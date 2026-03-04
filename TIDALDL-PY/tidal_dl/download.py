@@ -1655,11 +1655,16 @@ class Download:
         self,
         items: list,
         checkpoint: "DownloadCheckpoint | None" = None,
+        is_album: bool = False,
     ) -> dict[str, str]:
         """Scan items for duplicate ISRCs before downloads start.
 
         Returns a dict mapping str(track.id) -> action ('copy', 'redownload', 'skip').
         Empty dict means no duplicates were found or ISRC dedup is disabled.
+
+        For album downloads (is_album=True) duplicates are never skipped: source
+        files are copied if available, re-downloaded if not.  This guarantees
+        every album folder is complete regardless of what is already in the library.
         """
         if not self.settings.data.skip_duplicate_isrc:
             return {}
@@ -1687,6 +1692,21 @@ class Download:
 
         if not hits_with_source and not hits_missing_source:
             return {}
+
+        # Albums must always be complete: copy if source exists, re-download if not.
+        # Never skip or prompt for album downloads.
+        if is_album:
+            resolved: dict[str, str] = {}
+            for track, _ in hits_with_source:
+                resolved[str(track.id)] = "copy"
+            for track, _ in hits_missing_source:
+                resolved[str(track.id)] = "redownload"
+            if resolved:
+                self.fn_logger.info(
+                    f"Album download: {len(hits_with_source)} track(s) will be copied from existing "
+                    f"library files, {len(hits_missing_source)} will be re-downloaded."
+                )
+            return resolved
 
         saved_action = getattr(self.settings.data, "duplicate_action", "ask")
 
@@ -1883,7 +1903,9 @@ class Download:
             checkpoint = None
 
         # Pre-flight: resolve duplicate ISRCs before dispatching the thread pool.
-        resolved_actions: dict[str, str] = self._preflight_isrc_scan(items, checkpoint)
+        resolved_actions: dict[str, str] = self._preflight_isrc_scan(
+            items, checkpoint, is_album=isinstance(media, Album)
+        )
 
         # Set up progress tracking
         progress: Progress = self.progress_overall if self.progress_overall else self.progress
