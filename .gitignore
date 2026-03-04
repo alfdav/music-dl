@@ -19,6 +19,9 @@ MANIFEST.in
 # Compiled binaries
 TIDALDL-PY/exe/
 
+# Local-only documentation (not for public repo)
+.docs/
+
 # Config / data (local)
 *.ini
 settings.json
