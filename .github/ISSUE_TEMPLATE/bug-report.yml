@@ -6,25 +6,14 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please search for this issue in issues-page first. Avoid duplication.
-        Please read Wiki first.
-        https://github.com/yaronzz/Tidal-Media-Downloader/wiki
-  - type: textarea
-    id: which-tool
-    attributes:
-      label: Which tool
-      description: Describe which tool has been used.
-      placeholder: |
-        tidal-gui or tidal-dl
-    validations:
-      required: true
+        Please search for this issue in the issues page first. Avoid duplication.
   - type: textarea
     id: version
     attributes:
       label: Version
-      description: Describe the version of the tool.
+      description: Output of `tidal-dl --version`.
       placeholder: |
-        eg 2019.12.1.0
+        e.g. 3.0.0
     validations:
       required: true
   - type: textarea
