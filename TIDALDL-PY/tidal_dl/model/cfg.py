@@ -16,8 +16,8 @@ class Settings:
     video_download: bool = True
     download_delay: bool = True
     download_base_path: str = "~/download"
-    quality_audio: Quality = Quality.low_320k
-    quality_video: QualityVideo = QualityVideo.P480
+    quality_audio: Quality = Quality.hi_res_lossless
+    quality_video: QualityVideo = QualityVideo.P1080
     download_dolby_atmos: bool = False
     format_album: str = "Albums/{album_artist}/{album_title}/{track_volume_num_optional_CD}/{track_title}"
     format_playlist: str = "Playlists/{playlist_name}/{list_pos}. {artist_name} - {track_title}"
@@ -26,7 +26,7 @@ class Settings:
     format_video: str = "Videos/{artist_name}/{track_title}"
     video_convert_mp4: bool = True
     path_binary_ffmpeg: str = ""
-    metadata_cover_dimension: CoverDimensions = CoverDimensions.Px320
+    metadata_cover_dimension: CoverDimensions = CoverDimensions.Px1280
     metadata_cover_embed: bool = True
     mark_explicit: bool = False
     cover_album_file: bool = True
@@ -65,7 +65,8 @@ class HelpSettings:
     download_base_path: str = "Where to store the downloaded media."
     quality_audio: str = (
         'Desired audio download quality: "LOW" (96kbps), "HIGH" (320kbps), '
-        '"LOSSLESS" (16 Bit, 44,1 kHz), "HI_RES_LOSSLESS" (up to 24 Bit, 192 kHz)'
+        '"LOSSLESS" (16 Bit, 44,1 kHz), "HI_RES_LOSSLESS" (up to 24 Bit, 192 kHz). '
+        'Default: HI_RES_LOSSLESS. TIDAL auto-degrades based on your subscription tier.'
     )
     quality_video: str = 'Desired video download quality: "360", "480", "720", "1080"'
     download_dolby_atmos: str = "Download Dolby Atmos audio streams if available."

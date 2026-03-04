@@ -51,6 +51,7 @@ from tidal_dl.constants import (
     METADATA_LOOKUP_UPC,
     PLAYLIST_EXTENSION,
     PLAYLIST_PREFIX,
+    QUALITY_RANK,
     REQUESTS_TIMEOUT_SEC,
     AudioExtensionsValid,
     CoverDimensions,
@@ -965,6 +966,18 @@ class Download:
                 return TrackStreamInfo(None, "", False, None)
 
         media_stream = self.session.track(media.id).get_stream() if want_atmos else media.get_stream()
+
+        # Log when the delivered quality differs from the requested quality.
+        requested_quality = self.session.audio_quality
+        delivered_quality = media_stream.audio_quality
+        req_rank = QUALITY_RANK.get(requested_quality, -1)
+        del_rank = QUALITY_RANK.get(delivered_quality, -1)
+
+        if del_rank < req_rank:
+            self.fn_logger.warning(
+                f"Quality mismatch for '{name_builder_item(media)}': "
+                f"requested {requested_quality.value} but received {delivered_quality.value}."
+            )
 
         stream_manifest = media_stream.get_stream_manifest()
         file_extension = stream_manifest.file_extension

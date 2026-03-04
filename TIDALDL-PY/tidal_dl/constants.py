@@ -28,6 +28,18 @@ ATMOS_CLIENT_ID = base64.b64decode(_ATMOS_ID_B64).decode("utf-8")
 ATMOS_CLIENT_SECRET = base64.b64decode(_ATMOS_SECRET_B64).decode("utf-8")
 ATMOS_REQUEST_QUALITY = Quality.low_320k
 
+# Ordered from lowest to highest fidelity for comparison.
+QUALITY_RANK: dict[Quality, int] = {
+    Quality.low_96k: 0,
+    Quality.low_320k: 1,
+    Quality.high_lossless: 2,
+    Quality.hi_res_lossless: 3,
+}
+
+# Well-known track ID used to probe the account's maximum quality.
+# Fleetwood Mac – "Dreams" is widely available and tagged HI_RES_LOSSLESS.
+QUALITY_PROBE_TRACK_ID: int = 59727857
+
 
 class QualityVideo(StrEnum):
     P360 = "360"
