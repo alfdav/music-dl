@@ -1,162 +1,145 @@
 #!/usr/bin/env python
-# -*- encoding: utf-8 -*-
-'''
-@File    :   __init__.py
-@Time    :   2020/11/08
-@Author  :   Yaronzz
-@Version :   3.0
-@Contact :   yaronhuang@foxmail.com
-@Desc    :
-'''
-import sys
-import getopt
-import aigpy
+import importlib.metadata
+from pathlib import Path
+from urllib.parse import urlparse
 
-from events import *
-from settings import *
-from gui import startGui
-from printf import Printf
+import requests
+import toml
+
+from tidal_dl.constants import REQUESTS_TIMEOUT_SEC
+from tidal_dl.model.meta import ProjectInformation, ReleaseLatest
 
 
-def mainCommand():
+def metadata_project() -> ProjectInformation:
+    result: ProjectInformation
+    file_path: Path = Path(__file__)
+    tmp_result: dict = {}
+
+    paths: list[Path] = [
+        file_path.parent,
+        file_path.parent.parent,
+        file_path.parent.parent.parent,
+    ]
+
+    for pyproject_toml_dir in paths:
+        pyproject_toml_file: Path = pyproject_toml_dir / "pyproject.toml"
+
+        if pyproject_toml_file.is_file():
+            tmp_result = toml.load(pyproject_toml_file)
+
+            break
+
+    if tmp_result:
+        result = ProjectInformation(
+            version=tmp_result["project"]["version"], repository_url=tmp_result["project"]["urls"]["repository"]
+        )
+    else:
+        try:
+            meta_info = importlib.metadata.metadata(name_package())
+            repo_url = meta_info["Home-page"]
+
+            if not repo_url:
+                urls = meta_info.get_all("Project-URL")
+                # attempt to parse, else use hardcoded fallback
+                repo_url = next(
+                    (url.split(", ")[1] for url in urls if url.startswith("Repository")),
+                    "https://github.com/yaronzz/Tidal-Media-Downloader",
+                )
+
+            result = ProjectInformation(version=meta_info["Version"], repository_url=repo_url)
+        except Exception:
+            result = ProjectInformation(version="0.0.0", repository_url="https://anerroroccur.ed/sorry/for/that")
+
+    return result
+
+
+def version_app() -> str:
+    metadata: ProjectInformation = metadata_project()
+    version: str = metadata.version
+
+    return version
+
+
+def repository_url() -> str:
+    metadata: ProjectInformation = metadata_project()
+    url_repo: str = metadata.repository_url
+
+    return url_repo
+
+
+def repository_path() -> str:
+    url_repo: str = repository_url()
+    url_path: str = urlparse(url_repo).path
+
+    return url_path
+
+
+def latest_version_information() -> ReleaseLatest:
+    release_info: ReleaseLatest
+    repo_path: str = repository_path()
+    url: str = f"https://api.github.com/repos{repo_path}/releases/latest"
+
     try:
-        opts, args = getopt.getopt(sys.argv[1:],
-                                   "hvgl:o:q:r:",
-                                   ["help", "version", "gui", "link=", "output=", "quality", "resolution"])
-    except getopt.GetoptError as errmsg:
-        Printf.err(vars(errmsg)['msg'] + ". Use 'tidal-dl -h' for usage.")
-        return
+        response = requests.get(url, timeout=REQUESTS_TIMEOUT_SEC)
+        response.raise_for_status()
 
-    link = None
-    showGui = False
+        release_info_json: dict = response.json()
 
-    for opt, val in opts:
-        if opt in ('-h', '--help'):
-            Printf.usage()
-            return
-        if opt in ('-v', '--version'):
-            Printf.logo()
-            return
-        if opt in ('-g', '--gui'):
-            showGui = True
-            continue
-        if opt in ('-l', '--link'):
-            link = val
-            continue
-        if opt in ('-o', '--output'):
-            SETTINGS.downloadPath = val
-            SETTINGS.save()
-            continue
-        if opt in ('-q', '--quality'):
-            SETTINGS.audioQuality = SETTINGS.getAudioQuality(val)
-            SETTINGS.save()
-            continue
-        if opt in ('-r', '--resolution'):
-            SETTINGS.videoQuality = SETTINGS.getVideoQuality(val)
-            SETTINGS.save()
-            continue
+        release_info = ReleaseLatest(
+            version=release_info_json["tag_name"],
+            url=release_info_json["html_url"],
+            release_info=release_info_json["body"],
+        )
+    except (requests.RequestException, KeyError, ValueError):
+        release_info = ReleaseLatest(
+            version="v0.0.0",
+            url=url,
+            release_info=f"Something went wrong calling {url}. Check your internet connection.",
+        )
 
-    if not aigpy.path.mkdirs(SETTINGS.downloadPath):
-        Printf.err(LANG.select.MSG_PATH_ERR + SETTINGS.downloadPath)
-        return
-
-    if showGui:
-        startGui()
-        return
-
-    if link is not None:
-        if not loginByConfig():
-            loginByWeb()
-        Printf.info(LANG.select.SETTING_DOWNLOAD_PATH + ':' + SETTINGS.downloadPath)
-        start(link)
-
-def main():
-    SETTINGS.read(getProfilePath())
-    TOKEN.read(getTokenPath())
-    TIDAL_API.apiKey = apiKey.getItem(SETTINGS.apiKeyIndex)
-
-    if len(sys.argv) > 1:
-        mainCommand()
-        return
-
-    Printf.logo()
-    Printf.settings()
-
-    if not apiKey.isItemValid(SETTINGS.apiKeyIndex):
-        changeApiKey()
-        loginByWeb()
-    elif not loginByConfig():
-        loginByWeb()
-
-    Printf.checkVersion()
-
-    while True:
-        Printf.choices()
-        choice = Printf.enter(LANG.select.PRINT_ENTER_CHOICE)
-        if choice == "0":
-            return
-        elif choice == "1":
-            if not loginByConfig():
-                loginByWeb()
-        elif choice == "2":
-            loginByWeb()
-        elif choice == "3":
-            loginByAccessToken()
-        elif choice == "4":
-            changePathSettings()
-        elif choice == "5":
-            changeQualitySettings()
-        elif choice == "6":
-            changeSettings()
-        elif choice == "7":
-            if changeApiKey():
-                loginByWeb()
-        else:
-            start(choice)
+    return release_info
 
 
-def test():
-    SETTINGS.read(getProfilePath())
-    TOKEN.read(getTokenPath())
+def name_package() -> str:
+    package_name: str = __package__ or __name__
 
-    if not loginByConfig():
-        loginByWeb()
-
-    SETTINGS.audioQuality = AudioQuality.Master
-    SETTINGS.videoFileFormat = VideoQuality.P240
-    SETTINGS.checkExist = False
-    SETTINGS.includeEP = True
-    SETTINGS.saveCovers = True
-    SETTINGS.lyricFile = True
-    SETTINGS.showProgress = True
-    SETTINGS.showTrackInfo = True
-    SETTINGS.saveAlbumInfo = True
-    SETTINGS.downloadVideos = True
-    SETTINGS.downloadPath = "./download/"
-    SETTINGS.usePlaylistFolder = True
-    SETTINGS.albumFolderFormat = R"{ArtistName}/{Flag} {AlbumTitle} [{AlbumID}] [{AlbumYear}]"
-    SETTINGS.playlistFolderFormat = R"Playlist/{PlaylistName} [{PlaylistUUID}]"
-    SETTINGS.trackFileFormat = R"{TrackNumber} - {ArtistName} - {TrackTitle}{ExplicitFlag}"
-    SETTINGS.videoFileFormat = R"{VideoNumber} - {ArtistName} - {VideoTitle}{ExplicitFlag}"
-    SETTINGS.multiThread = False
-    SETTINGS.apiKeyIndex = 4
-    SETTINGS.checkExist = False
-
-    Printf.settings()
-
-    TIDAL_API.getPlaylistSelf()
-    # test example
-    # https://tidal.com/browse/track/70973230
-    # track 70973230  77798028 212657
-    start('242700165')
-    # album 58138532  77803199  21993753   79151897  56288918
-    # start('58138532')
-    # playlist 98235845-13e8-43b4-94e2-d9f8e603cee7
-    # start('98235845-13e8-43b4-94e2-d9f8e603cee7')
-    # video 155608351 188932980 https://tidal.com/browse/track/55130637
-    # start("155608351")https://tidal.com/browse/track/199683732
+    return package_name
 
 
-if __name__ == '__main__':
-    # test()
-    main()
+def is_dev_env() -> bool:
+    package_name: str = name_package()
+    result: bool = False
+
+    # Check if package is running from source code == dev mode
+    # If package is not running in Nuitka environment, try to import it from pip libraries.
+    # If this also fails, it is dev mode.
+    if "__compiled__" not in globals():
+        try:
+            importlib.metadata.version(package_name)
+        except Exception:
+            # If package is not installed
+            result = True
+
+    return result
+
+
+def name_app() -> str:
+    app_name: str = name_package()
+    is_dev: bool = is_dev_env()
+
+    if is_dev:
+        app_name += "-dev"
+
+    return app_name
+
+
+__name_display__ = name_app()
+__version__ = version_app()
+
+
+def update_available() -> tuple[bool, ReleaseLatest]:
+    latest_info: ReleaseLatest = latest_version_information()
+    version_current: str = f"v{__version__}"
+
+    result = version_current not in [latest_info.version, "v0.0.0"]
+    return result, latest_info
