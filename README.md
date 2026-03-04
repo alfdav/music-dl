@@ -9,6 +9,8 @@
 
 ---
 
+## I am learning how to code with this app, expect bugs
+
 ## Requirements
 
 - Python 3.12 or 3.13
@@ -244,3 +246,4 @@ Originally created by [yaronzz](https://github.com/yaronzz/Tidal-Media-Downloade
 - [Typer](https://typer.tiangolo.com/) — CLI framework
 - [python-ffmpeg](https://github.com/jonghwanhyeon/python-ffmpeg) — FFmpeg bindings
 - [pycryptodome](https://www.pycryptodome.org/) — AES decryption
+
