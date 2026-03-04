@@ -1937,10 +1937,6 @@ class Download:
         ]
         if summary.copied > 0:
             summary_lines.append(f"[cyan]⎘ Copied:[/cyan]      {summary.copied}")
-        if summary.source_missing_redownloaded > 0:
-            summary_lines.append(
-                f"[dim]  (incl. {summary.source_missing_redownloaded} re-downloaded: source was missing)[/dim]"
-            )
         summary_lines.append(f"[bold]Total:[/bold]         {summary.total}")
         Console().print(Panel(
             "\n".join(summary_lines),

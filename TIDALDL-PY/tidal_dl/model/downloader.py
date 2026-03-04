@@ -23,7 +23,6 @@ class DownloadSummary:
     skipped: int = 0
     failed: int = 0
     copied: int = 0
-    source_missing_redownloaded: int = 0
 
     @property
     def total(self) -> int:

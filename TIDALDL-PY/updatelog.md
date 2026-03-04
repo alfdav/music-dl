@@ -57,7 +57,7 @@ Full rewrite of the CLI engine, ported from [tidal-dl-ng](https://github.com/exi
 **Configuration**
 - `tidal-dl cfg` — view/change settings; `--editor` to open in `$EDITOR`
 - `tidal-dl cfg --reset` — backs up existing config to `.json.bak`, writes fresh defaults
-- 40 settings in the `Settings` dataclass; stored at `~/.config/tidal-dl/settings.json`
+- 46 settings in the `Settings` dataclass; stored at `~/.config/tidal-dl/settings.json`
 
 **Removed**
 - GUI (`tidal-gui`, `gui.py`)
