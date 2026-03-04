@@ -68,6 +68,24 @@ class IsrcIndex:
     # Query / mutation
     # ------------------------------------------------------------------
 
+    def get_path(self, isrc: str) -> str | None:
+        """Return the stored path string for *isrc* without pruning stale entries.
+
+        Unlike :meth:`contains`, this does **not** delete entries whose file
+        no longer exists.  Use this when you need to report the recorded path
+        even if the file has been moved or deleted.
+
+        Args:
+            isrc (str): ISRC identifier to look up.
+
+        Returns:
+            str | None: Recorded absolute path, or None if not indexed.
+        """
+        if not isrc:
+            return None
+        with self._lock:
+            return self._data.get(isrc)
+
     def contains(self, isrc: str) -> bool:
         """Return True if *isrc* is indexed and its recorded path still exists.
 
