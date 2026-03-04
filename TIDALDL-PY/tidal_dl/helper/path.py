@@ -476,10 +476,13 @@ def path_file_uniquify(path_file: pathlib.Path) -> pathlib.Path:
 
     if unique_suffix:
         file_suffix = unique_suffix + path_file.suffix
+        # Check length using the full filename (stem + suffix + extension) to decide
+        # whether to truncate the stem.  The else-branch must also include the
+        # original extension so the output file keeps its type (e.g. .flac).
         path_file = (
             path_file.parent / (str(path_file.stem)[: -len(file_suffix)] + file_suffix)
-            if len(str(path_file.parent / (path_file.stem + unique_suffix))) > FILENAME_LENGTH_MAX
-            else path_file.parent / (path_file.stem + unique_suffix)
+            if len(str(path_file.parent / (path_file.stem + file_suffix))) > FILENAME_LENGTH_MAX
+            else path_file.parent / (path_file.stem + file_suffix)
         )
 
     return path_file
