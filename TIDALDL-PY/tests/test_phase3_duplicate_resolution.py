@@ -243,6 +243,36 @@ class TestPreflightIsrcScan:
         result = dl._preflight_isrc_scan([video])
         assert result == {}
 
+    def test_album_copies_existing_source(self, tmp_path):
+        source = tmp_path / "track.flac"
+        source.touch()
+        dl = _make_download_obj(tmp_path, {"US-ABC-00-00010": str(source)}, duplicate_action="skip")
+
+        track = _make_track(10, "US-ABC-00-00010")
+        result = dl._preflight_isrc_scan([track], is_album=True)
+        assert result == {"10": "copy"}
+
+    def test_album_redownloads_missing_source(self, tmp_path):
+        dl = _make_download_obj(
+            tmp_path,
+            {"US-ABC-00-00011": str(tmp_path / "gone.flac")},
+            duplicate_action="skip",
+        )
+        track = _make_track(11, "US-ABC-00-00011")
+        result = dl._preflight_isrc_scan([track], is_album=True)
+        assert result == {"11": "redownload"}
+
+    def test_album_ignores_saved_skip_preference(self, tmp_path):
+        """Even if duplicate_action='skip' is saved, albums always copy/redownload."""
+        source = tmp_path / "track.flac"
+        source.touch()
+        dl = _make_download_obj(tmp_path, {"US-ABC-00-00012": str(source)}, duplicate_action="skip")
+
+        track = _make_track(12, "US-ABC-00-00012")
+        result = dl._preflight_isrc_scan([track], is_album=True)
+        # Must be 'copy', NOT 'skip'
+        assert result == {"12": "copy"}
+
     def test_skips_checkpoint_downloaded_tracks(self, tmp_path):
         source = tmp_path / "track.flac"
         source.touch()
