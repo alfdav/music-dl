@@ -147,6 +147,7 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         # when switching between Atmos and normal session credentials.
         self.stream_lock = Lock()
         self.is_atmos_session = False
+        self.is_pkce = False  # default; updated by login_token()
         self.active_source = DownloadSource.OAUTH
         self.hifi_client: HiFiApiClient | None = None
         self._active_key_index = 0
@@ -190,15 +191,39 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         return [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
 
     def resolve_source(self, fn_print: Callable) -> bool:
+        """Resolve the active download source.
+
+        Hi-Fi API handles audio streaming; OAuth is always needed for metadata
+        (playlist/album browsing, track info, cover art, lyrics).  When Hi-Fi
+        API is the preferred source we still attempt a silent token restore so
+        that collection downloads work.  If the token restore fails the user
+        can still download individual tracks by URL but playlist/album browsing
+        will be unavailable.
+        """
         preferred = DownloadSource(self.settings.data.download_source)
         allow_fallback = bool(self.settings.data.download_source_fallback)
 
         if preferred == DownloadSource.HIFI_API:
             self.hifi_client = HiFiApiClient(instances=self._configured_hifi_instances() or None)
             health = self.hifi_client.health_check()
+
             if health:
                 self.active_source = DownloadSource.HIFI_API
                 fn_print(f"Using Hi-Fi API source via {health}")
+
+                # Hi-Fi API provides audio streams; OAuth is still needed for
+                # metadata (playlist contents, track objects, cover art, lyrics).
+                # Attempt a silent token restore — non-blocking, best-effort.
+                is_token = self._try_login_with_key_rotation()
+                if is_token:
+                    fn_print("OAuth session restored for metadata access.")
+                    self._probe_subscription_quality()
+                else:
+                    fn_print(
+                        "[yellow]No OAuth token found.[/yellow] "
+                        "Playlist/album browsing requires login. "
+                        "Run 'tidal-dl login' to authenticate, or use direct track URLs."
+                    )
                 return True
 
             if not allow_fallback:
@@ -470,17 +495,22 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
             )
             return
 
+        # Quality may be a StrEnum member or a plain str depending on tidalapi version;
+        # normalise to string for display and enum for comparison.
+        delivered_str = delivered.value if hasattr(delivered, "value") else str(delivered)
+        configured_str = configured.value if hasattr(configured, "value") else str(configured)
+
         if delivered_rank >= configured_rank:
             _console.print(
                 f"[green]Audio quality check passed:[/green] "
-                f"account supports {delivered.value} (requested {configured.value})."
+                f"account supports {delivered_str} (requested {configured_str})."
             )
             return
 
         _console.print(
-            f"[yellow]Warning:[/yellow] Requested quality [bold]{configured.value}[/bold] "
-            f"but your subscription only delivers [bold]{delivered.value}[/bold]. "
-            f"Auto-downgrading to {delivered.value}."
+            f"[yellow]Warning:[/yellow] Requested quality [bold]{configured_str}[/bold] "
+            f"but your subscription only delivers [bold]{delivered_str}[/bold]. "
+            f"Auto-downgrading to {delivered_str}."
         )
 
         self.settings.data.quality_audio = delivered
