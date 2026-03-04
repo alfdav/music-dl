@@ -4,6 +4,25 @@
 pip install git+https://github.com/alfdav/Tidal-Media-Downloader.git#subdirectory=TIDALDL-PY
 ```
 
+#### v3.1.0 (2026)
+
+**Library Scanner**
+- New `tidal-dl scan` subcommand group for seeding the ISRC duplicate index from existing music files
+- New `tidal_dl/helper/library_scanner.py` module: reads ISRCs from FLAC (Vorbis Comment `ISRC`), MP3 (ID3 `TSRC`), MP4/M4A (iTunes `isrc` atom), and OGG files using mutagen
+- New `scan_paths` setting: persistent comma-separated list of directories to scan; managed via `scan add/remove/show`
+- Single configured path auto-defaults (no prompt); multiple paths show a numbered selection menu
+- `--dry-run` option: discover ISRCs without writing to the index
+- `--all` option: scan all configured paths without prompting
+- `--verbose/-v` option: log each file path as it is examined
+- Rich progress bar per directory + summary panel (files scanned, new ISRCs, already indexed, no-ISRC, errors)
+- Existence check in `scan show`: marks paths green (reachable) or red (missing/unmounted)
+
+**Documentation**
+- Full README rewrite: all commands, all 47 settings, new sections for Download Sources, Library Scanning, and Playlist Import
+- `updatelog.md` updated
+
+---
+
 #### v3.0.0 (2025)
 
 Full rewrite of the CLI engine, ported from [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng). No GUI.
