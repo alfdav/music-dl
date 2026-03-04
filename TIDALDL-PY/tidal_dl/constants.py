@@ -48,6 +48,31 @@ class QualityVideo(StrEnum):
     P1080 = "1080"
 
 
+class DownloadSource(StrEnum):
+    HIFI_API = "hifi_api"
+    OAUTH = "oauth"
+
+
+HIFI_UPTIME_TRACKER_URLS: list[str] = [
+    "https://tidal-uptime.jiffy-puffs-1j.workers.dev/",
+    "https://tidal-uptime.props-76styles.workers.dev/",
+]
+
+HIFI_API_FALLBACK_INSTANCES: list[str] = [
+    "https://api.monochrome.tf",
+    "https://arran.monochrome.tf",
+    "https://triton.squid.wtf",
+]
+
+# Maps tidalapi.Quality enum → Hi-Fi API quality string parameter.
+HIFI_QUALITY_MAP: dict[Quality, str] = {
+    Quality.hi_res_lossless: "HI_RES_LOSSLESS",
+    Quality.high_lossless: "LOSSLESS",
+    Quality.low_320k: "HIGH",
+    Quality.low_96k: "LOW",
+}
+
+
 class MediaType(StrEnum):
     TRACK = "track"
     VIDEO = "video"

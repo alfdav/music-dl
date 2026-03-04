@@ -3,7 +3,13 @@ from dataclasses import dataclass
 from dataclasses_json import dataclass_json
 from tidalapi import Quality
 
-from tidal_dl.constants import CoverDimensions, InitialKey, MetadataTargetUPC, QualityVideo
+from tidal_dl.constants import (
+    CoverDimensions,
+    DownloadSource,
+    InitialKey,
+    MetadataTargetUPC,
+    QualityVideo,
+)
 
 
 @dataclass_json
@@ -18,6 +24,9 @@ class Settings:
     download_base_path: str = "~/download"
     quality_audio: Quality = Quality.hi_res_lossless
     quality_video: QualityVideo = QualityVideo.P1080
+    download_source: DownloadSource = DownloadSource.HIFI_API
+    download_source_fallback: bool = True
+    hifi_api_instances: str = ""
     download_dolby_atmos: bool = False
     format_album: str = "Albums/{album_artist}/{album_title}/{track_volume_num_optional_CD}/{track_title}"
     format_playlist: str = "Playlists/{playlist_name}/{list_pos}. {artist_name} - {track_title}"
@@ -69,6 +78,15 @@ class HelpSettings:
         'Default: HI_RES_LOSSLESS. TIDAL auto-degrades based on your subscription tier.'
     )
     quality_video: str = 'Desired video download quality: "360", "480", "720", "1080"'
+    download_source: str = (
+        "Preferred download source: 'hifi_api' (public proxy instances) or 'oauth' (your personal TIDAL session)."
+    )
+    download_source_fallback: str = (
+        "If enabled, automatically fallback to the next source when the preferred source is unavailable."
+    )
+    hifi_api_instances: str = (
+        "Comma-separated Hi-Fi API instances. Empty means auto-discover from live uptime trackers."
+    )
     download_dolby_atmos: str = "Download Dolby Atmos audio streams if available."
     format_album: str = "Where to download albums and how to name the items."
     format_playlist: str = "Where to download playlists and how to name the items."

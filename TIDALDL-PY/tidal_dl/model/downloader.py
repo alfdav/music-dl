@@ -52,3 +52,15 @@ class TrackStreamInfo:
     file_extension: str
     requires_flac_extraction: bool
     media_stream: Stream | None
+
+
+@dataclass
+class HiFiStreamManifest:
+    urls: list[str]
+    file_extension: str
+    codecs: str
+    is_encrypted: bool = False
+    encryption_key: str | None = None
+
+    def get_urls(self) -> list[str]:
+        return self.urls

@@ -18,6 +18,7 @@ import time
 from collections.abc import Callable
 from concurrent import futures
 from threading import Event
+from threading import Lock
 from uuid import uuid4
 
 import m3u8
@@ -55,6 +56,8 @@ from tidal_dl.constants import (
     REQUESTS_TIMEOUT_SEC,
     AudioExtensionsValid,
     CoverDimensions,
+    DownloadSource,
+    HIFI_QUALITY_MAP,
     MediaType,
     MetadataTargetUPC,
     QualityVideo,
@@ -62,6 +65,7 @@ from tidal_dl.constants import (
 from tidal_dl.helper.camelot import format_initial_key
 from tidal_dl.helper.decryption import decrypt_file, decrypt_security_token
 from tidal_dl.helper.exceptions import MediaMissing
+from tidal_dl.helper.checkpoint import DownloadCheckpoint, STATUS_DOWNLOADED, STATUS_FAILED, STATUS_PENDING
 from tidal_dl.helper.isrc_index import IsrcIndex
 from tidal_dl.helper.path import (
     check_file_exists,
@@ -79,7 +83,13 @@ from tidal_dl.helper.tidal import (
     name_builder_title,
 )
 from tidal_dl.metadata import Metadata
-from tidal_dl.model.downloader import DownloadOutcome, DownloadSegmentResult, DownloadSummary, TrackStreamInfo
+from tidal_dl.model.downloader import (
+    DownloadOutcome,
+    DownloadSegmentResult,
+    DownloadSummary,
+    HiFiStreamManifest,
+    TrackStreamInfo,
+)
 
 
 # TODO: Set appropriate client string and use it for video download.
@@ -161,6 +171,12 @@ class Download:
         self.path_base = path_base
         self.event_abort = event_abort
         self.event_run = event_run
+        self._checkpoint: DownloadCheckpoint | None = None
+        self._rate_limit_hits: int = 0
+        self._successful_since_limit: int = 0
+        self._rate_limit_lock: Lock = Lock()
+        self._adaptive_delay_sec_min = self.settings.data.download_delay_sec_min
+        self._adaptive_delay_sec_max = self.settings.data.download_delay_sec_max
 
         # Use the session-level TTLCache if caching is enabled in settings.
         if self.settings.data.api_cache_enabled and hasattr(tidal_obj, "api_cache"):
@@ -172,6 +188,7 @@ class Download:
         _index_path = pathlib.Path(path_config_base()) / "isrc_index.json"
         self._isrc_index: IsrcIndex = IsrcIndex(_index_path)
         self._isrc_index.load()
+        self._cleanup_stale_temp_dirs()
 
         if not self.settings.data.path_binary_ffmpeg and (
             self.settings.data.video_convert_mp4 or self.settings.data.extract_flac
@@ -190,6 +207,88 @@ class Download:
                     "FLAC cannot be extracted from MP4 containers. "
                     "Install FFmpeg and ensure it is in your PATH, or set `path_binary_ffmpeg` in the config."
                 )
+
+    def _cleanup_stale_temp_dirs(self) -> None:
+        """Delete UUID-named temp dirs older than 1 hour, left from interrupted downloads."""
+        import uuid
+
+        tmp_dir = pathlib.Path(tempfile.gettempdir())
+        cutoff = time.time() - 3600
+        cleaned = 0
+
+        for entry in tmp_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            try:
+                uuid.UUID(entry.name)
+            except ValueError:
+                continue
+            try:
+                if entry.stat().st_mtime < cutoff:
+                    shutil.rmtree(entry, ignore_errors=True)
+                    cleaned += 1
+            except OSError:
+                pass
+
+        if cleaned:
+            self.fn_logger.info(f"Cleaned up {cleaned} stale temp dir(s) from previous sessions.")
+
+    def _on_rate_limit_hit(self) -> None:
+        """Double the adaptive download delay on a 429 response, capped at 30 s."""
+        max_delay = 30.0
+        with self._rate_limit_lock:
+            self._rate_limit_hits += 1
+            self._successful_since_limit = 0
+            self._adaptive_delay_sec_min = min(self._adaptive_delay_sec_min * 2, max_delay)
+            self._adaptive_delay_sec_max = min(self._adaptive_delay_sec_max * 2, max_delay)
+        self.fn_logger.warning(
+            f"Rate limit hit #{self._rate_limit_hits}. "
+            f"Adaptive delay now [{self._adaptive_delay_sec_min:.1f}s–{self._adaptive_delay_sec_max:.1f}s]."
+        )
+
+    def _on_successful_track(self) -> None:
+        """Track successful downloads; halve adaptive delay after 50 consecutive successes."""
+        with self._rate_limit_lock:
+            self._successful_since_limit += 1
+            if self._rate_limit_hits > 0 and self._successful_since_limit >= 50:
+                self._successful_since_limit = 0
+                baseline_min = self.settings.data.download_delay_sec_min
+                baseline_max = self.settings.data.download_delay_sec_max
+                self._adaptive_delay_sec_min = max(self._adaptive_delay_sec_min / 2, baseline_min)
+                self._adaptive_delay_sec_max = max(self._adaptive_delay_sec_max / 2, baseline_max)
+                self.fn_logger.debug(
+                    f"50 successful tracks. Delay halved to "
+                    f"[{self._adaptive_delay_sec_min:.1f}s–{self._adaptive_delay_sec_max:.1f}s]."
+                )
+
+    def _get_track_stream_info_hifi(self, media: Track) -> TrackStreamInfo:
+        """Fetch stream info via the Hi-Fi API client and wrap it in a HiFiStreamManifest.
+
+        Args:
+            media (Track): The track to fetch.
+
+        Returns:
+            TrackStreamInfo: Stream info with a HiFiStreamManifest as the manifest.
+
+        Raises:
+            Exception: Propagates any exception from the Hi-Fi client so the caller
+                       can decide whether to fall back to OAuth.
+        """
+        quality_str = HIFI_QUALITY_MAP.get(self.session.audio_quality, "LOSSLESS")
+        result = self.tidal.hifi_client.track_stream(media.id, quality_str)
+        manifest = HiFiStreamManifest(
+            urls=result.urls,
+            file_extension=result.file_extension,
+            codecs=result.codecs,
+            is_encrypted=result.encryption_type not in ("NONE", ""),
+            encryption_key=None,
+        )
+        return TrackStreamInfo(
+            stream_manifest=manifest,
+            file_extension=result.file_extension,
+            requires_flac_extraction=False,
+            media_stream=None,
+        )
 
     def _get_media_urls(
         self,
@@ -487,13 +586,27 @@ class Download:
                 r.raise_for_status()
 
                 # Write the content to disk. If `chunk_size` is set to `None` the whole file will be written at once.
+                expected_size: int = int(r.headers.get("content-length", 0))
                 with path_segment.open("wb") as f:
                     for data in r.iter_content(chunk_size=block_size):
                         f.write(data)
                         # Advance progress bar.
                         self.progress.advance(p_task)
 
-                result = True
+                # Integrity check: compare actual bytes written to Content-Length.
+                if expected_size > 0 and path_segment.is_file():
+                    actual_size = path_segment.stat().st_size
+                    if actual_size != expected_size:
+                        path_segment.unlink(missing_ok=True)
+                        self.fn_logger.warning(
+                            f"Integrity check failed for '{path_segment.name}': "
+                            f"expected {expected_size} B, got {actual_size} B. Segment discarded."
+                        )
+                        result = False
+                    else:
+                        result = True
+                else:
+                    result = True
             except Exception:
                 self.progress.advance(p_task)
 
@@ -630,7 +743,8 @@ class Download:
             isrc = getattr(media, "isrc", None)
             if isrc and self.settings.data.skip_duplicate_isrc:
                 self._isrc_index.add(isrc, path_media_dst)
-                self._isrc_index.save()
+                self._isrc_index.maybe_flush(every_n=25)
+            self._on_successful_track()
 
         return outcome, path_media_dst
 
@@ -862,7 +976,12 @@ class Download:
         )
 
     def _get_stream_info(self, media: Track | Video) -> tuple[StreamManifest | None, str, bool, Stream | None]:
-        """Get stream information for media.
+        """Get stream information for media, routing through Hi-Fi API or OAuth path.
+
+        For the Hi-Fi API source the stream lock is intentionally skipped because
+        Hi-Fi requests are stateless and do not mutate the tidalapi session.  The
+        OAuth path retains the broad lock to prevent the Atmos/Normal credential
+        race condition described in the original comments below.
 
         Args:
             media (Track | Video): Media item.
@@ -870,34 +989,59 @@ class Download:
         Returns:
             tuple[StreamManifest | None, str, bool, Stream | None]: Stream info.
         """
-        stream_manifest: StreamManifest | None = None
-        media_stream: Stream | None = None
-        do_flac_extract: bool = False
-        file_extension: str = ""
+        # ------------------------------------------------------------------
+        # Hi-Fi API path (Track only) — stateless, no session lock required
+        # ------------------------------------------------------------------
+        if (
+            isinstance(media, Track)
+            and self.tidal.active_source == DownloadSource.HIFI_API
+            and self.tidal.hifi_client is not None
+        ):
+            try:
+                track_info = self._get_track_stream_info_hifi(media)
+                if track_info.stream_manifest is not None:
+                    return (
+                        track_info.stream_manifest,
+                        track_info.file_extension,
+                        track_info.requires_flac_extraction,
+                        track_info.media_stream,
+                    )
+            except TooManyRequests:
+                self._on_rate_limit_hit()
+                self.fn_logger.exception(
+                    f"Too many requests (Hi-Fi API). Skipping '{name_builder_item(media)}'.  "
+                    f"Consider activating download delay."
+                )
+                return None, "", False, None
+            except Exception:
+                allow_fallback = getattr(self.settings.data, "download_source_fallback", True)
+                if not allow_fallback:
+                    self.fn_logger.exception(
+                        f"Hi-Fi API failed for '{name_builder_item(media)}'. Fallback is disabled."
+                    )
+                    return None, "", False, None
+                self.fn_logger.warning(
+                    f"Hi-Fi API failed for '{name_builder_item(media)}'. Falling back to OAuth."
+                )
+                # Fall through to OAuth path below
 
-        # CRITICAL: This lock is intentionally broad and serializes all
-        # stream-fetching (Phase 1) to prevent a critical race condition.
+        # ------------------------------------------------------------------
+        # OAuth path — CRITICAL: broad lock serializes session credential changes
         #
-        # THE PROBLEM:
-        # The single, shared session (self.tidal.session) must change its
-        # credentials to switch between Atmos and Hi-Res/Normal streams.
+        # THE PROBLEM: The shared tidalapi session must switch credentials to
+        # serve Atmos vs Hi-Res/Normal streams.  Without this lock a thread
+        # could overwrite the credentials mid-flight in another thread.
         #
-        # THE RACE CONDITION IT FIXES:
-        # If this lock is released *before* get_stream() is called,
-        # another thread could change the session (e.g., back to "Normal")
-        # right after this thread switched it to "Atmos". This would
-        # cause this thread to call get_stream() with the wrong credentials,
-        # resulting in the API returning AAC 320 instead of Atmos.
-        #
-        # THE TRADEOFF:
-        # This creates a "tollbooth" bottleneck, serializing the get_stream()
-        # calls. However, the *actual* segment downloads (Phase 2)
-        # still run in parallel, governed by `downloads_concurrent_max`.
+        # THE TRADEOFF: This creates a "tollbooth" bottleneck on stream-info
+        # fetching; actual segment downloads still run in parallel.
         #
         # DO NOT "OPTIMIZE" THIS by making the lock more granular.
         # Correctness > Performance.
-
+        # ------------------------------------------------------------------
         with self.tidal.stream_lock:
+            # Proactively refresh a near-expiry OAuth token before the API call.
+            self.tidal._ensure_token_fresh()
+
             try:
                 if isinstance(media, Track):
                     track_info = self._get_track_stream_info(media)
@@ -905,10 +1049,12 @@ class Download:
                     if track_info.stream_manifest is None:
                         return None, "", False, None
 
-                    stream_manifest = track_info.stream_manifest
-                    file_extension = track_info.file_extension
-                    do_flac_extract = track_info.requires_flac_extraction
-                    media_stream = track_info.media_stream
+                    return (
+                        track_info.stream_manifest,
+                        track_info.file_extension,
+                        track_info.requires_flac_extraction,
+                        track_info.media_stream,
+                    )
 
                 elif isinstance(media, Video):
                     # Videos always require the normal session
@@ -917,27 +1063,23 @@ class Download:
                         return None, "", False, None
 
                     file_extension = AudioExtensions.MP4 if self.settings.data.video_convert_mp4 else VideoExtensions.TS
-
-                    stream_manifest = None
-                    media_stream = None
-                    do_flac_extract = False
+                    return None, file_extension, False, None
 
                 else:
                     self.fn_logger.error(f"Unknown media type for stream info: {type(media)}")
                     return None, "", False, None
 
             except TooManyRequests:
+                self._on_rate_limit_hit()
                 self.fn_logger.exception(
                     f"Too many requests against TIDAL backend. Skipping '{name_builder_item(media)}'. "
-                    f"Consider to activate delay between downloads."
+                    f"Consider activating delay between downloads."
                 )
                 return None, "", False, None
 
             except Exception:
                 self.fn_logger.exception(f"Something went wrong. Skipping '{name_builder_item(media)}'.")
                 return None, "", False, None
-
-        return stream_manifest, file_extension, do_flac_extract, media_stream
 
     def _get_track_stream_info(self, media: Track) -> TrackStreamInfo:
         """Get stream info for a Track, handling Atmos/Normal session switching.
@@ -1133,7 +1275,7 @@ class Download:
         if download_delay and not skip_file:
             time_sleep: float = round(
                 random.SystemRandom().uniform(
-                    self.settings.data.download_delay_sec_min, self.settings.data.download_delay_sec_max
+                    self._adaptive_delay_sec_min, self._adaptive_delay_sec_max
                 ),
                 1,
             )
@@ -1331,7 +1473,7 @@ class Download:
 
     @staticmethod
     def cover_data(url: str | None = None, path_file: str | None = None) -> str | bytes:
-        """Retrieve cover image data from a URL or file.
+        """Retrieve cover image data from a URL or file, with up to 3 retry attempts.
 
         Args:
             url (str | None, optional): URL to download image from. Defaults to None.
@@ -1343,16 +1485,19 @@ class Download:
         result: str | bytes = ""
 
         if url:
-            response = None
-            try:
-                response = requests.get(url, timeout=REQUESTS_TIMEOUT_SEC)
-                response.raise_for_status()
-                result = response.content
-            except requests.RequestException:
-                pass
-            finally:
-                if response:
-                    response.close()
+            for attempt in range(3):
+                response = None
+                try:
+                    response = requests.get(url, timeout=REQUESTS_TIMEOUT_SEC)
+                    response.raise_for_status()
+                    result = response.content
+                    break
+                except requests.RequestException:
+                    if attempt < 2:
+                        time.sleep(2**attempt)
+                finally:
+                    if response:
+                        response.close()
         elif path_file:
             try:
                 with open(path_file, "rb") as f:
@@ -1392,19 +1537,24 @@ class Download:
         cover_data: bytes = None
 
         if self.settings.data.lyrics_embed or self.settings.data.lyrics_file:
-            # Try to retrieve lyrics.
-            try:
-                lyrics_obj = track.lyrics()
+            # Try to retrieve lyrics with up to 3 retries.
+            for attempt in range(3):
+                try:
+                    lyrics_obj = track.lyrics()
 
-                if lyrics_obj.text:
-                    lyrics_unsynced = lyrics_obj.text
-                    lyrics = lyrics_unsynced
-                if lyrics_obj.subtitles:
-                    lyrics_synced = lyrics_obj.subtitles
-                    lyrics = lyrics_synced
-            except Exception:
-                lyrics = ""
-                self.fn_logger.debug(f"Could not retrieve lyrics for `{name_builder_item(track)}`.")
+                    if lyrics_obj.text:
+                        lyrics_unsynced = lyrics_obj.text
+                        lyrics = lyrics_unsynced
+                    if lyrics_obj.subtitles:
+                        lyrics_synced = lyrics_obj.subtitles
+                        lyrics = lyrics_synced
+                    break
+                except Exception:
+                    if attempt < 2:
+                        time.sleep(2**attempt)
+                    else:
+                        lyrics = ""
+                        self.fn_logger.debug(f"Could not retrieve lyrics for `{name_builder_item(track)}`.")
 
         if lyrics and self.settings.data.lyrics_file:
             path_lyrics = self.lyrics_to_file(path_media.parent, lyrics)
@@ -1505,6 +1655,35 @@ class Download:
         download_context = self._setup_collection_download_context(media, file_template, video_download)
         file_name_relative, list_media_name, list_media_name_short, items, progress_stdout = download_context
 
+        # Set up checkpoint for collection resume.
+        collection_id = f"{type(media).__name__.lower()}_{media.id}"
+        checkpoint_path = pathlib.Path(path_config_base()) / "checkpoints" / f"{collection_id}.json"
+        checkpoint: DownloadCheckpoint | None = None
+        try:
+            track_ids = [str(item.id) for item in items if isinstance(item, Track)]
+            if checkpoint_path.exists():
+                checkpoint = DownloadCheckpoint.load(checkpoint_path)
+                checkpoint.initialize_tracks(track_ids)
+                already_done = sum(1 for v in checkpoint.tracks.values() if v == STATUS_DOWNLOADED)
+                if already_done:
+                    self.fn_logger.info(
+                        f"Resuming '{list_media_name}': "
+                        f"{already_done} track(s) already downloaded, skipping."
+                    )
+            else:
+                checkpoint = DownloadCheckpoint(
+                    path=checkpoint_path,
+                    collection_id=collection_id,
+                    collection_type=type(media).__name__.lower(),
+                )
+                checkpoint.initialize_tracks(track_ids)
+                checkpoint.save()
+        except Exception as exc:
+            self.fn_logger.warning(
+                f"Could not set up checkpoint for '{list_media_name}': {exc}. Continuing without checkpoint."
+            )
+            checkpoint = None
+
         # Set up progress tracking
         progress: Progress = self.progress_overall if self.progress_overall else self.progress
         progress_task: TaskID = progress.add_task(
@@ -1531,7 +1710,12 @@ class Download:
             progress_stdout,
             event_stop,
             summary,
+            checkpoint,
         )
+
+        # Clean up checkpoint if all tracks succeeded.
+        if checkpoint is not None:
+            checkpoint.cleanup_if_complete()
 
         # Create playlist file if requested
         if self.settings.data.playlist_create:
@@ -1608,6 +1792,7 @@ class Download:
         progress_stdout: bool,
         event_stop: Event | None = None,
         summary: DownloadSummary | None = None,
+        checkpoint: DownloadCheckpoint | None = None,
     ) -> list[pathlib.Path]:
         """Execute downloads for all items in the collection.
 
@@ -1624,6 +1809,7 @@ class Download:
             progress_stdout (bool): Whether to show progress in stdout.
             event_stop (Event | None, optional): Event to stop the download. Defaults to None.
             summary (DownloadSummary | None, optional): Outcome counter. Defaults to None.
+            checkpoint (DownloadCheckpoint | None, optional): Collection checkpoint for resume. Defaults to None.
 
         Returns:
             list[pathlib.Path]: List of result directories.
@@ -1640,9 +1826,19 @@ class Download:
         # Iterate through list items
         while not progress.finished:
             with futures.ThreadPoolExecutor(max_workers=self.settings.data.downloads_concurrent_max) as executor:
-                # Dispatch all download tasks to worker threads
-                download_futures: list[futures.Future] = [
-                    executor.submit(
+                # Build future → item_media mapping for checkpoint tracking.
+                # Pre-skip tracks already marked 'downloaded' in the checkpoint.
+                future_to_item: dict[futures.Future, object] = {}
+
+                for count, item_media in enumerate(items):
+                    if checkpoint is not None and isinstance(item_media, Track):
+                        if checkpoint.status_of(str(item_media.id)) == STATUS_DOWNLOADED:
+                            if summary is not None:
+                                summary.record(DownloadOutcome.SKIPPED)
+                            progress.advance(progress_task)
+                            continue
+
+                    future = executor.submit(
                         self.item,
                         media=item_media,
                         file_template=file_name_relative,
@@ -1654,12 +1850,17 @@ class Download:
                         list_total=list_total,
                         event_stop=event_stop,
                     )
-                    for count, item_media in enumerate(items)
-                ]
+                    future_to_item[future] = item_media
 
                 # Process download results
                 result_dirs = self._process_download_futures(
-                    download_futures, progress, progress_task, progress_stdout, summary
+                    list(future_to_item.keys()),
+                    progress,
+                    progress_task,
+                    progress_stdout,
+                    summary,
+                    checkpoint=checkpoint,
+                    future_to_item=future_to_item,
                 )
 
                 # Check for abort signal
@@ -1675,6 +1876,8 @@ class Download:
         progress_task: TaskID,
         progress_stdout: bool,
         summary: DownloadSummary | None = None,
+        checkpoint: DownloadCheckpoint | None = None,
+        future_to_item: dict | None = None,
     ) -> list[pathlib.Path]:
         """Process download futures and collect results.
 
@@ -1684,6 +1887,8 @@ class Download:
             progress_task (TaskID): Progress task ID.
             progress_stdout (bool): Whether to show progress in stdout.
             summary (DownloadSummary | None): Optional counter to accumulate outcomes.
+            checkpoint (DownloadCheckpoint | None): Collection checkpoint to update per track.
+            future_to_item (dict | None): Mapping from future to original media item.
 
         Returns:
             list[pathlib.Path]: List of result directories.
@@ -1700,6 +1905,16 @@ class Download:
 
             if result_path_file:
                 result_dirs.append(result_path_file.parent)
+
+            # Update checkpoint for track items.
+            if checkpoint is not None and future_to_item is not None:
+                item_media = future_to_item.get(future)
+                if isinstance(item_media, Track):
+                    cp_status = (
+                        STATUS_DOWNLOADED if outcome == DownloadOutcome.DOWNLOADED else STATUS_FAILED
+                    )
+                    checkpoint.mark(str(item_media.id), cp_status)
+                    checkpoint.save()
 
             # Advance progress bar.
             progress.advance(progress_task)

@@ -258,7 +258,7 @@ class TestSettings:
     def test_settings_has_expected_field_count(self, clear_singletons):
         from dataclasses import fields
         s = Settings()
-        assert len(fields(s.data)) == 42  # updated: +2 for api_cache_enabled, api_cache_ttl_sec
+        assert len(fields(s.data)) == 45  # updated: +3 for download_source, download_source_fallback, hifi_api_instances
 
     def test_settings_default_quality(self, clear_singletons, tmp_path, monkeypatch):
         from tidalapi import Quality
