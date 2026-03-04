@@ -26,6 +26,8 @@ from ffmpeg import FFmpeg
 from pathvalidate import sanitize_filename
 from requests.adapters import HTTPAdapter, Retry
 from requests.exceptions import HTTPError
+from rich.console import Console
+from rich.panel import Panel
 from rich.progress import Progress, TaskID
 from tidalapi import Album, Mix, Playlist, Session, Track, UserPlaylist, Video
 from tidalapi.exceptions import TooManyRequests
@@ -73,7 +75,7 @@ from tidal_dl.helper.tidal import (
     name_builder_title,
 )
 from tidal_dl.metadata import Metadata
-from tidal_dl.model.downloader import DownloadSegmentResult, TrackStreamInfo
+from tidal_dl.model.downloader import DownloadOutcome, DownloadSegmentResult, DownloadSummary, TrackStreamInfo
 
 
 # TODO: Set appropriate client string and use it for video download.
@@ -158,14 +160,20 @@ class Download:
         if not self.settings.data.path_binary_ffmpeg and (
             self.settings.data.video_convert_mp4 or self.settings.data.extract_flac
         ):
-            self.settings.data.video_convert_mp4 = False
-            self.settings.data.extract_flac = False
+            discovered = shutil.which("ffmpeg")
 
-            self.fn_logger.error(
-                "FFmpeg path is not set. Videos can be downloaded but will not be processed. FLAC cannot be "
-                "extracted from MP4 containers. Make sure FFmpeg is installed. The path to the FFmpeg binary must "
-                "be set in (`path_binary_ffmpeg`)."
-            )
+            if discovered:
+                self.settings.data.path_binary_ffmpeg = discovered
+                self.fn_logger.info(f"FFmpeg auto-discovered at: {discovered}")
+            else:
+                self.settings.data.video_convert_mp4 = False
+                self.settings.data.extract_flac = False
+
+                self.fn_logger.error(
+                    "FFmpeg was not found. Videos can be downloaded but will not be converted to MP4. "
+                    "FLAC cannot be extracted from MP4 containers. "
+                    "Install FFmpeg and ensure it is in your PATH, or set `path_binary_ffmpeg` in the config."
+                )
 
     def _get_media_urls(
         self,
@@ -528,7 +536,7 @@ class Download:
         list_position: int = 0,
         list_total: int = 0,
         event_stop: Event | None = None,
-    ) -> tuple[bool, pathlib.Path | str]:
+    ) -> tuple[DownloadOutcome, pathlib.Path | str]:
         """Download a single media item, handling file naming, skipping, and post-processing.
 
         Args:
@@ -546,22 +554,22 @@ class Download:
             event_stop (Event | None, optional): Event to stop the download. Defaults to None.
 
         Returns:
-            tuple[bool, pathlib.Path | str]: (Downloaded, path to file)
+            tuple[DownloadOutcome, pathlib.Path | str]: (Outcome, path to file)
         """
         # Check for stop signal before doing anything
         if self.event_abort.is_set() or (event_stop and event_stop.is_set()):
-            return False, ""
+            return DownloadOutcome.FAILED, ""
 
         # Step 1: Validate and prepare media
         validated_media = self._validate_and_prepare_media(media, media_id, media_type, video_download)
         if validated_media is None or not isinstance(validated_media, Track | Video):
-            return False, ""
+            return DownloadOutcome.FAILED, ""
 
         media = validated_media
 
         # Check for stop signal
         if self.event_abort.is_set() or (event_stop and event_stop.is_set()):
-            return False, ""
+            return DownloadOutcome.FAILED, ""
 
         # Step 2: Create file paths and determine skip logic
         path_media_dst, file_extension_dummy, skip_file, skip_download = self._prepare_file_paths_and_skip_logic(
@@ -571,7 +579,7 @@ class Download:
         if skip_file:
             self.fn_logger.debug(f"Download skipped, since file exists: '{path_media_dst}'")
 
-            return True, path_media_dst
+            return DownloadOutcome.SKIPPED, path_media_dst
 
         # Step 3: Handle quality settings
         quality_audio_old, quality_video_old = self._adjust_quality_settings(quality_audio, quality_video)
@@ -599,7 +607,8 @@ class Download:
             event_stop,
         )
 
-        return download_success, path_media_dst
+        outcome = DownloadOutcome.DOWNLOADED if download_success else DownloadOutcome.FAILED
+        return outcome, path_media_dst
 
     def _validate_and_prepare_media(
         self,
@@ -1459,6 +1468,7 @@ class Download:
         list_total: int = len(items)
 
         # Execute downloads
+        summary = DownloadSummary()
         result_dirs: list[pathlib.Path] = self._execute_collection_downloads(
             items,
             file_name_relative,
@@ -1471,6 +1481,7 @@ class Download:
             progress_task,
             progress_stdout,
             event_stop,
+            summary,
         )
 
         # Create playlist file if requested
@@ -1478,6 +1489,20 @@ class Download:
             self.playlist_populate(set(result_dirs), list_media_name, is_album, sort_by_track_num)
 
         self.fn_logger.info(f"Finished list '{list_media_name}'.")
+
+        # Print outcome summary
+        summary_lines = [
+            f"[green]✓ Downloaded:[/green]  {summary.downloaded}",
+            f"[yellow]⏭ Skipped:[/yellow]    {summary.skipped}",
+            f"[red]✗ Failed:[/red]      {summary.failed}",
+            f"[bold]Total:[/bold]         {summary.total}",
+        ]
+        Console().print(Panel(
+            "\n".join(summary_lines),
+            title=f"[bold cyan]{list_media_name[:50]}[/bold cyan]",
+            border_style="cyan",
+            expand=False,
+        ))
 
     def _setup_collection_download_context(
         self,
@@ -1529,6 +1554,7 @@ class Download:
         progress_task: TaskID,
         progress_stdout: bool,
         event_stop: Event | None = None,
+        summary: DownloadSummary | None = None,
     ) -> list[pathlib.Path]:
         """Execute downloads for all items in the collection.
 
@@ -1544,6 +1570,7 @@ class Download:
             progress_task (TaskID): Progress task ID.
             progress_stdout (bool): Whether to show progress in stdout.
             event_stop (Event | None, optional): Event to stop the download. Defaults to None.
+            summary (DownloadSummary | None, optional): Outcome counter. Defaults to None.
 
         Returns:
             list[pathlib.Path]: List of result directories.
@@ -1578,7 +1605,9 @@ class Download:
                 ]
 
                 # Process download results
-                result_dirs = self._process_download_futures(download_futures, progress, progress_task, progress_stdout)
+                result_dirs = self._process_download_futures(
+                    download_futures, progress, progress_task, progress_stdout, summary
+                )
 
                 # Check for abort signal
                 if self.event_abort.is_set() or (event_stop and event_stop.is_set()):
@@ -1592,6 +1621,7 @@ class Download:
         progress: Progress,
         progress_task: TaskID,
         progress_stdout: bool,
+        summary: DownloadSummary | None = None,
     ) -> list[pathlib.Path]:
         """Process download futures and collect results.
 
@@ -1600,6 +1630,7 @@ class Download:
             progress (Progress): Progress bar instance.
             progress_task (TaskID): Progress task ID.
             progress_stdout (bool): Whether to show progress in stdout.
+            summary (DownloadSummary | None): Optional counter to accumulate outcomes.
 
         Returns:
             list[pathlib.Path]: List of result directories.
@@ -1609,7 +1640,10 @@ class Download:
         # Report results as they become available
         for future in futures.as_completed(futures_list):
             # Retrieve result
-            status, result_path_file = future.result()
+            outcome, result_path_file = future.result()
+
+            if summary is not None:
+                summary.record(outcome)
 
             if result_path_file:
                 result_dirs.append(result_path_file.parent)

@@ -17,6 +17,10 @@ from threading import Event, Lock
 from typing import Any
 
 import tidalapi
+import typer
+from rich.console import Console as RichConsole
+
+_console = RichConsole()
 
 from tidal_dl.constants import (
     ATMOS_CLIENT_ID,
@@ -227,18 +231,18 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         if self.is_atmos_session:
             return True
 
-        print("Switching session context to Dolby Atmos...")
+        _console.print("[cyan]Switching session context to Dolby Atmos...[/cyan]")
         self.session.config.client_id = ATMOS_CLIENT_ID
         self.session.config.client_secret = ATMOS_CLIENT_SECRET
         self.session.audio_quality = ATMOS_REQUEST_QUALITY
 
         if not self.login_token(do_pkce=self.is_pkce):
-            print("Warning: Atmos session authentication failed.")
+            _console.print("[yellow]Warning:[/yellow] Atmos session authentication failed.")
             self.restore_normal_session(force=True)
             return False
 
         self.is_atmos_session = True
-        print("Session is now in Atmos mode.")
+        _console.print("[cyan]Session is now in Atmos mode.[/cyan]")
         return True
 
     def restore_normal_session(self, force: bool = False) -> bool:
@@ -253,23 +257,25 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         if not self.is_atmos_session and not force:
             return True
 
-        print("Restoring session context to Normal...")
+        _console.print("[cyan]Restoring session context to Normal...[/cyan]")
         self.session.config.client_id = self.original_client_id
         self.session.config.client_secret = self.original_client_secret
         self.session.audio_quality = tidalapi.Quality(self.settings.data.quality_audio)
 
         if not self.login_token(do_pkce=self.is_pkce):
-            print("Warning: Restoring original session failed. Please restart the application.")
+            _console.print("[yellow]Warning:[/yellow] Restoring original session failed. Please restart the application.")
             return False
 
         self.is_atmos_session = False
-        print("Session is now in Normal mode.")
+        _console.print("[cyan]Session is now in Normal mode.[/cyan]")
         return True
 
     def login(self, fn_print: Callable) -> bool:
         """Perform an interactive login.
 
         Tries the stored token first; if that fails, launches a device-link flow.
+        The browser is opened automatically; a clickable fallback link is also
+        printed for headless / SSH environments.
 
         Args:
             fn_print (Callable): Output function for user messages.
@@ -285,7 +291,25 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
 
         fn_print("You either do not have a token or your token is invalid.")
         fn_print("No worries, we will handle this...")
-        self.session.login_oauth_simple(fn_print)
+
+        # Use the lower-level login_oauth() so we can open the browser ourselves
+        # before blocking on future.result().
+        link_login, future = self.session.login_oauth()
+        url: str = f"https://{link_login.verification_uri_complete}"
+
+        # Try to auto-open the browser; fall back gracefully on headless systems.
+        try:
+            typer.launch(url)
+            _console.print(f"[green]Browser opened.[/green] If it did not open, visit:")
+        except Exception:
+            _console.print("[yellow]Could not open browser automatically.[/yellow] Visit:")
+
+        _console.print(
+            f"  [link={url}][bold cyan]{url}[/bold cyan][/link]\n"
+            f"  [dim]Link expires in {link_login.expires_in} seconds.[/dim]"
+        )
+
+        future.result()  # blocks until the user completes the browser login
         is_login = self.login_finalize()
 
         if is_login:

@@ -206,7 +206,13 @@ def _process_url(
     return True
 
 
-def _download(ctx: typer.Context, urls: list[str], try_login: bool = True, debug: bool = False) -> bool:
+def _download(
+    ctx: typer.Context,
+    urls: list[str],
+    try_login: bool = True,
+    debug: bool = False,
+    output_path: Path | None = None,
+) -> bool:
     """Invokes download function and tracks progress.
 
     Args:
@@ -214,6 +220,7 @@ def _download(ctx: typer.Context, urls: list[str], try_login: bool = True, debug
         urls (list[str]): The list of URLs to download.
         try_login (bool, optional): If true, attempts to login to TIDAL. Defaults to True.
         debug (bool, optional): If true, enables debug output with full tracebacks. Defaults to False.
+        output_path (Path | None, optional): Override download destination. Defaults to None.
 
     Returns:
         bool: True if ran successfully.
@@ -223,6 +230,9 @@ def _download(ctx: typer.Context, urls: list[str], try_login: bool = True, debug
 
     settings: Settings = ctx.obj[CTX_TIDAL].settings
     handling_app: HandlingApp = HandlingApp()
+
+    # One-off output path override — does not mutate persisted settings.
+    path_base: str = str(output_path) if output_path else settings.data.download_base_path
 
     progress: Progress = Progress(
         TextColumn("[progress.description]{task.description}"),
@@ -251,7 +261,7 @@ def _download(ctx: typer.Context, urls: list[str], try_login: bool = True, debug
     dl = Download(
         tidal_obj=ctx.obj[CTX_TIDAL],
         skip_existing=settings.data.skip_existing,
-        path_base=settings.data.download_base_path,
+        path_base=path_base,
         fn_logger=fn_logger,
         progress=progress,
         progress_overall=progress_overall,
@@ -284,22 +294,46 @@ def settings_management(
     editor: Annotated[
         bool, typer.Option("--editor", "-e", help="Open the settings file in your default editor.")
     ] = False,
+    reset: Annotated[
+        bool,
+        typer.Option(
+            "--reset",
+            help="Reset all settings to defaults (current file is backed up as settings.json.bak).",
+        ),
+    ] = False,
 ) -> None:
     """Print or set an option, or open the settings file in an editor.
 
     Args:
         names (list[str] | None, optional): None (list all options), one (list the value only for this option) or two arguments (set the value for the option). Defaults to None.
         editor (bool, optional): If set, your default system editor will be opened. Defaults to False.
+        reset (bool, optional): Reset settings to defaults. Defaults to False.
     """
+    console = Console()
+
+    if reset:
+        config_path = Path(path_file_settings())
+
+        if config_path.is_file():
+            bak_path = config_path.with_suffix(".json.bak")
+            config_path.rename(bak_path)
+            console.print(f"[yellow]Existing config backed up to:[/yellow] {bak_path}")
+
+        from tidal_dl.helper.decorator import SingletonMeta
+        SingletonMeta._instances.clear()
+
+        fresh = Settings()
+        fresh.save()
+        console.print(f"[green]Settings reset to defaults:[/green] {fresh.file_path}")
+        return
+
     if editor:
-        config_path: Path = Path(path_file_settings())
+        config_path = Path(path_file_settings())
 
         if not config_path.is_file():
             config_path.write_text('{"version": "1.0.0"}')
 
-        config_file_str = str(config_path)
-
-        typer.launch(config_file_str)
+        typer.launch(str(config_path))
     else:
         settings = Settings()
         d_settings = settings.data.to_dict()
@@ -322,7 +356,6 @@ def settings_management(
             for key, value in sorted(d_settings.items()):
                 table.add_row(key, str(value), help_settings[key])
 
-            console = Console()
             console.print(table)
 
 
@@ -381,6 +414,17 @@ def download(
             help="File with URLs to download. One URL per line.",
         ),
     ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            "-o",
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+            help="Override the download destination for this run only (does not change saved config).",
+        ),
+    ] = None,
     debug: Annotated[
         bool,
         typer.Option(
@@ -396,6 +440,7 @@ def download(
         ctx (typer.Context): Typer context object.
         urls (list[str] | None, optional): List of URLs to download. Defaults to None.
         file_urls (Path | None, optional): Path to file containing URLs. Defaults to None.
+        output (Path | None, optional): One-off output directory override. Defaults to None.
         debug (bool, optional): Enable debug mode with full error tracebacks. Defaults to False.
 
     Returns:
@@ -411,7 +456,7 @@ def download(
 
             raise typer.Abort()
 
-    return _download(ctx, urls, debug=debug)
+    return _download(ctx, urls, debug=debug, output_path=output)
 
 
 @app_dl_fav.command(
@@ -606,18 +651,24 @@ def handle_sigint_term(signum, frame):
     handling_app.event_abort.set()
 
 
-if __name__ == "__main__":
-    # Catch CTRL+C
+def main() -> None:
+    """Installed entry-point wrapper.
+
+    Applies bare-URL rewriting so that ``tidal-dl <URL>`` works identically
+    to ``tidal-dl dl <URL>`` when invoked via the installed script.
+    """
     signal.signal(signal.SIGINT, handle_sigint_term)
     signal.signal(signal.SIGTERM, handle_sigint_term)
 
-    # Check if the first argument is a URL. Hacky solution, since Typer does not support positional arguments without options / commands.
     if len(sys.argv) > 1:
         first_arg = sys.argv[1]
         parsed_url = urlparse(first_arg)
 
         if parsed_url.scheme in ["http", "https"] and parsed_url.netloc:
-            # Rewrite sys.argv to simulate `dl <URL>`
             sys.argv.insert(1, "dl")
 
     app()
+
+
+if __name__ == "__main__":
+    main()
