@@ -258,7 +258,7 @@ class TestSettings:
     def test_settings_has_expected_field_count(self, clear_singletons):
         from dataclasses import fields
         s = Settings()
-        assert len(fields(s.data)) == 39
+        assert len(fields(s.data)) == 40  # updated: +1 for skip_duplicate_isrc
 
     def test_settings_default_quality(self, clear_singletons):
         from tidalapi import Quality
@@ -383,6 +383,182 @@ class TestPathHelpers:
         p = pathlib.Path("C:/tmp/Artist: Track.flac")
         result = path_file_sanitize(p)
         assert ":" not in result.name
+
+
+# ---------------------------------------------------------------------------
+# IsrcIndex
+# ---------------------------------------------------------------------------
+
+class TestIsrcIndex:
+    """IsrcIndex — persistent ISRC duplicate-detection index. No network."""
+
+    def test_empty_on_missing_file(self, tmp_path):
+        from tidal_dl.helper.isrc_index import IsrcIndex
+        idx = IsrcIndex(tmp_path / "isrc.json")
+        idx.load()  # file does not exist
+        assert idx.size == 0
+
+    def test_add_and_contains_live_file(self, tmp_path):
+        from tidal_dl.helper.isrc_index import IsrcIndex
+        track = tmp_path / "track.flac"
+        track.write_bytes(b"")
+        idx = IsrcIndex(tmp_path / "isrc.json")
+        idx.add("USRC12345678", track)
+        assert idx.contains("USRC12345678")
+
+    def test_contains_returns_false_for_unknown_isrc(self, tmp_path):
+        from tidal_dl.helper.isrc_index import IsrcIndex
+        idx = IsrcIndex(tmp_path / "isrc.json")
+        assert not idx.contains("UNKNOWN")
+
+    def test_contains_returns_false_for_empty_isrc(self, tmp_path):
+        from tidal_dl.helper.isrc_index import IsrcIndex
+        idx = IsrcIndex(tmp_path / "isrc.json")
+        assert not idx.contains("")
+
+    def test_stale_entry_pruned(self, tmp_path):
+        """A file that existed during add() but was deleted should not match."""
+        from tidal_dl.helper.isrc_index import IsrcIndex
+        track = tmp_path / "gone.flac"
+        track.write_bytes(b"")
+        idx = IsrcIndex(tmp_path / "isrc.json")
+        idx.add("GBSTALE0001", track)
+        track.unlink()  # delete the file
+        assert not idx.contains("GBSTALE0001")
+        # Stale entry should have been pruned from the in-memory dict
+        assert idx.size == 0
+
+    def test_save_and_reload(self, tmp_path):
+        """Persisted index is correctly deserialised."""
+        from tidal_dl.helper.isrc_index import IsrcIndex
+        index_path = tmp_path / "isrc.json"
+        track = tmp_path / "persisted.flac"
+        track.write_bytes(b"")
+
+        idx = IsrcIndex(index_path)
+        idx.add("GBPERS0001", track)
+        idx.save()
+
+        idx2 = IsrcIndex(index_path)
+        idx2.load()
+        assert idx2.contains("GBPERS0001")
+
+    def test_corrupt_file_handled_gracefully(self, tmp_path):
+        from tidal_dl.helper.isrc_index import IsrcIndex
+        index_path = tmp_path / "corrupt.json"
+        index_path.write_text("not valid json {{{")  # corrupt
+        idx = IsrcIndex(index_path)
+        idx.load()  # must not raise
+        assert idx.size == 0
+
+    def test_thread_safety_concurrent_adds(self, tmp_path):
+        """Concurrent add() calls must not corrupt the index."""
+        import threading
+        from tidal_dl.helper.isrc_index import IsrcIndex
+        idx = IsrcIndex(tmp_path / "isrc.json")
+
+        tracks = []
+        for i in range(20):
+            t = tmp_path / f"track_{i:02d}.flac"
+            t.write_bytes(b"")
+            tracks.append((f"ISRC{i:08d}", t))
+
+        threads = [threading.Thread(target=lambda item=item: idx.add(*item)) for item in tracks]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+
+        assert idx.size == 20
+
+
+# ---------------------------------------------------------------------------
+# playlist_populate consolidation
+# ---------------------------------------------------------------------------
+
+class TestPlaylistPopulate:
+    """playlist_populate multi-dir M3U consolidation — no network."""
+
+    def _make_dl(self, fn_logger=None):
+        """Return a bare Download instance with just enough state to call playlist_populate."""
+        from unittest.mock import MagicMock
+        from tidal_dl.download import Download
+
+        dl = Download.__new__(Download)
+        dl.fn_logger = fn_logger or MagicMock()
+        return dl
+
+    def test_single_dir_creates_m3u_in_that_dir(self, tmp_path):
+        track = tmp_path / "track.flac"
+        track.write_bytes(b"")
+        dl = self._make_dl()
+        result = dl.playlist_populate({tmp_path}, "My Album", is_album=True, sort_alphabetically=True)
+        assert len(result) == 1
+        assert result[0].parent == tmp_path
+
+    def test_single_dir_m3u_lists_track(self, tmp_path):
+        track = tmp_path / "track.flac"
+        track.write_bytes(b"")
+        dl = self._make_dl()
+        result = dl.playlist_populate({tmp_path}, "My Album", is_album=True, sort_alphabetically=True)
+        content = result[0].read_text(encoding="utf-8")
+        assert "track.flac" in content
+
+    def test_multi_dir_creates_single_m3u_at_common_parent(self, tmp_path):
+        """Two disc dirs → one M3U at album root."""
+        cd1 = tmp_path / "CD1"
+        cd2 = tmp_path / "CD2"
+        cd1.mkdir()
+        cd2.mkdir()
+        (cd1 / "01 Track.flac").write_bytes(b"")
+        (cd2 / "01 Track.flac").write_bytes(b"")
+
+        dl = self._make_dl()
+        result = dl.playlist_populate({cd1, cd2}, "Double Album", is_album=True, sort_alphabetically=True)
+
+        # Only one M3U created, at the common parent (tmp_path)
+        assert len(result) == 1
+        assert result[0].parent == tmp_path
+
+    def test_multi_dir_m3u_contains_relative_paths(self, tmp_path):
+        """Paths in the M3U must be relative to the M3U's location."""
+        cd1 = tmp_path / "CD1"
+        cd2 = tmp_path / "CD2"
+        cd1.mkdir()
+        cd2.mkdir()
+        (cd1 / "song_a.flac").write_bytes(b"")
+        (cd2 / "song_b.flac").write_bytes(b"")
+
+        dl = self._make_dl()
+        result = dl.playlist_populate({cd1, cd2}, "Multi Disc", is_album=True, sort_alphabetically=True)
+        content = result[0].read_text(encoding="utf-8")
+
+        # Both tracks must appear; paths must be relative (not absolute)
+        assert any("song_a.flac" in line for line in content.splitlines())
+        assert any("song_b.flac" in line for line in content.splitlines())
+        for line in content.splitlines():
+            if line.strip():
+                assert not pathlib.Path(line.strip()).is_absolute(), f"Path should be relative: {line!r}"
+
+    def test_empty_dirs_scoped_returns_empty(self, tmp_path):
+        dl = self._make_dl()
+        result = dl.playlist_populate(set(), "Empty", is_album=False, sort_alphabetically=False)
+        assert result == []
+
+    def test_multi_dir_m3u_sorted_alphabetically(self, tmp_path):
+        """CD1 tracks appear before CD2 tracks after alphabetic sort."""
+        cd1 = tmp_path / "CD1"
+        cd2 = tmp_path / "CD2"
+        cd1.mkdir()
+        cd2.mkdir()
+        (cd1 / "aaa.flac").write_bytes(b"")
+        (cd2 / "zzz.flac").write_bytes(b"")
+
+        dl = self._make_dl()
+        result = dl.playlist_populate({cd1, cd2}, "Sort Test", is_album=True, sort_alphabetically=True)
+        lines = [line.strip() for line in result[0].read_text().splitlines() if line.strip()]
+        assert lines[0].endswith("aaa.flac")
+        assert lines[1].endswith("zzz.flac")
 
 
 # ---------------------------------------------------------------------------
