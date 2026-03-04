@@ -8,6 +8,7 @@ from typing import Annotated
 from urllib.parse import urlparse
 
 import typer
+import requests
 from rich.console import Console, Group
 from rich.live import Live
 from rich.progress import (
@@ -17,12 +18,18 @@ from rich.progress import (
     TaskProgressColumn,
     TextColumn,
 )
+app_source = typer.Typer(
+    context_settings={"help_option_names": ["-h", "--help"]},
+    add_completion=True,
+    help="Inspect and manage download source settings.",
+)
 from rich.table import Table
 
 from tidal_dl import __version__
 from tidal_dl.config import HandlingApp, Settings, Tidal
-from tidal_dl.constants import CTX_TIDAL, FAVORITES, MediaType
+from tidal_dl.constants import CTX_TIDAL, FAVORITES, MediaType, DownloadSource
 from tidal_dl.download import Download
+from tidal_dl.hifi_api import HiFiApiClient
 from tidal_dl.helper.cli import parse_timestamp
 from tidal_dl.helper.path import get_format_template, path_file_settings
 from tidal_dl.helper.playlist_import import PlaylistImporter
@@ -44,6 +51,7 @@ app_dl_fav = typer.Typer(
 )
 
 app.add_typer(app_dl_fav, name="dl_fav")
+app.add_typer(app_source, name="source")
 
 
 def version_callback(value: bool):
@@ -374,10 +382,79 @@ def login(ctx: typer.Context) -> bool:
 
     settings = Settings()
     tidal = Tidal(settings)
-    result = tidal.login(fn_print=print)
+    result = tidal.resolve_source(fn_print=print)
     ctx.obj[CTX_TIDAL] = tidal
 
     return result
+
+
+@app_source.callback(invoke_without_command=True)
+def source_callback(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    source_show()
+
+
+@app_source.command(name="show")
+def source_show() -> None:
+    settings = Settings()
+    preferred = DownloadSource(settings.data.download_source).value
+    fallback = bool(settings.data.download_source_fallback)
+    instances = [x.strip() for x in (settings.data.hifi_api_instances or "").split(",") if x.strip()]
+    print(f"preferred_source: {preferred}")
+    print(f"fallback_enabled: {fallback}")
+    print(f"hifi_instances_count: {len(instances)} (0 means auto-discover)")
+
+
+@app_source.command(name="set")
+def source_set(source: DownloadSource) -> None:
+    settings = Settings()
+    settings.data.download_source = source
+    settings.save()
+    print(f"Preferred source set to: {source.value}")
+
+
+@app_source.command(name="instances")
+def source_instances() -> None:
+    settings = Settings()
+    configured = [x.strip().rstrip("/") for x in (settings.data.hifi_api_instances or "").split(",") if x.strip()]
+    if not configured:
+        tidal = Tidal(settings)
+        tidal.hifi_client = tidal.hifi_client or HiFiApiClient()
+        configured = tidal.hifi_client.instances
+
+    for url in configured:
+        status = "down"
+        try:
+            r = requests.get(url + "/", timeout=8)
+            r.raise_for_status()
+            status = "up"
+        except requests.RequestException:
+            status = "down"
+        print(f"{url} [{status}]")
+
+
+@app_source.command(name="add")
+def source_add(url: str) -> None:
+    settings = Settings()
+    current = [x.strip().rstrip("/") for x in (settings.data.hifi_api_instances or "").split(",") if x.strip()]
+    normalized = url.strip().rstrip("/")
+    if normalized and normalized not in current:
+        current.append(normalized)
+        settings.data.hifi_api_instances = ",".join(current)
+        settings.save()
+    print(f"Configured instances: {settings.data.hifi_api_instances}")
+
+
+@app_source.command(name="remove")
+def source_remove(url: str) -> None:
+    settings = Settings()
+    current = [x.strip().rstrip("/") for x in (settings.data.hifi_api_instances or "").split(",") if x.strip()]
+    normalized = url.strip().rstrip("/")
+    current = [x for x in current if x != normalized]
+    settings.data.hifi_api_instances = ",".join(current)
+    settings.save()
+    print(f"Configured instances: {settings.data.hifi_api_instances}")
 
 
 @app.command(name="logout")
