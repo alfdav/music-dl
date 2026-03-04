@@ -10,6 +10,7 @@ import contextlib
 import json
 import os
 import shutil
+import time
 from collections.abc import Callable
 from json import JSONDecodeError
 from pathlib import Path
@@ -27,9 +28,11 @@ from tidal_dl.constants import (
     ATMOS_CLIENT_ID,
     ATMOS_CLIENT_SECRET,
     ATMOS_REQUEST_QUALITY,
+    DownloadSource,
     QUALITY_PROBE_TRACK_ID,
     QUALITY_RANK,
 )
+from tidal_dl.hifi_api import HiFiApiClient
 from tidal_dl.helper.cache import TTLCache
 from tidal_dl.helper.decorator import SingletonMeta
 from tidal_dl.helper.path import path_config_base, path_file_settings, path_file_token
@@ -144,6 +147,8 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         # when switching between Atmos and normal session credentials.
         self.stream_lock = Lock()
         self.is_atmos_session = False
+        self.active_source = DownloadSource.OAUTH
+        self.hifi_client: HiFiApiClient | None = None
         self._active_key_index = 0
         self.file_path = path_file_token()
         self.token_from_storage = self.read(self.file_path)
@@ -177,6 +182,36 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         self.session.video_quality = tidalapi.VideoQuality.high
 
         return True
+
+    def _configured_hifi_instances(self) -> list[str]:
+        raw = getattr(self.settings.data, "hifi_api_instances", "") if hasattr(self, "settings") else ""
+        if not raw:
+            return []
+        return [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
+
+    def resolve_source(self, fn_print: Callable) -> bool:
+        preferred = DownloadSource(self.settings.data.download_source)
+        allow_fallback = bool(self.settings.data.download_source_fallback)
+
+        if preferred == DownloadSource.HIFI_API:
+            self.hifi_client = HiFiApiClient(instances=self._configured_hifi_instances() or None)
+            health = self.hifi_client.health_check()
+            if health:
+                self.active_source = DownloadSource.HIFI_API
+                fn_print(f"Using Hi-Fi API source via {health}")
+                return True
+
+            if not allow_fallback:
+                fn_print("Hi-Fi API source is unavailable and source fallback is disabled.")
+                return False
+
+            fn_print("Hi-Fi API source unavailable. Falling back to OAuth source.")
+
+        # OAuth preferred or fallback path
+        is_login = self.login(fn_print=fn_print)
+        if is_login:
+            self.active_source = DownloadSource.OAUTH
+        return is_login
 
     # ------------------------------------------------------------------
     # API key management
@@ -292,6 +327,21 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
 
         with contextlib.suppress(OSError, NotImplementedError):
             os.chmod(self.file_path, 0o600)
+
+    def _ensure_token_fresh(self, refresh_window_sec: int = 300) -> bool:
+        expiry_time = float(getattr(self.data, "expiry_time", 0) or 0)
+        if expiry_time <= 0:
+            return False
+        if expiry_time - time.time() > refresh_window_sec:
+            return False
+
+        try:
+            self.session.token_refresh()
+            self.token_persist()
+            return True
+        except Exception:
+            _console.print("[yellow]Warning:[/yellow] Token refresh failed; proceeding with current token.")
+            return False
 
     def switch_to_atmos_session(self) -> bool:
         """Re-authenticate the session with Dolby Atmos credentials.
