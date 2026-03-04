@@ -61,6 +61,7 @@ class Settings:
     duplicate_action: str = "ask"
     api_cache_enabled: bool = True
     api_cache_ttl_sec: int = 300
+    scan_paths: str = ""
 
 
 @dataclass_json
@@ -152,6 +153,11 @@ class HelpSettings:
     api_cache_ttl_sec: str = (
         "Time-to-live in seconds for each cached API response. "
         "Entries older than this value are discarded and re-fetched. Default: 300 (5 minutes)."
+    )
+    scan_paths: str = (
+        "Comma-separated list of directories to scan for existing music files (ISRC seeding). "
+        "Managed via 'tidal-dl scan add/remove/show'. "
+        "When only one path is configured, 'tidal-dl scan' uses it automatically."
     )
 
 
