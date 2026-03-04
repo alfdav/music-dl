@@ -19,14 +19,11 @@ class Settings:
     quality_audio: Quality = Quality.low_320k
     quality_video: QualityVideo = QualityVideo.P480
     download_dolby_atmos: bool = False
-    format_album: str = (
-        "Albums/{album_artist} - {album_title}{album_explicit}/{track_volume_num_optional}"
-        "{album_track_num}. {artist_name} - {track_title}{album_explicit}"
-    )
+    format_album: str = "Albums/{album_artist}/{album_title}/{track_volume_num_optional_CD}/{track_title}"
     format_playlist: str = "Playlists/{playlist_name}/{list_pos}. {artist_name} - {track_title}"
     format_mix: str = "Mix/{mix_name}/{artist_name} - {track_title}"
-    format_track: str = "Tracks/{artist_name} - {track_title}{track_explicit}"
-    format_video: str = "Videos/{artist_name} - {track_title}{track_explicit}"
+    format_track: str = "Tracks/{album_artist}/{album_title}/{track_title}"
+    format_video: str = "Videos/{artist_name}/{track_title}"
     video_convert_mp4: bool = True
     path_binary_ffmpeg: str = ""
     metadata_cover_dimension: CoverDimensions = CoverDimensions.Px320
@@ -51,6 +48,7 @@ class Settings:
     api_rate_limit_batch_size: int = 20
     api_rate_limit_delay_sec: float = 3.0
     initial_key_format: InitialKey = InitialKey.ALPHANUMERIC
+    skip_duplicate_isrc: bool = True
 
 
 @dataclass_json
@@ -116,6 +114,10 @@ class HelpSettings:
     api_rate_limit_batch_size: str = "Number of albums to process before applying rate limit delay."
     api_rate_limit_delay_sec: str = "Delay in seconds between batches to avoid API rate limiting."
     initial_key_format: str = "Format for Initial Key metadata tag: 'alphanumeric' (default) or 'classic'."
+    skip_duplicate_isrc: str = (
+        "Skip download if a track with the same ISRC was already downloaded to any path. "
+        "Uses a persistent index at ~/.config/tidal-dl/isrc_index.json."
+    )
 
 
 @dataclass_json

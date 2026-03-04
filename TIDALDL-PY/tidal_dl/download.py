@@ -60,9 +60,11 @@ from tidal_dl.constants import (
 from tidal_dl.helper.camelot import format_initial_key
 from tidal_dl.helper.decryption import decrypt_file, decrypt_security_token
 from tidal_dl.helper.exceptions import MediaMissing
+from tidal_dl.helper.isrc_index import IsrcIndex
 from tidal_dl.helper.path import (
     check_file_exists,
     format_path_media,
+    path_config_base,
     path_file_sanitize,
     url_to_filename,
 )
@@ -156,6 +158,11 @@ class Download:
         self.path_base = path_base
         self.event_abort = event_abort
         self.event_run = event_run
+
+        # Persistent ISRC index for cross-context duplicate detection
+        _index_path = pathlib.Path(path_config_base()) / "isrc_index.json"
+        self._isrc_index: IsrcIndex = IsrcIndex(_index_path)
+        self._isrc_index.load()
 
         if not self.settings.data.path_binary_ffmpeg and (
             self.settings.data.video_convert_mp4 or self.settings.data.extract_flac
@@ -608,6 +615,14 @@ class Download:
         )
 
         outcome = DownloadOutcome.DOWNLOADED if download_success else DownloadOutcome.FAILED
+
+        # Record the ISRC after a successful download so future duplicate checks work.
+        if outcome == DownloadOutcome.DOWNLOADED and isinstance(media, Track):
+            isrc = getattr(media, "isrc", None)
+            if isrc and self.settings.data.skip_duplicate_isrc:
+                self._isrc_index.add(isrc, path_media_dst)
+                self._isrc_index.save()
+
         return outcome, path_media_dst
 
     def _validate_and_prepare_media(
@@ -717,7 +732,9 @@ class Download:
         ).absolute()
 
         # Sanitize final path_file to fit into OS boundaries.
-        path_media_dst = pathlib.Path(path_file_sanitize(path_media_dst, adapt=True))
+        # uniquify=True guards against same-titled tracks on the same album/playlist
+        # when no numeric prefix is present in the filename template.
+        path_media_dst = pathlib.Path(path_file_sanitize(path_media_dst, adapt=True, uniquify=True))
 
         # Compute if and how downloads need to be skipped.
         skip_download: bool = False
@@ -749,6 +766,17 @@ class Download:
                     skip_file = False
         else:
             skip_file: bool = False
+
+        # ISRC-based cross-context dedup: skip if the same recording was already
+        # downloaded to *any* path (independent of skip_existing path check).
+        if (
+            not skip_file
+            and self.settings.data.skip_duplicate_isrc
+            and isinstance(media, Track)
+            and getattr(media, "isrc", None)
+            and self._isrc_index.contains(media.isrc)
+        ):
+            skip_file = True
 
         return path_media_dst, file_extension_dummy, skip_file, skip_download
 
@@ -1488,6 +1516,10 @@ class Download:
         if self.settings.data.playlist_create:
             self.playlist_populate(set(result_dirs), list_media_name, is_album, sort_by_track_num)
 
+        # Persist ISRC index after all collection downloads complete
+        if self.settings.data.skip_duplicate_isrc:
+            self._isrc_index.save()
+
         self.fn_logger.info(f"Finished list '{list_media_name}'.")
 
         # Print outcome summary
@@ -1666,6 +1698,12 @@ class Download:
     ) -> list[pathlib.Path]:
         """Create playlist files (m3u) for downloaded tracks in each directory.
 
+        When all tracks in ``dirs_scoped`` share a common parent (e.g. disc
+        subdirectories of a multi-disc album), a single consolidated M3U is
+        placed at that common parent instead of one per subdirectory.  Track
+        paths are written relative to the M3U location so players can resolve
+        them regardless of where the library is mounted.
+
         Args:
             dirs_scoped (set[pathlib.Path]): Set of directories containing tracks.
             name_list (str): Name of the playlist.
@@ -1677,21 +1715,37 @@ class Download:
         """
         result: list[pathlib.Path] = []
 
-        # For each dir, which contains tracks
-        for dir_scoped in dirs_scoped:
+        if not dirs_scoped:
+            return result
+
+        # When tracks land in multiple subdirectories (e.g. CD1/, CD2/ for a
+        # multi-disc album, or per-artist dirs in a custom playlist template)
+        # consolidate everything under their common ancestor so the M3U covers
+        # the entire collection in one file.
+        if len(dirs_scoped) > 1:
+            scan_dirs = [pathlib.Path(os.path.commonpath([str(d) for d in dirs_scoped]))]
+        else:
+            scan_dirs = list(dirs_scoped)
+
+        for scan_root in scan_dirs:
             # Sanitize final playlist name to fit into OS boundaries.
-            path_playlist = dir_scoped / sanitize_filename(PLAYLIST_PREFIX + name_list + PLAYLIST_EXTENSION)
+            path_playlist = scan_root / sanitize_filename(PLAYLIST_PREFIX + name_list + PLAYLIST_EXTENSION)
             path_playlist = pathlib.Path(path_file_sanitize(path_playlist, adapt=True))
 
             self.fn_logger.debug(f"Playlist: Creating {path_playlist}")
 
-            # Get all tracks in the directory
+            # Collect all audio tracks under scan_root (recursive so disc
+            # subdirectories are included when consolidating multi-disc albums).
             path_tracks: list[pathlib.Path] = []
 
             for extension_audio in AudioExtensionsValid:
-                path_tracks = path_tracks + list(dir_scoped.glob(f"*{extension_audio!s}"))
+                path_tracks = path_tracks + list(scan_root.rglob(f"*{extension_audio!s}"))
 
-            # Sort alphabetically, e.g. if items are prefixed with numbers
+            # Exclude the playlist file itself if it has an audio extension (safety)
+            path_tracks = [p for p in path_tracks if p != path_playlist]
+
+            # Sort alphabetically, e.g. if items are prefixed with numbers or
+            # placed in CD1/CD2 subdirs — alphabetic sort preserves disc order.
             if sort_alphabetically:
                 path_tracks.sort()
             elif not is_album:
@@ -1703,11 +1757,12 @@ class Download:
             # Write data to m3u file
             with path_playlist.open(mode="w", encoding="utf-8") as f:
                 for path_track in path_tracks:
-                    # If it's a symlink write the relative file path to the actual track into the playlist file
+                    # Write paths relative to the M3U directory so the playlist
+                    # is portable.  Symlinks point to the canonical track file.
                     if path_track.is_symlink():
-                        media_file_target = path_track.resolve().relative_to(path_track.parent, walk_up=True)
+                        media_file_target = path_track.resolve().relative_to(path_playlist.parent, walk_up=True)
                     else:
-                        media_file_target = path_track.name
+                        media_file_target = path_track.relative_to(path_playlist.parent)
 
                     f.write(str(media_file_target) + os.linesep)
 

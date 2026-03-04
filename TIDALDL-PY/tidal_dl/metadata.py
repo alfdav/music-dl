@@ -4,7 +4,7 @@ import pathlib
 
 import mutagen
 from mutagen import flac, id3, mp4
-from mutagen.id3 import APIC, SYLT, TALB, TBPM, TCOM, TCOP, TDRC, TIT2, TKEY, TOPE, TPE1, TRCK, TSRC, TXXX, USLT, WOAS
+from mutagen.id3 import APIC, SYLT, TALB, TBPM, TCOM, TCOP, TDRC, TIT2, TKEY, TPE1, TPE2, TPOS, TRCK, TSRC, TXXX, USLT, WOAS
 
 
 class Metadata:
@@ -185,16 +185,17 @@ class Metadata:
         """Write ID3 tags for MP3 files."""
         self.m.tags.add(TIT2(encoding=3, text=self.title))
         self.m.tags.add(TALB(encoding=3, text=self.album))
-        self.m.tags.add(TOPE(encoding=3, text=self.albumartist))
+        self.m.tags.add(TPE2(encoding=3, text=self.albumartist))  # Album artist (Band/Orchestra)
         self.m.tags.add(TPE1(encoding=3, text=self.artists))
         self.m.tags.add(TCOP(encoding=3, text=self.copy_right))
-        self.m.tags.add(TRCK(encoding=3, text=str(self.tracknumber)))
+        self.m.tags.add(TRCK(encoding=3, text=f"{self.tracknumber}/{self.totaltrack}"))
+        self.m.tags.add(TPOS(encoding=3, text=f"{self.discnumber}/{self.totaldisc}"))  # Disc number
         self.m.tags.add(TDRC(encoding=3, text=self.date))
         self.m.tags.add(TCOM(encoding=3, text=self.composer))
         self.m.tags.add(TSRC(encoding=3, text=self.isrc))
         self.m.tags.add(SYLT(encoding=3, desc="text", text=self.lyrics))
         self.m.tags.add(USLT(encoding=3, desc="text", text=self.lyrics_unsynced))
-        self.m.tags.add(WOAS(encoding=3, text=self.isrc))
+        self.m.tags.add(WOAS(text=self.url_share))  # Official Audio Source URL
         self.m.tags.add(TXXX(encoding=3, desc=self.target_upc["MP3"], text=self.upc))
         self.m.tags.add(TBPM(encoding=3, text=str(self.bpm if self.bpm > 0 else "")))
         self.m.tags.add(TKEY(encoding=3, text=self.initial_key))
