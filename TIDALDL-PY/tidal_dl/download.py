@@ -42,6 +42,7 @@ from tidalapi.media import (
 )
 
 from tidal_dl.config import Settings, Tidal
+from tidal_dl.helper.cache import TTLCache
 from tidal_dl.constants import (
     CHUNK_SIZE,
     COVER_NAME,
@@ -121,6 +122,7 @@ class Download:
     progress_overall: Progress
     event_abort: Event
     event_run: Event
+    _api_cache: TTLCache | None
 
     def __init__(
         self,
@@ -158,6 +160,12 @@ class Download:
         self.path_base = path_base
         self.event_abort = event_abort
         self.event_run = event_run
+
+        # Use the session-level TTLCache if caching is enabled in settings.
+        if self.settings.data.api_cache_enabled and hasattr(tidal_obj, "api_cache"):
+            self._api_cache = tidal_obj.api_cache
+        else:
+            self._api_cache = None
 
         # Persistent ISRC index for cross-context duplicate detection
         _index_path = pathlib.Path(path_config_base()) / "isrc_index.json"
@@ -647,7 +655,7 @@ class Download:
             if media_id and media_type:
                 # If no media instance is provided, we need to create the media instance.
                 # Throws `tidalapi.exceptions.ObjectNotFound` if item is not available anymore.
-                media = instantiate_media(self.session, media_type, media_id)
+                media = instantiate_media(self.session, media_type, media_id, cache=self._api_cache)
             elif isinstance(media, Track | Video):
                 # Check if media is available not deactivated / removed from TIDAL.
                 if not media.allow_streaming:

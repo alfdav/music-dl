@@ -49,6 +49,8 @@ class Settings:
     api_rate_limit_delay_sec: float = 3.0
     initial_key_format: InitialKey = InitialKey.ALPHANUMERIC
     skip_duplicate_isrc: bool = True
+    api_cache_enabled: bool = True
+    api_cache_ttl_sec: int = 300
 
 
 @dataclass_json
@@ -85,7 +87,7 @@ class HelpSettings:
         "Possible values: 80, 160, 320, 640, 1280, origin."
     )
     metadata_cover_embed: str = "Embed album cover into file."
-    mark_explicit: str = "Mark explicit tracks with '🅴' in track title (only applies to metadata)."
+    mark_explicit: str = "Mark explicit tracks with '[E]' in track title (only applies to metadata)."
     cover_album_file: str = "Save cover to 'cover.jpg', if an album is downloaded."
     extract_flac: str = "Extract FLAC audio tracks from MP4 containers and save them as *.flac (uses FFmpeg)."
     downloads_simultaneous_per_track_max: str = "Maximum number of simultaneous chunk downloads per track."
@@ -117,6 +119,14 @@ class HelpSettings:
     skip_duplicate_isrc: str = (
         "Skip download if a track with the same ISRC was already downloaded to any path. "
         "Uses a persistent index at ~/.config/tidal-dl/isrc_index.json."
+    )
+    api_cache_enabled: str = (
+        "Cache TIDAL API responses in-memory during a session to reduce redundant HTTP calls. "
+        "Especially effective when downloading albums (avoids re-fetching the same album object per track)."
+    )
+    api_cache_ttl_sec: str = (
+        "Time-to-live in seconds for each cached API response. "
+        "Entries older than this value are discarded and re-fetched. Default: 300 (5 minutes)."
     )
 
 
