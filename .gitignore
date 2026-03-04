@@ -1,3 +1,31 @@
+# IDE / Editor
+/.vscode/
+/.idea/
+*.code-workspace
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+
+# Build / dist
+dist/
+build/
+*.spec
+MANIFEST.in
+
+# Compiled binaries
+/TIDALDL-PY/exe/
+
+# Legacy / stale
+TIDALDL-PY/requirements.txt
+TIDALDL-PY/guiStatic.in
+build.sh
+upload.sh
+
+# Stale legacy directories
 /Dll/AIGS.vshost.exe
 /Dll/AIGS.vshost.exe.manifest
 /Dll/AIGS.pdb

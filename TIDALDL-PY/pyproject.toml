@@ -5,7 +5,8 @@ description = "Tidal Media Downloader — CLI edition with next-generation featu
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12,<3.14"
-authors = [{ name = "YaronH", email = "yaronhuang@foxmail.com" }]
+authors = [{ name = "alfdav" }]
+maintainers = [{ name = "alfdav" }]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: End Users/Desktop",
@@ -33,7 +34,7 @@ dependencies = [
 tidal-dl = "tidal_dl.cli:main"
 
 [project.urls]
-repository = "https://github.com/yaronzz/Tidal-Media-Downloader"
+repository = "https://github.com/alfdav/Tidal-Media-Downloader"
 
 [build-system]
 requires = ["setuptools>=61"]
