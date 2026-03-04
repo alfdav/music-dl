@@ -1,0 +1,53 @@
+[project]
+name = "tidal-dl"
+version = "3.0.0"
+description = "Tidal Media Downloader — CLI edition with next-generation features."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12,<3.14"
+authors = [{ name = "YaronH", email = "yaronhuang@foxmail.com" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: End Users/Desktop",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+  "requests~=2.32.5",
+  "mutagen>=1.47.0",
+  "dataclasses-json>=0.6.7",
+  "pathvalidate>=3.3.1",
+  "m3u8>=6.0.0",
+  "rich>=14.0.0",
+  "toml>=0.10.2",
+  "typer>=0.12.0",
+  "tidalapi>=0.8.11",
+  "python-ffmpeg>=2.0.12",
+  "pycryptodome>=3.20.0",
+  "coloredlogs>=15.0.1",
+]
+
+[project.scripts]
+tidal-dl = "tidal_dl.cli:main"
+
+[project.urls]
+repository = "https://github.com/yaronzz/Tidal-Media-Downloader"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tidal_dl*"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+fix = true
+
+[tool.black]
+target-version = ["py312", "py313"]
+line-length = 120
