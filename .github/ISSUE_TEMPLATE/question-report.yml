@@ -6,18 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please search for this issue in issues-page first. Avoid duplication.
-        Please read Wiki first.
-        https://github.com/yaronzz/Tidal-Media-Downloader/wiki
-  - type: textarea
-    id: which-tool
-    attributes:
-      label: Which tool
-      description: Describe which tool the question is about.
-      placeholder: |
-        tidal-gui or tidal-dl
-    validations:
-      required: true
+        Please search for this issue in the issues page first. Avoid duplication.
   - type: textarea
     id: question
     attributes:
