@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.scripts]
-tidal-dl = "tidal_dl.cli:app"
+tidal-dl = "tidal_dl.cli:main"
 
 [project.urls]
 repository = "https://github.com/yaronzz/Tidal-Media-Downloader"

@@ -18,7 +18,8 @@ class LoggerWrapped:
         self.debug_mode: bool = debug
 
     def debug(self, value: Any) -> None:
-        self.fn_print(value)
+        if self.debug_mode:
+            self.fn_print(value)
 
     def warning(self, value: Any) -> None:
         self.fn_print(value)
