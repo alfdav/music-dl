@@ -25,6 +25,7 @@ from tidal_dl.constants import CTX_TIDAL, FAVORITES, MediaType
 from tidal_dl.download import Download
 from tidal_dl.helper.cli import parse_timestamp
 from tidal_dl.helper.path import get_format_template, path_file_settings
+from tidal_dl.helper.playlist_import import PlaylistImporter
 from tidal_dl.helper.tidal import (
     all_artist_album_ids,
     get_tidal_media_id,
@@ -637,6 +638,108 @@ def _download_fav_factory(ctx: typer.Context, func_name_favorites: str, since: d
         media_urls: list[str] = [media.share_url for media in all_media]
 
     return _download(ctx, media_urls, try_login=False)
+
+
+@app.command(name="import")
+def import_playlist(
+    ctx: typer.Context,
+    file_path: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+            help="Path to the import file (CSV/TSV with title+artist[+isrc] columns, or plain text 'Artist - Title' lines).",
+        ),
+    ],
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            "-o",
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+            help="Override the download destination for this run only.",
+        ),
+    ] = None,
+    debug: Annotated[
+        bool,
+        typer.Option("--debug", "-d", help="Enable debug mode with full error tracebacks."),
+    ] = False,
+) -> None:
+    """Import a playlist from any platform and download matched tracks from TIDAL.
+
+    Accepts a CSV/TSV file (with 'title', 'artist', and optional 'isrc' columns)
+    or a plain-text file with one 'Artist - Title' entry per line.
+    Each entry is matched to a TIDAL track via ISRC (exact) or title/artist
+    search (fallback), then downloaded using the configured track format.
+
+    Args:
+        ctx (typer.Context): Typer context object.
+        file_path (Path): Path to the import file.
+        output (Path | None, optional): One-off output directory override.
+        debug (bool, optional): Enable debug mode.
+    """
+    ctx.invoke(login, ctx)
+
+    settings: Settings = ctx.obj[CTX_TIDAL].settings
+    tidal: Tidal = ctx.obj[CTX_TIDAL]
+    handling_app: HandlingApp = HandlingApp()
+    path_base: str = str(output) if output else settings.data.download_base_path
+
+    progress = Progress(
+        TextColumn("[progress.description]{task.description}"),
+        SpinnerColumn(),
+        BarColumn(),
+        TaskProgressColumn(),
+        refresh_per_second=20,
+        auto_refresh=True,
+        expand=True,
+        transient=False,
+    )
+    progress_overall = Progress(
+        TextColumn("[progress.description]{task.description}"),
+        SpinnerColumn(),
+        BarColumn(),
+        TaskProgressColumn(),
+        refresh_per_second=20,
+        auto_refresh=True,
+        expand=True,
+        transient=False,
+    )
+
+    fn_logger = LoggerWrapped(progress.print, debug=debug)
+
+    dl = Download(
+        tidal_obj=tidal,
+        skip_existing=settings.data.skip_existing,
+        path_base=path_base,
+        fn_logger=fn_logger,
+        progress=progress,
+        progress_overall=progress_overall,
+        event_abort=handling_app.event_abort,
+        event_run=handling_app.event_run,
+    )
+
+    importer = PlaylistImporter(session=tidal.session)
+
+    progress_table = Table.grid()
+    progress_table.add_row(progress)
+    progress_table.add_row(progress_overall)
+
+    with Live(progress_table, refresh_per_second=20, vertical_overflow="visible"):
+        try:
+            importer.import_and_download(
+                path=file_path,
+                dl=dl,
+                file_template=settings.data.format_track,
+            )
+        finally:
+            progress.refresh()
+            progress.stop()
 
 
 def handle_sigint_term(signum, frame):

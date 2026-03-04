@@ -1,6 +1,9 @@
 """TIDAL API helpers — media instantiation, name builders, pagination."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from tidalapi import Album, Mix, Playlist, Session, Track, UserPlaylist, Video
 from tidalapi.artist import Artist, Role
@@ -9,6 +12,9 @@ from tidalapi.user import LoggedInUser
 
 from tidal_dl.constants import FAVORITES, MediaType
 from tidal_dl.helper.exceptions import MediaUnknown
+
+if TYPE_CHECKING:
+    from tidal_dl.helper.cache import TTLCache
 
 
 def name_builder_artist(media: Track | Video | Album, delimiter: str = ", ") -> str:
@@ -133,13 +139,20 @@ def instantiate_media(
     session: Session,
     media_type: MediaType,
     id_media: str,
+    cache: TTLCache | None = None,
 ) -> Track | Video | Album | Playlist | Mix | Artist:
     """Create a TIDAL media object for the given type and ID.
+
+    When *cache* is provided the result is looked up in the cache first.  On a
+    cache miss the object is fetched from the TIDAL API and stored for reuse
+    within the current session (avoids redundant HTTP calls when the same
+    media ID is requested multiple times, e.g. all tracks of an album).
 
     Args:
         session (Session): Active TIDAL session.
         media_type (MediaType): Type of the media.
         id_media (str): Media ID.
+        cache (TTLCache | None): Optional response cache. Defaults to None.
 
     Returns:
         A TIDAL media object.
@@ -147,20 +160,32 @@ def instantiate_media(
     Raises:
         MediaUnknown: If the media type is not recognised.
     """
+    cache_key = f"{media_type}:{id_media}"
+
+    if cache is not None:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
     if media_type == MediaType.TRACK:
-        return session.track(id_media, with_album=True)
+        result = session.track(id_media, with_album=True)
     elif media_type == MediaType.VIDEO:
-        return session.video(id_media)
+        result = session.video(id_media)
     elif media_type == MediaType.ALBUM:
-        return session.album(id_media)
+        result = session.album(id_media)
     elif media_type == MediaType.PLAYLIST:
-        return session.playlist(id_media)
+        result = session.playlist(id_media)
     elif media_type == MediaType.MIX:
-        return session.mix(id_media)
+        result = session.mix(id_media)
     elif media_type == MediaType.ARTIST:
-        return session.artist(id_media)
+        result = session.artist(id_media)
     else:
         raise MediaUnknown
+
+    if cache is not None:
+        cache.set(cache_key, result)
+
+    return result
 
 
 def items_results_all(

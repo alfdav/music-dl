@@ -22,11 +22,13 @@ from rich.console import Console as RichConsole
 
 _console = RichConsole()
 
+from tidal_dl import api as _api
 from tidal_dl.constants import (
     ATMOS_CLIENT_ID,
     ATMOS_CLIENT_SECRET,
     ATMOS_REQUEST_QUALITY,
 )
+from tidal_dl.helper.cache import TTLCache
 from tidal_dl.helper.decorator import SingletonMeta
 from tidal_dl.helper.path import path_config_base, path_file_settings, path_file_token
 from tidal_dl.model.cfg import Settings as ModelSettings
@@ -127,6 +129,8 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
     token_from_storage: bool = False
     settings: Settings
     is_pkce: bool
+    api_cache: TTLCache
+    _active_key_index: int
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.cls_model = ModelToken
@@ -138,8 +142,16 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         # when switching between Atmos and normal session credentials.
         self.stream_lock = Lock()
         self.is_atmos_session = False
+        self._active_key_index = 0
         self.file_path = path_file_token()
         self.token_from_storage = self.read(self.file_path)
+
+        # Apply the first valid API key from the managed key list.
+        self._apply_api_key(0)
+
+        # Initialise the response cache (TTL applied after settings load).
+        ttl = settings.data.api_cache_ttl_sec if settings else 300
+        self.api_cache = TTLCache(ttl_sec=ttl)
 
         if settings:
             self.settings = settings
@@ -163,6 +175,63 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         self.session.video_quality = tidalapi.VideoQuality.high
 
         return True
+
+    # ------------------------------------------------------------------
+    # API key management
+    # ------------------------------------------------------------------
+
+    def _apply_api_key(self, index: int) -> bool:
+        """Apply the API key at *index* from the managed key list to the session config.
+
+        Args:
+            index (int): Zero-based index into the key list returned by :mod:`tidal_dl.api`.
+
+        Returns:
+            bool: True if a valid key was applied, False if index is out of range or invalid.
+        """
+        key = _api.getItem(index)
+        if key.get("valid") != "True" or not key.get("clientId"):
+            return False
+
+        self.session.config.client_id = key["clientId"]
+        self.session.config.client_secret = key["clientSecret"]
+        self._active_key_index = index
+        return True
+
+    def _try_login_with_key_rotation(self) -> bool:
+        """Attempt token login, rotating through all available API keys on failure.
+
+        Iterates :func:`tidal_dl.api.getItems` in order.  The first key that
+        allows a successful ``login_token()`` call wins and is recorded as the
+        active key.  Falls back to the original ``tidalapi`` credentials if
+        the managed list is exhausted.
+
+        Returns:
+            bool: True if login succeeded with any key.
+        """
+        keys = _api.getItems()
+
+        for index, key in enumerate(keys):
+            if key.get("valid") != "True" or not key.get("clientId"):
+                continue
+
+            self._apply_api_key(index)
+
+            if self.login_token(do_pkce=self.is_pkce):
+                _console.print(
+                    f"[dim]API key [{index}] ({key.get('platform', 'unknown')}) accepted.[/dim]"
+                )
+                return True
+
+            _console.print(
+                f"[yellow]API key [{index}] ({key.get('platform', 'unknown')}) failed, trying next...[/yellow]"
+            )
+
+        # All managed keys exhausted — restore original tidalapi credentials
+        # and attempt one final login with them.
+        self.session.config.client_id = self.original_client_id
+        self.session.config.client_secret = self.original_client_secret
+        return self.login_token(do_pkce=self.is_pkce)
 
     def login_token(self, do_pkce: bool = False) -> bool:
         """Attempt to restore a session from a stored token.
@@ -258,8 +327,11 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
             return True
 
         _console.print("[cyan]Restoring session context to Normal...[/cyan]")
-        self.session.config.client_id = self.original_client_id
-        self.session.config.client_secret = self.original_client_secret
+        # Restore the active managed key (not the raw tidalapi default),
+        # so the session stays consistent with the key that succeeded at login.
+        if not self._apply_api_key(self._active_key_index):
+            self.session.config.client_id = self.original_client_id
+            self.session.config.client_secret = self.original_client_secret
         self.session.audio_quality = tidalapi.Quality(self.settings.data.quality_audio)
 
         if not self.login_token(do_pkce=self.is_pkce):
@@ -273,7 +345,8 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
     def login(self, fn_print: Callable) -> bool:
         """Perform an interactive login.
 
-        Tries the stored token first; if that fails, launches a device-link flow.
+        Tries the stored token first (rotating through managed API keys on
+        failure); if all keys fail, launches a device-link OAuth flow.
         The browser is opened automatically; a clickable fallback link is also
         printed for headless / SSH environments.
 
@@ -283,7 +356,7 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         Returns:
             bool: True if logged in successfully.
         """
-        is_token = self.login_token()
+        is_token = self._try_login_with_key_rotation()
 
         if is_token:
             fn_print("Yep, looks good! You are logged in.")

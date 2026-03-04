@@ -258,7 +258,7 @@ class TestSettings:
     def test_settings_has_expected_field_count(self, clear_singletons):
         from dataclasses import fields
         s = Settings()
-        assert len(fields(s.data)) == 40  # updated: +1 for skip_duplicate_isrc
+        assert len(fields(s.data)) == 42  # updated: +2 for api_cache_enabled, api_cache_ttl_sec
 
     def test_settings_default_quality(self, clear_singletons):
         from tidalapi import Quality
@@ -593,6 +593,182 @@ class TestParseTimestamp:
         import typer
         with pytest.raises(typer.BadParameter):
             parse_timestamp("not-a-timestamp")
+
+
+# ---------------------------------------------------------------------------
+# TTLCache
+# ---------------------------------------------------------------------------
+
+class TestTTLCache:
+    """TTLCache — thread-safe TTL cache. No network."""
+
+    def test_cache_hit(self):
+        from tidal_dl.helper.cache import TTLCache
+        c = TTLCache(ttl_sec=60)
+        c.set("k", "value")
+        assert c.get("k") == "value"
+
+    def test_cache_miss_unknown_key(self):
+        from tidal_dl.helper.cache import TTLCache
+        c = TTLCache(ttl_sec=60)
+        assert c.get("missing") is None
+
+    def test_cache_expiry(self):
+        import time
+        from tidal_dl.helper.cache import TTLCache
+        c = TTLCache(ttl_sec=0)  # expires immediately
+        c.set("k", "stale")
+        time.sleep(0.01)  # ensure monotonic clock advances
+        assert c.get("k") is None
+
+    def test_cache_expiry_prunes_entry(self):
+        import time
+        from tidal_dl.helper.cache import TTLCache
+        c = TTLCache(ttl_sec=0)
+        c.set("k", "stale")
+        time.sleep(0.01)
+        c.get("k")  # triggers prune
+        assert c.size == 0
+
+    def test_cache_invalidate(self):
+        from tidal_dl.helper.cache import TTLCache
+        c = TTLCache(ttl_sec=60)
+        c.set("k", "v")
+        c.invalidate("k")
+        assert c.get("k") is None
+
+    def test_cache_invalidate_noop_on_missing(self):
+        from tidal_dl.helper.cache import TTLCache
+        c = TTLCache(ttl_sec=60)
+        c.invalidate("nonexistent")  # must not raise
+
+    def test_cache_clear(self):
+        from tidal_dl.helper.cache import TTLCache
+        c = TTLCache(ttl_sec=60)
+        c.set("a", 1)
+        c.set("b", 2)
+        c.clear()
+        assert c.size == 0
+
+    def test_cache_size(self):
+        from tidal_dl.helper.cache import TTLCache
+        c = TTLCache(ttl_sec=60)
+        c.set("x", 10)
+        c.set("y", 20)
+        assert c.size == 2
+
+    def test_cache_overwrite_resets_ttl(self):
+        import time
+        from tidal_dl.helper.cache import TTLCache
+        c = TTLCache(ttl_sec=1)
+        c.set("k", "first")
+        c.set("k", "second")  # overwrite — should refresh TTL
+        assert c.get("k") == "second"
+
+    def test_cache_thread_safety_concurrent_sets(self, tmp_path):
+        """Concurrent set() calls must not corrupt the cache."""
+        import threading
+        from tidal_dl.helper.cache import TTLCache
+        c = TTLCache(ttl_sec=60)
+
+        def setter(i):
+            c.set(f"key{i}", i)
+
+        threads = [threading.Thread(target=setter, args=(i,)) for i in range(50)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert c.size == 50
+
+
+# ---------------------------------------------------------------------------
+# PlaylistImporter (parse_file only — no network)
+# ---------------------------------------------------------------------------
+
+class TestPlaylistImporter:
+    """PlaylistImporter.parse_file — no network, no TIDAL session."""
+
+    def _make_importer(self):
+        """Return a PlaylistImporter with a dummy session (parse_file doesn't use it)."""
+        from unittest.mock import MagicMock
+        from tidal_dl.helper.playlist_import import PlaylistImporter
+        return PlaylistImporter(session=MagicMock())
+
+    def test_parse_csv_basic(self, tmp_path):
+        f = tmp_path / "tracks.csv"
+        f.write_text("title,artist,isrc\nBohemian Rhapsody,Queen,GBUM71029604\n", encoding="utf-8")
+        importer = self._make_importer()
+        entries = importer.parse_file(f)
+        assert len(entries) == 1
+        assert entries[0].title == "Bohemian Rhapsody"
+        assert entries[0].artist == "Queen"
+        assert entries[0].isrc == "GBUM71029604"
+
+    def test_parse_csv_missing_isrc_column(self, tmp_path):
+        f = tmp_path / "no_isrc.csv"
+        f.write_text("title,artist\nHotel California,Eagles\n", encoding="utf-8")
+        importer = self._make_importer()
+        entries = importer.parse_file(f)
+        assert len(entries) == 1
+        assert entries[0].isrc == ""
+
+    def test_parse_csv_multiple_rows(self, tmp_path):
+        f = tmp_path / "multi.csv"
+        f.write_text(
+            "title,artist\nTrack A,Artist A\nTrack B,Artist B\nTrack C,Artist C\n",
+            encoding="utf-8",
+        )
+        importer = self._make_importer()
+        entries = importer.parse_file(f)
+        assert len(entries) == 3
+
+    def test_parse_csv_skips_blank_rows(self, tmp_path):
+        f = tmp_path / "blanks.csv"
+        f.write_text("title,artist\nTrack A,Artist A\n,,\nTrack B,Artist B\n", encoding="utf-8")
+        importer = self._make_importer()
+        entries = importer.parse_file(f)
+        assert len(entries) == 2
+
+    def test_parse_plain_basic(self, tmp_path):
+        f = tmp_path / "plain.txt"
+        f.write_text("Queen - Bohemian Rhapsody\nEagles - Hotel California\n", encoding="utf-8")
+        importer = self._make_importer()
+        entries = importer.parse_file(f)
+        assert len(entries) == 2
+        assert entries[0].artist == "Queen"
+        assert entries[0].title == "Bohemian Rhapsody"
+
+    def test_parse_plain_title_with_dash(self, tmp_path):
+        """Titles containing ' - ' must be preserved correctly (split on first only)."""
+        f = tmp_path / "dash.txt"
+        f.write_text("Artist - Title - With - Many - Dashes\n", encoding="utf-8")
+        importer = self._make_importer()
+        entries = importer.parse_file(f)
+        assert entries[0].artist == "Artist"
+        assert entries[0].title == "Title - With - Many - Dashes"
+
+    def test_parse_plain_skips_comments(self, tmp_path):
+        f = tmp_path / "comments.txt"
+        f.write_text("# This is a comment\nQueen - Radio Ga Ga\n", encoding="utf-8")
+        importer = self._make_importer()
+        entries = importer.parse_file(f)
+        assert len(entries) == 1
+
+    def test_parse_plain_skips_blank_lines(self, tmp_path):
+        f = tmp_path / "blanks.txt"
+        f.write_text("\nQueen - Radio Ga Ga\n\n", encoding="utf-8")
+        importer = self._make_importer()
+        entries = importer.parse_file(f)
+        assert len(entries) == 1
+
+    def test_parse_plain_isrc_is_empty(self, tmp_path):
+        f = tmp_path / "plain_isrc.txt"
+        f.write_text("Artist - Song Title\n", encoding="utf-8")
+        importer = self._make_importer()
+        entries = importer.parse_file(f)
+        assert entries[0].isrc == ""
 
 
 # ---------------------------------------------------------------------------
