@@ -27,6 +27,8 @@ from tidal_dl.constants import (
     ATMOS_CLIENT_ID,
     ATMOS_CLIENT_SECRET,
     ATMOS_REQUEST_QUALITY,
+    QUALITY_PROBE_TRACK_ID,
+    QUALITY_RANK,
 )
 from tidal_dl.helper.cache import TTLCache
 from tidal_dl.helper.decorator import SingletonMeta
@@ -360,6 +362,7 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
 
         if is_token:
             fn_print("Yep, looks good! You are logged in.")
+            self._probe_subscription_quality()
             return True
 
         fn_print("You either do not have a token or your token is invalid.")
@@ -387,10 +390,52 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
 
         if is_login:
             fn_print("The login was successful. I have stored your credentials (token).")
+            self._probe_subscription_quality()
             return True
 
         fn_print("Something went wrong. Did you complete the browser login? You may try again.")
         return False
+
+    def _probe_subscription_quality(self) -> None:
+        """Probe the account's actual max audio quality and downgrade if needed.
+
+        Fetches a known Hi-Res track and compares the delivered quality against
+        the configured quality.  If the account's tier cannot satisfy the
+        requested quality, the setting is automatically downgraded and persisted
+        so subsequent downloads use the correct expectation.
+        """
+        configured = tidalapi.Quality(self.settings.data.quality_audio)
+        configured_rank = QUALITY_RANK.get(configured, 0)
+
+        try:
+            track = self.session.track(QUALITY_PROBE_TRACK_ID)
+            stream = track.get_stream()
+            delivered = stream.audio_quality
+            delivered_rank = QUALITY_RANK.get(delivered, 0)
+        except Exception:
+            # Non-fatal: if the probe fails we just keep the configured quality.
+            _console.print(
+                "[dim]Could not probe subscription quality (network or track unavailable). "
+                "Keeping configured quality.[/dim]"
+            )
+            return
+
+        if delivered_rank >= configured_rank:
+            _console.print(
+                f"[green]Audio quality check passed:[/green] "
+                f"account supports {delivered.value} (requested {configured.value})."
+            )
+            return
+
+        _console.print(
+            f"[yellow]Warning:[/yellow] Requested quality [bold]{configured.value}[/bold] "
+            f"but your subscription only delivers [bold]{delivered.value}[/bold]. "
+            f"Auto-downgrading to {delivered.value}."
+        )
+
+        self.settings.data.quality_audio = delivered
+        self.session.audio_quality = delivered
+        self.settings.save()
 
     def logout(self) -> bool:
         """Remove the stored token and invalidate the current session.

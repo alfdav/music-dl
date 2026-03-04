@@ -260,10 +260,15 @@ class TestSettings:
         s = Settings()
         assert len(fields(s.data)) == 42  # updated: +2 for api_cache_enabled, api_cache_ttl_sec
 
-    def test_settings_default_quality(self, clear_singletons):
+    def test_settings_default_quality(self, clear_singletons, tmp_path, monkeypatch):
         from tidalapi import Quality
+        # Point to a non-existent file so Settings falls back to dataclass defaults.
+        monkeypatch.setattr(
+            "tidal_dl.config.path_file_settings",
+            lambda: str(tmp_path / "settings.json"),
+        )
         s = Settings()
-        assert s.data.quality_audio == Quality.low_320k
+        assert s.data.quality_audio == Quality.hi_res_lossless
 
     def test_settings_default_base_path(self, clear_singletons):
         s = Settings()
