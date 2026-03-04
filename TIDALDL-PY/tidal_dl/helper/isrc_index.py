@@ -33,6 +33,7 @@ class IsrcIndex:
         self._path: pathlib.Path = index_path
         self._data: dict[str, str] = {}
         self._lock: Lock = Lock()
+        self._dirty_count: int = 0
 
     # ------------------------------------------------------------------
     # Persistence
@@ -111,6 +112,17 @@ class IsrcIndex:
 
         with self._lock:
             self._data[isrc] = str(path.absolute())
+            self._dirty_count += 1
+
+    def maybe_flush(self, every_n: int = 25) -> None:
+        if every_n <= 0:
+            return
+        with self._lock:
+            should_flush = self._dirty_count >= every_n
+            if should_flush:
+                self._dirty_count = 0
+        if should_flush:
+            self.save()
 
     # ------------------------------------------------------------------
     # Helpers for testing
