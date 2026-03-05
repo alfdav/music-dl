@@ -214,16 +214,10 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
                 # Hi-Fi API provides audio streams; OAuth is still needed for
                 # metadata (playlist contents, track objects, cover art, lyrics).
                 # Attempt a silent token restore — non-blocking, best-effort.
-                is_token = self._try_login_with_key_rotation()
+                is_token = self._try_login_with_key_rotation(quiet=True)
                 if is_token:
-                    fn_print("OAuth session restored for metadata access.")
+                    fn_print("OAuth session restored (available as fallback).")
                     self._probe_subscription_quality()
-                else:
-                    fn_print(
-                        "[yellow]No OAuth token found.[/yellow] "
-                        "Playlist/album browsing requires login. "
-                        "Run 'tidal-dl login' to authenticate, or use direct track URLs."
-                    )
                 return True
 
             if not allow_fallback:
@@ -260,13 +254,17 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         self._active_key_index = index
         return True
 
-    def _try_login_with_key_rotation(self) -> bool:
+    def _try_login_with_key_rotation(self, quiet: bool = False) -> bool:
         """Attempt token login, rotating through all available API keys on failure.
 
         Iterates :func:`tidal_dl.api.getItems` in order.  The first key that
         allows a successful ``login_token()`` call wins and is recorded as the
         active key.  Falls back to the original ``tidalapi`` credentials if
         the managed list is exhausted.
+
+        Args:
+            quiet (bool): Suppress per-key failure messages (used when Hi-Fi is
+                primary and OAuth is only a best-effort fallback).
 
         Returns:
             bool: True if login succeeded with any key.
@@ -279,27 +277,33 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
 
             self._apply_api_key(index)
 
-            if self.login_token(do_pkce=self.is_pkce):
-                _console.print(
-                    f"[dim]API key [{index}] ({key.get('platform', 'unknown')}) accepted.[/dim]"
-                )
+            if self.login_token(do_pkce=self.is_pkce, quiet=quiet):
+                if not quiet:
+                    _console.print(
+                        f"[dim]API key [{index}] ({key.get('platform', 'unknown')}) accepted.[/dim]"
+                    )
                 return True
 
-            _console.print(
-                f"[yellow]API key [{index}] ({key.get('platform', 'unknown')}) failed, trying next...[/yellow]"
-            )
+            if not quiet:
+                _console.print(
+                    f"[yellow]API key [{index}] ({key.get('platform', 'unknown')}) failed, trying next...[/yellow]"
+                )
 
         # All managed keys exhausted — restore original tidalapi credentials
-        # and attempt one final login with them.
+        # and attempt one final login with them.  Only this last-resort attempt
+        # is allowed to delete the token file on failure.
         self.session.config.client_id = self.original_client_id
         self.session.config.client_secret = self.original_client_secret
-        return self.login_token(do_pkce=self.is_pkce)
+        return self.login_token(do_pkce=self.is_pkce, delete_on_failure=not quiet, quiet=quiet)
 
-    def login_token(self, do_pkce: bool = False) -> bool:
+    def login_token(self, do_pkce: bool = False, delete_on_failure: bool = False, quiet: bool = False) -> bool:
         """Attempt to restore a session from a stored token.
 
         Args:
             do_pkce (bool): Use PKCE flow. Defaults to False.
+            delete_on_failure (bool): If True, delete the token file when restoration
+                fails.  Should only be set after ALL API keys have been exhausted.
+            quiet (bool): Suppress error messages on failure.
 
         Returns:
             bool: True if the session was restored.
@@ -319,13 +323,14 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
             except Exception:
                 result = False
 
-                if os.path.exists(self.file_path):
-                    os.remove(self.file_path)
+                if not quiet:
+                    print(
+                        "Either there is something wrong with your credentials / account or some server problems on TIDAL's "
+                        "side. Try logging in again by re-running this app."
+                    )
 
-                print(
-                    "Either there is something wrong with your credentials / account or some server problems on TIDAL's "
-                    "side. Try logging in again by re-running this app."
-                )
+                if delete_on_failure and os.path.exists(self.file_path):
+                    os.remove(self.file_path)
 
         return result
 

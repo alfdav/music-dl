@@ -191,30 +191,39 @@ def _process_url(
 
     if "http" not in url:
         print(f"It seems like you have supplied an invalid URL: {url}")
-        return True
+        return False
 
     url_clean: str = url_ending_clean(url)
 
     media_type = get_tidal_media_type(url_clean)
     if not isinstance(media_type, MediaType):
         print(f"Could not determine media type for: {url_clean}")
-        return True
+        return False
 
     url_clean_id = get_tidal_media_id(url_clean)
     if not isinstance(url_clean_id, str):
         print(f"Could not determine media id for: {url_clean}")
-        return True
+        return False
 
     file_template = get_format_template(media_type, settings)
     if not isinstance(file_template, str):
         print(f"Could not determine file template for: {url_clean}")
-        return True
+        return False
+    tidal = ctx.obj[CTX_TIDAL]
+    prefer_hifi = tidal.active_source == DownloadSource.HIFI_API and tidal.hifi_client is not None
 
     try:
-        media = instantiate_media(ctx.obj[CTX_TIDAL].session, media_type, url_clean_id)
+        media = instantiate_media(
+            session=tidal.session,
+            media_type=media_type,
+            id_media=url_clean_id,
+            hifi_client=tidal.hifi_client,
+            prefer_hifi=prefer_hifi,
+            oauth_fallback=bool(settings.data.download_source_fallback),
+        )
     except Exception:
         print(f"Media not found (ID: {url_clean_id}). Maybe it is not available anymore.")
-        return True
+        return False
 
     if media_type in [MediaType.TRACK, MediaType.VIDEO]:
         _handle_track_or_video(dl, ctx, url_clean, media, file_template, idx, urls_pos_last)
@@ -242,8 +251,8 @@ def _download(
     Returns:
         bool: True if ran successfully.
     """
-    if try_login:
-        ctx.invoke(login, ctx)
+    if try_login and not ctx.invoke(login, ctx):
+        return False
 
     settings: Settings = ctx.obj[CTX_TIDAL].settings
     handling_app: HandlingApp = HandlingApp()
@@ -542,7 +551,10 @@ def download(
 
             raise typer.Abort()
 
-    return _download(ctx, urls, debug=debug, output_path=output)
+    result = _download(ctx, urls, debug=debug, output_path=output)
+    if not result:
+        raise typer.Exit(code=1)
+    return result
 
 
 @app_dl_fav.command(
@@ -722,7 +734,10 @@ def _download_fav_factory(ctx: typer.Context, func_name_favorites: str, since: d
     else:
         media_urls: list[str] = [media.share_url for media in all_media]
 
-    return _download(ctx, media_urls, try_login=False)
+    result = _download(ctx, media_urls, try_login=False)
+    if not result:
+        raise typer.Exit(code=1)
+    return result
 
 
 @app.command(name="import")

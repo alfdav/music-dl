@@ -6,14 +6,14 @@ import unittest.mock as mock
 
 import pytest
 
-from tidal_dl.constants import DownloadSource, HIFI_QUALITY_MAP
+from tidal_dl.constants import DownloadSource, HIFI_QUALITY_MAP, MediaType
 from tidal_dl.config import Tidal
 from tidal_dl.helper.checkpoint import DownloadCheckpoint
 from tidal_dl.helper.isrc_index import IsrcIndex
 from tidal_dl.hifi_api import HiFiApiClient
 from tidal_dl.model.cfg import Settings
 from tidal_dl.model.downloader import HiFiStreamManifest
-from tidalapi import Quality
+from tidalapi import Playlist, Quality, Track
 
 
 def test_settings_default_download_source():
@@ -112,6 +112,87 @@ def test_tidal_ensure_token_fresh(monkeypatch):
     tidal._ensure_token_fresh()
     assert called["refresh"] == 1
     assert called["persist"] == 1
+
+
+def _sample_hifi_track_item(track_id: int = 111) -> dict:
+    return {
+        "id": track_id,
+        "title": "Sample Track",
+        "duration": 200,
+        "allowStreaming": True,
+        "trackNumber": 1,
+        "volumeNumber": 1,
+        "copyright": "(P) Test",
+        "bpm": 120,
+        "key": "C",
+        "keyScale": "MAJOR",
+        "url": f"https://tidal.com/browse/track/{track_id}",
+        "isrc": "US-TST-00-00001",
+        "explicit": False,
+        "audioQuality": "LOSSLESS",
+        "audioModes": ["STEREO"],
+        "mediaMetadata": {"tags": ["LOSSLESS"]},
+        "artist": {"id": 1, "name": "Artist A", "type": "MAIN"},
+        "artists": [{"id": 1, "name": "Artist A", "type": "MAIN"}],
+        "album": {"id": 10, "title": "Album A", "cover": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},
+    }
+
+
+def test_instantiate_media_prefers_hifi_playlist_over_oauth():
+    """When source is Hi-Fi, playlist resolution should not require oauth session.playlist()."""
+    from tidal_dl.helper.tidal import instantiate_media
+
+    session = mock.MagicMock()
+    session.playlist.side_effect = AssertionError("OAuth playlist() should not be called in Hi-Fi-first mode")
+
+    hifi = mock.MagicMock()
+    hifi.playlist.return_value = {
+        "version": "2.5",
+        "playlist": {"uuid": "pl-123", "title": "My Playlist", "numberOfTracks": 1, "numberOfVideos": 0},
+        "items": [{"item": _sample_hifi_track_item(111), "type": "track"}],
+    }
+
+    media = instantiate_media(
+        session=session,
+        media_type=MediaType.PLAYLIST,
+        id_media="pl-123",
+        hifi_client=hifi,
+        prefer_hifi=True,
+        oauth_fallback=True,
+    )
+
+    assert isinstance(media, Playlist)
+    assert media.id == "pl-123"
+    assert len(media.items()) == 1
+
+
+def test_validate_prepare_media_does_not_refetch_track_when_hifi_active():
+    """Hi-Fi resolved tracks should not be re-fetched through OAuth session.track()."""
+    from tidal_dl.download import Download
+
+    dl = Download.__new__(Download)
+    dl.session = mock.MagicMock()
+    dl.session.track.side_effect = AssertionError("session.track() should not be called for Hi-Fi-resolved tracks")
+    dl.tidal = mock.MagicMock()
+    dl.tidal.active_source = DownloadSource.HIFI_API
+    dl.tidal.hifi_client = object()
+    dl._api_cache = None
+    dl.fn_logger = mock.MagicMock()
+
+    track = mock.MagicMock(spec=Track)
+    track.id = 111
+    track.allow_streaming = True
+    track.album = mock.MagicMock()
+
+    result = Download._validate_and_prepare_media(
+        dl,
+        media=track,
+        media_id=None,
+        media_type=None,
+        video_download=True,
+    )
+
+    assert result is track
 
 
 # ---------------------------------------------------------------------------
