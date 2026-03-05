@@ -22,6 +22,7 @@ import sys
 import pytest
 from Crypto.Cipher import AES
 from Crypto.Util import Counter
+from typer.testing import CliRunner
 
 from tidal_dl.config import Settings
 from tidal_dl.constants import MediaType
@@ -258,7 +259,7 @@ class TestSettings:
     def test_settings_has_expected_field_count(self, clear_singletons):
         from dataclasses import fields
         s = Settings()
-        assert len(fields(s.data)) == 46  # updated: +1 for duplicate_action
+        assert len(fields(s.data)) == 47  # updated: +1 for scan_paths
 
     def test_settings_default_quality(self, clear_singletons, tmp_path, monkeypatch):
         from tidalapi import Quality
@@ -800,3 +801,14 @@ class TestCLI:
         )
         assert result.returncode == 0
         assert "dl" in result.stdout.lower()
+
+    def test_dl_command_exits_nonzero_when_download_fails(self, monkeypatch):
+        from tidal_dl.cli import app
+
+        def _fake_download(*args, **kwargs):
+            return False
+
+        monkeypatch.setattr("tidal_dl.cli._download", _fake_download)
+        runner = CliRunner()
+        result = runner.invoke(app, ["dl", "https://tidal.com/browse/track/12345678"])
+        assert result.exit_code == 1

@@ -167,6 +167,33 @@ class HiFiApiClient:
     def track_info(self, track_id: int) -> dict[str, Any]:
         return self._request_with_rotation("/info/", params={"id": track_id})
 
+    def album(self, album_id: int, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        return self._request_with_rotation("/album/", params={"id": album_id, "limit": limit, "offset": offset})
+
+    def playlist(self, playlist_id: str, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        return self._request_with_rotation("/playlist/", params={"id": playlist_id, "limit": limit, "offset": offset})
+
+    def mix(self, mix_id: str) -> dict[str, Any]:
+        return self._request_with_rotation("/mix/", params={"id": mix_id})
+
+    def artist(self, artist_id: int, f: int | None = None, skip_tracks: bool = False) -> dict[str, Any]:
+        params: dict[str, Any] = {"id": artist_id, "skip_tracks": skip_tracks}
+        if f is not None:
+            params["f"] = f
+        return self._request_with_rotation("/artist/", params=params)
+
+    def search(
+        self,
+        *,
+        s: str | None = None,
+        a: str | None = None,
+        al: str | None = None,
+        v: str | None = None,
+        p: str | None = None,
+    ) -> dict[str, Any]:
+        params = {k: val for k, val in {"s": s, "a": a, "al": al, "v": v, "p": p}.items() if val}
+        return self._request_with_rotation("/search/", params=params)
+
     def track_stream(self, track_id: int, quality: str) -> HiFiStreamResult:
         payload = self._request_with_rotation("/track/", params={"id": track_id, "quality": quality})
         return self.parse_track_payload(payload)

@@ -17,6 +17,8 @@ import pathlib
 import shutil
 import types
 import unittest
+from concurrent.futures import Future
+from threading import Event
 from dataclasses import fields
 from unittest.mock import MagicMock, patch
 
@@ -24,6 +26,7 @@ import pytest
 from tidalapi import Track, Video
 
 from tidal_dl.helper.isrc_index import IsrcIndex
+from tidal_dl.helper.checkpoint import STATUS_DOWNLOADED
 from tidal_dl.model.downloader import DownloadOutcome, DownloadSummary
 from tidal_dl.model.cfg import Settings as CfgSettings
 
@@ -356,3 +359,42 @@ class TestItemCopyAction:
         dest_flac = result_path
         assert dest_flac.is_file()
         assert dest_flac.read_bytes() == b"audio data"
+
+
+class TestCheckpointOutcomeMapping:
+    """COPIED/SKIPPED are terminal successes for checkpoint resume semantics."""
+
+    @staticmethod
+    def _run_process_download_futures(outcome: DownloadOutcome):
+        from tidal_dl.download import Download
+
+        dl = Download.__new__(Download)
+        dl.event_abort = Event()
+        process_fn = Download._process_download_futures.__get__(dl, Download)
+
+        progress = MagicMock()
+        checkpoint = MagicMock()
+        track = _make_track(42, "US-TST-42-00001")
+
+        future = Future()
+        future.set_result((outcome, pathlib.Path("C:/tmp/result.flac")))
+
+        process_fn(
+            [future],
+            progress=progress,
+            progress_task=1,
+            progress_stdout=True,
+            summary=None,
+            checkpoint=checkpoint,
+            future_to_item={future: track},
+        )
+
+        return checkpoint
+
+    def test_copied_marks_checkpoint_downloaded(self):
+        checkpoint = self._run_process_download_futures(DownloadOutcome.COPIED)
+        checkpoint.mark.assert_called_once_with("42", STATUS_DOWNLOADED)
+
+    def test_skipped_marks_checkpoint_downloaded(self):
+        checkpoint = self._run_process_download_futures(DownloadOutcome.SKIPPED)
+        checkpoint.mark.assert_called_once_with("42", STATUS_DOWNLOADED)

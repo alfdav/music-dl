@@ -799,7 +799,20 @@ class Download:
             if media_id and media_type:
                 # If no media instance is provided, we need to create the media instance.
                 # Throws `tidalapi.exceptions.ObjectNotFound` if item is not available anymore.
-                media = instantiate_media(self.session, media_type, media_id, cache=self._api_cache)
+                prefer_hifi = (
+                    self.tidal.active_source == DownloadSource.HIFI_API
+                    and self.tidal.hifi_client is not None
+                )
+                oauth_fallback = bool(getattr(self.settings.data, "download_source_fallback", True))
+                media = instantiate_media(
+                    session=self.session,
+                    media_type=media_type,
+                    id_media=media_id,
+                    cache=self._api_cache,
+                    hifi_client=self.tidal.hifi_client,
+                    prefer_hifi=prefer_hifi,
+                    oauth_fallback=oauth_fallback,
+                )
             elif isinstance(media, Track | Video):
                 # Check if media is available not deactivated / removed from TIDAL.
                 if not media.allow_streaming:
@@ -808,8 +821,18 @@ class Download:
                     )
                     return None
                 elif isinstance(media, Track):
-                    # Re-create media instance with full album information
-                    media = self.session.track(str(media.id), with_album=True)
+                    # Re-create media instance with full album information.
+                    # Skip the OAuth re-fetch when the track was resolved via
+                    # Hi-Fi (marker attribute) OR the active source is Hi-Fi
+                    # and the track already carries album data.
+                    is_hifi_resolved = bool(getattr(media, "_resolved_via_hifi", False))
+                    has_album_from_hifi = (
+                        self.tidal.active_source == DownloadSource.HIFI_API
+                        and self.tidal.hifi_client is not None
+                        and getattr(media, "album", None) is not None
+                    )
+                    if not (is_hifi_resolved or has_album_from_hifi):
+                        media = self.session.track(str(media.id), with_album=True)
             elif isinstance(media, Album):
                 # Check if media is available not deactivated / removed from TIDAL.
                 if not media.allow_streaming:
@@ -1251,11 +1274,11 @@ class Download:
         tmp_path_lyrics: pathlib.Path | None = None
         tmp_path_cover: pathlib.Path | None = None
 
-        # Write metadata to file.
-        if media_stream:
-            result_metadata, tmp_path_lyrics, tmp_path_cover = self.metadata_write(
-                media, tmp_path_file, is_parent_album, media_stream
-            )
+        # Write metadata to file.  media_stream may be None for Hi-Fi API
+        # downloads; metadata_write handles this gracefully.
+        result_metadata, tmp_path_lyrics, tmp_path_cover = self.metadata_write(
+            media, tmp_path_file, is_parent_album, media_stream
+        )
 
         # Move lyrics file
         if self.settings.data.lyrics_file and tmp_path_lyrics:
@@ -1540,7 +1563,7 @@ class Download:
         return result
 
     def metadata_write(
-        self, track: Track, path_media: pathlib.Path, is_parent_album: bool, media_stream: Stream
+        self, track: Track, path_media: pathlib.Path, is_parent_album: bool, media_stream: Stream | None = None
     ) -> tuple[bool, pathlib.Path | None, pathlib.Path | None]:
         """Write metadata, lyrics, and cover to a media file.
 
@@ -1548,7 +1571,8 @@ class Download:
             track (Track): Track object.
             path_media (pathlib.Path): Path to media file.
             is_parent_album (bool): Whether this is a parent album.
-            media_stream (Stream): Stream object.
+            media_stream (Stream | None): Stream object. May be None for Hi-Fi API downloads;
+                replay gain fields use neutral defaults when unavailable.
 
         Returns:
             tuple[bool, pathlib.Path | None, pathlib.Path | None]: (Success, path to lyrics, path to cover)
@@ -1633,10 +1657,10 @@ class Download:
             totaldisc=track.album.num_volumes if track.album and track.album.num_volumes else 1,
             discnumber=track.volume_num if track.volume_num else 1,
             cover_data=cover_data if self.settings.data.metadata_cover_embed else None,
-            album_replay_gain=media_stream.album_replay_gain,
-            album_peak_amplitude=media_stream.album_peak_amplitude,
-            track_replay_gain=media_stream.track_replay_gain,
-            track_peak_amplitude=media_stream.track_peak_amplitude,
+            album_replay_gain=media_stream.album_replay_gain if media_stream else 1.0,
+            album_peak_amplitude=media_stream.album_peak_amplitude if media_stream else 1.0,
+            track_replay_gain=media_stream.track_replay_gain if media_stream else 1.0,
+            track_peak_amplitude=media_stream.track_peak_amplitude if media_stream else 1.0,
             url_share=track.share_url if track.share_url and self.settings.data.metadata_write_url else "",
             replay_gain_write=self.settings.data.metadata_replay_gain,
             upc=track.album.upc if track.album and track.album.upc else "",
@@ -2151,7 +2175,9 @@ class Download:
                 item_media = future_to_item.get(future)
                 if isinstance(item_media, Track):
                     cp_status = (
-                        STATUS_DOWNLOADED if outcome == DownloadOutcome.DOWNLOADED else STATUS_FAILED
+                        STATUS_DOWNLOADED
+                        if outcome in (DownloadOutcome.DOWNLOADED, DownloadOutcome.COPIED, DownloadOutcome.SKIPPED)
+                        else STATUS_FAILED
                     )
                     checkpoint.mark(str(item_media.id), cp_status)
                     checkpoint.save()
