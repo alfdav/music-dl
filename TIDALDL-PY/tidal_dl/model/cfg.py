@@ -29,7 +29,7 @@ class Settings:
     hifi_api_instances: str = ""
     download_dolby_atmos: bool = False
     format_album: str = "{album_artist}/{album_title}/{track_volume_num_optional_CD}/{track_title}"
-    format_playlist: str = "Playlists/{playlist_name}/{list_pos}. {artist_name} - {track_title}"
+    format_playlist: str = "- Playlists/{playlist_name}/{list_pos}. {artist_name} - {track_title}"
     format_mix: str = "Mix/{mix_name}/{artist_name} - {track_title}"
     format_track: str = "{album_artist}/{album_title}/{track_title}"
     format_video: str = "Videos/{artist_name}/{track_title}"
@@ -58,7 +58,7 @@ class Settings:
     api_rate_limit_delay_sec: float = 3.0
     initial_key_format: InitialKey = InitialKey.ALPHANUMERIC
     skip_duplicate_isrc: bool = True
-    duplicate_action: str = "ask"
+    duplicate_action: str = "copy"
     api_cache_enabled: bool = True
     api_cache_ttl_sec: int = 300
     scan_paths: str = ""

@@ -1084,6 +1084,12 @@ def main() -> None:
     Applies bare-URL rewriting so that ``tidal-dl <URL>`` works identically
     to ``tidal-dl dl <URL>`` when invoked via the installed script.
     """
+    # Ensure UTF-8 output on Windows to prevent Rich/Unicode crashes (cp1252).
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+
     signal.signal(signal.SIGINT, handle_sigint_term)
     signal.signal(signal.SIGTERM, handle_sigint_term)
 

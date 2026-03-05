@@ -716,6 +716,8 @@ class Download:
             if src_path_str and pathlib.Path(src_path_str).is_file():
                 src_ext = pathlib.Path(src_path_str).suffix
                 path_copy_dst = path_media_dst.with_suffix(src_ext)
+                if path_copy_dst.is_file():
+                    return DownloadOutcome.SKIPPED, path_copy_dst
                 path_copy_dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_path_str, path_copy_dst)
                 self.fn_logger.info(
@@ -1679,16 +1681,15 @@ class Download:
         self,
         items: list,
         checkpoint: "DownloadCheckpoint | None" = None,
-        is_album: bool = False,
+        ensure_complete: bool = False,
     ) -> dict[str, str]:
         """Scan items for duplicate ISRCs before downloads start.
 
         Returns a dict mapping str(track.id) -> action ('copy', 'redownload', 'skip').
         Empty dict means no duplicates were found or ISRC dedup is disabled.
 
-        For album downloads (is_album=True) duplicates are never skipped: source
-        files are copied if available, re-downloaded if not.  This guarantees
-        every album folder is complete regardless of what is already in the library.
+        When *ensure_complete* is True (collections: albums, playlists, mixes),
+        duplicates are always copied or re-downloaded — never skipped.
         """
         if not self.settings.data.skip_duplicate_isrc:
             return {}
@@ -1717,9 +1718,8 @@ class Download:
         if not hits_with_source and not hits_missing_source:
             return {}
 
-        # Albums must always be complete: copy if source exists, re-download if not.
-        # Never skip or prompt for album downloads.
-        if is_album:
+        # Collections must always be complete: copy if source exists, re-download if not.
+        if ensure_complete:
             resolved: dict[str, str] = {}
             for track, _ in hits_with_source:
                 resolved[str(track.id)] = "copy"
@@ -1727,8 +1727,8 @@ class Download:
                 resolved[str(track.id)] = "redownload"
             if resolved:
                 self.fn_logger.info(
-                    f"Album download: {len(hits_with_source)} track(s) will be copied from existing "
-                    f"library files, {len(hits_missing_source)} will be re-downloaded."
+                    f"{len(hits_with_source)} track(s) will be copied from existing "
+                    f"library, {len(hits_missing_source)} will be re-downloaded."
                 )
             return resolved
 
@@ -1927,8 +1927,9 @@ class Download:
             checkpoint = None
 
         # Pre-flight: resolve duplicate ISRCs before dispatching the thread pool.
+        # Collections (albums, playlists, mixes) are always completed in full.
         resolved_actions: dict[str, str] = self._preflight_isrc_scan(
-            items, checkpoint, is_album=isinstance(media, Album)
+            items, checkpoint, ensure_complete=True
         )
 
         # Set up progress tracking
