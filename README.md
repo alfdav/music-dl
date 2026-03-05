@@ -102,11 +102,11 @@ tidal-dl -v/--version                               Show version
 
 tidal-dl supports two audio download backends:
 
-**Hi-Fi API** (`hifi_api`, default) — Uses public community proxy instances for audio stream URLs. Stateless and fast; does not put load on your personal Tidal credentials. Instances are auto-discovered from live uptime trackers and rotated automatically when one fails.
+**Hi-Fi API** (`hifi_api`, default) — Uses public community proxy instances for both metadata resolution and audio streaming. Stateless and fast; does not put load on your personal Tidal credentials. Instances are auto-discovered from live uptime trackers and rotated automatically when one fails.
 
-**OAuth** (`oauth`) — Uses your personal Tidal OAuth session directly. OAuth is always required for metadata operations (album info, playlist browsing, cover art, lyrics) regardless of which audio source is active.
+**OAuth** (`oauth`) — Uses your personal Tidal OAuth session directly for metadata and streaming. When Hi-Fi API is the active source, OAuth serves only as a fallback — it is not required for normal operation.
 
-When `download_source_fallback = true` the app automatically tries the next source if the preferred one is unavailable.
+When `download_source_fallback = true` (default) the app automatically falls back to OAuth if a Hi-Fi API request fails.
 
 ```shell
 tidal-dl source set hifi_api        # switch to Hi-Fi API (default)
@@ -246,10 +246,10 @@ Download paths are built from template strings using `{token}` placeholders.
 
 | Context | Default |
 | --- | --- |
-| Album | `Albums/{album_artist}/{album_title}/{track_volume_num_optional_CD}/{track_title}` |
+| Album | `{album_artist}/{album_title}/{track_volume_num_optional_CD}/{track_title}` |
 | Playlist | `Playlists/{playlist_name}/{list_pos}. {artist_name} - {track_title}` |
 | Mix | `Mix/{mix_name}/{artist_name} - {track_title}` |
-| Track | `Tracks/{album_artist}/{album_title}/{track_title}` |
+| Track | `{album_artist}/{album_title}/{track_title}` |
 | Video | `Videos/{artist_name}/{track_title}` |
 
 ### Available tokens
@@ -340,7 +340,7 @@ MP3-specific tags: `TPE2` (album artist), `TPOS` (disc number), `WOAS` (share UR
 - **ISRC duplicate detection** — persistent cross-session index at `~/.config/tidal-dl/isrc_index.json`; stale entries pruned automatically; thread-safe
 - **Library scanning** — seed the ISRC index from your existing music collection (FLAC/MP3/M4A/OGG) via `tidal-dl scan`; prevents re-downloading tracks already on disk
 - **Skip existing** — skips files that already exist on disk
-- **Dual download sources** — Hi-Fi API (public proxy, stateless) or OAuth (personal session); automatic fallback between sources
+- **Dual download sources** — Hi-Fi API (public proxy, stateless) handles both metadata and streaming by default; OAuth serves as an automatic fallback
 - **Hi-Fi API instance rotation** — auto-discovers live instances from uptime trackers; dead instances are quarantined and skipped automatically
 - **Playlist import** — import from Spotify, Apple Music, or any platform via CSV/TSV or `Artist - Title` text files
 - **Multi-disc M3U** — when `playlist_create = true`, a single consolidated M3U is written at the album root with relative paths; works correctly across multi-disc albums
