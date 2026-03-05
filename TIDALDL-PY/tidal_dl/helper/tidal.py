@@ -285,7 +285,18 @@ def _instantiate_media_hifi(
     if media_type == MediaType.ALBUM:
         payload = hifi_client.album(int(id_media))
         album_data = payload.get("data", payload)
+        # Paginate: fetch all album items across pages.
         raw_tracks = _hifi_items_unwrap((album_data or {}).get("items"))
+        total = (album_data or {}).get("numberOfTracks", 0) or 0
+        offset = len(raw_tracks)
+        while offset < total:
+            page = hifi_client.album(int(id_media), limit=100, offset=offset)
+            page_data = page.get("data", page)
+            page_items = _hifi_items_unwrap((page_data or {}).get("items"))
+            if not page_items:
+                break
+            raw_tracks.extend(page_items)
+            offset += len(page_items)
         album_obj = _hifi_album_obj(album_data)
         tracks = [_hifi_track_obj(t, parent_album=album_obj) for t in raw_tracks]
         album_obj.items = lambda limit=100, offset=0: tracks[offset : offset + limit]
@@ -296,7 +307,18 @@ def _instantiate_media_hifi(
     if media_type == MediaType.PLAYLIST:
         payload = hifi_client.playlist(str(id_media))
         playlist_data = payload.get("playlist", payload)
+        # Paginate: fetch all playlist items across pages.
         raw_tracks = _hifi_items_unwrap(payload.get("items"))
+        total = (playlist_data or {}).get("numberOfTracks", 0) or 0
+        total += (playlist_data or {}).get("numberOfVideos", 0) or 0
+        offset = len(raw_tracks)
+        while offset < total:
+            page = hifi_client.playlist(str(id_media), limit=100, offset=offset)
+            page_items = _hifi_items_unwrap(page.get("items"))
+            if not page_items:
+                break
+            raw_tracks.extend(page_items)
+            offset += len(page_items)
         tracks = [_hifi_track_obj(t) for t in raw_tracks]
         playlist = MagicMock(spec=Playlist)
         playlist.id = playlist_data.get("uuid", str(id_media))

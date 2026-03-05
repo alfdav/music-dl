@@ -426,16 +426,29 @@ def path_file_sanitize(
     Returns:
         pathlib.Path: Sanitized path.
     """
-    sanitized_filename = sanitize_filename(
-        path_file.name, replacement_text="_", validate_after_sanitize=True, platform="auto"
-    )
+    # Smart truncation: when the filename exceeds the NTFS 255-char limit,
+    # shorten the artist portion (before last " - ") while keeping the track
+    # title intact. Done BEFORE pathvalidate so the sanitizer sees a short
+    # name and won't blindly truncate.
+    raw_name = path_file.name
+    if len(raw_name) > FILENAME_LENGTH_MAX:
+        ext = path_file.suffix
+        stem = raw_name[: -len(ext)] if ext else raw_name
+        parts = stem.rsplit(" - ", 1)
+        if len(parts) == 2:
+            prefix, title = parts
+            max_prefix = FILENAME_LENGTH_MAX - len(ext) - len(" - ") - len(title)
+            if max_prefix > 10:
+                prefix = prefix[: max_prefix - 3].rstrip(", ") + "..."
+                raw_name = prefix + " - " + title + ext
+            else:
+                raw_name = stem[: FILENAME_LENGTH_MAX - len(ext)] + ext
+        else:
+            raw_name = stem[: FILENAME_LENGTH_MAX - len(ext)] + ext
 
-    if not sanitized_filename.endswith(path_file.suffix):
-        sanitized_filename = (
-            sanitized_filename[: -len(path_file.suffix) - len(FILENAME_SANITIZE_PLACEHOLDER)]
-            + FILENAME_SANITIZE_PLACEHOLDER
-            + path_file.suffix
-        )
+    sanitized_filename = sanitize_filename(
+        raw_name, replacement_text="_", validate_after_sanitize=True, platform="auto"
+    )
 
     sanitized_path = pathlib.Path(
         *[
@@ -524,11 +537,11 @@ def check_file_exists(path_file: pathlib.Path, extension_ignore: bool = False) -
     if extension_ignore:
         stem = pathlib.Path(path_file).stem
         parent = pathlib.Path(path_file).parent
-        path_files: list[str] = [str(parent / (stem + ext)) for ext in AudioExtensions]
+        path_files: list[pathlib.Path] = [parent / (stem + ext) for ext in AudioExtensions]
     else:
-        path_files = [str(path_file)]
+        path_files = [path_file]
 
-    return any(os.path.isfile(f) for f in path_files)
+    return any(win_long_path(p).is_file() for p in path_files)
 
 
 def resource_path(relative_path: str) -> str:
@@ -563,3 +576,21 @@ def url_to_filename(url: str) -> str:
         raise ValueError
 
     return basename
+
+
+def win_long_path(path: pathlib.Path) -> pathlib.Path:
+    """On Windows, return the ``\\\\?\\`` extended-length form to bypass MAX_PATH.
+
+    This allows file operations on paths longer than 260 characters.
+    On non-Windows platforms (or paths already prefixed), returns the path unchanged.
+    """
+    if sys.platform != "win32":
+        return path
+    s = str(path)
+    if s.startswith("\\\\?\\"):
+        return path
+    # Use absolute() instead of resolve() — resolve() can fail on mapped
+    # network drives (e.g. M:) by trying to convert to UNC paths.
+    # Replace forward slashes for the \\?\ prefix which requires backslashes.
+    abs_path = str(path.absolute()).replace("/", "\\")
+    return pathlib.Path("\\\\?\\" + abs_path)

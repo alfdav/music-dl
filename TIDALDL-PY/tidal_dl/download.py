@@ -12,6 +12,7 @@ Classes:
 import os
 import pathlib
 import random
+import re
 import shutil
 import sys
 import tempfile
@@ -75,6 +76,7 @@ from tidal_dl.helper.path import (
     path_config_base,
     path_file_sanitize,
     url_to_filename,
+    win_long_path,
 )
 from tidal_dl.helper.tidal import (
     instantiate_media,
@@ -716,10 +718,15 @@ class Download:
             if src_path_str and pathlib.Path(src_path_str).is_file():
                 src_ext = pathlib.Path(src_path_str).suffix
                 path_copy_dst = path_media_dst.with_suffix(src_ext)
-                if path_copy_dst.is_file():
-                    return DownloadOutcome.SKIPPED, path_copy_dst
-                path_copy_dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_path_str, path_copy_dst)
+                # Check the canonical path (without uniquify suffix like _01)
+                # since uniquify may have renamed the destination to avoid an
+                # existing file — which is exactly the file we want to detect.
+                canonical = re.sub(r"_\d{2}$", "", path_copy_dst.stem)
+                path_canonical = path_copy_dst.parent / (canonical + path_copy_dst.suffix)
+                if win_long_path(path_canonical).is_file() or win_long_path(path_copy_dst).is_file():
+                    return DownloadOutcome.SKIPPED, path_canonical
+                win_long_path(path_copy_dst).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_path_str, win_long_path(path_copy_dst))
                 self.fn_logger.info(
                     f"Copied '{name_builder_item(media)}' from '{src_path_str}'."
                 )
@@ -1019,7 +1026,7 @@ class Download:
             path_media_dst = path_media_dst.with_suffix(file_extension)
             path_media_dst = pathlib.Path(path_file_sanitize(path_media_dst, adapt=True))
 
-        os.makedirs(path_media_dst.parent, exist_ok=True)
+        os.makedirs(win_long_path(path_media_dst).parent, exist_ok=True)
 
         # Perform actual download
         return self._perform_actual_download(
@@ -1249,7 +1256,7 @@ class Download:
             self.fn_logger.info(f"Downloaded item '{name_builder_item(media)}'.")
 
             # Move final file to the configured destination directory.
-            shutil.move(tmp_path_file, path_media_dst)
+            shutil.move(tmp_path_file, win_long_path(path_media_dst))
 
             return True
 
@@ -1373,7 +1380,7 @@ class Download:
         ).absolute()
         path_media_dst = pathlib.Path(path_file_sanitize(path_media_dst, adapt=True))
 
-        os.makedirs(path_media_dst.parent, exist_ok=True)
+        os.makedirs(win_long_path(path_media_dst).parent, exist_ok=True)
 
         # Move item and symlink it
         if path_media_dst != path_media_src:
@@ -1386,7 +1393,7 @@ class Download:
 
             if not skip_file:
                 self.fn_logger.debug(f"Move: {path_media_src} -> {path_media_dst}")
-                shutil.move(path_media_src, path_media_dst)
+                shutil.move(path_media_src, win_long_path(path_media_dst))
 
             if not skip_symlink:
                 self.fn_logger.debug(f"Symlink: {path_media_src} -> {path_media_dst}")
@@ -1442,7 +1449,7 @@ class Download:
         # Check if the file was downloaded
         if path_file_source and path_file_source.is_file():
             # Move it.
-            shutil.move(path_file_source, path_file_destination)
+            shutil.move(path_file_source, win_long_path(pathlib.Path(path_file_destination)))
 
             result = True
         else:
