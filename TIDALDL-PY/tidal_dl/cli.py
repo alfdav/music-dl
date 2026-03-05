@@ -1022,19 +1022,25 @@ def scan_add(
         str,
         typer.Argument(help="Directory path to add to the scan list."),
     ],
+    no_scan: Annotated[
+        bool,
+        typer.Option("--no-scan", help="Only save the path without scanning it."),
+    ] = False,
 ) -> None:
-    """Add a directory to the persistent scan path list."""
+    """Add a directory to the persistent scan path list and scan it."""
     settings = Settings()
     current = _scan_paths_list(settings)
     normalized = path.strip().rstrip("/").rstrip("\\")
-    if normalized and normalized not in current:
+    already_configured = normalized in current
+    if normalized and not already_configured:
         current.append(normalized)
         settings.data.scan_paths = ",".join(current)
         settings.save()
         print(f"Added: {normalized}")
     else:
         print(f"Already configured: {normalized}")
-    print(f"Scan paths: {settings.data.scan_paths or '(none)'}")
+    if not no_scan:
+        _run_scan([normalized], dry_run=False, verbose=False)
 
 
 @app_scan.command(name="remove")
