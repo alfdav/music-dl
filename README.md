@@ -204,7 +204,7 @@ Config is stored at `~/.config/tidal-dl/settings.json`. Use `tidal-dl cfg` to vi
 | `video_download` | `true` | Allow download of videos |
 | `lyrics_embed` | `false` | Embed synced lyrics in audio tags |
 | `lyrics_file` | `false` | Save lyrics as a separate `.lrc` file |
-| `playlist_create` | `false` | Generate M3U playlist files |
+| `playlist_create` | `false` | Generate M3U playlist files for albums and mixes (playlists always generate an M3U automatically) |
 | `symlink_to_track` | `false` | Create a symlink to the track inside the playlist folder |
 | `downloads_concurrent_max` | `3` | Maximum parallel downloads |
 | `downloads_simultaneous_per_track_max` | `20` | Maximum simultaneous chunk downloads per track |
@@ -330,6 +330,8 @@ Metadata written to all downloaded files (FLAC, MP3, MP4):
 
 MP3-specific tags: `TPE2` (album artist), `TPOS` (disc number), `WOAS` (share URL), `TRCK` written as `N/total`.
 
+MP4-specific atoms: `aART` (album artist).
+
 ---
 
 ## Features
@@ -343,6 +345,7 @@ MP3-specific tags: `TPE2` (album artist), `TPOS` (disc number), `WOAS` (share UR
 - **Dual download sources** — Hi-Fi API (public proxy, stateless) handles both metadata and streaming by default; OAuth serves as an automatic fallback
 - **Hi-Fi API instance rotation** — auto-discovers live instances from uptime trackers; dead instances are quarantined and skipped automatically
 - **Playlist import** — import from Spotify, Apple Music, or any platform via CSV/TSV or `Artist - Title` text files
+- **Playlist M3U generation** — an M3U playlist file is always generated for playlist downloads so music players can recognize the folder as a playlist; original track metadata (album, artist, artwork) is preserved
 - **Multi-disc M3U** — when `playlist_create = true`, a single consolidated M3U is written at the album root with relative paths; works correctly across multi-disc albums
 - **Download checkpointing** — interrupted collection downloads can resume from where they left off
 - **API response caching** — in-memory TTL cache reduces redundant HTTP calls during a session

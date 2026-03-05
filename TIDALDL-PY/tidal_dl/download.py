@@ -1572,7 +1572,7 @@ class Download:
         return result
 
     def metadata_write(
-        self, track: Track, path_media: pathlib.Path, is_parent_album: bool, media_stream: Stream | None = None
+        self, track: Track, path_media: pathlib.Path, is_parent_album: bool, media_stream: Stream | None = None,
     ) -> tuple[bool, pathlib.Path | None, pathlib.Path | None]:
         """Write metadata, lyrics, and cover to a media file.
 
@@ -1648,6 +1648,8 @@ class Download:
         title = name_builder_title(track)
         title += METADATA_EXPLICIT if explicit and self.settings.data.mark_explicit else ""
 
+        albumartist = name_builder_album_artist(track, delimiter=self.settings.data.metadata_delimiter_album_artist)
+
         # `None` values are not allowed.
         m: Metadata = Metadata(
             path_file=path_media,
@@ -1661,7 +1663,7 @@ class Download:
             tracknumber=track.track_num,
             date=release_date,
             isrc=isrc,
-            albumartist=name_builder_album_artist(track, delimiter=self.settings.data.metadata_delimiter_album_artist),
+            albumartist=albumartist,
             totaltrack=track.album.num_tracks if track.album and track.album.num_tracks else 1,
             totaldisc=track.album.num_volumes if track.album and track.album.num_volumes else 1,
             discnumber=track.volume_num if track.volume_num else 1,
@@ -1947,6 +1949,7 @@ class Download:
 
         # Download configuration
         is_album: bool = isinstance(media, Album)
+        is_playlist: bool = isinstance(media, Playlist | UserPlaylist)
         sort_by_track_num: bool = bool("album_track_num" in file_name_relative or "list_pos" in file_name_relative)
         list_total: int = len(items)
 
@@ -1973,8 +1976,9 @@ class Download:
         if checkpoint is not None:
             checkpoint.cleanup_if_complete()
 
-        # Create playlist file if requested
-        if self.settings.data.playlist_create:
+        # Create playlist file: always for playlists (helps music players recognize the
+        # folder), or when explicitly requested via the playlist_create setting.
+        if is_playlist or self.settings.data.playlist_create:
             self.playlist_populate(set(result_dirs), list_media_name, is_album, sort_by_track_num)
 
         # Persist ISRC index after all collection downloads complete
