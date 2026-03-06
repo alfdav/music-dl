@@ -34,6 +34,18 @@ git clone https://github.com/alfdav/Tidal-Media-Downloader.git
 pip install -e Tidal-Media-Downloader/TIDALDL-PY
 ```
 
+### Docker (no Python or FFmpeg required)
+
+Run on any machine without installing Python or FFmpeg. See **[docker/README.md](docker/README.md)** for full instructions including volume mounts, login, and docker compose usage.
+
+```shell
+docker build -f docker/Dockerfile -t tidal-dl .
+docker run --rm -it \
+  -v "$HOME/.config/tidal-dl:/root/.config/tidal-dl" \
+  -v "$HOME/tidal-downloads:/root/download" \
+  tidal-dl https://tidal.com/browse/album/123456789
+```
+
 ---
 
 ## Authentication
