@@ -218,6 +218,8 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
                 if is_token:
                     fn_print("OAuth session restored (available as fallback).")
                     self._probe_subscription_quality()
+                else:
+                    fn_print("Not logged in. Run 'tidal-dl login' for OAuth fallback and favourites.")
                 return True
 
             if not allow_fallback:
