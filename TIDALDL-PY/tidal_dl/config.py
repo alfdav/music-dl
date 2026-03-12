@@ -15,7 +15,7 @@ from datetime import datetime
 from json import JSONDecodeError
 from pathlib import Path
 from threading import Event, Lock
-from typing import Any, Generic, Protocol, TypeVar, cast
+from typing import Any, Generic, Protocol, Self, TypeVar
 
 import typer
 from rich.console import Console as RichConsole
@@ -44,6 +44,9 @@ _console = RichConsole()
 
 
 class JsonConfigModel(Protocol):
+    @classmethod
+    def from_json(cls, s: str) -> Self: ...
+
     def to_json(self) -> str: ...
 
 
@@ -115,7 +118,7 @@ class BaseConfig(Generic[ConfigModelT]):
             with open(path, encoding="utf-8") as f:
                 settings_json = f.read()
 
-            self.data = cast(ConfigModelT, cast(Any, self.cls_model).from_json(settings_json))
+            self.data = self.cls_model.from_json(settings_json)
             result = True
         except (JSONDecodeError, TypeError, FileNotFoundError, ValueError) as e:
             if isinstance(e, ValueError):

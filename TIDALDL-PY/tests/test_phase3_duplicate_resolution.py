@@ -133,7 +133,7 @@ class TestDuplicateActionConfig:
         cfg = CfgSettings()
         assert hasattr(cfg, "duplicate_action")
 
-    def test_default_value_is_ask(self):
+    def test_default_value_is_copy(self):
         cfg = CfgSettings()
         assert cfg.duplicate_action == "copy"
 
