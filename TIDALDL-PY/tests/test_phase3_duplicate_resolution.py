@@ -10,7 +10,7 @@ Covers:
   - 'redownload' bypasses ISRC check
   - Missing-source fallback under saved 'copy' preference
   - DownloadSummary counts COPIED correctly
-  - duplicate_action config field exists with default 'ask'
+  - duplicate_action config field exists with default 'copy'
 """
 
 import pathlib
@@ -18,22 +18,22 @@ import shutil
 import types
 import unittest
 from concurrent.futures import Future
-from threading import Event
 from dataclasses import fields
+from threading import Event
 from unittest.mock import MagicMock, patch
 
-import pytest
-from tidalapi import Track, Video
+import pytest  # pyright: ignore[reportMissingImports]
+from tidalapi.media import Track, Video
 
-from tidal_dl.helper.isrc_index import IsrcIndex
 from tidal_dl.helper.checkpoint import STATUS_DOWNLOADED
-from tidal_dl.model.downloader import DownloadOutcome, DownloadSummary
+from tidal_dl.helper.isrc_index import IsrcIndex
 from tidal_dl.model.cfg import Settings as CfgSettings
-
+from tidal_dl.model.downloader import DownloadOutcome, DownloadSummary
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_track(track_id: int, isrc: str | None = None) -> MagicMock:
     """Return a minimal Track-like mock that passes isinstance(x, Track)."""
@@ -47,6 +47,7 @@ def _make_track(track_id: int, isrc: str | None = None) -> MagicMock:
 # ---------------------------------------------------------------------------
 # IsrcIndex.get_path
 # ---------------------------------------------------------------------------
+
 
 class TestIsrcIndexGetPath:
     """get_path() returns stored value without pruning stale entries."""
@@ -97,6 +98,7 @@ class TestIsrcIndexGetPath:
 # DownloadSummary with COPIED
 # ---------------------------------------------------------------------------
 
+
 class TestDownloadSummaryWithCopied:
     def test_copied_increments_on_record(self):
         s = DownloadSummary()
@@ -125,6 +127,7 @@ class TestDownloadSummaryWithCopied:
 # duplicate_action config field
 # ---------------------------------------------------------------------------
 
+
 class TestDuplicateActionConfig:
     def test_field_exists_in_cfg_settings(self):
         cfg = CfgSettings()
@@ -132,12 +135,13 @@ class TestDuplicateActionConfig:
 
     def test_default_value_is_ask(self):
         cfg = CfgSettings()
-        assert cfg.duplicate_action == "ask"
+        assert cfg.duplicate_action == "copy"
 
 
 # ---------------------------------------------------------------------------
 # _preflight_isrc_scan
 # ---------------------------------------------------------------------------
+
 
 def _make_download_obj(tmp_path, isrc_data: dict[str, str], duplicate_action: str = "skip"):
     """Build a minimal Download-like object for testing preflight scan."""
@@ -165,6 +169,7 @@ def _make_download_obj(tmp_path, isrc_data: dict[str, str], duplicate_action: st
 
     # Bind the real method to our mock object
     from tidal_dl.download import Download
+
     dl._preflight_isrc_scan = Download._preflight_isrc_scan.__get__(dl, type(dl))
     dl._prompt_duplicate_action = Download._prompt_duplicate_action.__get__(dl, type(dl))
 
@@ -252,7 +257,7 @@ class TestPreflightIsrcScan:
         dl = _make_download_obj(tmp_path, {"US-ABC-00-00010": str(source)}, duplicate_action="skip")
 
         track = _make_track(10, "US-ABC-00-00010")
-        result = dl._preflight_isrc_scan([track], is_album=True)
+        result = dl._preflight_isrc_scan([track], ensure_complete=True)
         assert result == {"10": "copy"}
 
     def test_album_redownloads_missing_source(self, tmp_path):
@@ -262,7 +267,7 @@ class TestPreflightIsrcScan:
             duplicate_action="skip",
         )
         track = _make_track(11, "US-ABC-00-00011")
-        result = dl._preflight_isrc_scan([track], is_album=True)
+        result = dl._preflight_isrc_scan([track], ensure_complete=True)
         assert result == {"11": "redownload"}
 
     def test_album_ignores_saved_skip_preference(self, tmp_path):
@@ -272,7 +277,7 @@ class TestPreflightIsrcScan:
         dl = _make_download_obj(tmp_path, {"US-ABC-00-00012": str(source)}, duplicate_action="skip")
 
         track = _make_track(12, "US-ABC-00-00012")
-        result = dl._preflight_isrc_scan([track], is_album=True)
+        result = dl._preflight_isrc_scan([track], ensure_complete=True)
         # Must be 'copy', NOT 'skip'
         assert result == {"12": "copy"}
 
@@ -284,6 +289,7 @@ class TestPreflightIsrcScan:
         track = _make_track(7, "US-ABC-00-00007")
         checkpoint = MagicMock()
         from tidal_dl.helper.checkpoint import STATUS_DOWNLOADED
+
         checkpoint.status_of.return_value = STATUS_DOWNLOADED
 
         result = dl._preflight_isrc_scan([track], checkpoint=checkpoint)
@@ -294,12 +300,14 @@ class TestPreflightIsrcScan:
 # item() copy action
 # ---------------------------------------------------------------------------
 
+
 class TestItemCopyAction:
     """item() correctly copies source file and returns COPIED outcome."""
 
     def _build_minimal_download(self, tmp_path):
         """Build enough of a Download to test item() copy path."""
         from threading import Event
+
         from tidal_dl.download import Download
 
         tidal = MagicMock()
@@ -356,9 +364,69 @@ class TestItemCopyAction:
 
         assert outcome == DownloadOutcome.COPIED
         # File should exist at destination (with src extension)
-        dest_flac = result_path
+        dest_flac = pathlib.Path(result_path)
         assert dest_flac.is_file()
         assert dest_flac.read_bytes() == b"audio data"
+
+    def test_prepare_paths_skip_existing_uses_canonical_path(self, tmp_path):
+        """skip_existing must check the canonical path before any _01 uniquify."""
+        dl = self._build_minimal_download(tmp_path)
+
+        track = _make_track(101, "US-TST-00-01001")
+        track.full_name = "Track 101"
+        track.name = "Track 101"
+        track.media_metadata_tags = []
+        track.album = MagicMock()
+
+        existing = tmp_path / "output" / "Track 101.flac"
+        existing.parent.mkdir(parents=True, exist_ok=True)
+        existing.write_bytes(b"existing")
+
+        with patch.object(dl, "extension_guess", return_value=".flac"):
+            path_media_dst, file_extension_dummy, skip_file, skip_download = dl._prepare_file_paths_and_skip_logic(
+                track,
+                "{track_title}",
+                None,
+                0,
+                0,
+            )
+
+        assert path_media_dst == existing.absolute()
+        assert file_extension_dummy == ".flac"
+        assert skip_file is True
+        assert skip_download is False
+
+    def test_item_returns_and_indexes_final_stream_extension(self, tmp_path):
+        """item() must report the final stream extension, not the dummy guess."""
+        dl = self._build_minimal_download(tmp_path)
+
+        track = _make_track(102, "US-TST-00-01002")
+        track.isrc = "US-TST-00-01002"
+        track.full_name = "Track 102"
+        track.name = "Track 102"
+        track.media_metadata_tags = []
+        track.album = MagicMock()
+        track.allow_streaming = True
+
+        dummy_path = (tmp_path / "output" / "Track 102.flac").absolute()
+        final_path = dummy_path.with_suffix(".m4a")
+
+        with (
+            patch.object(dl, "_validate_and_prepare_media", return_value=track),
+            patch.object(dl, "_prepare_file_paths_and_skip_logic", return_value=(dummy_path, ".flac", False, False)),
+            patch.object(dl, "_adjust_quality_settings", return_value=(None, None)),
+            patch.object(dl, "_get_stream_info", return_value=(MagicMock(), ".m4a", False, None)),
+            patch.object(dl, "_perform_actual_download", return_value=True),
+            patch.object(dl, "_perform_post_processing", return_value=None),
+        ):
+            outcome, result_path = dl.item(
+                file_template="{track_title}",
+                media=track,
+            )
+
+        assert outcome == DownloadOutcome.DOWNLOADED
+        assert result_path == final_path
+        assert dl._isrc_index.get_path(track.isrc) == str(final_path.absolute())
 
 
 class TestCheckpointOutcomeMapping:

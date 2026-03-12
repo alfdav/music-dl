@@ -1,7 +1,7 @@
 [project]
-name = "tidal-dl"
+name = "music-dl"
 version = "3.0.0"
-description = "Tidal Media Downloader — CLI edition with next-generation features."
+description = "music-dl — CLI Tidal downloader with next-generation features."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12,<3.14"
@@ -31,10 +31,11 @@ dependencies = [
 ]
 
 [project.scripts]
+music-dl = "tidal_dl.cli:main"
 tidal-dl = "tidal_dl.cli:main"
 
 [project.urls]
-repository = "https://github.com/alfdav/Tidal-Media-Downloader"
+repository = "https://github.com/alfdav/music-dl"
 
 [build-system]
 requires = ["setuptools>=61"]

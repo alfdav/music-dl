@@ -4,18 +4,22 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock
 
-from tidalapi import Album, Mix, Playlist, Session, Track, UserPlaylist, Video
+from tidalapi.album import Album
 from tidalapi.artist import Artist, Role
-from tidalapi.media import MediaMetadataTags, Quality
+from tidalapi.media import MediaMetadataTags, Quality, Track, Video
+from tidalapi.mix import Mix
+from tidalapi.playlist import Playlist, UserPlaylist
+from tidalapi.session import Session
 from tidalapi.user import LoggedInUser
 
 from tidal_dl.constants import FAVORITES, MediaType
 from tidal_dl.helper.exceptions import MediaUnknown
 
 if TYPE_CHECKING:
+    from tidal_dl.config import Tidal
     from tidal_dl.helper.cache import TTLCache
     from tidal_dl.hifi_api import HiFiApiClient
 
@@ -30,7 +34,9 @@ def name_builder_artist(media: Track | Video | Album, delimiter: str = ", ") -> 
     Returns:
         str: Delimited artist names.
     """
-    return delimiter.join(artist.name for artist in media.artists)
+    artists = media.artists or []
+    names = [artist.name for artist in artists if artist.name]
+    return delimiter.join(names)
 
 
 def name_builder_album_artist(
@@ -49,10 +55,10 @@ def name_builder_album_artist(
         str: Delimited album artist names.
     """
     artists_tmp: list[str] = []
-    artists: list[Artist] = media.album.artists if isinstance(media, Track) else media.artists
+    artists = (media.album.artists if isinstance(media, Track) and media.album is not None else media.artists) or []
 
     for artist in artists:
-        if Role.main in artist.roles:
+        if Role.main in (artist.roles or []) and artist.name:
             artists_tmp.append(artist.name)
 
             if first_only:
@@ -70,7 +76,17 @@ def name_builder_title(media: Track | Video | Mix | Playlist | Album) -> str:
     Returns:
         str: Display title.
     """
-    return media.title if isinstance(media, Mix) else media.full_name if hasattr(media, "full_name") else media.name
+    if isinstance(media, Mix):
+        name = getattr(media, "name", None)
+        return media.title or (name if isinstance(name, str) else "") or ""
+    full_name = getattr(media, "full_name", None)
+    if isinstance(full_name, str) and full_name:
+        return full_name
+    name = getattr(media, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    title = getattr(media, "title", None)
+    return title if isinstance(title, str) else ""
 
 
 def name_builder_item(media: Track | Video) -> str:
@@ -153,6 +169,7 @@ def _cover_url(cover_id: str | None, size: int) -> str:
         return ""
     return f"https://resources.tidal.com/images/{cover_id.replace('-', '/')}/{size}x{size}.jpg"
 
+
 def _mark_hifi_resolved(media_obj):
     try:
         media_obj._resolved_via_hifi = True
@@ -176,7 +193,9 @@ def _hifi_album_obj(raw_album: dict | None, tracks: list | None = None):
 
     title = data.get("title") or data.get("name") or ""
     release_dt = _parse_release_date(data.get("releaseDate"))
-    artists = [_hifi_artist_obj(a) for a in (data.get("artists") or ([] if not data.get("artist") else [data["artist"]]))]
+    artists = [
+        _hifi_artist_obj(a) for a in (data.get("artists") or ([] if not data.get("artist") else [data["artist"]]))
+    ]
 
     album.id = data.get("id")
     album.title = title
@@ -218,7 +237,9 @@ def _hifi_track_obj(raw_track: dict, parent_album: object | None = None):
     track = MagicMock(spec=Track)
 
     title = data.get("title") or data.get("name") or ""
-    artists = [_hifi_artist_obj(a) for a in (data.get("artists") or ([] if not data.get("artist") else [data["artist"]]))]
+    artists = [
+        _hifi_artist_obj(a) for a in (data.get("artists") or ([] if not data.get("artist") else [data["artist"]]))
+    ]
 
     track.id = data.get("id")
     track.title = title
@@ -352,7 +373,7 @@ def instantiate_media(
     media_type: MediaType,
     id_media: str,
     cache: TTLCache | None = None,
-    hifi_client: "HiFiApiClient" | None = None,
+    hifi_client: HiFiApiClient | None = None,
     prefer_hifi: bool = False,
     oauth_fallback: bool = True,
 ) -> Track | Video | Album | Playlist | Mix | Artist:
@@ -430,27 +451,24 @@ def items_results_all(
     Returns:
         list: All media items.
     """
-    result: list[Track | Video | Album] = []
-
     if isinstance(media_list, Mix):
-        result = media_list.items()
+        return list(media_list.items())
+
+    func_get_items_media: list[Callable[..., object]] = []
+
+    if isinstance(media_list, Playlist | Album):
+        func_get_items_media.append(media_list.items if videos_include else media_list.tracks)
     else:
-        func_get_items_media: list[Callable] = []
+        func_get_items_media.append(media_list.get_albums)
+        func_get_items_media.append(media_list.get_ep_singles)
 
-        if isinstance(media_list, Playlist | Album):
-            func_get_items_media.append(media_list.items if videos_include else media_list.tracks)
-        else:
-            func_get_items_media.append(media_list.get_albums)
-            func_get_items_media.append(media_list.get_ep_singles)
-
-        result = paginate_results(func_get_items_media)
-
-    return result
+    result = paginate_results(func_get_items_media)
+    return [item for item in result if isinstance(item, (Track, Video, Album))]
 
 
 def paginate_results(
-    func_get_items_media: list[Callable],
-) -> list[Track | Video | Album | Playlist | UserPlaylist]:
+    func_get_items_media: list[Callable[..., object]],
+) -> list[object]:
     """Paginate through all results from one or more list-fetching callables.
 
     Args:
@@ -459,7 +477,7 @@ def paginate_results(
     Returns:
         list: All collected items.
     """
-    result: list = []
+    result: list[object] = []
 
     for func_media in func_get_items_media:
         limit = 50 if getattr(func_media, "__func__", None) == LoggedInUser.playlist_and_favorite_playlists else 100
@@ -467,10 +485,10 @@ def paginate_results(
         done = False
 
         while not done:
-            tmp_result = func_media(limit=limit, offset=offset)
+            tmp_result_obj = func_media(limit=limit, offset=offset)
 
-            if tmp_result:
-                result += tmp_result
+            if isinstance(tmp_result_obj, list) and tmp_result_obj:
+                result += tmp_result_obj
                 offset += limit
             else:
                 done = True
@@ -487,7 +505,11 @@ def all_artist_album_ids(media_artist: Artist) -> list[int | None]:
     Returns:
         list[int | None]: List of album IDs.
     """
-    albums: list[Album] = paginate_results([media_artist.get_albums, media_artist.get_ep_singles])
+    albums = [
+        item
+        for item in paginate_results([media_artist.get_albums, media_artist.get_ep_singles])
+        if isinstance(item, Album)
+    ]
     return [album.id for album in albums]
 
 
@@ -500,15 +522,16 @@ def quality_audio_highest(media: Track | Album) -> Quality:
     Returns:
         Quality: Highest available quality enum value.
     """
-    if MediaMetadataTags.hi_res_lossless in media.media_metadata_tags:
-        return Quality.hi_res_lossless
-    elif MediaMetadataTags.lossless in media.media_metadata_tags:
-        return Quality.high_lossless
-    else:
-        return media.audio_quality
+    tags = set(media.media_metadata_tags or [])
+
+    if MediaMetadataTags.hi_res_lossless in tags:
+        return cast(Quality, Quality.hi_res_lossless)
+    if MediaMetadataTags.lossless in tags:
+        return cast(Quality, Quality.high_lossless)
+    return cast(Quality, media.audio_quality or Quality.low_320k)
 
 
-def favorite_function_factory(tidal: object, favorite_item: str) -> Callable:
+def favorite_function_factory(tidal: Tidal, favorite_item: str) -> Callable[..., object]:
     """Return the tidalapi callable for fetching a favorites collection.
 
     Args:
@@ -519,4 +542,5 @@ def favorite_function_factory(tidal: object, favorite_item: str) -> Callable:
         Callable: The function to call to fetch the favorites list.
     """
     function_name: str = FAVORITES[favorite_item]["function_name"]
-    return getattr(tidal.session.user.favorites, function_name)
+    favorites = cast(Any, tidal.session.user).favorites
+    return cast(Callable[..., object], getattr(favorites, function_name))

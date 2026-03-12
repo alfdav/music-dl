@@ -1,7 +1,8 @@
 from dataclasses import dataclass
+from typing import cast
 
-from dataclasses_json import dataclass_json
-from tidalapi import Quality
+from dataclasses_json import DataClassJsonMixin, dataclass_json
+from tidalapi.media import Quality
 
 from tidal_dl.constants import (
     CoverDimensions,
@@ -14,7 +15,7 @@ from tidal_dl.constants import (
 
 @dataclass_json
 @dataclass
-class Settings:
+class Settings(DataClassJsonMixin):
     skip_existing: bool = True
     lyrics_embed: bool = False
     lyrics_file: bool = False
@@ -22,7 +23,7 @@ class Settings:
     video_download: bool = True
     download_delay: bool = True
     download_base_path: str = "~/download"
-    quality_audio: Quality = Quality.hi_res_lossless
+    quality_audio: Quality = cast(Quality, Quality.hi_res_lossless)
     quality_video: QualityVideo = QualityVideo.P1080
     download_source: DownloadSource = DownloadSource.HIFI_API
     download_source_fallback: bool = True
@@ -66,7 +67,7 @@ class Settings:
 
 @dataclass_json
 @dataclass
-class HelpSettings:
+class HelpSettings(DataClassJsonMixin):
     skip_existing: str = "Skip download if file already exists."
     lyrics_embed: str = "Embed lyrics in audio file, if lyrics are available."
     use_primary_album_artist: str = "Use only the primary album artist for folder paths instead of track artists."
@@ -77,7 +78,7 @@ class HelpSettings:
     quality_audio: str = (
         'Desired audio download quality: "LOW" (96kbps), "HIGH" (320kbps), '
         '"LOSSLESS" (16 Bit, 44,1 kHz), "HI_RES_LOSSLESS" (up to 24 Bit, 192 kHz). '
-        'Default: HI_RES_LOSSLESS. TIDAL auto-degrades based on your subscription tier.'
+        "Default: HI_RES_LOSSLESS. TIDAL auto-degrades based on your subscription tier."
     )
     quality_video: str = 'Desired video download quality: "360", "480", "720", "1080"'
     download_source: str = (
@@ -115,8 +116,7 @@ class HelpSettings:
     download_delay_sec_min: str = "Lower boundary for the calculation of the download delay in seconds."
     download_delay_sec_max: str = "Upper boundary for the calculation of the download delay in seconds."
     album_track_num_pad_min: str = (
-        "Minimum length of the album track count, will be padded with zeroes (0). "
-        "To disable padding set this to 1."
+        "Minimum length of the album track count, will be padded with zeroes (0). To disable padding set this to 1."
     )
     downloads_concurrent_max: str = "Maximum concurrent number of downloads (threads)."
     symlink_to_track: str = (
@@ -139,7 +139,7 @@ class HelpSettings:
     initial_key_format: str = "Format for Initial Key metadata tag: 'alphanumeric' (default) or 'classic'."
     skip_duplicate_isrc: str = (
         "Skip download if a track with the same ISRC was already downloaded to any path. "
-        "Uses a persistent index at ~/.config/tidal-dl/isrc_index.json."
+        "Uses a persistent index at ~/.config/music-dl/isrc_index.json."
     )
     duplicate_action: str = (
         "What to do when a duplicate ISRC is detected during a pre-flight scan. "
@@ -156,14 +156,14 @@ class HelpSettings:
     )
     scan_paths: str = (
         "Comma-separated list of directories to scan for existing music files (ISRC seeding). "
-        "Managed via 'tidal-dl scan add/remove/show'. "
-        "When only one path is configured, 'tidal-dl scan' uses it automatically."
+        "Managed via 'music-dl scan add/remove/show'. "
+        "When only one path is configured, 'music-dl scan' uses it automatically."
     )
 
 
 @dataclass_json
 @dataclass
-class Token:
+class Token(DataClassJsonMixin):
     token_type: str | None = None
     access_token: str | None = None
     refresh_token: str | None = None

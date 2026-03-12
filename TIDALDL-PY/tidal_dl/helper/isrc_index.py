@@ -6,8 +6,8 @@ re-downloading a track that already exists somewhere in the library, even when
 the output path for the current context (album vs. playlist vs. mix) differs
 from where the track was previously stored.
 
-The index is a plain JSON file stored alongside the other tidal-dl config files
-(``~/.config/tidal-dl/isrc_index.json``).  Each entry is::
+The index is a plain JSON file stored alongside the other music-dl config files
+(``~/.config/music-dl/isrc_index.json``).  Each entry is::
 
     { "ISRC_VALUE": "/absolute/path/to/track.flac", ... }
 

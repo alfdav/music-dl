@@ -1,14 +1,16 @@
 #!/usr/bin/env python
+import pathlib as _pathlib
 import signal
 import sys
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated
+from types import FrameType
+from typing import Annotated, Any, Protocol, cast
 from urllib.parse import urlparse
 
-import typer
 import requests
+import typer
 from rich.console import Console, Group
 from rich.live import Live
 from rich.progress import (
@@ -18,25 +20,17 @@ from rich.progress import (
     TaskProgressColumn,
     TextColumn,
 )
-app_source = typer.Typer(
-    context_settings={"help_option_names": ["-h", "--help"]},
-    add_completion=True,
-    help="Inspect and manage download source settings.",
-)
-app_scan = typer.Typer(
-    context_settings={"help_option_names": ["-h", "--help"]},
-    add_completion=True,
-    help="Scan local music directories and seed the ISRC duplicate index.",
-)
 from rich.table import Table
-
-import pathlib as _pathlib
+from tidalapi.album import Album
+from tidalapi.artist import Artist
+from tidalapi.media import Track, Video
+from tidalapi.mix import Mix
+from tidalapi.playlist import Playlist
 
 from tidal_dl import __version__
 from tidal_dl.config import HandlingApp, Settings, Tidal
-from tidal_dl.constants import CTX_TIDAL, FAVORITES, MediaType, DownloadSource
+from tidal_dl.constants import CTX_TIDAL, FAVORITES, DownloadSource, MediaType
 from tidal_dl.download import Download
-from tidal_dl.hifi_api import HiFiApiClient
 from tidal_dl.helper.cli import parse_timestamp
 from tidal_dl.helper.path import get_format_template, path_file_settings
 from tidal_dl.helper.playlist_import import PlaylistImporter
@@ -48,9 +42,20 @@ from tidal_dl.helper.tidal import (
     url_ending_clean,
 )
 from tidal_dl.helper.wrapper import LoggerWrapped
+from tidal_dl.hifi_api import HiFiApiClient
 from tidal_dl.model.cfg import HelpSettings
 
 app = typer.Typer(context_settings={"help_option_names": ["-h", "--help"]}, add_completion=False)
+app_source = typer.Typer(
+    context_settings={"help_option_names": ["-h", "--help"]},
+    add_completion=True,
+    help="Inspect and manage download source settings.",
+)
+app_scan = typer.Typer(
+    context_settings={"help_option_names": ["-h", "--help"]},
+    add_completion=True,
+    help="Scan local music directories and seed the ISRC duplicate index.",
+)
 app_dl_fav = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
     add_completion=True,
@@ -60,6 +65,25 @@ app_dl_fav = typer.Typer(
 app.add_typer(app_dl_fav, name="dl_fav")
 app.add_typer(app_source, name="source")
 app.add_typer(app_scan, name="scan")
+
+TrackOrVideo = Track | Video
+CollectionMedia = Album | Playlist | Mix | Artist
+
+
+class FavoriteMedia(Protocol):
+    share_url: str
+    user_date_added: datetime | None
+
+
+def _ctx_tidal(ctx: typer.Context) -> Tidal:
+    tidal = ctx.obj.get(CTX_TIDAL) if isinstance(ctx.obj, dict) else None
+    if not isinstance(tidal, Tidal):
+        raise RuntimeError("TIDAL context is not initialized")
+    return tidal
+
+
+def _ctx_settings(ctx: typer.Context) -> Settings:
+    return _ctx_tidal(ctx).settings
 
 
 def version_callback(value: bool):
@@ -89,23 +113,27 @@ def callback_app(
 
 
 def _handle_track_or_video(
-    dl: Download, ctx: typer.Context, item: str, media: object, file_template: str, idx: int, urls_pos_last: int
+    dl: Download,
+    ctx: typer.Context,
+    media: TrackOrVideo,
+    file_template: str,
+    idx: int,
+    urls_pos_last: int,
 ) -> None:
     """Handle downloading a track or video item.
 
     Args:
         dl (Download): The Download instance.
         ctx (typer.Context): Typer context object.
-        item (str): The URL or identifier of the item.
         media: The media object to download.
         file_template (str): The file template for saving the media.
         idx (int): The index of the item in the list.
         urls_pos_last (int): The last index in the URLs list.
     """
-    settings = ctx.obj[CTX_TIDAL].settings
+    settings = _ctx_settings(ctx)
     download_delay: bool = bool(settings.data.download_delay and idx < urls_pos_last)
 
-    dl.item(
+    _ = dl.item(
         media=media,
         file_template=file_template,
         download_delay=download_delay,
@@ -119,7 +147,7 @@ def _handle_album_playlist_mix_artist(
     dl: Download,
     handling_app: HandlingApp,
     media_type: MediaType,
-    media: object,
+    media: CollectionMedia,
     item_id: str,
     file_template: str,
 ) -> bool:
@@ -138,11 +166,12 @@ def _handle_album_playlist_mix_artist(
         bool: False if aborted, True otherwise.
     """
     item_ids: list[str] = []
-    settings = ctx.obj[CTX_TIDAL].settings
+    settings = _ctx_settings(ctx)
 
     if media_type == MediaType.ARTIST:
         media_type = MediaType.ALBUM
-        item_ids += all_artist_album_ids(media)
+        artist_media = cast(Artist, media)
+        item_ids.extend(str(album_id) for album_id in all_artist_album_ids(artist_media) if album_id is not None)
     else:
         item_ids.append(item_id)
 
@@ -184,7 +213,7 @@ def _process_url(
     Returns:
         bool: False if aborted, True otherwise.
     """
-    settings = ctx.obj[CTX_TIDAL].settings
+    settings = _ctx_settings(ctx)
 
     if handling_app.event_abort.is_set():
         return False
@@ -201,15 +230,11 @@ def _process_url(
         return False
 
     url_clean_id = get_tidal_media_id(url_clean)
-    if not isinstance(url_clean_id, str):
-        print(f"Could not determine media id for: {url_clean}")
-        return False
-
     file_template = get_format_template(media_type, settings)
     if not isinstance(file_template, str):
         print(f"Could not determine file template for: {url_clean}")
         return False
-    tidal = ctx.obj[CTX_TIDAL]
+    tidal = _ctx_tidal(ctx)
     prefer_hifi = tidal.active_source == DownloadSource.HIFI_API and tidal.hifi_client is not None
 
     try:
@@ -226,9 +251,17 @@ def _process_url(
         return False
 
     if media_type in [MediaType.TRACK, MediaType.VIDEO]:
-        _handle_track_or_video(dl, ctx, url_clean, media, file_template, idx, urls_pos_last)
+        _handle_track_or_video(dl, ctx, cast(TrackOrVideo, media), file_template, idx, urls_pos_last)
     elif media_type in [MediaType.ALBUM, MediaType.PLAYLIST, MediaType.MIX, MediaType.ARTIST]:
-        return _handle_album_playlist_mix_artist(ctx, dl, handling_app, media_type, media, url_clean_id, file_template)
+        return _handle_album_playlist_mix_artist(
+            ctx,
+            dl,
+            handling_app,
+            media_type,
+            cast(CollectionMedia, media),
+            url_clean_id,
+            file_template,
+        )
     return True
 
 
@@ -254,7 +287,8 @@ def _download(
     if try_login and not ctx.invoke(login, ctx):
         return False
 
-    settings: Settings = ctx.obj[CTX_TIDAL].settings
+    settings = _ctx_settings(ctx)
+    tidal = _ctx_tidal(ctx)
     handling_app: HandlingApp = HandlingApp()
 
     # One-off output path override — does not mutate persisted settings.
@@ -285,7 +319,7 @@ def _download(
     fn_logger = LoggerWrapped(progress.print, debug=debug)
 
     dl = Download(
-        tidal_obj=ctx.obj[CTX_TIDAL],
+        tidal_obj=tidal,
         skip_existing=settings.data.skip_existing,
         path_base=path_base,
         fn_logger=fn_logger,
@@ -342,10 +376,11 @@ def settings_management(
 
         if config_path.is_file():
             bak_path = config_path.with_suffix(".json.bak")
-            config_path.rename(bak_path)
+            _ = config_path.rename(bak_path)
             console.print(f"[yellow]Existing config backed up to:[/yellow] {bak_path}")
 
         from tidal_dl.helper.decorator import SingletonMeta
+
         SingletonMeta._instances.clear()
 
         fresh = Settings()
@@ -357,9 +392,9 @@ def settings_management(
         config_path = Path(path_file_settings())
 
         if not config_path.is_file():
-            config_path.write_text('{"version": "1.0.0"}')
+            _ = config_path.write_text('{"version": "1.0.0"}')
 
-        typer.launch(str(config_path))
+        _ = typer.launch(str(config_path))
     else:
         settings = Settings()
         d_settings = settings.data.to_dict()
@@ -399,7 +434,11 @@ def login(ctx: typer.Context) -> bool:
 
     settings = Settings()
     tidal = Tidal(settings)
-    result = tidal.resolve_source(fn_print=print)
+
+    def _print_message(message: str) -> None:
+        print(message)
+
+    result = tidal.resolve_source(fn_print=_print_message)
     ctx.obj[CTX_TIDAL] = tidal
 
     return result
@@ -708,21 +747,23 @@ def _download_fav_factory(ctx: typer.Context, func_name_favorites: str, since: d
     Returns:
         bool: Download result.
     """
-    ctx.invoke(login, ctx)
-    func_favorites: Callable = getattr(ctx.obj[CTX_TIDAL].session.user.favorites, func_name_favorites)
+    _ = ctx.invoke(login, ctx)
+    tidal = _ctx_tidal(ctx)
+    user = cast(Any, tidal.session.user)
+    func_favorites = cast(Callable[[], list[FavoriteMedia]], getattr(user.favorites, func_name_favorites))
 
     # Get all favorite items
-    all_media: list = list(func_favorites())
+    all_media = list(func_favorites())
 
     # Filter by timestamp if provided (only for items with user_date_added attribute)
     if since is not None:
         console: Console = Console()
         console.print(f"[cyan]Filtering favorites added since: {since.strftime('%Y-%m-%d %H:%M:%S')}[/cyan]")
 
-        filtered_media: list = []
+        filtered_media: list[FavoriteMedia] = []
         for media in all_media:
             # Check if media has user_date_added attribute and it's after the since timestamp
-            if hasattr(media, "user_date_added") and media.user_date_added is not None:
+            if media.user_date_added is not None:
                 if media.user_date_added >= since:
                     filtered_media.append(media)
             else:
@@ -730,9 +771,9 @@ def _download_fav_factory(ctx: typer.Context, func_name_favorites: str, since: d
                 filtered_media.append(media)
 
         console.print(f"[cyan]Found {len(all_media)} total favorites, {len(filtered_media)} match filter[/cyan]")
-        media_urls: list[str] = [media.share_url for media in filtered_media]
+        media_urls = [media.share_url for media in filtered_media]
     else:
-        media_urls: list[str] = [media.share_url for media in all_media]
+        media_urls = [media.share_url for media in all_media]
 
     result = _download(ctx, media_urls, try_login=False)
     if not result:
@@ -783,10 +824,10 @@ def import_playlist(
         output (Path | None, optional): One-off output directory override.
         debug (bool, optional): Enable debug mode.
     """
-    ctx.invoke(login, ctx)
+    _ = ctx.invoke(login, ctx)
 
-    settings: Settings = ctx.obj[CTX_TIDAL].settings
-    tidal: Tidal = ctx.obj[CTX_TIDAL]
+    settings = _ctx_settings(ctx)
+    tidal = _ctx_tidal(ctx)
     handling_app: HandlingApp = HandlingApp()
     path_base: str = str(output) if output else settings.data.download_base_path
 
@@ -842,7 +883,7 @@ def import_playlist(
             progress.stop()
 
 
-def handle_sigint_term(signum, frame):
+def handle_sigint_term(signum: int, frame: FrameType | None) -> None:
     """Set app abort event, so threads can check it and shutdown.
 
     Args:
@@ -867,9 +908,9 @@ def _scan_paths_list(settings: Settings) -> list[str]:
 
 def _run_scan(paths: list[str], *, dry_run: bool, verbose: bool) -> None:
     """Execute a scan over one or more directories and display a summary."""
-    import time
     from rich.panel import Panel
     from rich.table import Table as RichTable
+
     from tidal_dl.helper.isrc_index import IsrcIndex
     from tidal_dl.helper.library_scanner import scan_directory
     from tidal_dl.helper.path import path_config_base
@@ -988,8 +1029,7 @@ def scan_callback(
 
     if not paths:
         console.print(
-            "[yellow]No scan directories configured.[/yellow]\n"
-            "Add one with:  [cyan]tidal-dl scan add <PATH>[/cyan]"
+            "[yellow]No scan directories configured.[/yellow]\nAdd one with:  [cyan]music-dl scan add <PATH>[/cyan]"
         )
         raise typer.Exit(1)
 
@@ -1000,7 +1040,7 @@ def scan_callback(
         for i, p in enumerate(paths, 1):
             console.print(f"  [{i}] {p}")
         console.print(f"  [a] All ({len(paths)} directories)")
-        choice = typer.prompt("Select directory (number or 'a')", default="a")
+        choice: str = typer.prompt("Select directory (number or 'a')", default="a")
         if choice.strip().lower() == "a":
             chosen = paths
         else:
@@ -1070,7 +1110,7 @@ def scan_show() -> None:
     settings = Settings()
     paths = _scan_paths_list(settings)
     if not paths:
-        print("No scan paths configured. Add one with: tidal-dl scan add <PATH>")
+        print("No scan paths configured. Add one with: music-dl scan add <PATH>")
         return
     for i, p in enumerate(paths, 1):
         exists = _pathlib.Path(p).expanduser().is_dir()
@@ -1081,14 +1121,14 @@ def scan_show() -> None:
 def main() -> None:
     """Installed entry-point wrapper.
 
-    Applies bare-URL rewriting so that ``tidal-dl <URL>`` works identically
-    to ``tidal-dl dl <URL>`` when invoked via the installed script.
+    Applies bare-URL rewriting so that ``music-dl <URL>`` works identically
+    to ``music-dl dl <URL>`` when invoked via the installed script.
     """
     # Ensure UTF-8 output on Windows to prevent Rich/Unicode crashes (cp1252).
     if sys.platform == "win32":
         for stream in (sys.stdout, sys.stderr):
             if hasattr(stream, "reconfigure"):
-                stream.reconfigure(encoding="utf-8", errors="replace")
+                cast(Any, stream).reconfigure(encoding="utf-8", errors="replace")
 
     signal.signal(signal.SIGINT, handle_sigint_term)
     signal.signal(signal.SIGTERM, handle_sigint_term)
