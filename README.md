@@ -1,8 +1,8 @@
 <div align="center">
   <h1>Tidal-Media-Downloader</h1>
   <p>A CLI-only fork of <a href="https://github.com/yaronzz/Tidal-Media-Downloader">yaronzz/Tidal-Media-Downloader</a>, rebuilt with a next-generation engine.<br>Download tracks, albums, playlists, mixes, and videos from Tidal. No GUI. Python 3.12+.</p>
-  <a href="https://github.com/alfdav/Tidal-Media-Downloader/blob/master/LICENSE">
-    <img src="https://img.shields.io/github/license/alfdav/Tidal-Media-Downloader.svg?style=flat-square" alt="License">
+  <a href="https://github.com/alfdav/music-dl/blob/master/LICENSE">
+    <img src="https://img.shields.io/github/license/alfdav/music-dl.svg?style=flat-square" alt="License">
   </a>
   <img src="https://img.shields.io/badge/python-3.12%2B-blue?style=flat-square" alt="Python 3.12+">
 </div>
@@ -24,14 +24,14 @@
 ### From GitHub (recommended)
 
 ```shell
-pip install git+https://github.com/alfdav/Tidal-Media-Downloader.git#subdirectory=TIDALDL-PY
+pip install git+https://github.com/alfdav/music-dl.git#subdirectory=TIDALDL-PY
 ```
 
 ### Development install
 
 ```shell
-git clone https://github.com/alfdav/Tidal-Media-Downloader.git
-pip install -e Tidal-Media-Downloader/TIDALDL-PY
+git clone https://github.com/alfdav/music-dl.git
+pip install -e music-dl/TIDALDL-PY
 ```
 
 ### Docker (no Python or FFmpeg required)
