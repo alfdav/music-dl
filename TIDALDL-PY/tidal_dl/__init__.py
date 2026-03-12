@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 import requests
 import toml
 
-from tidal_dl.constants import REQUESTS_TIMEOUT_SEC
+from tidal_dl.constants import APP_NAME, REQUESTS_TIMEOUT_SEC
 from tidal_dl.model.meta import ProjectInformation, ReleaseLatest
 
 
@@ -35,15 +35,15 @@ def metadata_project() -> ProjectInformation:
         )
     else:
         try:
-            meta_info = importlib.metadata.metadata(name_package())
+            meta_info = importlib.metadata.metadata(distribution_name())
             repo_url = meta_info["Home-page"]
 
             if not repo_url:
-                urls = meta_info.get_all("Project-URL")
+                urls = meta_info.get_all("Project-URL") or []
                 # attempt to parse, else use hardcoded fallback
                 repo_url = next(
                     (url.split(", ")[1] for url in urls if url.startswith("Repository")),
-                    "https://github.com/alfdav/Tidal-Media-Downloader",
+                    "https://github.com/alfdav/music-dl",
                 )
 
             result = ProjectInformation(version=meta_info["Version"], repository_url=repo_url)
@@ -100,14 +100,12 @@ def latest_version_information() -> ReleaseLatest:
     return release_info
 
 
-def name_package() -> str:
-    package_name: str = __package__ or __name__
-
-    return package_name
+def distribution_name() -> str:
+    return APP_NAME
 
 
 def is_dev_env() -> bool:
-    package_name: str = name_package()
+    package_name: str = distribution_name()
     result: bool = False
 
     # Check if package is running from source code == dev mode
@@ -124,7 +122,7 @@ def is_dev_env() -> bool:
 
 
 def name_app() -> str:
-    app_name: str = name_package()
+    app_name: str = APP_NAME
     is_dev: bool = is_dev_env()
 
     if is_dev:

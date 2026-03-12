@@ -5,28 +5,59 @@ import os
 import pathlib
 import posixpath
 import re
+import shutil
 import sys
 from copy import deepcopy
+from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlsplit
 
 from pathvalidate import sanitize_filename, sanitize_filepath
 from pathvalidate.error import ValidationError
-from tidalapi import Album, Mix, Playlist, Track, UserPlaylist, Video
-from tidalapi.media import AudioExtensions
+from tidalapi.album import Album
+from tidalapi.media import AudioExtensions, Track, Video
+from tidalapi.mix import Mix
+from tidalapi.playlist import Playlist, UserPlaylist
 
 from tidal_dl.constants import (
+    APP_NAME,
     FILENAME_LENGTH_MAX,
     FILENAME_SANITIZE_PLACEHOLDER,
     FORMAT_TEMPLATE_EXPLICIT,
+    LEGACY_APP_NAME,
     UNIQUIFY_THRESHOLD,
     MediaType,
 )
 from tidal_dl.helper.tidal import name_builder_album_artist, name_builder_artist, name_builder_title
 
+if TYPE_CHECKING:
+    from tidal_dl.config import Settings
+
+
+PathMedia = Track | Album | Playlist | UserPlaylist | Video | Mix
+
+
+def _album_from_media(media: Track | Video) -> Album | None:
+    album = getattr(media, "album", None)
+    return album if isinstance(album, Album) else None
+
+
+def _name_or_none(value: object) -> str | None:
+    name = getattr(value, "name", None)
+    return name if isinstance(name, str) and name else None
+
+
+def _int_or_default(value: int | None, default: int) -> int:
+    return value if isinstance(value, int) else default
+
+
+def _string_id(value: object) -> str | None:
+    return str(value) if value is not None else None
+
 
 # ---------------------------------------------------------------------------
 # Config paths
 # ---------------------------------------------------------------------------
+
 
 def path_home() -> str:
     if "XDG_CONFIG_HOME" in os.environ:
@@ -42,7 +73,18 @@ def path_home() -> str:
 def path_config_base() -> str:
     path_user_custom: str = os.environ.get("XDG_CONFIG_HOME", "")
     path_config: str = ".config" if not path_user_custom else ""
-    return os.path.join(path_home(), path_config, "tidal-dl")
+    base_dir = os.path.join(path_home(), path_config, APP_NAME)
+    legacy_dir = os.path.join(path_home(), path_config, LEGACY_APP_NAME)
+
+    if base_dir != legacy_dir and not os.path.exists(base_dir) and os.path.exists(legacy_dir):
+        os.makedirs(os.path.dirname(base_dir), exist_ok=True)
+        try:
+            shutil.move(legacy_dir, base_dir)
+        except OSError:
+            # Keep the app usable even if the legacy config cannot be moved.
+            os.makedirs(base_dir, exist_ok=True)
+
+    return base_dir
 
 
 def path_file_log() -> str:
@@ -60,6 +102,7 @@ def path_file_settings() -> str:
 # ---------------------------------------------------------------------------
 # Template expansion
 # ---------------------------------------------------------------------------
+
 
 def format_path_media(
     fmt_template: str,
@@ -104,9 +147,7 @@ def format_path_media(
 
         if result_fmt != match.group(1):
             value = (
-                sanitize_filename(result_fmt)
-                if result_fmt != FORMAT_TEMPLATE_EXPLICIT
-                else FORMAT_TEMPLATE_EXPLICIT
+                sanitize_filename(result_fmt) if result_fmt != FORMAT_TEMPLATE_EXPLICIT else FORMAT_TEMPLATE_EXPLICIT
             )
             result = result.replace(template_str, value)
 
@@ -171,9 +212,10 @@ def format_str_media(
 # Per-category formatters
 # ---------------------------------------------------------------------------
 
+
 def _format_artist_names(
     name: str,
-    media: Track | Album | Playlist | UserPlaylist | Video | Mix,
+    media: PathMedia,
     delimiter_artist: str = ", ",
     delimiter_album_artist: str = ", ",
     *_args,
@@ -181,22 +223,28 @@ def _format_artist_names(
     **kwargs,
 ) -> str | None:
     if name == "artist_name" and isinstance(media, Track | Video):
-        if use_primary_album_artist and hasattr(media, "album") and media.album and media.album.artists:
-            return media.album.artists[0].name
+        album = _album_from_media(media)
+        if use_primary_album_artist and album and album.artists:
+            primary_name = _name_or_none(album.artists[0])
+            if primary_name is not None:
+                return primary_name
         if hasattr(media, "artists"):
             return name_builder_artist(media, delimiter=delimiter_artist)
-        elif hasattr(media, "artist"):
-            return media.artist.name
+        artist_name = _name_or_none(getattr(media, "artist", None))
+        if artist_name is not None:
+            return artist_name
     elif name == "album_artist":
-        return name_builder_album_artist(media, first_only=True)
+        if isinstance(media, Track | Album):
+            return name_builder_album_artist(media, first_only=True)
     elif name == "album_artists":
-        return name_builder_album_artist(media, delimiter=delimiter_album_artist)
+        if isinstance(media, Track | Album):
+            return name_builder_album_artist(media, delimiter=delimiter_album_artist)
     return None
 
 
 def _format_titles(
     name: str,
-    media: Track | Album | Playlist | UserPlaylist | Video | Mix,
+    media: PathMedia,
     *_args,
     **kwargs,
 ) -> str | None:
@@ -210,13 +258,14 @@ def _format_titles(
         if isinstance(media, Album):
             return media.name
         elif isinstance(media, Track):
-            return media.album.name
+            album = _album_from_media(media)
+            return album.name if album is not None else None
     return None
 
 
 def _format_names(
     name: str,
-    media: Track | Album | Playlist | UserPlaylist | Video | Mix,
+    media: PathMedia,
     *args,
     delimiter_artist: str = ", ",
     delimiter_album_artist: str = ", ",
@@ -239,7 +288,7 @@ def _format_names(
 
 def _format_numbers(
     name: str,
-    media: Track | Album | Playlist | UserPlaylist | Video | Mix,
+    media: PathMedia,
     album_track_num_pad_min: int,
     list_pos: int,
     list_total: int,
@@ -247,13 +296,15 @@ def _format_numbers(
     **kwargs,
 ) -> str | None:
     if name == "album_track_num" and isinstance(media, Track | Video):
+        album = _album_from_media(media)
         return calculate_number_padding(
             album_track_num_pad_min,
-            media.track_num,
-            media.album.num_tracks if hasattr(media, "album") else 1,
+            _int_or_default(media.track_num, 0),
+            _int_or_default(album.num_tracks if album else None, 1),
         )
     elif name == "album_num_tracks" and isinstance(media, Track | Video):
-        return str(media.album.num_tracks if hasattr(media, "album") else 1)
+        album = _album_from_media(media)
+        return str(_int_or_default(album.num_tracks if album else None, 1))
     elif name == "list_pos" and isinstance(media, Track | Video):
         return calculate_number_padding(album_track_num_pad_min, list_pos, list_total)
     return None
@@ -261,7 +312,7 @@ def _format_numbers(
 
 def _format_ids(
     name: str,
-    media: Track | Album | Playlist | UserPlaylist | Video | Mix,
+    media: PathMedia,
     *_args,
     **kwargs,
 ) -> str | None:
@@ -275,38 +326,42 @@ def _format_ids(
         if isinstance(media, Album):
             return str(media.id)
         elif isinstance(media, Track):
-            return str(media.album.id)
+            album = _album_from_media(media)
+            return _string_id(album.id) if album is not None else None
     elif name == "isrc" and isinstance(media, Track):
         return media.isrc
     elif name == "album_artist_id" and isinstance(media, Album):
-        return str(media.artist.id)
+        artist = getattr(media, "artist", None)
+        return _string_id(getattr(artist, "id", None))
     elif name == "track_artist_id" and isinstance(media, Track):
-        return str(media.album.artist.id)
+        album = _album_from_media(media)
+        artist = getattr(album, "artist", None) if album is not None else None
+        return _string_id(getattr(artist, "id", None))
     return None
 
 
 def _format_durations(
     name: str,
-    media: Track | Album | Playlist | UserPlaylist | Video | Mix,
+    media: PathMedia,
     *_args,
     **kwargs,
 ) -> str | None:
     if name == "track_duration_seconds" and isinstance(media, Track | Video):
         return str(media.duration)
     elif name == "track_duration_minutes" and isinstance(media, Track | Video):
-        m, s = divmod(media.duration, 60)
+        m, s = divmod(_int_or_default(media.duration, 0), 60)
         return f"{m:01d}:{s:02d}"
     elif name == "album_duration_seconds" and isinstance(media, Album):
         return str(media.duration)
     elif name == "album_duration_minutes" and isinstance(media, Album):
-        m, s = divmod(media.duration, 60)
+        m, s = divmod(_int_or_default(media.duration, 0), 60)
         return f"{m:01d}:{s:02d}"
     return None
 
 
 def _format_dates(
     name: str,
-    media: Track | Album | Playlist | UserPlaylist | Video | Mix,
+    media: PathMedia,
     *_args,
     **kwargs,
 ) -> str | None:
@@ -314,25 +369,29 @@ def _format_dates(
         if isinstance(media, Album):
             return str(media.year)
         elif isinstance(media, Track):
-            return str(media.album.year)
+            album = _album_from_media(media)
+            year = getattr(album, "year", None) if album is not None else None
+            return str(year) if year is not None else None
     elif name == "album_date":
         if isinstance(media, Album):
             return media.release_date.strftime("%Y-%m-%d") if media.release_date else None
         elif isinstance(media, Track):
-            return media.album.release_date.strftime("%Y-%m-%d") if media.album.release_date else None
+            album = _album_from_media(media)
+            release_date = getattr(album, "release_date", None) if album is not None else None
+            return release_date.strftime("%Y-%m-%d") if release_date is not None else None
     return None
 
 
 def _format_metadata(
     name: str,
-    media: Track | Album | Playlist | UserPlaylist | Video | Mix,
+    media: PathMedia,
     *_args,
     **kwargs,
 ) -> str | None:
     if name == "video_quality" and isinstance(media, Video):
         return media.video_quality
     elif name == "track_quality" and isinstance(media, Track):
-        return ", ".join(tag for tag in media.media_metadata_tags if tag is not None)
+        return ", ".join(tag for tag in (media.media_metadata_tags or []) if tag is not None)
     elif (name == "track_explicit" and isinstance(media, Track | Video)) or (
         name == "album_explicit" and isinstance(media, Album)
     ):
@@ -341,13 +400,14 @@ def _format_metadata(
         if isinstance(media, Album):
             return media.type
         elif isinstance(media, Track):
-            return media.album.type
+            album = _album_from_media(media)
+            return getattr(album, "type", None) if album is not None else None
     return None
 
 
 def _format_volumes(
     name: str,
-    media: Track | Album | Playlist | UserPlaylist | Video | Mix,
+    media: PathMedia,
     *_args,
     **kwargs,
 ) -> str | None:
@@ -356,10 +416,12 @@ def _format_volumes(
     elif name == "track_volume_num" and isinstance(media, Track | Video):
         return str(media.volume_num)
     elif name == "track_volume_num_optional" and isinstance(media, Track | Video):
-        num_volumes: int = media.album.num_volumes if hasattr(media, "album") else 1
+        album = _album_from_media(media)
+        num_volumes = _int_or_default(album.num_volumes if album else None, 1)
         return "" if num_volumes == 1 else str(media.volume_num)
     elif name == "track_volume_num_optional_CD" and isinstance(media, Track | Video):
-        num_volumes: int = media.album.num_volumes if hasattr(media, "album") else 1
+        album = _album_from_media(media)
+        num_volumes = _int_or_default(album.num_volumes if album else None, 1)
         return "" if num_volumes == 1 else f"CD{media.volume_num!s}"
     return None
 
@@ -367,6 +429,7 @@ def _format_volumes(
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
+
 
 def calculate_number_padding(padding_minimum: int, item_position: int, items_max: int) -> str:
     """Return zero-padded number string.
@@ -386,8 +449,8 @@ def calculate_number_padding(padding_minimum: int, item_position: int, items_max
 
 
 def get_format_template(
-    media: Track | Album | Playlist | UserPlaylist | Video | Mix | MediaType,
-    settings: object,
+    media: PathMedia | MediaType,
+    settings: "Settings",
 ) -> str | bool:
     """Return the configured format template for the given media type.
 

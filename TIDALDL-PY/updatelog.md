@@ -1,98 +1,109 @@
-# tidal-dl changelog
+# music-dl changelog
 
+## Current naming note
+
+The project is now called `music-dl`.
+
+Migration details:
+
+- primary CLI name: `music-dl`
+- compatibility CLI alias: `tidal-dl`
+- current config directory: `~/.config/music-dl/`
+- legacy config directory: `~/.config/tidal-dl/`
+- legacy config is migrated automatically on first run
+
+Recommended install command:
+
+```shell
+uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=TIDALDL-PY music-dl
 ```
-pip install git+https://github.com/alfdav/Tidal-Media-Downloader.git#subdirectory=TIDALDL-PY
-```
-
-#### v3.1.0 (2026)
-
-**Playlist M3U Generation**
-- M3U playlist file is now always generated for playlist downloads (regardless of `playlist_create` setting)
-- Original track metadata (album name, album artist, artwork) is fully preserved — no compilation flags or overrides
-- Albums and mixes still respect the `playlist_create` setting for M3U generation
-
-**Library Scanner**
-- New `tidal-dl scan` subcommand group for seeding the ISRC duplicate index from existing music files
-- New `tidal_dl/helper/library_scanner.py` module: reads ISRCs from FLAC (Vorbis Comment `ISRC`), MP3 (ID3 `TSRC`), MP4/M4A (iTunes `isrc` atom), and OGG files using mutagen
-- New `scan_paths` setting: persistent comma-separated list of directories to scan; managed via `scan add/remove/show`
-- Single configured path auto-defaults (no prompt); multiple paths show a numbered selection menu
-- `--dry-run` option: discover ISRCs without writing to the index
-- `--all` option: scan all configured paths without prompting
-- `--verbose/-v` option: log each file path as it is examined
-- Rich progress bar per directory + summary panel (files scanned, new ISRCs, already indexed, no-ISRC, errors)
-- Existence check in `scan show`: marks paths green (reachable) or red (missing/unmounted)
-
-**Documentation**
-- Full README rewrite: all commands, all 47 settings, new sections for Download Sources, Library Scanning, and Playlist Import
-- `updatelog.md` updated
 
 ---
 
-#### v3.0.0 (2025)
+## v3.1.0 (2026)
 
-Full rewrite of the CLI engine, ported from [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng). No GUI.
+### Behavior changes
 
-**Core**
-- New CLI built with Typer; subcommands: `dl`, `dl_fav`, `login`, `logout`, `cfg`
-- Bare URL shorthand: `tidal-dl <URL>` works directly without a subcommand
-- Package entry point changed to `tidal_dl.cli:main`
-- Requires Python 3.12 or 3.13; all legacy Python 2 / Python 3 < 3.12 code removed
-- Migrated from `setup.py` to `pyproject.toml`; no more `setup-gui.py`
+- `duplicate_action` now defaults to `copy` for configs that do not already define the setting, so duplicate ISRC hits prefer copying from an existing local source instead of prompting.
 
-**Authentication**
-- OAuth device flow: `tidal-dl login` auto-opens the browser
-- Rich clickable fallback link printed if the browser cannot be opened
-- Credentials cached at `~/.config/tidal-dl/` with automatic token refresh
+### Playlist M3U generation
 
-**Downloads**
-- `dl --output/-o DIR` — one-off output directory override per invocation
-- `dl --list/-l FILE` — batch download URLs from a text file
-- `dl_fav tracks|albums|artists|videos [--since DATE]` — download Tidal favourites
-- Download summary Rich panel: downloaded / skipped / failed counts after each collection
-- Configurable concurrency (`downloads_concurrent_max`, default 3)
-- Optional random delay between downloads (`download_delay`)
+- Playlist downloads now always generate an M3U file
+- Playlist metadata preservation was tightened so album name, album artist, and artwork survive playlist downloads
+- Albums and mixes still respect `playlist_create`
 
-**Duplicate detection**
-- ISRC-based cross-session duplicate detection (`skip_duplicate_isrc = true`)
-- Persistent index at `~/.config/tidal-dl/isrc_index.json`; stale entries pruned automatically; thread-safe
+### Library scanning
 
-**Path templates**
-- New `{token}` placeholder syntax (replaces old `{PascalCase}` tags)
-- New tokens: `track_volume_num_optional_CD`, `album_artists`, `list_pos`, `isrc`, `album_duration_*`, `track_duration_*`, `track_explicit`, `album_explicit`, `media_type`, and more
-- New default templates with artist/album/track hierarchy; players sort by embedded TRACKNUMBER/DISCNUMBER
-- `{track_volume_num_optional_CD}` emits `CD1/`, `CD2/`, etc. only for multi-disc albums
-- `uniquify = true` prevents filename collisions for same-title tracks
+- Added `music-dl scan`
+- Added persistent `scan_paths` management through `scan add`, `scan remove`, and `scan show`
+- Added `--dry-run`, `--all`, and `--verbose`
+- Added ISRC extraction for FLAC, MP3, MP4/M4A, and OGG through `mutagen`
+- Added Rich progress and summary output for scan runs
+- Added existence checks in `scan show`
 
-**Metadata**
-- Writes full metadata to FLAC, MP3, and MP4: title, album, artist, albumartist, tracknumber/total, discnumber/total, date, ISRC, copyright, composer, cover art, BPM, initial key (Camelot), replay gain, UPC, share URL
-- Synced and unsynced lyrics embedding (`lyrics_embed`); separate `.lrc` file (`lyrics_file`)
-- MP3 fixes: `TPE2` (not `TOPE`) for album artist; `TPOS` for disc number; `WOAS` for Tidal share URL; `TRCK` as `N/total`
+### Documentation
 
-**M3U playlists**
-- Single consolidated M3U at the album root using `rglob`; relative paths throughout
-- Works correctly for multi-disc albums across subdirectories
-- Optional symlink from playlist folder to track file (`symlink_to_track`)
-
-**FFmpeg**
-- Auto-discovered via `shutil.which` — no configuration needed if FFmpeg is on PATH
-- `path_binary_ffmpeg` setting overrides auto-discovery
-- Used for FLAC extraction from M4A (`extract_flac`) and video remux to MP4 (`video_convert_mp4`)
-
-**Configuration**
-- `tidal-dl cfg` — view/change settings; `--editor` to open in `$EDITOR`
-- `tidal-dl cfg --reset` — backs up existing config to `.json.bak`, writes fresh defaults
-- 46 settings in the `Settings` dataclass; stored at `~/.config/tidal-dl/settings.json`
-
-**Removed**
-- GUI (`tidal-gui`, `gui.py`)
-- All multi-language `lang/` modules (21 files)
-- Legacy `setup.py`, `setup-gui.py`, `apiKey.py`, `events.py`, `model.py`, `paths.py`, `printf.py`, `settings.py`, `tidal.py`, `enums.py`, `decryption.py`
+- README updated for the current command surface
+- Docker documentation added and aligned with the renamed app
+- changelog refreshed for the `music-dl` rename
 
 ---
 
-<details>
-<summary>Legacy changelog (v1.x / v2.x — yaronzz era)</summary>
+## v3.0.0 (2025)
 
-See the original project history at [yaronzz/Tidal-Media-Downloader](https://github.com/yaronzz/Tidal-Media-Downloader).
+Full CLI rewrite based on the current Typer engine, ported from [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng).
 
-</details>
+### Core
+
+- Replaced the old CLI with a Typer-based command tree
+- Added bare URL shorthand so `music-dl <URL>` works without an explicit `dl` subcommand
+- Standardized the package entrypoint around the `music-dl` CLI
+- Moved packaging to `pyproject.toml`
+- Dropped legacy Python support and now require Python 3.12+
+
+### Authentication
+
+- Added browser-based OAuth login
+- Added clickable fallback links when auto-launch is unavailable
+- Added token persistence with automatic refresh
+
+### Downloads
+
+- Added `dl --list` for URL files
+- Added `dl --output` for a one-off destination override
+- Added `dl_fav tracks|albums|artists|videos`
+- Added `dl_fav ... --since` for date-filtered favourites
+- Added richer summary output after collection downloads
+- Added configurable concurrency and randomized delay controls
+
+### Duplicate handling
+
+- Added persistent ISRC duplicate tracking across sessions
+- Added duplicate actions such as `copy`, `ask`, `redownload`, and `skip`
+- Added index pruning and safer duplicate-state handling
+
+### Paths and templates
+
+- Replaced legacy placeholder formatting with `{token}` templates
+- Added multi-disc path helpers such as `{track_volume_num_optional_CD}`
+- Added more metadata-aware path tokens for IDs, dates, durations, and explicit flags
+
+### Metadata and media handling
+
+- Expanded metadata writing across FLAC, MP3, and MP4
+- Improved lyrics handling
+- Improved album artist, disc number, replay gain, and URL tagging
+- Added FFmpeg auto-discovery for FLAC extraction and MP4 remuxing
+
+### Removed legacy surface
+
+- Removed the GUI path
+- Removed older setup scripts and legacy support modules that no longer matched the current architecture
+
+---
+
+## Legacy history
+
+For older project history before the current rewrite, see the upstream repository:
+
+- [yaronzz/Tidal-Media-Downloader](https://github.com/yaronzz/Tidal-Media-Downloader)

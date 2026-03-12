@@ -2,8 +2,8 @@
 
 Scans a directory tree for audio files and extracts ISRC identifiers from
 their metadata tags.  The results are fed into an :class:`~tidal_dl.helper.isrc_index.IsrcIndex`
-so that tidal-dl can skip re-downloading tracks that already exist on disk,
-even if they were not originally downloaded through tidal-dl.
+so that music-dl can skip re-downloading tracks that already exist on disk,
+even if they were not originally downloaded through music-dl.
 
 Supported formats and tag locations (mirrors the write logic in metadata.py):
     - FLAC  → Vorbis Comment ``ISRC``
@@ -18,13 +18,13 @@ import pathlib
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
-import mutagen
 import mutagen.flac
 import mutagen.mp3
 import mutagen.mp4
 import mutagen.oggvorbis
+from mutagen._file import File as mutagen_file
 
 if TYPE_CHECKING:
     from tidal_dl.helper.isrc_index import IsrcIndex
@@ -86,7 +86,7 @@ def _extract_isrc(path: pathlib.Path) -> str | None:
         str | None: Upper-cased ISRC string, or None if not found / not readable.
     """
     try:
-        audio = mutagen.File(str(path), easy=False)
+        audio = mutagen_file(str(path), easy=False)
     except Exception:
         return None
 
@@ -97,7 +97,8 @@ def _extract_isrc(path: pathlib.Path) -> str | None:
 
     if isinstance(audio, mutagen.flac.FLAC):
         # Vorbis Comment: value is a list of strings
-        values = audio.tags.get("ISRC") or audio.tags.get("isrc")
+        tags = cast(dict[str, Any], audio.tags)
+        values = tags.get("ISRC") or tags.get("isrc")
         if values:
             isrc = values[0] if isinstance(values, list) else str(values)
 
@@ -125,7 +126,8 @@ def _extract_isrc(path: pathlib.Path) -> str | None:
 
     elif isinstance(audio, mutagen.oggvorbis.OggVorbis):
         # Vorbis Comment: same as FLAC
-        values = audio.tags.get("ISRC") or audio.tags.get("isrc")
+        tags = cast(dict[str, Any], audio.tags)
+        values = tags.get("ISRC") or tags.get("isrc")
         if values:
             isrc = values[0] if isinstance(values, list) else str(values)
 

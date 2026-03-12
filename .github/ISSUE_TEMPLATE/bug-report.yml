@@ -11,7 +11,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: Output of `tidal-dl --version`.
+      description: Output of `music-dl --version`.
       placeholder: |
         e.g. 3.0.0
     validations:
@@ -31,7 +31,7 @@ body:
       label: Describe the bug
       description: Describe the bug as accurately as possible.
       placeholder: |
-        How to reappear this bug? 
+        How to reappear this bug?
         Which albumID\trackID\artistID?
         Please describe in detail.
     validations:

@@ -1,5 +1,5 @@
 # Build context must be the repository root:
-#   docker build -f docker/Dockerfile -t tidal-dl .
+#   docker build -f docker/Dockerfile -t music-dl .
 
 FROM python:3.12-slim-bookworm
 
@@ -13,12 +13,12 @@ COPY TIDALDL-PY /app/TIDALDL-PY
 
 WORKDIR /app/TIDALDL-PY
 
-# Install tidal-dl and its Python dependencies
+# Install music-dl and its Python dependencies
 RUN pip install --no-cache-dir .
 
 # Config and downloads are provided by the caller via bind mounts:
-#   ~/.config/tidal-dl  → /root/.config/tidal-dl
+#   ~/.config/music-dl  → /root/.config/music-dl
 #   <download dir>      → /root/download
-VOLUME ["/root/.config/tidal-dl", "/root/download"]
+VOLUME ["/root/.config/music-dl", "/root/download"]
 
-ENTRYPOINT ["tidal-dl"]
+ENTRYPOINT ["music-dl"]

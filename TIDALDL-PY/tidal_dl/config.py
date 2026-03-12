@@ -1,4 +1,4 @@
-"""Configuration management for tidal-dl.
+"""Configuration management for music-dl.
 
 Provides:
   - Settings: User preferences singleton backed by settings.json.
@@ -11,42 +11,64 @@ import json
 import os
 import shutil
 import time
-from collections.abc import Callable
+from datetime import datetime
 from json import JSONDecodeError
 from pathlib import Path
 from threading import Event, Lock
-from typing import Any
+from typing import Any, Generic, Protocol, Self, TypeVar
 
-import tidalapi
 import typer
 from rich.console import Console as RichConsole
-
-_console = RichConsole()
+from tidalapi.media import Quality, VideoQuality
+from tidalapi.session import Config as TidalConfig
+from tidalapi.session import Session
 
 from tidal_dl import api as _api
 from tidal_dl.constants import (
     ATMOS_CLIENT_ID,
     ATMOS_CLIENT_SECRET,
     ATMOS_REQUEST_QUALITY,
-    DownloadSource,
     QUALITY_PROBE_TRACK_ID,
     QUALITY_RANK,
+    DownloadSource,
+    quality_name,
 )
-from tidal_dl.hifi_api import HiFiApiClient
 from tidal_dl.helper.cache import TTLCache
 from tidal_dl.helper.decorator import SingletonMeta
 from tidal_dl.helper.path import path_config_base, path_file_settings, path_file_token
+from tidal_dl.hifi_api import HiFiApiClient
 from tidal_dl.model.cfg import Settings as ModelSettings
 from tidal_dl.model.cfg import Token as ModelToken
 
+_console = RichConsole()
 
-class BaseConfig:
+
+class JsonConfigModel(Protocol):
+    @classmethod
+    def from_json(cls, s: str) -> Self: ...
+
+    def to_json(self) -> str: ...
+
+
+ConfigModelT = TypeVar("ConfigModelT", bound=JsonConfigModel)
+
+
+class MessagePrinter(Protocol):
+    def __call__(self, message: str) -> object: ...
+
+
+class BaseConfig(Generic[ConfigModelT]):
     """Base class for JSON-backed configuration objects."""
 
-    data: ModelSettings | ModelToken
+    data: ConfigModelT
     file_path: str
-    cls_model: type
+    cls_model: type[ConfigModelT]
     path_base: str = path_config_base()
+
+    def __init__(self, cls_model: type[ConfigModelT], file_path: str) -> None:
+        self.cls_model = cls_model
+        self.file_path = file_path
+        self.data = cls_model()
 
     def save(self, config_to_compare: str | None = None) -> None:
         """Persist current config to disk.
@@ -118,19 +140,21 @@ class BaseConfig:
         return result
 
 
-class Settings(BaseConfig, metaclass=SingletonMeta):
+class Settings(BaseConfig[ModelSettings], metaclass=SingletonMeta):
     """Singleton holding user preferences loaded from settings.json."""
 
+    data: ModelSettings
+
     def __init__(self) -> None:
-        self.cls_model = ModelSettings
-        self.file_path = path_file_settings()
+        super().__init__(ModelSettings, path_file_settings())
         self.read(self.file_path)
 
 
-class Tidal(BaseConfig, metaclass=SingletonMeta):
+class Tidal(BaseConfig[ModelToken], metaclass=SingletonMeta):
     """Singleton wrapping a tidalapi Session with OAuth and Dolby Atmos support."""
 
-    session: tidalapi.Session
+    data: ModelToken
+    session: Session
     token_from_storage: bool = False
     settings: Settings
     is_pkce: bool
@@ -138,9 +162,9 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
     _active_key_index: int
 
     def __init__(self, settings: Settings | None = None) -> None:
-        self.cls_model = ModelToken
-        tidal_config = tidalapi.Config(item_limit=10000)
-        self.session = tidalapi.Session(tidal_config)
+        super().__init__(ModelToken, path_file_token())
+        tidal_config = TidalConfig(item_limit=10000)
+        self.session = Session(tidal_config)
         self.original_client_id = self.session.config.client_id
         self.original_client_secret = self.session.config.client_secret
         # Serialize all stream-fetch operations to prevent race conditions
@@ -151,7 +175,6 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         self.active_source = DownloadSource.OAUTH
         self.hifi_client: HiFiApiClient | None = None
         self._active_key_index = 0
-        self.file_path = path_file_token()
         self.token_from_storage = self.read(self.file_path)
 
         # Apply the first valid API key from the managed key list.
@@ -178,9 +201,9 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
             self.settings = settings
 
         if not self.is_atmos_session:
-            self.session.audio_quality = tidalapi.Quality(self.settings.data.quality_audio)
+            self.session.audio_quality = Quality(self.settings.data.quality_audio)
 
-        self.session.video_quality = tidalapi.VideoQuality.high
+        self.session.video_quality = VideoQuality.high
 
         return True
 
@@ -190,7 +213,7 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
             return []
         return [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
 
-    def resolve_source(self, fn_print: Callable) -> bool:
+    def resolve_source(self, fn_print: MessagePrinter) -> bool:
         """Resolve the active download source.
 
         Hi-Fi API handles audio streaming; OAuth is always needed for metadata
@@ -219,7 +242,7 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
                     fn_print("OAuth session restored (available as fallback).")
                     self._probe_subscription_quality()
                 else:
-                    fn_print("Not logged in. Run 'tidal-dl login' for OAuth fallback and favourites.")
+                    fn_print("Not logged in. Run 'music-dl login' for OAuth fallback and favourites.")
                 return True
 
             if not allow_fallback:
@@ -281,9 +304,7 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
 
             if self.login_token(do_pkce=self.is_pkce, quiet=quiet):
                 if not quiet:
-                    _console.print(
-                        f"[dim]API key [{index}] ({key.get('platform', 'unknown')}) accepted.[/dim]"
-                    )
+                    _console.print(f"[dim]API key [{index}] ({key.get('platform', 'unknown')}) accepted.[/dim]")
                 return True
 
             if not quiet:
@@ -315,11 +336,19 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
 
         if self.token_from_storage:
             try:
+                token_type: str | None = self.data.token_type
+                access_token: str | None = self.data.access_token
+                refresh_token: str = self.data.refresh_token or ""
+                expiry_time = datetime.fromtimestamp(self.data.expiry_time) if self.data.expiry_time > 0 else None
+
+                if token_type is None or access_token is None:
+                    return False
+
                 result = self.session.load_oauth_session(
-                    self.data.token_type,
-                    self.data.access_token,
-                    self.data.refresh_token,
-                    self.data.expiry_time,
+                    token_type,
+                    access_token,
+                    refresh_token,
+                    expiry_time,
                     is_pkce=do_pkce,
                 )
             except Exception:
@@ -367,8 +396,12 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         if expiry_time - time.time() > refresh_window_sec:
             return False
 
+        refresh_token = self.data.refresh_token
+        if not refresh_token:
+            return False
+
         try:
-            self.session.token_refresh()
+            self.session.token_refresh(refresh_token)
             self.token_persist()
             return True
         except Exception:
@@ -416,17 +449,19 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         if not self._apply_api_key(self._active_key_index):
             self.session.config.client_id = self.original_client_id
             self.session.config.client_secret = self.original_client_secret
-        self.session.audio_quality = tidalapi.Quality(self.settings.data.quality_audio)
+        self.session.audio_quality = Quality(self.settings.data.quality_audio)
 
         if not self.login_token(do_pkce=self.is_pkce):
-            _console.print("[yellow]Warning:[/yellow] Restoring original session failed. Please restart the application.")
+            _console.print(
+                "[yellow]Warning:[/yellow] Restoring original session failed. Please restart the application."
+            )
             return False
 
         self.is_atmos_session = False
         _console.print("[cyan]Session is now in Normal mode.[/cyan]")
         return True
 
-    def login(self, fn_print: Callable) -> bool:
+    def login(self, fn_print: MessagePrinter) -> bool:
         """Perform an interactive login.
 
         Tries the stored token first (rotating through managed API keys on
@@ -486,14 +521,14 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         requested quality, the setting is automatically downgraded and persisted
         so subsequent downloads use the correct expectation.
         """
-        configured = tidalapi.Quality(self.settings.data.quality_audio)
-        configured_rank = QUALITY_RANK.get(configured, 0)
+        configured = Quality(self.settings.data.quality_audio)
+        configured_rank = QUALITY_RANK.get(quality_name(configured), 0)
 
         try:
             track = self.session.track(QUALITY_PROBE_TRACK_ID)
             stream = track.get_stream()
             delivered = stream.audio_quality
-            delivered_rank = QUALITY_RANK.get(delivered, 0)
+            delivered_rank = QUALITY_RANK.get(quality_name(delivered), 0)
         except Exception:
             # Non-fatal: if the probe fails we just keep the configured quality.
             _console.print(
@@ -504,8 +539,8 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
 
         # Quality may be a StrEnum member or a plain str depending on tidalapi version;
         # normalise to string for display and enum for comparison.
-        delivered_str = delivered.value if hasattr(delivered, "value") else str(delivered)
-        configured_str = configured.value if hasattr(configured, "value") else str(configured)
+        delivered_str = quality_name(delivered)
+        configured_str = quality_name(configured)
 
         if delivered_rank >= configured_rank:
             _console.print(
@@ -520,8 +555,9 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
             f"Auto-downgrading to {delivered_str}."
         )
 
-        self.settings.data.quality_audio = delivered
-        self.session.audio_quality = delivered
+        downgraded_quality = Quality(delivered_str)
+        self.settings.data.quality_audio = downgraded_quality
+        self.session.audio_quality = downgraded_quality
         self.settings.save()
 
     def logout(self) -> bool:

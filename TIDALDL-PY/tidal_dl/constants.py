@@ -1,9 +1,12 @@
-"""Shared constants and enums for tidal-dl."""
+"""Shared constants and enums for music-dl."""
 
 import base64
 from enum import StrEnum
 
-from tidalapi import Quality
+from tidalapi.media import Quality
+
+APP_NAME: str = "music-dl"
+LEGACY_APP_NAME: str = "tidal-dl"
 
 CTX_TIDAL: str = "tidal"
 REQUESTS_TIMEOUT_SEC: int = 45
@@ -28,17 +31,23 @@ ATMOS_CLIENT_ID = base64.b64decode(_ATMOS_ID_B64).decode("utf-8")
 ATMOS_CLIENT_SECRET = base64.b64decode(_ATMOS_SECRET_B64).decode("utf-8")
 ATMOS_REQUEST_QUALITY = Quality.low_320k
 
+
+def quality_name(value: Quality | str) -> str:
+    """Return a stable string key for quality values from runtime or stubs."""
+    return value.value if isinstance(value, Quality) else str(value)
+
+
 # Ordered from lowest to highest fidelity for comparison.
-QUALITY_RANK: dict[Quality, int] = {
-    Quality.low_96k: 0,
-    Quality.low_320k: 1,
-    Quality.high_lossless: 2,
-    Quality.hi_res_lossless: 3,
+QUALITY_RANK: dict[str, int] = {
+    quality_name(Quality.low_96k): 0,
+    quality_name(Quality.low_320k): 1,
+    quality_name(Quality.high_lossless): 2,
+    quality_name(Quality.hi_res_lossless): 3,
 }
 
 # Well-known track ID used to probe the account's maximum quality.
 # Fleetwood Mac – "Dreams" is widely available and tagged HI_RES_LOSSLESS.
-QUALITY_PROBE_TRACK_ID: int = 59727857
+QUALITY_PROBE_TRACK_ID: str = "59727857"
 
 
 class QualityVideo(StrEnum):
@@ -65,11 +74,11 @@ HIFI_API_FALLBACK_INSTANCES: list[str] = [
 ]
 
 # Maps tidalapi.Quality enum → Hi-Fi API quality string parameter.
-HIFI_QUALITY_MAP: dict[Quality, str] = {
-    Quality.hi_res_lossless: "HI_RES_LOSSLESS",
-    Quality.high_lossless: "LOSSLESS",
-    Quality.low_320k: "HIGH",
-    Quality.low_96k: "LOW",
+HIFI_QUALITY_MAP: dict[str, str] = {
+    quality_name(Quality.hi_res_lossless): "HI_RES_LOSSLESS",
+    quality_name(Quality.high_lossless): "LOSSLESS",
+    quality_name(Quality.low_320k): "HIGH",
+    quality_name(Quality.low_96k): "LOW",
 }
 
 

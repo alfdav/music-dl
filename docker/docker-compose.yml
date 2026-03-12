@@ -1,19 +1,19 @@
 services:
-  tidal-dl:
+  music-dl:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: tidal-dl
+    image: music-dl
     # Pass a command after the service name:
-    #   docker compose -f docker/docker-compose.yml run --rm tidal-dl <URL>
-    #   docker compose -f docker/docker-compose.yml run --rm tidal-dl login
+    #   docker compose -f docker/docker-compose.yml run --rm music-dl <URL>
+    #   docker compose -f docker/docker-compose.yml run --rm music-dl login
     volumes:
       # Persists credentials, settings, and the ISRC duplicate index.
       # Replace the left-hand path with a folder of your choice.
-      - ${TIDAL_CONFIG:-~/.config/tidal-dl}:/root/.config/tidal-dl
-      # Downloaded files land here. Override with TIDAL_DOWNLOADS env var.
-      - ${TIDAL_DOWNLOADS:-~/tidal-downloads}:/root/download
-    # stdin_open + tty are needed for interactive commands such as `tidal-dl login`
+      - ${MUSIC_DL_CONFIG:-~/.config/music-dl}:/root/.config/music-dl
+      # Downloaded files land here. Override with MUSIC_DL_DOWNLOADS env var.
+      - ${MUSIC_DL_DOWNLOADS:-~/music-downloads}:/root/download
+    # stdin_open + tty are needed for interactive commands such as `music-dl login`
     # (opens a browser link). Remove them for non-interactive / headless runs.
     stdin_open: true
     tty: true

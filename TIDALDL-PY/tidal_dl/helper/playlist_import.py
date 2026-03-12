@@ -1,6 +1,6 @@
 """playlist_import.py
 
-Cross-platform playlist import for tidal-dl.
+Cross-platform playlist import for music-dl.
 
 Accepts a file containing tracks exported from any platform (Spotify,
 Apple Music, etc.) and matches each entry to a TIDAL track using:
@@ -38,14 +38,15 @@ from __future__ import annotations
 
 import csv
 import pathlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from rich.console import Console
 from rich.table import Table
+from tidalapi.media import Track as TidalTrack
 
 if TYPE_CHECKING:
-    from tidalapi import Session
     from tidalapi.media import Track
+    from tidalapi.session import Session
 
     from tidal_dl.download import Download
 
@@ -55,6 +56,7 @@ _console = Console()
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
+
 
 class TrackEntry:
     """A single track entry parsed from an import file.
@@ -67,6 +69,10 @@ class TrackEntry:
     """
 
     __slots__ = ("title", "artist", "isrc", "raw")
+    title: str
+    artist: str
+    isrc: str
+    raw: str
 
     def __init__(self, title: str, artist: str, isrc: str = "", raw: str = "") -> None:
         self.title = title.strip()
@@ -74,6 +80,7 @@ class TrackEntry:
         self.isrc = isrc.strip().upper()
         self.raw = raw
 
+    @override
     def __repr__(self) -> str:
         return f"TrackEntry(artist={self.artist!r}, title={self.title!r}, isrc={self.isrc!r})"
 
@@ -81,6 +88,7 @@ class TrackEntry:
 # ---------------------------------------------------------------------------
 # PlaylistImporter
 # ---------------------------------------------------------------------------
+
 
 class PlaylistImporter:
     """Parse a foreign-platform track list and match entries to TIDAL tracks.
@@ -164,9 +172,7 @@ class PlaylistImporter:
         isrc_col = _find_col(fieldnames_lower, ("isrc",))
 
         if title_col is None or artist_col is None:
-            raise ValueError(
-                f"CSV must have 'title' and 'artist' columns. Found: {fieldnames_lower}"
-            )
+            raise ValueError(f"CSV must have 'title' and 'artist' columns. Found: {fieldnames_lower}")
 
         entries: list[TrackEntry] = []
         for row in reader:
@@ -226,14 +232,12 @@ class PlaylistImporter:
         Returns:
             Track | None: Matched TIDAL track, or ``None`` if no match found.
         """
-        import tidalapi  # local import to avoid circular dependency at module level
-
         # --- ISRC-first ---
         if entry.isrc:
             try:
                 results = self._session.search(
                     entry.isrc,
-                    models=[tidalapi.Track],
+                    models=[TidalTrack],
                     limit=5,
                 )
                 for track in results.get("tracks", []):
@@ -247,7 +251,7 @@ class PlaylistImporter:
         try:
             results = self._session.search(
                 query,
-                models=[tidalapi.Track],
+                models=[TidalTrack],
                 limit=5,
             )
             tracks = results.get("tracks", [])
@@ -305,7 +309,7 @@ class PlaylistImporter:
 
         # Download matched tracks
         for _entry, track in matched:
-            dl.item(
+            _ = dl.item(
                 media=track,
                 file_template=file_template,
             )
@@ -320,7 +324,6 @@ class PlaylistImporter:
             for entry in unmatched:
                 table.add_row(entry.artist, entry.title, entry.isrc or "-")
 
-            import sys
             err_console = Console(stderr=True)
             err_console.print(table)
 
@@ -328,6 +331,7 @@ class PlaylistImporter:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _find_col(fieldnames: list[str], candidates: tuple[str, ...]) -> str | None:
     """Return the first fieldname that matches any candidate (case-insensitive).

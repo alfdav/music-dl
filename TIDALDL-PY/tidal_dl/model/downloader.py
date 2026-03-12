@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import pathlib
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -52,7 +54,7 @@ class DownloadSegmentResult:
 class TrackStreamInfo:
     """Container for track stream information."""
 
-    stream_manifest: StreamManifest | None
+    stream_manifest: StreamManifest | HiFiStreamManifest | None
     file_extension: str
     requires_flac_extraction: bool
     media_stream: Stream | None

@@ -1,4 +1,4 @@
-"""No-API-key tests for tidal-dl.
+"""No-API-key tests for music-dl.
 
 All tests in this file can run without a TIDAL API key.
 
@@ -18,13 +18,15 @@ import base64
 import pathlib
 import subprocess
 import sys
+from dataclasses import dataclass
 
-import pytest
+import pytest  # pyright: ignore[reportMissingImports]
 from Crypto.Cipher import AES
 from Crypto.Util import Counter
+from dataclasses_json import DataClassJsonMixin, dataclass_json
 from typer.testing import CliRunner
 
-from tidal_dl.config import Settings
+from tidal_dl.config import BaseConfig, Settings
 from tidal_dl.constants import MediaType
 from tidal_dl.helper.camelot import (
     CamelotNotation,
@@ -33,6 +35,7 @@ from tidal_dl.helper.camelot import (
     key_to_alphanumeric,
     key_to_classic,
 )
+from tidal_dl.helper.cli import parse_timestamp
 from tidal_dl.helper.decryption import decrypt_file, decrypt_security_token
 from tidal_dl.helper.path import (
     check_file_exists,
@@ -40,12 +43,11 @@ from tidal_dl.helper.path import (
     url_to_filename,
 )
 from tidal_dl.helper.tidal import get_tidal_media_id, get_tidal_media_type
-from tidal_dl.helper.cli import parse_timestamp
-
 
 # ---------------------------------------------------------------------------
 # URL parsing
 # ---------------------------------------------------------------------------
+
 
 class TestURLParsing:
     """TIDAL URL parsing — no network required."""
@@ -98,6 +100,7 @@ class TestURLParsing:
 # ---------------------------------------------------------------------------
 # AES decryption helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_security_token(key: bytes, nonce: bytes) -> str:
     """Build a valid TIDAL-style security token (CBC-encrypted, base64-encoded).
@@ -196,6 +199,7 @@ class TestDecryption:
 # Camelot key notation
 # ---------------------------------------------------------------------------
 
+
 class TestCamelot:
     """Camelot key notation — no network required."""
 
@@ -249,6 +253,7 @@ class TestCamelot:
 # Settings / config
 # ---------------------------------------------------------------------------
 
+
 class TestSettings:
     """Settings singleton — no network required."""
 
@@ -258,11 +263,13 @@ class TestSettings:
 
     def test_settings_has_expected_field_count(self, clear_singletons):
         from dataclasses import fields
+
         s = Settings()
         assert len(fields(s.data)) == 47  # updated: +1 for scan_paths
 
     def test_settings_default_quality(self, clear_singletons, tmp_path, monkeypatch):
-        from tidalapi import Quality
+        from tidalapi.media import Quality
+
         # Point to a non-existent file so Settings falls back to dataclass defaults.
         monkeypatch.setattr(
             "tidal_dl.config.path_file_settings",
@@ -305,10 +312,25 @@ class TestSettings:
         s = Settings()
         assert hasattr(s, "file_path")
 
+    def test_base_config_has_default_data_before_read(self, clear_singletons, tmp_path):
+        @dataclass_json
+        @dataclass
+        class DummyConfig(DataClassJsonMixin):
+            enabled: bool = True
+
+        class DummyBaseConfig(BaseConfig[DummyConfig]):
+            def __init__(self) -> None:
+                super().__init__(DummyConfig, str(tmp_path / "dummy.json"))
+
+        cfg = DummyBaseConfig()
+
+        assert cfg.data.enabled is True
+
 
 # ---------------------------------------------------------------------------
 # Path helpers
 # ---------------------------------------------------------------------------
+
 
 class TestPathHelpers:
     """Path utilities — no network required."""
@@ -395,17 +417,20 @@ class TestPathHelpers:
 # IsrcIndex
 # ---------------------------------------------------------------------------
 
+
 class TestIsrcIndex:
     """IsrcIndex — persistent ISRC duplicate-detection index. No network."""
 
     def test_empty_on_missing_file(self, tmp_path):
         from tidal_dl.helper.isrc_index import IsrcIndex
+
         idx = IsrcIndex(tmp_path / "isrc.json")
         idx.load()  # file does not exist
         assert idx.size == 0
 
     def test_add_and_contains_live_file(self, tmp_path):
         from tidal_dl.helper.isrc_index import IsrcIndex
+
         track = tmp_path / "track.flac"
         track.write_bytes(b"")
         idx = IsrcIndex(tmp_path / "isrc.json")
@@ -414,17 +439,20 @@ class TestIsrcIndex:
 
     def test_contains_returns_false_for_unknown_isrc(self, tmp_path):
         from tidal_dl.helper.isrc_index import IsrcIndex
+
         idx = IsrcIndex(tmp_path / "isrc.json")
         assert not idx.contains("UNKNOWN")
 
     def test_contains_returns_false_for_empty_isrc(self, tmp_path):
         from tidal_dl.helper.isrc_index import IsrcIndex
+
         idx = IsrcIndex(tmp_path / "isrc.json")
         assert not idx.contains("")
 
     def test_stale_entry_pruned(self, tmp_path):
         """A file that existed during add() but was deleted should not match."""
         from tidal_dl.helper.isrc_index import IsrcIndex
+
         track = tmp_path / "gone.flac"
         track.write_bytes(b"")
         idx = IsrcIndex(tmp_path / "isrc.json")
@@ -437,6 +465,7 @@ class TestIsrcIndex:
     def test_save_and_reload(self, tmp_path):
         """Persisted index is correctly deserialised."""
         from tidal_dl.helper.isrc_index import IsrcIndex
+
         index_path = tmp_path / "isrc.json"
         track = tmp_path / "persisted.flac"
         track.write_bytes(b"")
@@ -451,6 +480,7 @@ class TestIsrcIndex:
 
     def test_corrupt_file_handled_gracefully(self, tmp_path):
         from tidal_dl.helper.isrc_index import IsrcIndex
+
         index_path = tmp_path / "corrupt.json"
         index_path.write_text("not valid json {{{")  # corrupt
         idx = IsrcIndex(index_path)
@@ -460,7 +490,9 @@ class TestIsrcIndex:
     def test_thread_safety_concurrent_adds(self, tmp_path):
         """Concurrent add() calls must not corrupt the index."""
         import threading
+
         from tidal_dl.helper.isrc_index import IsrcIndex
+
         idx = IsrcIndex(tmp_path / "isrc.json")
 
         tracks = []
@@ -482,12 +514,14 @@ class TestIsrcIndex:
 # playlist_populate consolidation
 # ---------------------------------------------------------------------------
 
+
 class TestPlaylistPopulate:
     """playlist_populate multi-dir M3U consolidation — no network."""
 
     def _make_dl(self, fn_logger=None):
         """Return a bare Download instance with just enough state to call playlist_populate."""
         from unittest.mock import MagicMock
+
         from tidal_dl.download import Download
 
         dl = Download.__new__(Download)
@@ -571,17 +605,20 @@ class TestPlaylistPopulate:
 # Timestamp parsing (CLI helper)
 # ---------------------------------------------------------------------------
 
+
 class TestParseTimestamp:
     """parse_timestamp helper — no network required."""
 
     def test_unix_integer(self):
         from datetime import UTC
+
         result = parse_timestamp("1705330200")
         assert result.year == 2024
         assert result.tzinfo == UTC
 
     def test_iso_date_only(self):
         from datetime import UTC
+
         result = parse_timestamp("2024-01-15")
         assert result.year == 2024
         assert result.month == 1
@@ -590,6 +627,7 @@ class TestParseTimestamp:
 
     def test_iso_datetime_T(self):
         from datetime import UTC
+
         result = parse_timestamp("2024-01-15T14:30:45")
         assert result.hour == 14
         assert result.minute == 30
@@ -597,6 +635,7 @@ class TestParseTimestamp:
 
     def test_invalid_raises(self):
         import typer
+
         with pytest.raises(typer.BadParameter):
             parse_timestamp("not-a-timestamp")
 
@@ -605,23 +644,28 @@ class TestParseTimestamp:
 # TTLCache
 # ---------------------------------------------------------------------------
 
+
 class TestTTLCache:
     """TTLCache — thread-safe TTL cache. No network."""
 
     def test_cache_hit(self):
         from tidal_dl.helper.cache import TTLCache
+
         c = TTLCache(ttl_sec=60)
         c.set("k", "value")
         assert c.get("k") == "value"
 
     def test_cache_miss_unknown_key(self):
         from tidal_dl.helper.cache import TTLCache
+
         c = TTLCache(ttl_sec=60)
         assert c.get("missing") is None
 
     def test_cache_expiry(self):
         import time
+
         from tidal_dl.helper.cache import TTLCache
+
         c = TTLCache(ttl_sec=0)  # expires immediately
         c.set("k", "stale")
         time.sleep(0.01)  # ensure monotonic clock advances
@@ -629,7 +673,9 @@ class TestTTLCache:
 
     def test_cache_expiry_prunes_entry(self):
         import time
+
         from tidal_dl.helper.cache import TTLCache
+
         c = TTLCache(ttl_sec=0)
         c.set("k", "stale")
         time.sleep(0.01)
@@ -638,6 +684,7 @@ class TestTTLCache:
 
     def test_cache_invalidate(self):
         from tidal_dl.helper.cache import TTLCache
+
         c = TTLCache(ttl_sec=60)
         c.set("k", "v")
         c.invalidate("k")
@@ -645,11 +692,13 @@ class TestTTLCache:
 
     def test_cache_invalidate_noop_on_missing(self):
         from tidal_dl.helper.cache import TTLCache
+
         c = TTLCache(ttl_sec=60)
         c.invalidate("nonexistent")  # must not raise
 
     def test_cache_clear(self):
         from tidal_dl.helper.cache import TTLCache
+
         c = TTLCache(ttl_sec=60)
         c.set("a", 1)
         c.set("b", 2)
@@ -658,6 +707,7 @@ class TestTTLCache:
 
     def test_cache_size(self):
         from tidal_dl.helper.cache import TTLCache
+
         c = TTLCache(ttl_sec=60)
         c.set("x", 10)
         c.set("y", 20)
@@ -665,7 +715,9 @@ class TestTTLCache:
 
     def test_cache_overwrite_resets_ttl(self):
         import time
+
         from tidal_dl.helper.cache import TTLCache
+
         c = TTLCache(ttl_sec=1)
         c.set("k", "first")
         c.set("k", "second")  # overwrite — should refresh TTL
@@ -674,7 +726,9 @@ class TestTTLCache:
     def test_cache_thread_safety_concurrent_sets(self, tmp_path):
         """Concurrent set() calls must not corrupt the cache."""
         import threading
+
         from tidal_dl.helper.cache import TTLCache
+
         c = TTLCache(ttl_sec=60)
 
         def setter(i):
@@ -693,13 +747,16 @@ class TestTTLCache:
 # PlaylistImporter (parse_file only — no network)
 # ---------------------------------------------------------------------------
 
+
 class TestPlaylistImporter:
     """PlaylistImporter.parse_file — no network, no TIDAL session."""
 
     def _make_importer(self):
         """Return a PlaylistImporter with a dummy session (parse_file doesn't use it)."""
         from unittest.mock import MagicMock
+
         from tidal_dl.helper.playlist_import import PlaylistImporter
+
         return PlaylistImporter(session=MagicMock())
 
     def test_parse_csv_basic(self, tmp_path):
@@ -781,12 +838,13 @@ class TestPlaylistImporter:
 # CLI smoke tests
 # ---------------------------------------------------------------------------
 
+
 class TestCLI:
     """Basic CLI invocation — no network required."""
 
     def test_version_command(self):
         result = subprocess.run(
-            ["tidal-dl", "--version"],
+            [sys.executable, "-m", "tidal_dl.cli", "--version"],
             capture_output=True,
             text=True,
         )
@@ -795,7 +853,7 @@ class TestCLI:
 
     def test_help_command(self):
         result = subprocess.run(
-            ["tidal-dl", "--help"],
+            [sys.executable, "-m", "tidal_dl.cli", "--help"],
             capture_output=True,
             text=True,
         )

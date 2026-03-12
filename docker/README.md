@@ -1,154 +1,211 @@
-# Running tidal-dl with Docker
+# Running music-dl with Docker
 
-Docker lets you run tidal-dl on any machine — including headless servers and NAS devices — without installing Python or FFmpeg on the host.
+Docker is the simplest way to run `music-dl` on a machine that does not already have Python and FFmpeg configured.
 
-The image contains:
+The image includes:
 
-- Python 3.12 (Debian bookworm-slim base)
-- FFmpeg (installed in the image — no host FFmpeg required)
-- tidal-dl and all Python dependencies
+- Python 3.12
+- FFmpeg
+- the `music-dl` package and its Python dependencies
 
-**Your credentials are never baked into the image.** Config and downloads are supplied via bind mounts at runtime; each user brings their own.
+The image does **not** include your credentials or personal config. Those are mounted in at runtime.
 
 ---
 
-## Quick start
+## Quick Start
 
-### 1. Build the image
-
-Run from the **repository root** (the build context must include `TIDALDL-PY/`):
+Build from the repository root:
 
 ```shell
-docker build -f docker/Dockerfile -t tidal-dl .
+docker build -f docker/Dockerfile -t music-dl .
 ```
 
-### 2. Download something
+Run a download:
 
 ```shell
 docker run --rm -it \
-  -v "$HOME/.config/tidal-dl:/root/.config/tidal-dl" \
-  -v "$HOME/tidal-downloads:/root/download" \
-  tidal-dl https://tidal.com/browse/album/123456789
+  -v "$HOME/.config/music-dl:/root/.config/music-dl" \
+  -v "$HOME/music-downloads:/root/download" \
+  music-dl https://tidal.com/browse/album/123456789
 ```
 
-Replace `$HOME/tidal-downloads` with wherever you want files to land.
+Container paths:
+
+- config: `/root/.config/music-dl`
+- downloads: `/root/download`
+
+If you previously used `tidal-dl`, the old `~/.config/tidal-dl/` directory is migrated automatically on first run.
 
 ---
 
-## Volume mounts
+## Required Mounts
 
 | Host path | Container path | Purpose |
-|-----------|----------------|---------|
-| `~/.config/tidal-dl` | `/root/.config/tidal-dl` | Settings, OAuth token, ISRC index — persisted across runs |
-| `<your download dir>` | `/root/download` | Downloaded tracks, albums, playlists |
-| `<your music library>` (optional, read-only) | any path | Library scanning with `tidal-dl scan` |
+| --- | --- | --- |
+| `~/.config/music-dl` | `/root/.config/music-dl` | settings, token, duplicate index, checkpoints |
+| `~/music-downloads` | `/root/download` | downloaded media |
 
-The config directory is created automatically on first run if it does not exist.
+Optional extra mount:
+
+| Host path | Container path | Purpose |
+| --- | --- | --- |
+| `/path/to/library` | any path | existing library scan input |
 
 ---
 
-## Login (optional)
+## Login Flow
 
-tidal-dl works **without logging in** when the default Hi-Fi API source is available. On first run you will see:
+The default source is `hifi_api`, so direct URL downloads can work without logging in first.
 
-```
-Not logged in. Run 'tidal-dl login' for OAuth fallback and favourites.
-```
+You still want `music-dl login` when you need:
 
-You can ignore this and download immediately, or log in now or later.
+- favourites downloads
+- an OAuth fallback session
+- your personal session cached inside the mounted config directory
 
-### Logging in
-
-Login uses a browser-based OAuth flow. Run the container interactively with the same config volume:
+Run login interactively:
 
 ```shell
 docker run --rm -it \
-  -v "$HOME/.config/tidal-dl:/root/.config/tidal-dl" \
-  tidal-dl login
+  -v "$HOME/.config/music-dl:/root/.config/music-dl" \
+  music-dl login
 ```
 
-A clickable link will be printed. Open it in your browser, complete the Tidal login, and the token is saved to the mounted config directory. Subsequent runs reuse the stored token automatically.
+What happens:
 
-### Sharing credentials between machines
-
-Copy or sync `~/.config/tidal-dl/` to the other machine and mount it the same way. No re-login needed.
+1. the app prints a browser URL
+2. you complete the OAuth flow outside the container
+3. the token is saved into the mounted config directory
+4. future runs reuse that token automatically
 
 ---
 
-## Using docker compose
+## Common Docker Commands
 
-A `docker-compose.yml` is provided in this folder for convenience.
+### Direct download
 
 ```shell
-# Download a URL
-docker compose -f docker/docker-compose.yml run --rm tidal-dl https://tidal.com/browse/album/123456789
-
-# Log in
-docker compose -f docker/docker-compose.yml run --rm tidal-dl login
-
-# Show config
-docker compose -f docker/docker-compose.yml run --rm tidal-dl cfg
+docker run --rm -it \
+  -v "$HOME/.config/music-dl:/root/.config/music-dl" \
+  -v "$HOME/music-downloads:/root/download" \
+  music-dl https://tidal.com/browse/track/123456789
 ```
 
-Override the config or download paths with environment variables:
+### Batch download from a file
 
 ```shell
-TIDAL_CONFIG=/mnt/nas/tidal-config \
-TIDAL_DOWNLOADS=/mnt/nas/Music \
-docker compose -f docker/docker-compose.yml run --rm tidal-dl https://tidal.com/browse/album/123456789
+docker run --rm -it \
+  -v "$HOME/.config/music-dl:/root/.config/music-dl" \
+  -v "$HOME/music-downloads:/root/download" \
+  -v "$PWD:/work" \
+  music-dl dl --list /work/urls.txt
+```
+
+### Favourites
+
+```shell
+docker run --rm -it \
+  -v "$HOME/.config/music-dl:/root/.config/music-dl" \
+  -v "$HOME/music-downloads:/root/download" \
+  music-dl dl_fav tracks --since 2026-01-01
+```
+
+### Import playlist file
+
+```shell
+docker run --rm -it \
+  -v "$HOME/.config/music-dl:/root/.config/music-dl" \
+  -v "$HOME/music-downloads:/root/download" \
+  -v "$PWD:/work" \
+  music-dl import /work/my_playlist.csv
+```
+
+### Seed duplicate index from an existing library
+
+```shell
+docker run --rm -it \
+  -v "$HOME/.config/music-dl:/root/.config/music-dl" \
+  -v "$HOME/music-downloads:/root/download" \
+  -v "/mnt/nas/Music:/mnt/music:ro" \
+  music-dl scan add /mnt/music
+
+# later
+
+docker run --rm -it \
+  -v "$HOME/.config/music-dl:/root/.config/music-dl" \
+  -v "$HOME/music-downloads:/root/download" \
+  -v "/mnt/nas/Music:/mnt/music:ro" \
+  music-dl scan
 ```
 
 ---
 
-## Headless / server use
+## Docker Compose
 
-For scheduled or non-interactive runs, omit `-it` and ensure `tidal-dl login` has been run at least once with the config volume:
+This repo includes [docker/docker-compose.yml](docker/docker-compose.yml).
+
+Examples:
+
+```shell
+docker compose -f docker/docker-compose.yml run --rm music-dl https://tidal.com/browse/album/123456789
+docker compose -f docker/docker-compose.yml run --rm music-dl login
+docker compose -f docker/docker-compose.yml run --rm music-dl cfg
+```
+
+Override the default host paths with environment variables:
+
+```shell
+MUSIC_DL_CONFIG=/mnt/nas/music-dl-config \
+MUSIC_DL_DOWNLOADS=/mnt/nas/Music \
+docker compose -f docker/docker-compose.yml run --rm music-dl https://tidal.com/browse/album/123456789
+```
+
+The compose file uses:
+
+- service name: `music-dl`
+- config env var: `MUSIC_DL_CONFIG`
+- download env var: `MUSIC_DL_DOWNLOADS`
+
+---
+
+## Headless Use
+
+For non-interactive scheduled runs, remove `-it` after you have already completed login at least once:
 
 ```shell
 docker run --rm \
-  -v "/mnt/nas/tidal-config:/root/.config/tidal-dl" \
+  -v "/mnt/nas/music-dl-config:/root/.config/music-dl" \
   -v "/mnt/nas/Music:/root/download" \
-  tidal-dl https://tidal.com/browse/album/123456789
+  music-dl https://tidal.com/browse/album/123456789
 ```
 
-Add this to a cron job or systemd timer as needed.
+That works well for:
+
+- cron
+- systemd timers
+- NAS automation
+- CI jobs that already have a mounted config directory
 
 ---
 
-## Library scanning
+## Publish the Image
 
-Mount your existing music library read-only and run `tidal-dl scan` to seed the ISRC duplicate index:
+The image is safe to publish because credentials are not baked into it.
 
 ```shell
-docker run --rm -it \
-  -v "$HOME/.config/tidal-dl:/root/.config/tidal-dl" \
-  -v "$HOME/tidal-downloads:/root/download" \
-  -v "/mnt/nas/Music:/mnt/music:ro" \
-  tidal-dl scan add /mnt/music
-
-docker run --rm -it \
-  -v "$HOME/.config/tidal-dl:/root/.config/tidal-dl" \
-  -v "$HOME/tidal-downloads:/root/download" \
-  -v "/mnt/nas/Music:/mnt/music:ro" \
-  tidal-dl scan
+docker tag music-dl youruser/music-dl:latest
+docker push youruser/music-dl:latest
 ```
+
+Consumers still need their own mounted config directory and their own login.
 
 ---
 
-## Publishing the image
+## What the Image Does Not Do
 
-Publishing the image to Docker Hub or GHCR is safe. The image contains no credentials. Anyone who pulls the image must supply their own config volume and run their own `tidal-dl login`.
+The image does not:
 
-```shell
-docker tag tidal-dl youruser/tidal-dl:latest
-docker push youruser/tidal-dl:latest
-```
-
-Others can then run:
-
-```shell
-docker run --rm -it \
-  -v "$HOME/.config/tidal-dl:/root/.config/tidal-dl" \
-  -v "$HOME/tidal-downloads:/root/download" \
-  youruser/tidal-dl:latest https://tidal.com/browse/album/123456789
-```
+- bundle your TIDAL token
+- persist downloads unless you mount `/root/download`
+- persist settings unless you mount `/root/.config/music-dl`
+- auto-discover files on the host without an explicit volume mount

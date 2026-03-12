@@ -1,6 +1,7 @@
 <div align="center">
-  <h1>Tidal-Media-Downloader</h1>
-  <p>A CLI-only fork of <a href="https://github.com/yaronzz/Tidal-Media-Downloader">yaronzz/Tidal-Media-Downloader</a>, rebuilt with a next-generation engine.<br>Download tracks, albums, playlists, mixes, and videos from Tidal. No GUI. Python 3.12+.</p>
+  <h1>music-dl</h1>
+  <p><code>music-dl</code> is a CLI-only TIDAL downloader built on the current Typer-based engine. Download tracks, albums, playlists, mixes, favourites, and videos from the terminal.</p>
+  <p>The project was renamed from <code>tidal-dl</code> to <code>music-dl</code>. The old command still exists as a temporary compatibility alias, but <code>music-dl</code> is the primary interface going forward.</p>
   <a href="https://github.com/alfdav/music-dl/blob/master/LICENSE">
     <img src="https://img.shields.io/github/license/alfdav/music-dl.svg?style=flat-square" alt="License">
   </a>
@@ -9,386 +10,342 @@
 
 ---
 
-## I am learning how to code with this app, expect bugs
-
 ## Requirements
 
 - Python 3.12 or 3.13
-- FFmpeg (optional — auto-discovered via PATH; required for video conversion and FLAC extraction)
-- A valid Tidal subscription (HiFi or HiFi Plus for lossless)
+- FFmpeg on `PATH` if you want video remuxing or FLAC extraction
+- A valid TIDAL subscription
 
 ---
 
-## Installation
+## Install
 
-### From GitHub (recommended)
-
-```shell
-pip install git+https://github.com/alfdav/music-dl.git#subdirectory=TIDALDL-PY
-```
-
-### Development install
+### Recommended: install with UV
 
 ```shell
-git clone https://github.com/alfdav/music-dl.git
-pip install -e music-dl/TIDALDL-PY
+uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=TIDALDL-PY music-dl
 ```
 
-### Docker (no Python or FFmpeg required)
-
-Run on any machine without installing Python or FFmpeg. See **[docker/README.md](docker/README.md)** for full instructions including volume mounts, login, and docker compose usage.
+After installation, use:
 
 ```shell
-docker build -f docker/Dockerfile -t tidal-dl .
-docker run --rm -it \
-  -v "$HOME/.config/tidal-dl:/root/.config/tidal-dl" \
-  -v "$HOME/tidal-downloads:/root/download" \
-  tidal-dl https://tidal.com/browse/album/123456789
+music-dl --help
 ```
+
+Compatibility note:
+
+- `music-dl` is the supported command name.
+- `tidal-dl` is still installed as a compatibility alias for existing users.
+
+### Development setup
+
+```shell
+git clone git@github.com:alfdav/music-dl.git
+cd music-dl/TIDALDL-PY
+uv sync
+uv run python -m tidal_dl.cli --help
+```
+
+Use the module entrypoint in development. It is the most reliable way to run the local checkout directly.
+
+### Docker
+
+If you do not want a local Python or FFmpeg install, use Docker instead. See [docker/README.md](docker/README.md).
 
 ---
 
-## Authentication
+## First Run
 
-Use `tidal-dl login` to authenticate via OAuth. A browser window opens automatically. If the browser cannot be opened, a clickable link is printed in the terminal.
+### Download something immediately
+
+The app supports bare URL downloads. No subcommand is required.
 
 ```shell
-tidal-dl login    # OAuth login — auto-opens browser
-tidal-dl logout   # clear saved credentials
+music-dl https://tidal.com/browse/album/123456789
 ```
 
-Credentials are cached at `~/.config/tidal-dl/` and refresh automatically.
+### Login
+
+`music-dl` defaults to the Hi-Fi API source. That means direct URL downloads can often work without logging in first.
+
+OAuth login is still important when you want:
+
+- favourites downloads
+- OAuth fallback when the Hi-Fi API source is unavailable
+- a stored personal session for broader metadata access
+
+```shell
+music-dl login
+music-dl logout
+```
+
+Credentials and settings live in `~/.config/music-dl/`.
+
+If you previously used `tidal-dl`, the old config directory at `~/.config/tidal-dl/` is migrated automatically on first run.
 
 ---
 
-## Usage
+## Core Workflows
 
-### Quick download
-
-Paste any Tidal URL directly — no subcommand needed:
+### Download one or more URLs
 
 ```shell
-tidal-dl https://tidal.com/browse/album/123456789
+music-dl https://tidal.com/browse/track/123456789
+music-dl dl https://tidal.com/browse/album/123456789 https://tidal.com/browse/playlist/abcdef
+music-dl dl --list urls.txt
+music-dl dl --output /tmp/music-import https://tidal.com/browse/album/123456789
 ```
 
-### All commands
-
-```
-tidal-dl <URL>                                      Download a Tidal URL (bare shorthand)
-tidal-dl dl <URL>... [OPTIONS]                      Explicit download subcommand; accepts multiple URLs
-tidal-dl dl -l/--list FILE                          Read URLs from a text file (one per line)
-tidal-dl dl -o/--output DIR                         Override output directory for this run only
-tidal-dl dl -d/--debug                              Enable verbose debug logging
-tidal-dl dl_fav tracks                              Download favourite tracks
-tidal-dl dl_fav albums                              Download favourite albums
-tidal-dl dl_fav artists                             Download favourite artists' albums
-tidal-dl dl_fav videos                              Download favourite videos
-tidal-dl dl_fav tracks --since DATE                 Only items added after DATE (YYYY-MM-DD)
-tidal-dl import FILE                                Import playlist from CSV/TSV or plain text and download
-tidal-dl import FILE -o DIR                         Override output directory for import run
-tidal-dl scan                                       Scan configured music directories and seed ISRC index
-tidal-dl scan add PATH                              Add a directory to the scan path list
-tidal-dl scan remove PATH                           Remove a directory from the scan path list
-tidal-dl scan show                                  List configured scan directories (with existence check)
-tidal-dl scan --dry-run                             Discover ISRCs without writing to the index
-tidal-dl scan --all                                 Scan all configured paths without prompting
-tidal-dl source                                     Show current download source configuration
-tidal-dl source show                                Show current download source configuration
-tidal-dl source set SOURCE                          Set preferred source: hifi_api or oauth
-tidal-dl source instances                           List and probe all configured Hi-Fi API instances
-tidal-dl source add URL                             Add a Hi-Fi API instance URL
-tidal-dl source remove URL                          Remove a Hi-Fi API instance URL
-tidal-dl login                                      OAuth login (auto-opens browser)
-tidal-dl logout                                     Clear saved credentials
-tidal-dl cfg                                        Show all settings
-tidal-dl cfg KEY                                    Show one setting value
-tidal-dl cfg KEY VALUE                              Change one setting
-tidal-dl cfg -e/--editor                            Open config file in $EDITOR
-tidal-dl cfg --reset                                Reset to defaults (backs up existing to .json.bak)
-tidal-dl -v/--version                               Show version
-```
-
----
-
-## Download Sources
-
-tidal-dl supports two audio download backends:
-
-**Hi-Fi API** (`hifi_api`, default) — Uses public community proxy instances for both metadata resolution and audio streaming. Stateless and fast; does not put load on your personal Tidal credentials. Instances are auto-discovered from live uptime trackers and rotated automatically when one fails.
-
-**OAuth** (`oauth`) — Uses your personal Tidal OAuth session directly for metadata and streaming. When Hi-Fi API is the active source, OAuth serves only as a fallback — it is not required for normal operation.
-
-When `download_source_fallback = true` (default) the app automatically falls back to OAuth if a Hi-Fi API request fails.
+### Download favourites
 
 ```shell
-tidal-dl source set hifi_api        # switch to Hi-Fi API (default)
-tidal-dl source set oauth           # switch to personal session
-tidal-dl source instances           # probe all known instances
-tidal-dl source add https://my.instance.example
-tidal-dl source remove https://my.instance.example
+music-dl dl_fav tracks
+music-dl dl_fav albums
+music-dl dl_fav artists
+music-dl dl_fav videos
+music-dl dl_fav tracks --since 2026-01-01
+music-dl dl_fav tracks --since 2026-01-01T12:30:00
 ```
 
----
+`--since` accepts:
 
-## Library Scanning
+- `YYYY-MM-DD`
+- `YYYY-MM-DDTHH:MM:SS`
+- Unix timestamps
 
-The ISRC duplicate index (`~/.config/tidal-dl/isrc_index.json`) normally only knows about tracks downloaded by tidal-dl itself. The `scan` command walks your existing music library, reads ISRCs from audio file metadata, and seeds the index — so tidal-dl will skip re-downloading tracks you already own on disk.
+### Import a playlist from another platform
 
-Run the scan once after initial setup. Every subsequent download by tidal-dl keeps the index up to date automatically.
+Accepted formats:
 
-Supported formats: FLAC, MP3, M4A, MP4, OGG.
+- CSV or TSV with `title`, `artist`, and optional `isrc`
+- Plain text with one `Artist - Title` entry per line
 
-### Setup (single library directory)
+Examples:
 
-```shell
-tidal-dl scan add M:\Music      # save the path (auto-defaults when only one is configured)
-tidal-dl scan                   # runs immediately, no prompt needed
-```
-
-### Multiple directories
-
-```shell
-tidal-dl scan add M:\Music
-tidal-dl scan add D:\Archive
-tidal-dl scan                   # shows a numbered selection prompt
-tidal-dl scan --all             # scan all at once without prompting
-```
-
-### Other options
-
-```shell
-tidal-dl scan --dry-run         # discover ISRCs without writing to the index
-tidal-dl scan show              # list configured directories with existence check
-tidal-dl scan remove D:\Archive # remove a directory from the list
-```
-
----
-
-## Playlist Import
-
-Import a track list exported from any platform (Spotify, Apple Music, etc.) and download all matched tracks from Tidal.
-
-**Accepted formats:**
-
-CSV / TSV — a header row with at least `title` and `artist` columns; optional `isrc` column for exact matching:
-
-```
+```text
 title,artist,isrc
 Bohemian Rhapsody,Queen,GBUM71029604
 Hotel California,Eagles,
 ```
 
-Plain text — one `Artist - Title` entry per line (lines starting with `#` are ignored):
-
-```
+```text
 Queen - Bohemian Rhapsody
 Eagles - Hotel California
 ```
 
-Each entry is matched via ISRC (exact) first, then falls back to title + artist search.
+Run it:
 
 ```shell
-tidal-dl import my_playlist.csv
-tidal-dl import my_playlist.txt -o /tmp/import
+music-dl import my_playlist.csv
+music-dl import my_playlist.txt --output /tmp/import
+```
+
+Matching order:
+
+1. ISRC exact match
+2. Title + artist search fallback
+
+### Manage download sources
+
+`music-dl` supports two download backends:
+
+- `hifi_api` - default, public community proxy instances
+- `oauth` - your personal TIDAL OAuth session
+
+```shell
+music-dl source show
+music-dl source set hifi_api
+music-dl source set oauth
+music-dl source instances
+music-dl source add https://my.instance.example
+music-dl source remove https://my.instance.example
+```
+
+Important behavior:
+
+- `download_source = hifi_api` is the default
+- `download_source_fallback = true` is enabled by default
+- when the preferred source fails, the app can fall back automatically
+- an OAuth login is still useful even when Hi-Fi API is your preferred source
+
+### Seed the duplicate index from an existing library
+
+The persistent duplicate index lives at `~/.config/music-dl/isrc_index.json`.
+
+Use `scan` to seed it from an existing library so the downloader can skip tracks you already own.
+
+```shell
+music-dl scan add /Volumes/Music
+music-dl scan
+music-dl scan --all
+music-dl scan --dry-run
+music-dl scan show
+music-dl scan remove /Volumes/Music
+```
+
+Key behavior:
+
+- if exactly one scan path is configured, `music-dl scan` uses it directly
+- if multiple scan paths are configured, `music-dl scan` prompts for a selection unless `--all` is used
+- `scan add` scans immediately unless you pass `--no-scan`
+
+Supported audio containers for scanning include FLAC, MP3, M4A, MP4, and OGG.
+
+---
+
+## Command Summary
+
+```text
+music-dl <URL>
+music-dl dl [URLS]... [--list FILE] [--output DIR] [--debug]
+music-dl dl_fav tracks|albums|artists|videos [--since TIMESTAMP]
+music-dl import FILE [--output DIR] [--debug]
+music-dl login
+music-dl logout
+music-dl cfg [KEY] [VALUE]
+music-dl cfg --editor
+music-dl cfg --reset
+music-dl source show
+music-dl source set {hifi_api|oauth}
+music-dl source instances
+music-dl source add URL
+music-dl source remove URL
+music-dl scan [--dry-run] [--all] [--verbose]
+music-dl scan add PATH [--no-scan]
+music-dl scan remove PATH
+music-dl scan show
+music-dl --version
 ```
 
 ---
 
 ## Configuration
 
-Config is stored at `~/.config/tidal-dl/settings.json`. Use `tidal-dl cfg` to view or change any setting.
+Main settings file:
 
-| Setting | Default | Description |
+- `~/.config/music-dl/settings.json`
+
+Useful config commands:
+
+```shell
+music-dl cfg
+music-dl cfg download_base_path
+music-dl cfg download_base_path /Volumes/Music/Incoming
+music-dl cfg download_source oauth
+music-dl cfg --editor
+music-dl cfg --reset
+```
+
+### Important defaults
+
+| Setting | Default | Notes |
 | --- | --- | --- |
-| `download_base_path` | `~/download` | Root download directory |
-| `quality_audio` | `hi_res_lossless` | `low_96k` / `low_320k` / `high_lossless` / `hi_res_lossless`. Tidal auto-degrades based on subscription. |
-| `quality_video` | `1080p` | `360p` / `480p` / `720p` / `1080p` |
-| `skip_existing` | `true` | Skip if the output file already exists on disk |
-| `skip_duplicate_isrc` | `true` | Skip tracks whose ISRC was already downloaded (cross-session persistent index) |
-| `duplicate_action` | `ask` | Action on duplicate ISRC: `ask` / `copy` / `redownload` / `skip` |
-| `download_source` | `hifi_api` | Preferred audio source: `hifi_api` or `oauth` |
-| `download_source_fallback` | `true` | Automatically fall back to next source when preferred is unavailable |
-| `hifi_api_instances` | `""` | Comma-separated Hi-Fi API instance URLs. Empty = auto-discover |
-| `scan_paths` | `""` | Comma-separated directories for library scanning. Managed via `tidal-dl scan add/remove` |
-| `download_dolby_atmos` | `false` | Download Dolby Atmos variant when available |
-| `extract_flac` | `true` | Extract FLAC from M4A container when possible |
-| `video_convert_mp4` | `true` | Remux video to MP4 via FFmpeg |
-| `video_download` | `true` | Allow download of videos |
-| `lyrics_embed` | `false` | Embed synced lyrics in audio tags |
-| `lyrics_file` | `false` | Save lyrics as a separate `.lrc` file |
-| `playlist_create` | `false` | Generate M3U playlist files for albums and mixes (playlists always generate an M3U automatically) |
-| `symlink_to_track` | `false` | Create a symlink to the track inside the playlist folder |
+| `download_base_path` | `~/download` | Root download destination |
+| `quality_audio` | `HI_RES_LOSSLESS` | TIDAL degrades automatically based on subscription |
+| `quality_video` | `1080` | Video quality setting |
+| `download_source` | `hifi_api` | Preferred audio source |
+| `download_source_fallback` | `true` | Fall back automatically when needed |
+| `hifi_api_instances` | `""` | Empty means auto-discover instances |
+| `skip_existing` | `true` | Skip files already present on disk |
+| `skip_duplicate_isrc` | `true` | Skip tracks already seen in the persistent ISRC index |
+| `duplicate_action` | `copy` | Copy, ask, redownload, or skip on duplicate detection |
+| `scan_paths` | `""` | Managed through `scan add/remove/show` |
+| `extract_flac` | `true` | Uses FFmpeg when applicable |
+| `video_convert_mp4` | `true` | Remuxes video output to MP4 |
+| `playlist_create` | `false` | Albums and mixes only; playlists always generate M3U |
+| `symlink_to_track` | `false` | Symlink playlist items to track storage |
 | `downloads_concurrent_max` | `3` | Maximum parallel downloads |
-| `downloads_simultaneous_per_track_max` | `20` | Maximum simultaneous chunk downloads per track |
-| `download_delay` | `true` | Add a small random delay between downloads |
-| `download_delay_sec_min` | `3.0` | Lower bound for random download delay (seconds) |
-| `download_delay_sec_max` | `5.0` | Upper bound for random download delay (seconds) |
-| `path_binary_ffmpeg` | `""` | Path to FFmpeg binary; empty = auto-discover via PATH |
-| `metadata_cover_dimension` | `1280` | Square dimensions of embedded cover art: `80` / `160` / `320` / `640` / `1280` / `origin` |
-| `metadata_cover_embed` | `true` | Embed album cover into downloaded file |
-| `cover_album_file` | `true` | Save `cover.jpg` in the album folder |
-| `mark_explicit` | `false` | Mark explicit tracks with 🅴 in title metadata |
-| `metadata_replay_gain` | `false` | Write replay gain values to metadata |
-| `metadata_write_url` | `true` | Write Tidal share URL to metadata |
-| `metadata_delimiter_artist` | `", "` | Delimiter for multiple artists in metadata tags |
-| `metadata_delimiter_album_artist` | `", "` | Delimiter for multiple album artists in metadata tags |
-| `filename_delimiter_artist` | `", "` | Delimiter for multiple artists in filenames |
-| `filename_delimiter_album_artist` | `", "` | Delimiter for multiple album artists in filenames |
-| `metadata_target_upc` | `UPC` | Tag name for UPC/barcode: `UPC` / `BARCODE` / `EAN` |
-| `use_primary_album_artist` | `false` | Use only the primary album artist for folder paths |
-| `album_track_num_pad_min` | `1` | Minimum zero-pad width for track numbers (1 = no padding) |
-| `api_rate_limit_batch_size` | `20` | Albums per batch before applying rate-limit delay |
-| `api_rate_limit_delay_sec` | `3.0` | Delay in seconds between batches to avoid API rate limiting |
-| `api_cache_enabled` | `true` | Cache Tidal API responses in-memory during a session |
-| `api_cache_ttl_sec` | `300` | TTL in seconds for cached API responses (default: 5 minutes) |
-| `initial_key_format` | `alphanumeric` | Format for Initial Key metadata tag: `alphanumeric` or `classic` |
-| `format_album` | see below | Path template for album tracks |
-| `format_playlist` | see below | Path template for playlist tracks |
-| `format_mix` | see below | Path template for mix tracks |
-| `format_track` | see below | Path template for standalone tracks |
-| `format_video` | see below | Path template for videos |
+| `downloads_simultaneous_per_track_max` | `20` | Chunk concurrency per track |
+| `api_cache_enabled` | `true` | In-memory API response cache |
+| `api_cache_ttl_sec` | `300` | Cache TTL in seconds |
 
----
+### Path templates
 
-## Path Format Templates
+Default path templates:
 
-Download paths are built from template strings using `{token}` placeholders.
-
-### Default templates
-
-| Context | Default |
+| Context | Template |
 | --- | --- |
 | Album | `{album_artist}/{album_title}/{track_volume_num_optional_CD}/{track_title}` |
-| Playlist | `Playlists/{playlist_name}/{list_pos}. {artist_name} - {track_title}` |
+| Playlist | `- Playlists/{playlist_name}/{list_pos}. {artist_name} - {track_title}` |
 | Mix | `Mix/{mix_name}/{artist_name} - {track_title}` |
 | Track | `{album_artist}/{album_title}/{track_title}` |
 | Video | `Videos/{artist_name}/{track_title}` |
 
-### Available tokens
+Common template tokens:
 
-**Names**
-
-| Token | Description |
+| Token | Meaning |
 | --- | --- |
-| `{artist_name}` | Primary artist name |
-| `{album_artist}` | Album artist |
-| `{album_artists}` | All album artists (joined) |
+| `{artist_name}` | Track or video artist |
+| `{album_artist}` | Primary album artist |
+| `{album_artists}` | All album artists joined by the configured delimiter |
 | `{track_title}` | Track title |
-| `{mix_name}` | Mix name |
-| `{playlist_name}` | Playlist name |
 | `{album_title}` | Album title |
-
-**Numbers**
-
-| Token | Description |
-| --- | --- |
-| `{album_track_num}` | Track number (zero-padded) |
-| `{album_num_tracks}` | Total tracks in album |
-| `{list_pos}` | Position in playlist or collection |
-| `{album_num_volumes}` | Number of discs/volumes |
-| `{track_volume_num}` | Disc/volume number |
-| `{track_volume_num_optional}` | Disc number; empty string for single-disc albums |
-| `{track_volume_num_optional_CD}` | `CD1/`, `CD2/`, … — empty for single-disc (use as a path segment) |
-
-**IDs**
-
-| Token | Description |
-| --- | --- |
-| `{track_id}` | Tidal track ID |
-| `{playlist_id}` | Tidal playlist ID |
-| `{video_id}` | Tidal video ID |
-| `{album_id}` | Tidal album ID |
-| `{isrc}` | ISRC code |
-
-**Durations**
-
-| Token | Description |
-| --- | --- |
-| `{track_duration_seconds}` | Track duration in seconds |
-| `{track_duration_minutes}` | Track duration as M:SS |
-| `{album_duration_seconds}` | Album duration in seconds |
-| `{album_duration_minutes}` | Album duration as M:SS |
-
-**Dates**
-
-| Token | Description |
-| --- | --- |
+| `{playlist_name}` | Playlist name |
+| `{mix_name}` | Mix name |
+| `{list_pos}` | Playlist or collection position |
+| `{track_volume_num_optional_CD}` | `CD1/`, `CD2/`, etc. for multi-disc albums |
+| `{isrc}` | Track ISRC |
 | `{album_year}` | Album release year |
-| `{album_date}` | Album release date (YYYY-MM-DD) |
-
-**Metadata flags**
-
-| Token | Description |
-| --- | --- |
-| `{video_quality}` | Video quality string |
-| `{track_quality}` | Track quality / format string |
-| `{track_explicit}` | `(Explicit)` or empty |
-| `{album_explicit}` | `(Explicit)` or empty |
-| `{media_type}` | `TRACK`, `VIDEO`, etc. |
+| `{track_explicit}` | Explicit marker or empty string |
 
 ---
 
-## Embedded Metadata
+## Metadata and Output Behavior
 
-Metadata written to all downloaded files (FLAC, MP3, MP4):
+The downloader writes rich metadata to supported files, including:
 
-- Title, album, album artist, artist
-- Track number / total, disc number / total
-- Release date, ISRC, copyright, composer
-- Cover art (embedded)
-- Synced and unsynced lyrics (when `lyrics_embed = true`)
-- BPM, initial key (Camelot notation), replay gain
-- UPC (album barcode), Tidal share URL
+- title, album, artist, album artist
+- track and disc numbering
+- release date and ISRC
+- cover art
+- lyrics when enabled
+- replay gain and initial key when available
+- TIDAL share URL
+- album barcode / UPC target metadata
 
-MP3-specific tags: `TPE2` (album artist), `TPOS` (disc number), `WOAS` (share URL), `TRCK` written as `N/total`.
+Other behavior worth knowing:
 
-MP4-specific atoms: `aART` (album artist).
+- playlists always produce an M3U file
+- albums and mixes produce an M3U when `playlist_create = true`
+- duplicate detection is cross-session, not just per run
+- interrupted collection downloads can resume from checkpoints
+- FFmpeg is auto-discovered on `PATH`
 
 ---
 
-## Features
+## Docker
 
-- **CLI-only** — no GUI, no interactive menus; every action is a typed command
-- **Bare URL shorthand** — `tidal-dl <URL>` works without any subcommand
-- **Concurrent downloads** — configurable parallelism (default: 3)
-- **ISRC duplicate detection** — persistent cross-session index at `~/.config/tidal-dl/isrc_index.json`; stale entries pruned automatically; thread-safe
-- **Library scanning** — seed the ISRC index from your existing music collection (FLAC/MP3/M4A/OGG) via `tidal-dl scan`; prevents re-downloading tracks already on disk
-- **Skip existing** — skips files that already exist on disk
-- **Dual download sources** — Hi-Fi API (public proxy, stateless) handles both metadata and streaming by default; OAuth serves as an automatic fallback
-- **Hi-Fi API instance rotation** — auto-discovers live instances from uptime trackers; dead instances are quarantined and skipped automatically
-- **Playlist import** — import from Spotify, Apple Music, or any platform via CSV/TSV or `Artist - Title` text files
-- **Playlist M3U generation** — an M3U playlist file is always generated for playlist downloads so music players can recognize the folder as a playlist; original track metadata (album, artist, artwork) is preserved
-- **Multi-disc M3U** — when `playlist_create = true`, a single consolidated M3U is written at the album root with relative paths; works correctly across multi-disc albums
-- **Download checkpointing** — interrupted collection downloads can resume from where they left off
-- **API response caching** — in-memory TTL cache reduces redundant HTTP calls during a session
-- **FFmpeg auto-discovery** — finds FFmpeg via PATH automatically; no manual configuration needed
-- **One-off output override** — `--output/-o` overrides the download root for a single invocation only
-- **Download summary** — a Rich panel shows downloaded / skipped / failed counts after every collection download
-- **Config reset** — `cfg --reset` backs up the existing config to `.json.bak` before writing fresh defaults
-- **OAuth browser login** — `tidal-dl login` opens your browser automatically; Rich clickable fallback link if browser unavailable
-- **Dolby Atmos** — optionally download Atmos variants (`download_dolby_atmos = true`)
-- **Favourites** — `dl_fav` downloads your entire Tidal favourites library with optional `--since` date filter
-- **Collision avoidance** — uniquify mode prevents filename collisions for same-title tracks in the same directory
+Docker instructions live in [docker/README.md](docker/README.md).
+
+Use Docker when you want:
+
+- no local Python install
+- no host FFmpeg install
+- a clean portable runtime for servers, NAS boxes, or containers
 
 ---
 
 ## Disclaimer
 
-- For private, personal use only.
-- Requires a valid Tidal subscription.
-- Do not use this tool to distribute or share copyrighted material.
-- Usage may be subject to legal restrictions in your jurisdiction.
+- Personal use only
+- Requires a valid TIDAL subscription
+- Do not redistribute copyrighted content
+- You are responsible for complying with local law and TIDAL's terms
 
 ---
 
 ## Credits
 
-Originally created by [yaronzz](https://github.com/yaronzz/Tidal-Media-Downloader). This fork ports the next-generation engine from [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng) into the original project structure.
+This project builds on prior work from:
 
-**Libraries used:**
-- [tidalapi](https://github.com/tamland/python-tidal) — Tidal API client
-- [mutagen](https://mutagen.readthedocs.io/) — audio metadata
-- [Rich](https://github.com/Textualize/rich) — terminal output
-- [Typer](https://typer.tiangolo.com/) — CLI framework
-- [python-ffmpeg](https://github.com/jonghwanhyeon/python-ffmpeg) — FFmpeg bindings
-- [pycryptodome](https://www.pycryptodome.org/) — AES decryption
+- [yaronzz/Tidal-Media-Downloader](https://github.com/yaronzz/Tidal-Media-Downloader)
+- [tidal-dl-ng](https://github.com/exislow/tidal-dl-ng)
+
+Primary libraries:
+
+- [tidalapi](https://github.com/tamland/python-tidal)
+- [mutagen](https://mutagen.readthedocs.io/)
+- [Rich](https://github.com/Textualize/rich)
+- [Typer](https://typer.tiangolo.com/)
+- [python-ffmpeg](https://github.com/jonghwanhyeon/python-ffmpeg)
+- [pycryptodome](https://www.pycryptodome.org/)
