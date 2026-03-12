@@ -428,6 +428,49 @@ class TestItemCopyAction:
         assert result_path == final_path
         assert dl._isrc_index.get_path(track.isrc) == str(final_path.absolute())
 
+    def test_detect_downloaded_audio_extension_reads_mp4_header(self, tmp_path):
+        from tidal_dl.download import Download
+
+        dl = self._build_minimal_download(tmp_path)
+        detect = Download._detect_downloaded_audio_extension.__get__(dl, Download)
+
+        mp4_path = tmp_path / "download.bin"
+        mp4_path.write_bytes(b"\x00\x00\x00\x18ftypiso8\x00\x00\x00\x00payload")
+
+        assert detect(mp4_path, ".flac") == ".m4a"
+
+    def test_item_uses_corrected_extension_from_downloaded_file(self, tmp_path):
+        """item() must propagate the final extension detected from downloaded bytes."""
+        dl = self._build_minimal_download(tmp_path)
+
+        track = _make_track(103, "US-TST-00-01003")
+        track.isrc = "US-TST-00-01003"
+        track.full_name = "Track 103"
+        track.name = "Track 103"
+        track.media_metadata_tags = []
+        track.album = MagicMock()
+        track.allow_streaming = True
+
+        dummy_path = (tmp_path / "output" / "Track 103.flac").absolute()
+        final_path = dummy_path.with_suffix(".m4a")
+
+        with (
+            patch.object(dl, "_validate_and_prepare_media", return_value=track),
+            patch.object(dl, "_prepare_file_paths_and_skip_logic", return_value=(dummy_path, ".flac", False, False)),
+            patch.object(dl, "_adjust_quality_settings", return_value=(None, None)),
+            patch.object(dl, "_get_stream_info", return_value=(MagicMock(), ".flac", False, None)),
+            patch.object(dl, "_perform_actual_download", return_value=(True, final_path)),
+            patch.object(dl, "_perform_post_processing", return_value=None),
+        ):
+            outcome, result_path = dl.item(
+                file_template="{track_title}",
+                media=track,
+            )
+
+        assert outcome == DownloadOutcome.DOWNLOADED
+        assert result_path == final_path
+        assert dl._isrc_index.get_path(track.isrc) == str(final_path.absolute())
+
 
 class TestCheckpointOutcomeMapping:
     """COPIED/SKIPPED are terminal successes for checkpoint resume semantics."""

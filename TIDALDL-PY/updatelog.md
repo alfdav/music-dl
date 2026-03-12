@@ -32,6 +32,11 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=T
 - Playlist metadata preservation was tightened so album name, album artist, and artwork survive playlist downloads
 - Albums and mixes still respect `playlist_create`
 
+### Download correctness fixes
+
+- Fixed live playlist downloads that were saved as `.flac` even when the downloaded container was actually MP4/M4A
+- Fixed re-download path handling so canonical filenames are reused instead of drifting into `_01` duplicates when the resolved stream extension changes
+
 ### Library scanning
 
 - Added `music-dl scan`

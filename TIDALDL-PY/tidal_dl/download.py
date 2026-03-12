@@ -1044,18 +1044,20 @@ class Download:
         os.makedirs(win_long_path(path_media_dst).parent, exist_ok=True)
 
         # Perform actual download
-        return (
-            self._perform_actual_download(
-                media,
-                path_media_dst,
-                stream_manifest,
-                do_flac_extract,
-                is_parent_album,
-                media_stream,
-                event_stop,
-            ),
+        result_download = self._perform_actual_download(
+            media,
             path_media_dst,
+            stream_manifest,
+            do_flac_extract,
+            is_parent_album,
+            media_stream,
+            event_stop,
         )
+
+        if isinstance(result_download, tuple):
+            return result_download
+
+        return result_download, path_media_dst
 
     def _get_stream_info(
         self, media: Track | Video
@@ -1231,7 +1233,7 @@ class Download:
         is_parent_album: bool,
         media_stream: Stream | None,
         event_stop: Event | None = None,
-    ) -> bool:
+    ) -> tuple[bool, pathlib.Path]:
         """Perform the actual download and processing.
 
         Args:
@@ -1244,7 +1246,7 @@ class Download:
             event_stop (Event | None, optional): Event to stop the download. Defaults to None.
 
         Returns:
-            bool: Whether download was successful.
+            tuple[bool, pathlib.Path]: Whether download succeeded and the final destination path.
         """
         # Create a temp directory and file.
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_path_dir:
@@ -1260,7 +1262,7 @@ class Download:
             )
 
             if not result_download:
-                return False
+                return False, path_media_dst
 
             # Convert video from TS to MP4
             if isinstance(media, Video) and self.settings.data.video_convert_mp4:
@@ -1270,6 +1272,14 @@ class Download:
             if isinstance(media, Track) and self.settings.data.extract_flac and do_flac_extract:
                 tmp_path_file = self._extract_flac(tmp_path_file)
 
+            if isinstance(media, Track):
+                detected_extension = self._detect_downloaded_audio_extension(tmp_path_file, path_media_dst.suffix)
+                if detected_extension != path_media_dst.suffix:
+                    path_media_dst = pathlib.Path(
+                        path_file_sanitize(path_media_dst.with_suffix(detected_extension), adapt=True, uniquify=True)
+                    )
+                    os.makedirs(win_long_path(path_media_dst).parent, exist_ok=True)
+
             # Handle metadata, lyrics, and cover
             self._handle_metadata_and_extras(media, tmp_path_file, path_media_dst, is_parent_album, media_stream)
 
@@ -1278,7 +1288,27 @@ class Download:
             # Move final file to the configured destination directory.
             shutil.move(tmp_path_file, win_long_path(path_media_dst))
 
-            return True
+            return True, path_media_dst
+
+    def _detect_downloaded_audio_extension(self, path_media_src: pathlib.Path, current_extension: str) -> str:
+        """Infer the actual audio container from the downloaded file header.
+
+        The Hi-Fi API can occasionally report FLAC while returning an MP4/M4A
+        container. Detect the real container from bytes so the final filename
+        matches the downloaded file.
+        """
+        try:
+            header = path_media_src.read_bytes()[:16]
+        except OSError:
+            return current_extension
+
+        if header.startswith(b"fLaC"):
+            return str(AudioExtensions.FLAC)
+
+        if len(header) >= 8 and header[4:8] == b"ftyp":
+            return str(AudioExtensions.M4A)
+
+        return current_extension
 
     def _handle_metadata_and_extras(
         self,
