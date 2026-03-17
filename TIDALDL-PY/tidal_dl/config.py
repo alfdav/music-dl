@@ -37,6 +37,7 @@ from tidal_dl.helper.cache import TTLCache
 from tidal_dl.helper.decorator import SingletonMeta
 from tidal_dl.helper.path import path_config_base, path_file_settings, path_file_token
 from tidal_dl.hifi_api import HiFiApiClient
+from tidal_dl.model.cfg import DEFAULT_FORMAT_PLAYLIST, LEGACY_DEFAULT_FORMAT_PLAYLIST
 from tidal_dl.model.cfg import Settings as ModelSettings
 from tidal_dl.model.cfg import Token as ModelToken
 
@@ -148,6 +149,15 @@ class Settings(BaseConfig[ModelSettings], metaclass=SingletonMeta):
     def __init__(self) -> None:
         super().__init__(ModelSettings, path_file_settings())
         self.read(self.file_path)
+        self._migrate_legacy_playlist_template()
+
+    def _migrate_legacy_playlist_template(self) -> None:
+        """Upgrade the untouched legacy playlist template to the current default."""
+        if self.data.format_playlist != LEGACY_DEFAULT_FORMAT_PLAYLIST:
+            return
+
+        self.data.format_playlist = DEFAULT_FORMAT_PLAYLIST
+        self.save()
 
 
 class Tidal(BaseConfig[ModelToken], metaclass=SingletonMeta):

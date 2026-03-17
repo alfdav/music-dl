@@ -266,7 +266,7 @@ Default path templates:
 | Context | Template |
 | --- | --- |
 | Album | `{album_artist}/{album_title}/{track_volume_num_optional_CD}/{track_title}` |
-| Playlist | `- Playlists/{playlist_name}/{list_pos}. {artist_name} - {track_title}` |
+| Playlist | `Playlists/{playlist_name}/{list_pos}. {artist_name} - {track_title}` |
 | Mix | `Mix/{mix_name}/{artist_name} - {track_title}` |
 | Track | `{album_artist}/{album_title}/{track_title}` |
 | Video | `Videos/{artist_name}/{track_title}` |
@@ -305,11 +305,12 @@ The downloader writes rich metadata to supported files, including:
 
 Other behavior worth knowing:
 
-- playlists always produce an M3U file
+- playlists always produce a UTF-8 `.m3u8` file with relative paths
 - albums and mixes produce an M3U when `playlist_create = true`
 - duplicate detection is cross-session, not just per run
 - interrupted collection downloads can resume from checkpoints
 - FFmpeg is auto-discovered on `PATH`
+- existing configs that still use the untouched legacy `- Playlists/...` default are migrated automatically to `Playlists/...`
 
 ---
 

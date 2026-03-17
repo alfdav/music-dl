@@ -28,9 +28,10 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=T
 
 ### Playlist M3U generation
 
-- Playlist downloads now always generate an M3U file
+- Playlist downloads now always generate a UTF-8 `.m3u8` file with relative paths
 - Playlist metadata preservation was tightened so album name, album artist, and artwork survive playlist downloads
 - Albums and mixes still respect `playlist_create`
+- Existing configs that still use the untouched legacy `- Playlists/...` default are migrated automatically to `Playlists/...` for cleaner library ingestion
 
 ### Download correctness fixes
 

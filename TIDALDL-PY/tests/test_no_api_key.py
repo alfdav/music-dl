@@ -15,10 +15,12 @@ Fixed failures (vs. prior run):
 """
 
 import base64
+import json
 import pathlib
 import subprocess
 import sys
 from dataclasses import dataclass
+from unittest.mock import patch
 
 import pytest  # pyright: ignore[reportMissingImports]
 from Crypto.Cipher import AES
@@ -43,6 +45,7 @@ from tidal_dl.helper.path import (
     url_to_filename,
 )
 from tidal_dl.helper.tidal import get_tidal_media_id, get_tidal_media_type
+from tidal_dl.model.cfg import DEFAULT_FORMAT_PLAYLIST, LEGACY_DEFAULT_FORMAT_PLAYLIST
 
 # ---------------------------------------------------------------------------
 # URL parsing
@@ -282,6 +285,10 @@ class TestSettings:
         s = Settings()
         assert s.data.download_base_path == "~/download"
 
+    def test_settings_default_playlist_template(self, clear_singletons):
+        s = Settings()
+        assert s.data.format_playlist == DEFAULT_FORMAT_PLAYLIST
+
     def test_settings_save_writes_file(self, clear_singletons, tmp_path):
         """save() must write to file_path — the correct attribute name."""
         s = Settings()
@@ -325,6 +332,25 @@ class TestSettings:
         cfg = DummyBaseConfig()
 
         assert cfg.data.enabled is True
+
+    def test_settings_migrates_legacy_playlist_template(self, clear_singletons, tmp_path):
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "version": "1.0.0",
+                    "format_playlist": LEGACY_DEFAULT_FORMAT_PLAYLIST,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("tidal_dl.config.path_file_settings", return_value=str(settings_path)):
+            s = Settings()
+
+        assert s.data.format_playlist == DEFAULT_FORMAT_PLAYLIST
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert saved["format_playlist"] == DEFAULT_FORMAT_PLAYLIST
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +561,7 @@ class TestPlaylistPopulate:
         result = dl.playlist_populate({tmp_path}, "My Album", is_album=True, sort_alphabetically=True)
         assert len(result) == 1
         assert result[0].parent == tmp_path
+        assert result[0].name == "My Album.m3u8"
 
     def test_single_dir_m3u_lists_track(self, tmp_path):
         track = tmp_path / "track.flac"
@@ -542,6 +569,7 @@ class TestPlaylistPopulate:
         dl = self._make_dl()
         result = dl.playlist_populate({tmp_path}, "My Album", is_album=True, sort_alphabetically=True)
         content = result[0].read_text(encoding="utf-8")
+        assert content.splitlines()[0] == "#EXTM3U"
         assert "track.flac" in content
 
     def test_multi_dir_creates_single_m3u_at_common_parent(self, tmp_path):
@@ -597,8 +625,9 @@ class TestPlaylistPopulate:
         dl = self._make_dl()
         result = dl.playlist_populate({cd1, cd2}, "Sort Test", is_album=True, sort_alphabetically=True)
         lines = [line.strip() for line in result[0].read_text().splitlines() if line.strip()]
-        assert lines[0].endswith("aaa.flac")
-        assert lines[1].endswith("zzz.flac")
+        track_lines = [line for line in lines if not line.startswith("#")]
+        assert track_lines[0].endswith("aaa.flac")
+        assert track_lines[1].endswith("zzz.flac")
 
 
 # ---------------------------------------------------------------------------

@@ -2251,7 +2251,7 @@ class Download:
     def playlist_populate(
         self, dirs_scoped: set[pathlib.Path], name_list: str, is_album: bool, sort_alphabetically: bool
     ) -> list[pathlib.Path]:
-        """Create playlist files (m3u) for downloaded tracks in each directory.
+        """Create playlist files for downloaded tracks in each directory.
 
         When all tracks in ``dirs_scoped`` share a common parent (e.g. disc
         subdirectories of a multi-disc album), a single consolidated M3U is
@@ -2309,8 +2309,9 @@ class Download:
                     key=lambda x: x.stat().st_birthtime if hasattr(x.stat(), "st_birthtime") else x.stat().st_ctime
                 )
 
-            # Write data to m3u file
+            # Write UTF-8 playlist data once all track paths are finalized.
             with path_playlist.open(mode="w", encoding="utf-8") as f:
+                f.write("#EXTM3U" + os.linesep)
                 for path_track in path_tracks:
                     # Write paths relative to the M3U directory so the playlist
                     # is portable.  Symlinks point to the canonical track file.
