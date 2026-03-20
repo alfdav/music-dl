@@ -348,6 +348,51 @@ def _download(
     return True
 
 
+def _sync_diff_playlists(
+    playlists: list[Any],
+    isrc_index: "IsrcIndex",
+) -> list[dict[str, Any]]:
+    """Compare Tidal playlists against the local ISRC index.
+
+    Args:
+        playlists: List of tidalapi Playlist objects (or duck-typed equivalents).
+        isrc_index: Loaded IsrcIndex instance.
+
+    Returns:
+        List of dicts with keys: name, total, local, missing, share_url.
+    """
+    results: list[dict[str, Any]] = []
+
+    for pl in playlists:
+        tracks: list[Any] = []
+        offset = 0
+        while True:
+            page = pl.tracks(limit=100, offset=offset)
+            if not page:
+                break
+            tracks.extend(page)
+            if len(page) < 100:
+                break
+            offset += 100
+
+        total = len(tracks)
+        local = 0
+        for track in tracks:
+            isrc = getattr(track, "isrc", None)
+            if isrc and isrc_index.contains(isrc):
+                local += 1
+
+        results.append({
+            "name": pl.name,
+            "total": total,
+            "local": local,
+            "missing": total - local,
+            "share_url": pl.share_url,
+        })
+
+    return results
+
+
 @app.command(name="cfg")
 def settings_management(
     names: Annotated[list[str] | None, typer.Argument()] = None,
