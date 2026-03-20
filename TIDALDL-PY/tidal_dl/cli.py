@@ -418,6 +418,50 @@ def _sync_print_summary(diff: list[dict[str, Any]], console: Console) -> None:
     console.print(table)
 
 
+def _sync_prompt_playlists(
+    diff: list[dict[str, Any]],
+    auto_yes: bool = False,
+) -> list[str]:
+    """Prompt the user to choose which playlists to sync.
+
+    Args:
+        diff: Output of _sync_diff_playlists().
+        auto_yes: If True, select all playlists with missing tracks without prompting.
+
+    Returns:
+        List of playlist share_urls selected for download.
+    """
+    selected: list[str] = []
+    pending = [row for row in diff if row["missing"] > 0]
+
+    if not pending:
+        return selected
+
+    if auto_yes:
+        return [row["share_url"] for row in pending]
+
+    for row in pending:
+        answer = input(
+            f"  Sync '{row['name']}' ({row['missing']} missing)? [Y]es / [n]o / [a]ll / [q]uit: "
+        ).strip().lower()
+
+        if answer in ("q", "quit"):
+            break
+        elif answer in ("a", "all"):
+            selected.append(row["share_url"])
+            # Add all remaining without prompting
+            remaining = pending[pending.index(row) + 1 :]
+            selected.extend(r["share_url"] for r in remaining)
+            break
+        elif answer in ("n", "no"):
+            continue
+        else:
+            # Default is yes (empty input or "y")
+            selected.append(row["share_url"])
+
+    return selected
+
+
 @app.command(name="cfg")
 def settings_management(
     names: Annotated[list[str] | None, typer.Argument()] = None,

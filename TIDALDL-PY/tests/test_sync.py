@@ -118,3 +118,80 @@ def test_summary_table_renders():
     assert "42" in output
     assert "4" in output
     assert "Done" in output
+
+
+from unittest.mock import patch
+
+from tidal_dl.cli import _sync_prompt_playlists
+
+
+def test_prompt_yes_selects_playlist():
+    diff = [{"name": "Chill", "total": 10, "local": 6, "missing": 4, "share_url": "https://tidal.com/playlist/123"}]
+    with patch("builtins.input", return_value="y"):
+        urls = _sync_prompt_playlists(diff)
+    assert urls == ["https://tidal.com/playlist/123"]
+
+
+def test_prompt_no_skips_playlist():
+    diff = [{"name": "Chill", "total": 10, "local": 6, "missing": 4, "share_url": "https://tidal.com/playlist/123"}]
+    with patch("builtins.input", return_value="n"):
+        urls = _sync_prompt_playlists(diff)
+    assert urls == []
+
+
+def test_prompt_all_selects_remaining():
+    diff = [
+        {"name": "A", "total": 5, "local": 0, "missing": 5, "share_url": "https://tidal.com/playlist/1"},
+        {"name": "B", "total": 3, "local": 0, "missing": 3, "share_url": "https://tidal.com/playlist/2"},
+    ]
+    with patch("builtins.input", return_value="a"):
+        urls = _sync_prompt_playlists(diff)
+    assert urls == ["https://tidal.com/playlist/1", "https://tidal.com/playlist/2"]
+
+
+def test_prompt_quit_stops_early():
+    diff = [
+        {"name": "A", "total": 5, "local": 0, "missing": 5, "share_url": "https://tidal.com/playlist/1"},
+        {"name": "B", "total": 3, "local": 0, "missing": 3, "share_url": "https://tidal.com/playlist/2"},
+    ]
+    with patch("builtins.input", return_value="q"):
+        urls = _sync_prompt_playlists(diff)
+    assert urls == []
+
+
+def test_prompt_skips_zero_missing():
+    diff = [
+        {"name": "Done", "total": 10, "local": 10, "missing": 0, "share_url": "https://tidal.com/playlist/1"},
+        {"name": "Has Missing", "total": 5, "local": 2, "missing": 3, "share_url": "https://tidal.com/playlist/2"},
+    ]
+    with patch("builtins.input", return_value="y"):
+        urls = _sync_prompt_playlists(diff)
+    assert urls == ["https://tidal.com/playlist/2"]
+
+
+def test_prompt_empty_input_defaults_to_yes():
+    diff = [{"name": "Chill", "total": 10, "local": 6, "missing": 4, "share_url": "https://tidal.com/playlist/123"}]
+    with patch("builtins.input", return_value=""):
+        urls = _sync_prompt_playlists(diff)
+    assert urls == ["https://tidal.com/playlist/123"]
+
+
+def test_prompt_all_on_second_playlist():
+    diff = [
+        {"name": "A", "total": 5, "local": 0, "missing": 5, "share_url": "https://tidal.com/playlist/1"},
+        {"name": "B", "total": 3, "local": 0, "missing": 3, "share_url": "https://tidal.com/playlist/2"},
+        {"name": "C", "total": 4, "local": 1, "missing": 3, "share_url": "https://tidal.com/playlist/3"},
+    ]
+    with patch("builtins.input", side_effect=["n", "a"]):
+        urls = _sync_prompt_playlists(diff)
+    assert urls == ["https://tidal.com/playlist/2", "https://tidal.com/playlist/3"]
+
+
+def test_prompt_yes_flag_selects_all():
+    diff = [
+        {"name": "A", "total": 5, "local": 0, "missing": 5, "share_url": "https://tidal.com/playlist/1"},
+        {"name": "B", "total": 3, "local": 1, "missing": 2, "share_url": "https://tidal.com/playlist/2"},
+        {"name": "Done", "total": 10, "local": 10, "missing": 0, "share_url": "https://tidal.com/playlist/3"},
+    ]
+    urls = _sync_prompt_playlists(diff, auto_yes=True)
+    assert urls == ["https://tidal.com/playlist/1", "https://tidal.com/playlist/2"]
