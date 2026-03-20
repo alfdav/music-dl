@@ -45,7 +45,7 @@ from tidal_dl.helper.wrapper import LoggerWrapped
 from tidal_dl.hifi_api import HiFiApiClient
 from tidal_dl.model.cfg import HelpSettings
 
-app = typer.Typer(context_settings={"help_option_names": ["-h", "--help"]}, add_completion=False)
+app = typer.Typer(context_settings={"help_option_names": ["-h", "--help"]}, add_completion=True)
 app_source = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
     add_completion=True,
