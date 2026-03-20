@@ -284,7 +284,7 @@ def _download(
     Returns:
         bool: True if ran successfully.
     """
-    if try_login and not ctx.invoke(login, ctx):
+    if try_login and not _resolve_session(ctx):
         return False
 
     settings = _ctx_settings(ctx)
@@ -534,18 +534,18 @@ def settings_management(
             console.print(table)
 
 
-@app.command(name="login")
-def login(ctx: typer.Context) -> bool:
-    """Login to TIDAL and update context object.
+def _resolve_session(ctx: typer.Context) -> bool:
+    """Resolve the download source (Hi-Fi API preferred, silent OAuth fallback).
+
+    Used internally by commands that need a TIDAL session but don't require
+    explicit OAuth login. Sets up ctx.obj[CTX_TIDAL].
 
     Args:
         ctx (typer.Context): Typer context object.
 
     Returns:
-        bool: True if login was successful, False otherwise.
+        bool: True if a download source was resolved.
     """
-    print("Let us check if you are already logged in... ", end="")
-
     settings = Settings()
     tidal = Tidal(settings)
 
@@ -553,6 +553,42 @@ def login(ctx: typer.Context) -> bool:
         print(message)
 
     result = tidal.resolve_source(fn_print=_print_message)
+    ctx.obj[CTX_TIDAL] = tidal
+
+    return result
+
+
+@app.command(name="login")
+def login(ctx: typer.Context) -> bool:
+    """Login to TIDAL via interactive OAuth.
+
+    Args:
+        ctx (typer.Context): Typer context object.
+
+    Returns:
+        bool: True if login was successful, False otherwise.
+    """
+    settings = Settings()
+    tidal = Tidal(settings)
+
+    def _print_message(message: str) -> None:
+        print(message)
+
+    # Always do interactive OAuth when user explicitly runs 'login'
+    result = tidal.login(fn_print=_print_message)
+
+    # Also set up Hi-Fi API if available (for download source)
+    if result:
+        from tidal_dl.hifi_api import HiFiApiClient
+        hifi_instances = tidal._configured_hifi_instances() or None
+        tidal.hifi_client = HiFiApiClient(instances=hifi_instances)
+        health = tidal.hifi_client.health_check()
+        if health:
+            tidal.active_source = DownloadSource.HIFI_API
+            _print_message(f"Hi-Fi API also available via {health}")
+        else:
+            tidal.active_source = DownloadSource.OAUTH
+
     ctx.obj[CTX_TIDAL] = tidal
 
     return result
@@ -662,7 +698,7 @@ def sync(
     against the local index, and downloads missing tracks.
     """
     # Login required for playlist enumeration
-    if not ctx.invoke(login, ctx):
+    if not _resolve_session(ctx):
         raise typer.Exit(code=1)
 
     tidal = _ctx_tidal(ctx)
@@ -943,7 +979,7 @@ def _download_fav_factory(ctx: typer.Context, func_name_favorites: str, since: d
     Returns:
         bool: Download result.
     """
-    _ = ctx.invoke(login, ctx)
+    _ = _resolve_session(ctx)
     tidal = _ctx_tidal(ctx)
     user = cast(Any, tidal.session.user)
     func_favorites = cast(Callable[[], list[FavoriteMedia]], getattr(user.favorites, func_name_favorites))
@@ -1020,7 +1056,7 @@ def import_playlist(
         output (Path | None, optional): One-off output directory override.
         debug (bool, optional): Enable debug mode.
     """
-    _ = ctx.invoke(login, ctx)
+    _ = _resolve_session(ctx)
 
     settings = _ctx_settings(ctx)
     tidal = _ctx_tidal(ctx)
