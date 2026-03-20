@@ -1350,6 +1350,233 @@ def scan_show() -> None:
         Console().print(f"  [{i}] {p}  {status}")
 
 
+@app.command(name="isrc-tag")
+def isrc_tag(
+    ctx: typer.Context,
+    directory: Annotated[
+        str,
+        typer.Argument(
+            help="Directory to scan for audio files missing ISRC tags.",
+        ),
+    ],
+    limit: Annotated[
+        int,
+        typer.Option(
+            "--limit",
+            "-n",
+            help="Stop after tagging this many files (0 = no limit).",
+        ),
+    ] = 0,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Show what would be tagged without writing.",
+        ),
+    ] = False,
+) -> None:
+    """Look up and write missing ISRC tags via Tidal search.
+
+    Scans audio files for existing artist+title tags, searches Tidal for a
+    match, and writes the ISRC back to the file. Skips files that already
+    have an ISRC. Updates the ISRC index after tagging.
+    """
+    import time as _time
+
+    dir_path = Path(directory).expanduser().resolve()
+
+    import mutagen as _mutagen
+    import mutagen.flac
+    import mutagen.mp3
+    import mutagen.mp4
+    import mutagen.oggvorbis
+    from mutagen.id3 import TSRC
+
+    from tidal_dl.helper.isrc_index import IsrcIndex
+    from tidal_dl.helper.library_scanner import SCAN_EXTENSIONS, _extract_isrc
+
+    # Need OAuth for Tidal search
+    if not _resolve_session(ctx):
+        raise typer.Exit(code=1)
+
+    tidal = _ctx_tidal(ctx)
+
+    if tidal.session.user is None:
+        console = Console()
+        console.print("[red]ISRC tagging requires OAuth login for Tidal search.[/red]")
+        console.print("Run [bold]music-dl login[/bold] first.")
+        raise typer.Exit(code=1)
+
+    console = Console()
+    console.print(f"[cyan]Scanning {dir_path} for files missing ISRC tags...[/cyan]")
+
+    # Collect files missing ISRCs with artist+title tags
+    candidates: list[tuple[Path, str, str]] = []  # (path, artist, title)
+    skipped_has_isrc = 0
+    skipped_no_tags = 0
+
+    for file_path in sorted(dir_path.rglob("*")):
+        if not file_path.is_file():
+            continue
+        if file_path.suffix.lower() not in SCAN_EXTENSIONS:
+            continue
+
+        # Skip if already has ISRC
+        if _extract_isrc(file_path):
+            skipped_has_isrc += 1
+            continue
+
+        # Read artist + title via easy tags
+        try:
+            audio = _mutagen.File(str(file_path), easy=True)
+        except Exception:
+            continue
+
+        if audio is None or audio.tags is None:
+            skipped_no_tags += 1
+            continue
+
+        artist_list = audio.tags.get("artist") or audio.tags.get("albumartist")
+        title_list = audio.tags.get("title")
+
+        if not artist_list or not title_list:
+            skipped_no_tags += 1
+            continue
+
+        artist = str(artist_list[0]) if isinstance(artist_list, list) else str(artist_list)
+        title = str(title_list[0]) if isinstance(title_list, list) else str(title_list)
+
+        if artist.strip() and title.strip():
+            candidates.append((file_path, artist.strip(), title.strip()))
+
+    console.print(
+        f"[cyan]Found {len(candidates)} files missing ISRC with artist+title tags.[/cyan]\n"
+        f"[dim]({skipped_has_isrc} already have ISRC, {skipped_no_tags} missing artist/title tags)[/dim]"
+    )
+
+    if not candidates:
+        console.print("[green]Nothing to do.[/green]")
+        raise typer.Exit()
+
+    if limit > 0:
+        candidates = candidates[:limit]
+        console.print(f"[cyan]Processing first {limit} files.[/cyan]")
+
+    # Load ISRC index for updating after tagging
+    _index_path = _pathlib.Path(path_config_base()) / "isrc_index.json"
+    isrc_index = IsrcIndex(_index_path)
+    isrc_index.load()
+
+    tagged = 0
+    not_found = 0
+    errors = 0
+
+    def _write_isrc(path: Path, isrc: str) -> bool:
+        """Write ISRC tag to an audio file using the correct format."""
+        try:
+            audio = _mutagen.File(str(path), easy=False)
+            if audio is None:
+                return False
+
+            if isinstance(audio, mutagen.flac.FLAC):
+                if audio.tags is None:
+                    audio.add_tags()
+                audio.tags["ISRC"] = isrc
+            elif isinstance(audio, mutagen.mp3.MP3):
+                if audio.tags is None:
+                    audio.add_tags()
+                audio.tags.add(TSRC(encoding=3, text=isrc))
+            elif isinstance(audio, mutagen.mp4.MP4):
+                if audio.tags is None:
+                    audio.add_tags()
+                audio.tags["isrc"] = isrc
+            elif isinstance(audio, mutagen.oggvorbis.OggVorbis):
+                if audio.tags is None:
+                    audio.add_tags()
+                audio.tags["ISRC"] = isrc
+            else:
+                return False
+
+            audio.save()
+            return True
+        except Exception:
+            return False
+
+    progress = Progress(
+        TextColumn("[progress.description]{task.description}"),
+        SpinnerColumn(),
+        BarColumn(),
+        TaskProgressColumn(),
+        TextColumn("[dim]{task.fields[status]}[/dim]"),
+        refresh_per_second=5,
+    )
+
+    with progress:
+        task_id = progress.add_task("Tagging ISRCs", total=len(candidates), status="")
+
+        for file_path, artist, title in candidates:
+            progress.update(task_id, status=f"{artist} - {title}"[:60])
+
+            # Search Tidal for this track
+            try:
+                results = tidal.session.search(f"{artist} {title}", models=[Track], limit=5)
+                tracks = results.get("tracks", []) or results.get("top_hit", [])
+                if not tracks:
+                    not_found += 1
+                    progress.advance(task_id)
+                    continue
+
+                # Find best match — exact artist+title match preferred
+                matched_isrc = None
+                for track in tracks:
+                    track_title = (track.name or "").strip().lower()
+                    track_artist = (track.artist.name or "").strip().lower() if track.artist else ""
+                    if track_title == title.lower() and track_artist == artist.lower():
+                        matched_isrc = track.isrc
+                        break
+
+                # Fallback: use first result if no exact match
+                if not matched_isrc and tracks:
+                    matched_isrc = tracks[0].isrc
+
+                if not matched_isrc:
+                    not_found += 1
+                    progress.advance(task_id)
+                    continue
+
+                matched_isrc = matched_isrc.strip().upper()
+
+                if dry_run:
+                    progress.print(f"  [dim]Would tag:[/dim] {file_path.name} → {matched_isrc}")
+                    tagged += 1
+                else:
+                    if _write_isrc(file_path, matched_isrc):
+                        isrc_index.add(matched_isrc, file_path)
+                        tagged += 1
+                    else:
+                        errors += 1
+
+            except Exception:
+                errors += 1
+
+            progress.advance(task_id)
+
+            # Brief pause to avoid rate-limiting
+            _time.sleep(0.2)
+
+    # Save index
+    if not dry_run and tagged > 0:
+        isrc_index.save()
+
+    # Summary
+    console.print()
+    action = "Would tag" if dry_run else "Tagged"
+    console.print(f"[green]{action}: {tagged}[/green]  [yellow]Not found: {not_found}[/yellow]  [red]Errors: {errors}[/red]")
+
+    if not dry_run and tagged > 0:
+        console.print(f"[dim]ISRC index updated ({isrc_index.size} total entries).[/dim]")
+
+
 def main() -> None:
     """Installed entry-point wrapper.
 
