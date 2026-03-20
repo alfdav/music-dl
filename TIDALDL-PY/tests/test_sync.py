@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from unittest.mock import MagicMock
+from io import StringIO
+from unittest.mock import MagicMock, patch
 
-from tidal_dl.cli import _sync_diff_playlists
+from rich.console import Console
+
+from tidal_dl.cli import _sync_diff_playlists, _sync_print_summary, _sync_prompt_playlists
 
 
 @dataclass
@@ -30,6 +33,9 @@ def _make_isrc_index(known_isrcs: set[str]) -> MagicMock:
     idx.contains.side_effect = lambda isrc: isrc in known_isrcs
     idx.load.return_value = None
     return idx
+
+
+# --- _sync_diff_playlists tests ---
 
 
 def test_diff_finds_missing_tracks():
@@ -96,11 +102,7 @@ def test_diff_paginates_large_playlist():
     assert result[0]["missing"] == 150
 
 
-from io import StringIO
-
-from rich.console import Console
-
-from tidal_dl.cli import _sync_print_summary
+# --- _sync_print_summary tests ---
 
 
 def test_summary_table_renders():
@@ -120,9 +122,7 @@ def test_summary_table_renders():
     assert "Done" in output
 
 
-from unittest.mock import patch
-
-from tidal_dl.cli import _sync_prompt_playlists
+# --- _sync_prompt_playlists tests ---
 
 
 def test_prompt_yes_selects_playlist():
