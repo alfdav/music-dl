@@ -70,6 +70,7 @@ music-dl https://tidal.com/browse/album/123456789
 
 OAuth login is still important when you want:
 
+- playlist sync (`music-dl sync`)
 - favourites downloads
 - OAuth fallback when the Hi-Fi API source is unavailable
 - a stored personal session for broader metadata access
@@ -168,6 +169,19 @@ Important behavior:
 - when the preferred source fails, the app can fall back automatically
 - an OAuth login is still useful even when Hi-Fi API is your preferred source
 
+### Sync Tidal playlists
+
+Compare your Tidal playlists against your local library and download missing tracks.
+
+```shell
+music-dl sync           # Interactive — prompts per playlist
+music-dl sync --yes     # Download all missing tracks without prompting
+```
+
+Requires OAuth login for playlist enumeration. Downloads use the Hi-Fi API by default.
+
+Tip: run `music-dl scan add /path/to/library` first to seed the duplicate index from your existing collection, so sync only downloads what you're truly missing.
+
 ### Seed the duplicate index from an existing library
 
 The persistent duplicate index lives at `~/.config/music-dl/isrc_index.json`.
@@ -200,6 +214,7 @@ music-dl <URL>
 music-dl dl [URLS]... [--list FILE] [--output DIR] [--debug]
 music-dl dl_fav tracks|albums|artists|videos [--since TIMESTAMP]
 music-dl import FILE [--output DIR] [--debug]
+music-dl sync [--yes]
 music-dl login
 music-dl logout
 music-dl cfg [KEY] [VALUE]
