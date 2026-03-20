@@ -94,3 +94,27 @@ def test_diff_paginates_large_playlist():
 
     assert result[0]["total"] == 150
     assert result[0]["missing"] == 150
+
+
+from io import StringIO
+
+from rich.console import Console
+
+from tidal_dl.cli import _sync_print_summary
+
+
+def test_summary_table_renders():
+    diff = [
+        {"name": "Chill", "total": 42, "local": 38, "missing": 4, "share_url": ""},
+        {"name": "Done", "total": 10, "local": 10, "missing": 0, "share_url": ""},
+    ]
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=True, width=80)
+
+    _sync_print_summary(diff, console)
+
+    output = buf.getvalue()
+    assert "Chill" in output
+    assert "42" in output
+    assert "4" in output
+    assert "Done" in output

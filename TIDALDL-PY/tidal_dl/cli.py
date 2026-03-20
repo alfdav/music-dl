@@ -393,6 +393,31 @@ def _sync_diff_playlists(
     return results
 
 
+def _sync_print_summary(diff: list[dict[str, Any]], console: Console) -> None:
+    """Print a Rich table summarising the sync diff.
+
+    Args:
+        diff: Output of _sync_diff_playlists().
+        console: Rich Console to print to.
+    """
+    table = Table(title="Playlist Sync Summary", show_lines=False)
+    table.add_column("Playlist", style="cyan", no_wrap=True)
+    table.add_column("Total", justify="right")
+    table.add_column("Local", justify="right")
+    table.add_column("Missing", justify="right")
+
+    for row in diff:
+        missing_style = "red bold" if row["missing"] > 0 else "green"
+        table.add_row(
+            row["name"],
+            str(row["total"]),
+            str(row["local"]),
+            f"[{missing_style}]{row['missing']}[/{missing_style}]",
+        )
+
+    console.print(table)
+
+
 @app.command(name="cfg")
 def settings_management(
     names: Annotated[list[str] | None, typer.Argument()] = None,
