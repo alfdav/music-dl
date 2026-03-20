@@ -668,6 +668,12 @@ def sync(
     tidal = _ctx_tidal(ctx)
     console = Console()
 
+    # Sync requires an OAuth session — Hi-Fi API alone can't enumerate user playlists
+    if tidal.session.user is None:
+        console.print("[red]Sync requires an OAuth login to access your playlists.[/red]")
+        console.print("Run [bold]music-dl login[/bold] first to authenticate with TIDAL.")
+        raise typer.Exit(code=1)
+
     # Fetch all user playlists (paginated, 50 per page)
     console.print("[cyan]Fetching your playlists...[/cyan]")
     user = cast(Any, tidal.session.user)
