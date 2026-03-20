@@ -32,7 +32,7 @@ from tidal_dl.config import HandlingApp, Settings, Tidal
 from tidal_dl.constants import CTX_TIDAL, FAVORITES, DownloadSource, MediaType
 from tidal_dl.download import Download
 from tidal_dl.helper.cli import parse_timestamp
-from tidal_dl.helper.path import get_format_template, path_file_settings
+from tidal_dl.helper.path import get_format_template, path_config_base, path_file_settings
 from tidal_dl.helper.playlist_import import PlaylistImporter
 from tidal_dl.helper.tidal import (
     all_artist_album_ids,
@@ -642,6 +642,82 @@ def logout() -> bool:
         print("You have been successfully logged out.")
 
     return result
+
+
+@app.command(name="sync")
+def sync(
+    ctx: typer.Context,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Skip per-playlist prompt and download all missing tracks.",
+        ),
+    ] = False,
+) -> None:
+    """Sync local library with your Tidal playlists.
+
+    Fetches all playlists in your Tidal collection, compares track ISRCs
+    against the local index, and downloads missing tracks.
+    """
+    # Login required for playlist enumeration
+    if not ctx.invoke(login, ctx):
+        raise typer.Exit(code=1)
+
+    tidal = _ctx_tidal(ctx)
+    console = Console()
+
+    # Fetch all user playlists (paginated, 50 per page)
+    console.print("[cyan]Fetching your playlists...[/cyan]")
+    user = cast(Any, tidal.session.user)
+    all_playlists: list[Any] = []
+    offset = 0
+    while True:
+        page = user.favorites.playlists(limit=50, offset=offset)
+        if not page:
+            break
+        all_playlists.extend(page)
+        if len(page) < 50:
+            break
+        offset += 50
+
+    if not all_playlists:
+        console.print("[yellow]No playlists found in your collection.[/yellow]")
+        raise typer.Exit()
+
+    console.print(f"[cyan]Found {len(all_playlists)} playlists. Checking tracks...[/cyan]")
+
+    # Load ISRC index
+    from tidal_dl.helper.isrc_index import IsrcIndex
+    _index_path = _pathlib.Path(path_config_base()) / "isrc_index.json"
+    isrc_index = IsrcIndex(_index_path)
+    isrc_index.load()
+
+    # Diff
+    diff = _sync_diff_playlists(all_playlists, isrc_index)
+
+    # Summary
+    _sync_print_summary(diff, console)
+
+    total_missing = sum(row["missing"] for row in diff)
+    if total_missing == 0:
+        console.print("\n[green]All playlists up to date.[/green]")
+        raise typer.Exit()
+
+    console.print(f"\n[cyan]{total_missing} total missing tracks across all playlists.[/cyan]\n")
+
+    # Prompt
+    urls = _sync_prompt_playlists(diff, auto_yes=yes)
+
+    if not urls:
+        console.print("[yellow]No playlists selected. Nothing to do.[/yellow]")
+        raise typer.Exit()
+
+    # Download — reuse existing pipeline (Hi-Fi API default, full dedup + M3U rebuild)
+    result = _download(ctx, urls, try_login=False)
+    if not result:
+        raise typer.Exit(code=1)
 
 
 @app.command(name="dl")
