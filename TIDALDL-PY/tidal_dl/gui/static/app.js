@@ -449,7 +449,7 @@ function _albumsInsight(count, artists) {
     lines.push(_insight('', artists[1].artist, ' follows with ' + artists[1].count));
   }
   if (artists && artists.length >= 3) {
-    lines.push(_insight('', artists[2].artist, ' rounds out the top three'));
+    lines.push(_insight('', artists[2].artist, ' rounds out the top three with ' + artists[2].count));
   }
   if (lines.length === 0) {
     lines.push(_insight('', count.toLocaleString(), ' albums in your collection'));
