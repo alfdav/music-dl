@@ -20,7 +20,8 @@ All paths below are relative to `TIDALDL-PY/`.
 
 | File | Responsibility |
 |---|---|
-| `tidal_dl/gui/__init__.py` | FastAPI app factory — creates app, mounts static, registers routers |
+| `tidal_dl/gui/__init__.py` | FastAPI app factory — creates app, mounts static, registers routers, security middleware |
+| `tidal_dl/gui/security.py` | CSRF token generation, Host header validation middleware, path validation utilities |
 | `tidal_dl/gui/server.py` | uvicorn launcher, browser open, signal handling |
 | `tidal_dl/gui/api/__init__.py` | API router aggregation |
 | `tidal_dl/gui/api/search.py` | `GET /api/search` — Tidal search with ISRC cross-ref |
@@ -38,8 +39,355 @@ All paths below are relative to `TIDALDL-PY/`.
 
 | File | Change |
 |---|---|
-| `pyproject.toml` | Add `fastapi>=0.115.0`, `uvicorn[standard]>=0.34.0` to dependencies |
+| `pyproject.toml` | Add `fastapi>=0.115.0`, `uvicorn>=0.34.0` to dependencies |
 | `tidal_dl/cli.py` | Add `gui` command to Typer app |
+
+---
+
+## Task 0: Security Hardening — Middleware, CSRF, Path Validation
+
+**Context:** music-dl was CLI-only. Adding a local HTTP server is a significant threat model change. Any website the user visits while the GUI is running could make requests to `localhost:8765`. This task builds the security layer that all other tasks depend on.
+
+**Files:**
+- Create: `TIDALDL-PY/tidal_dl/gui/security.py`
+- Test: `TIDALDL-PY/tests/test_gui_security.py`
+
+- [ ] **Step 1: Write security tests**
+
+Create `tests/test_gui_security.py`:
+
+```python
+"""Security tests for the GUI server."""
+
+import secrets
+from unittest.mock import patch
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+
+def _create_secured_app():
+    """Create a minimal FastAPI app with security middleware for testing."""
+    from tidal_dl.gui.security import (
+        CSRFMiddleware,
+        HostValidationMiddleware,
+        validate_audio_path,
+    )
+
+    app = FastAPI()
+    csrf_token = secrets.token_urlsafe(32)
+    app.state.csrf_token = csrf_token
+    app.add_middleware(HostValidationMiddleware, allowed_hosts=["localhost:8765", "127.0.0.1:8765"])
+    app.add_middleware(CSRFMiddleware, csrf_token=csrf_token)
+
+    @app.get("/api/test")
+    def test_read():
+        return {"ok": True}
+
+    @app.post("/api/test")
+    def test_write():
+        return {"ok": True}
+
+    return app, csrf_token
+
+
+class TestHostValidation:
+    def test_allows_localhost(self):
+        app, token = _create_secured_app()
+        client = TestClient(app)
+        resp = client.get("/api/test", headers={"Host": "localhost:8765", "X-CSRF-Token": token})
+        assert resp.status_code == 200
+
+    def test_allows_127(self):
+        app, token = _create_secured_app()
+        client = TestClient(app)
+        resp = client.get("/api/test", headers={"Host": "127.0.0.1:8765", "X-CSRF-Token": token})
+        assert resp.status_code == 200
+
+    def test_rejects_foreign_host(self):
+        app, token = _create_secured_app()
+        client = TestClient(app)
+        resp = client.get("/api/test", headers={"Host": "evil.com", "X-CSRF-Token": token})
+        assert resp.status_code == 403
+
+    def test_blocks_dns_rebinding(self):
+        app, token = _create_secured_app()
+        client = TestClient(app)
+        resp = client.get("/api/test", headers={"Host": "attacker.localhost:8765", "X-CSRF-Token": token})
+        assert resp.status_code == 403
+
+
+class TestCSRF:
+    def test_get_requests_pass_without_token(self):
+        app, _ = _create_secured_app()
+        client = TestClient(app)
+        resp = client.get("/api/test", headers={"Host": "localhost:8765"})
+        assert resp.status_code == 200
+
+    def test_post_rejected_without_token(self):
+        app, _ = _create_secured_app()
+        client = TestClient(app)
+        resp = client.post("/api/test", headers={"Host": "localhost:8765"})
+        assert resp.status_code == 403
+
+    def test_post_accepted_with_valid_token(self):
+        app, token = _create_secured_app()
+        client = TestClient(app)
+        resp = client.post("/api/test", headers={"Host": "localhost:8765", "X-CSRF-Token": token})
+        assert resp.status_code == 200
+
+    def test_post_rejected_with_wrong_token(self):
+        app, _ = _create_secured_app()
+        client = TestClient(app)
+        resp = client.post("/api/test", headers={"Host": "localhost:8765", "X-CSRF-Token": "wrong"})
+        assert resp.status_code == 403
+
+
+class TestPathValidation:
+    def test_allows_audio_in_allowed_dir(self, tmp_path):
+        from tidal_dl.gui.security import validate_audio_path
+
+        audio = tmp_path / "track.flac"
+        audio.write_bytes(b"fake")
+        result = validate_audio_path(str(audio), [str(tmp_path)])
+        assert result == audio.resolve()
+
+    def test_rejects_outside_allowed_dir(self, tmp_path):
+        from tidal_dl.gui.security import validate_audio_path
+
+        result = validate_audio_path("/etc/passwd", [str(tmp_path)])
+        assert result is None
+
+    def test_rejects_non_audio_extension(self, tmp_path):
+        from tidal_dl.gui.security import validate_audio_path
+
+        bad = tmp_path / "secrets.json"
+        bad.write_bytes(b"{}")
+        result = validate_audio_path(str(bad), [str(tmp_path)])
+        assert result is None
+
+    def test_rejects_symlink_escape(self, tmp_path):
+        from tidal_dl.gui.security import validate_audio_path
+
+        # Create a symlink that points outside allowed dir
+        target = tmp_path.parent / "outside.flac"
+        target.write_bytes(b"fake")
+        link = tmp_path / "escape.flac"
+        link.symlink_to(target)
+
+        result = validate_audio_path(str(link), [str(tmp_path)])
+        assert result is None
+
+    def test_rejects_dot_dot_traversal(self, tmp_path):
+        from tidal_dl.gui.security import validate_audio_path
+
+        path = str(tmp_path / ".." / ".." / "etc" / "passwd")
+        result = validate_audio_path(path, [str(tmp_path)])
+        assert result is None
+
+    def test_rejects_nonexistent_file(self, tmp_path):
+        from tidal_dl.gui.security import validate_audio_path
+
+        result = validate_audio_path(str(tmp_path / "nope.flac"), [str(tmp_path)])
+        assert result is None
+
+    def test_validates_download_path_change(self, tmp_path):
+        from tidal_dl.gui.security import validate_download_path
+
+        assert validate_download_path(str(tmp_path)) is True
+        assert validate_download_path("/etc") is False
+        assert validate_download_path("/usr/bin") is False
+        assert validate_download_path("/nonexistent/path") is False
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd /Users/hackbook/Documents/opt/music-dl/TIDALDL-PY && python -m pytest tests/test_gui_security.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'tidal_dl.gui.security'`
+
+- [ ] **Step 3: Implement security module**
+
+Create `tidal_dl/gui/security.py`:
+
+```python
+"""Security middleware and utilities for the GUI server.
+
+Threat model: music-dl GUI runs a local HTTP server. Any website the user
+visits while the GUI is open can attempt requests to localhost. This module
+provides defense-in-depth against DNS rebinding, CSRF, path traversal, and
+SSRF attacks.
+"""
+
+from __future__ import annotations
+
+import secrets
+from pathlib import Path
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+# Audio extensions allowed for local file serving
+AUDIO_EXTENSIONS = frozenset({".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma"})
+
+# Directories that must never be used as download paths
+FORBIDDEN_PATHS = frozenset({
+    "/etc", "/usr", "/bin", "/sbin", "/var", "/boot", "/dev", "/proc", "/sys",
+    "/Library", "/System", "/Applications",
+    str(Path.home() / ".ssh"),
+    str(Path.home() / ".gnupg"),
+    str(Path.home() / ".config"),
+})
+
+# Known Tidal CDN hostnames allowed for stream proxying
+TIDAL_CDN_HOSTS = frozenset({
+    "sp-pr-cf.audio.tidal.com",
+    "sp-ad-cf.audio.tidal.com",
+    "fa-cf.audio.tidal.com",
+    "listening-test.tidal.com",
+})
+
+
+def generate_csrf_token() -> str:
+    """Generate a cryptographically secure CSRF token."""
+    return secrets.token_urlsafe(32)
+
+
+class HostValidationMiddleware(BaseHTTPMiddleware):
+    """Reject requests with unexpected Host headers to prevent DNS rebinding.
+
+    Only allows requests where the Host header exactly matches an allowed value.
+    This prevents an attacker-controlled domain from resolving to 127.0.0.1
+    and making cross-origin requests that bypass browser same-origin policy.
+    """
+
+    def __init__(self, app, allowed_hosts: list[str]):
+        super().__init__(app)
+        self.allowed_hosts = set(allowed_hosts)
+
+    async def dispatch(self, request: Request, call_next):
+        host = request.headers.get("host", "")
+        # Strip port-less variants too
+        host_no_port = host.split(":")[0] if ":" in host else host
+
+        if host not in self.allowed_hosts and host_no_port not in {"localhost", "127.0.0.1"}:
+            return JSONResponse(
+                {"detail": "Forbidden: invalid Host header"},
+                status_code=403,
+            )
+        return await call_next(request)
+
+
+class CSRFMiddleware(BaseHTTPMiddleware):
+    """Require a CSRF token on all state-mutating requests (POST/PATCH/PUT/DELETE).
+
+    The token is generated at server startup, embedded in index.html, and must
+    be sent as the X-CSRF-Token header. Cross-origin pages cannot read the
+    token from our HTML, so they cannot forge valid mutating requests.
+
+    GET/HEAD/OPTIONS are exempt (safe methods per HTTP spec).
+    """
+
+    SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+    def __init__(self, app, csrf_token: str):
+        super().__init__(app)
+        self.csrf_token = csrf_token
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method in self.SAFE_METHODS:
+            return await call_next(request)
+
+        token = request.headers.get("X-CSRF-Token", "")
+        if not secrets.compare_digest(token, self.csrf_token):
+            return JSONResponse(
+                {"detail": "Forbidden: invalid or missing CSRF token"},
+                status_code=403,
+            )
+        return await call_next(request)
+
+
+def validate_audio_path(path_str: str, allowed_dirs: list[str]) -> Path | None:
+    """Validate that a file path is a real audio file inside an allowed directory.
+
+    Returns the resolved Path if valid, None if rejected.
+
+    Defenses:
+    - Resolves symlinks before checking containment (prevents symlink escape)
+    - Uses is_relative_to() instead of string prefix matching
+    - Checks file actually exists (no speculative path access)
+    - Whitelists audio extensions only
+    """
+    try:
+        file_path = Path(path_str).resolve(strict=True)  # strict=True: file must exist
+    except (OSError, ValueError):
+        return None
+
+    # Extension whitelist
+    if file_path.suffix.lower() not in AUDIO_EXTENSIONS:
+        return None
+
+    # Must be inside at least one allowed directory
+    for allowed in allowed_dirs:
+        allowed_resolved = Path(allowed).resolve()
+        if file_path.is_relative_to(allowed_resolved):
+            return file_path
+
+    return None
+
+
+def validate_download_path(path_str: str) -> bool:
+    """Validate that a path is safe to use as a download directory.
+
+    Rejects system directories, non-existent paths, and paths the user
+    likely doesn't intend to fill with music files.
+    """
+    try:
+        resolved = Path(path_str).resolve()
+    except (OSError, ValueError):
+        return False
+
+    if not resolved.is_dir():
+        return False
+
+    resolved_str = str(resolved)
+    for forbidden in FORBIDDEN_PATHS:
+        if resolved_str == forbidden or resolved_str.startswith(forbidden + "/"):
+            return False
+
+    return True
+
+
+def validate_stream_url(url: str) -> bool:
+    """Validate that a stream URL points to a known Tidal CDN host.
+
+    Prevents SSRF by ensuring we only proxy requests to Tidal infrastructure.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+
+    if parsed.scheme != "https":
+        return False
+
+    return parsed.hostname in TIDAL_CDN_HOSTS
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd /Users/hackbook/Documents/opt/music-dl/TIDALDL-PY && python -m pytest tests/test_gui_security.py -v`
+Expected: All PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd /Users/hackbook/Documents/opt/music-dl
+git add TIDALDL-PY/tidal_dl/gui/security.py TIDALDL-PY/tests/test_gui_security.py
+git commit -m "feat(gui): add security layer — CSRF, Host validation, path/URL validation"
+```
 
 ---
 
@@ -55,7 +403,7 @@ All paths below are relative to `TIDALDL-PY/`.
 
 - [ ] **Step 1: Add dependencies to pyproject.toml**
 
-Add `fastapi>=0.115.0` and `uvicorn[standard]>=0.34.0` to the `dependencies` list in `pyproject.toml`.
+Add `fastapi>=0.115.0` and `uvicorn>=0.34.0` to the `dependencies` list in `pyproject.toml`.
 
 - [ ] **Step 2: Install updated dependencies**
 
@@ -99,19 +447,73 @@ Create `tidal_dl/gui/__init__.py`:
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from tidal_dl.gui.api import api_router
+from tidal_dl.gui.security import (
+    CSRFMiddleware,
+    HostValidationMiddleware,
+    generate_csrf_token,
+)
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
+def create_app(port: int = 8765) -> FastAPI:
+    """Create and configure the FastAPI application with security middleware."""
     app = FastAPI(title="music-dl", docs_url="/api/docs", redoc_url=None)
+
+    # --- Security middleware (outermost first) ---
+    csrf_token = generate_csrf_token()
+    app.state.csrf_token = csrf_token
+
+    allowed_hosts = [f"localhost:{port}", f"127.0.0.1:{port}"]
+    app.add_middleware(HostValidationMiddleware, allowed_hosts=allowed_hosts)
+    app.add_middleware(CSRFMiddleware, csrf_token=csrf_token)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[f"http://localhost:{port}", f"http://127.0.0.1:{port}"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
+        allow_headers=["X-CSRF-Token", "Content-Type"],
+    )
+
+    # --- Routes ---
     app.include_router(api_router, prefix="/api")
-    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static")
+
+    # Serve index.html with CSRF token injected
+    @app.get("/", response_class=HTMLResponse)
+    async def index():
+        html_path = _STATIC_DIR / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        # Inject CSRF token into a meta tag for JS to read
+        html = html.replace("__CSRF_TOKEN__", csrf_token)
+        return HTMLResponse(html)
+
+    # Static assets (CSS, JS, fonts)
+    app.mount("/", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
     return app
+```
+
+**Note:** The CSRF token is injected into `index.html` via a `<meta>` tag placeholder `__CSRF_TOKEN__`. The frontend JS reads it from `document.querySelector('meta[name="csrf-token"]').content` and includes it as `X-CSRF-Token` header on all POST/PATCH/DELETE requests.
+
+Add this meta tag to `index.html` in Task 4:
+```html
+<meta name="csrf-token" content="__CSRF_TOKEN__">
+```
+
+And in `app.js`, wrap fetch for mutating requests:
+```javascript
+function apiFetch(path, options = {}) {
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+    const headers = { ...options.headers, 'Content-Type': 'application/json' };
+    if (options.method && options.method !== 'GET') {
+        headers['X-CSRF-Token'] = csrfToken;
+    }
+    return fetch('/api' + path, { ...options, headers });
+}
 ```
 
 Create `tidal_dl/gui/api/__init__.py`:
@@ -507,26 +909,25 @@ def serve_local_file(path: str = Query(..., description="Absolute path to audio 
 
     Path must be within a configured download directory.
     """
-    file_path = Path(path).resolve()
+    from tidal_dl.gui.security import validate_audio_path
+
     allowed = get_download_paths()
+    validated_path = validate_audio_path(path, allowed)
 
-    if not any(str(file_path).startswith(str(Path(d).resolve())) for d in allowed):
-        raise HTTPException(status_code=403, detail="Path outside allowed directories")
+    if validated_path is None:
+        raise HTTPException(status_code=403, detail="Access denied")
 
-    if not file_path.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
-
-    suffix = file_path.suffix.lower()
     media_types = {
         ".flac": "audio/flac",
         ".mp3": "audio/mpeg",
         ".m4a": "audio/mp4",
         ".ogg": "audio/ogg",
         ".wav": "audio/wav",
+        ".aac": "audio/aac",
     }
-    media_type = media_types.get(suffix, "application/octet-stream")
+    media_type = media_types.get(validated_path.suffix.lower(), "audio/flac")
 
-    return FileResponse(file_path, media_type=media_type)
+    return FileResponse(validated_path, media_type=media_type)
 
 
 @router.get("/stream/{track_id}")
@@ -551,7 +952,13 @@ def stream_tidal_track(track_id: int):
             urls = manifest.get_urls()
 
             if urls:
-                resp = http_requests.get(urls[0], stream=True, timeout=30)
+                from tidal_dl.gui.security import validate_stream_url
+
+                stream_url = urls[0]
+                if not validate_stream_url(stream_url):
+                    raise HTTPException(status_code=502, detail="Untrusted stream source")
+
+                resp = http_requests.get(stream_url, stream=True, timeout=30, allow_redirects=False)
                 content_type = resp.headers.get("Content-Type", "audio/flac")
 
                 return StreamingResponse(
@@ -672,7 +1079,24 @@ function updateProgress() { ... } // Called on 'timeupdate' event
 navigate(location.hash.slice(1) || 'search');
 ```
 
-Each view renderer function returns an HTML string that gets set as `#view.innerHTML`. Event listeners are attached after render via delegation on `#view`.
+Each view renderer builds DOM elements programmatically using `createElement` + `textContent` — **never `innerHTML` with user data**. All metadata strings from Tidal (track names, artist names, album names) must go through `textContent` or a dedicated `escapeHtml()` function to prevent XSS. Structural HTML (layout scaffolding with no user data) may use `innerHTML`. Event listeners are attached after render via delegation on `#view`.
+
+```javascript
+/** Escape HTML entities in user-supplied strings. Use for any data from Tidal API. */
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+/** Create a text element safely. Preferred over innerHTML for user data. */
+function textEl(tag, text, className) {
+    const el = document.createElement(tag);
+    el.textContent = text;
+    if (className) el.className = className;
+    return el;
+}
+```
 
 - [ ] **Step 4: Manual smoke test**
 
@@ -984,6 +1408,7 @@ class DownloadEntry:
 _active: dict[int, DownloadEntry] = {}
 _history: deque[dict] = deque(maxlen=50)
 _sse_clients: list[asyncio.Queue] = []
+_MAX_SSE_CLIENTS = 5
 
 
 def _broadcast(event: dict):
@@ -1067,6 +1492,9 @@ def download(req: DownloadRequest):
 @router.get("/downloads/active")
 async def downloads_sse():
     """Server-Sent Events stream for download progress."""
+    if len(_sse_clients) >= _MAX_SSE_CLIENTS:
+        raise HTTPException(status_code=429, detail="Too many SSE connections")
+
     queue: asyncio.Queue = asyncio.Queue()
     _sse_clients.append(queue)
 
@@ -1440,8 +1868,18 @@ class SettingsUpdate(BaseModel):
 @router.patch("/settings")
 def update_settings(update: SettingsUpdate) -> dict:
     """Update settings. Only provided fields are changed."""
+    from tidal_dl.gui.security import validate_download_path
+
+    updates = update.model_dump(exclude_none=True)
+
+    # Validate download path changes
+    if "download_base_path" in updates:
+        if not validate_download_path(updates["download_base_path"]):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail="Invalid download path")
+
     s = Settings()
-    for field, value in update.model_dump(exclude_none=True).items():
+    for field, value in updates.items():
         if hasattr(s.data, field):
             setattr(s.data, field, value)
     s.save()
@@ -1555,8 +1993,21 @@ git commit -m "feat(gui): self-host fonts, UX polish, update README"
 
 The `Settings` and `Tidal` singletons are shared between CLI and GUI. The GUI imports them normally — they're already thread-safe. The `clear_singletons` fixture in `conftest.py` ensures test isolation.
 
-### Security
+### Security (Defense-in-Depth)
 
-- Local file serving validates paths against configured download directories (no path traversal)
-- Server binds to `127.0.0.1` only (no remote access)
-- No authentication on the API (it's localhost-only, single-user)
+The GUI opens a local HTTP port — a fundamentally different threat model from CLI-only. Any website the user visits while the GUI runs can attempt requests to localhost. Defenses are layered:
+
+| Layer | Threat | Mitigation |
+|---|---|---|
+| **Host header validation** | DNS rebinding | Reject requests where `Host` isn't `localhost:{port}` or `127.0.0.1:{port}` |
+| **CORS** | Cross-origin reads | Only allow origin `http://localhost:{port}` |
+| **CSRF token** | Cross-origin state mutation | Random token in `index.html` meta tag, required as `X-CSRF-Token` header on POST/PATCH/DELETE |
+| **Path validation** | Path traversal, symlink escape | `Path.resolve(strict=True)` + `is_relative_to()` + audio extension whitelist |
+| **Download path validation** | Arbitrary file write via settings | Reject system dirs (`/etc`, `/usr`, `~/.ssh`, etc.) |
+| **Stream URL validation** | SSRF via proxy | Whitelist Tidal CDN hostnames, reject non-HTTPS, disable redirects |
+| **XSS prevention** | Malicious Tidal metadata | `textContent` / `escapeHtml()` for all user data, never raw `innerHTML` |
+| **SSE connection cap** | Resource exhaustion | Max 5 concurrent SSE clients |
+| **Localhost binding** | Remote access | `127.0.0.1` only, no `0.0.0.0` |
+| **Reduced dependencies** | Supply chain | `uvicorn` without `[standard]` extras, pinned versions |
+
+All security code lives in `tidal_dl/gui/security.py` with dedicated tests in `tests/test_gui_security.py`.
