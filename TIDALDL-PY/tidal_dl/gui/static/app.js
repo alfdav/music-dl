@@ -129,6 +129,55 @@ const state = {
   volume: 0.7,
 };
 
+// ---- FAVORITES CACHE ----
+// Keyed by path for local tracks or "tidal:{id}" for Tidal tracks
+const _favCache = {};
+
+async function loadFavCache(tracks) {
+  const paths = [];
+  const tids = [];
+  tracks.forEach(t => {
+    if (t.path) paths.push(t.path);
+    else if (t.id) tids.push(t.id);
+  });
+  if (!paths.length && !tids.length) return;
+
+  try {
+    const params = new URLSearchParams();
+    if (paths.length) params.set('paths', paths.join(','));
+    if (tids.length) params.set('tidal_ids', tids.join(','));
+    const data = await api('/library/favorites/check?' + params.toString());
+    Object.assign(_favCache, data.favorites || {});
+  } catch (_) {}
+}
+
+async function toggleFavorite(track, btn) {
+  const body = {
+    path: track.path || null,
+    tidal_id: track.id || null,
+    artist: track.artist || null,
+    title: track.name || null,
+    album: track.album || null,
+    isrc: track.isrc || null,
+    cover_url: track.cover_url || null,
+  };
+
+  try {
+    const res = await api('/library/favorites/toggle', {
+      method: 'POST',
+      body,
+    });
+
+    const key = track.path || (track.id ? 'tidal:' + track.id : null);
+    if (key) _favCache[key] = res.favorited;
+
+    btn.classList.toggle('hearted', res.favorited);
+    updatePlayerHeart();
+  } catch (err) {
+    toast('Failed to update favorite', 'error');
+  }
+}
+
 // ---- API ----
 const apiCache = {};
 
@@ -303,6 +352,7 @@ function navigate(view) {
     case 'library': renderLibrary(container); break;
     case 'recent': renderRecentlyPlayed(container); break;
     case 'playlists': renderPlaylists(container); break;
+    case 'favorites': renderFavorites(container); break;
     case 'downloads': renderDownloads(container); break;
     case 'settings': renderSettings(container); break;
     case 'djai': renderDjai(container); break;
@@ -1060,6 +1110,18 @@ function _trackKey(t) {
   return t.id || t.path || t.local_path || '';
 }
 
+function renderTrackHeader() {
+  return h('div', { className: 'track-header' },
+    textEl('div', '#', 'col-label center'),
+    h('div'),
+    textEl('div', 'Title', 'col-label'),
+    textEl('div', 'Album', 'col-label'),
+    textEl('div', 'Quality', 'col-label center'),
+    textEl('div', 'Time', 'col-label right'),
+    h('div')
+  );
+}
+
 function renderTrackRow(track, num, allTracks) {
   const current = state.queue[state.queueIndex];
   const isPlaying = current && _trackKey(current) === _trackKey(track) && _trackKey(track) !== '' && state.playing;
@@ -1142,6 +1204,33 @@ function renderTrackRow(track, num, allTracks) {
     actions.appendChild(btn);
   }
   row.appendChild(actions);
+
+  // Heart button
+  const heartSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  heartSvg.setAttribute('viewBox', '0 0 24 24');
+  heartSvg.setAttribute('fill', 'none');
+  heartSvg.setAttribute('stroke', 'currentColor');
+  const heartPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  heartPath.setAttribute('d', 'M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z');
+  heartSvg.appendChild(heartPath);
+
+  const heartBtn = h('button', {
+    className: 'heart-btn',
+    'aria-label': 'Toggle favorite',
+  });
+  heartBtn.appendChild(heartSvg);
+
+  const favKey = track.path || (track.id ? 'tidal:' + track.id : null);
+  if (favKey && _favCache[favKey]) {
+    heartBtn.classList.add('hearted');
+  }
+
+  heartBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleFavorite(track, heartBtn);
+  });
+
+  row.appendChild(heartBtn);
 
   // Click to play
   row.addEventListener('click', () => {
@@ -1988,6 +2077,79 @@ function updateDlBadge(delta) {
   badge.style.display = count > 0 ? '' : 'none';
 }
 
+// ---- FAVORITES VIEW ----
+async function renderFavorites(container) {
+  container.appendChild(breadcrumb([{ label: 'Favorites' }]));
+
+  const title = textEl('h1', 'Favorites', 'view-title');
+  container.appendChild(title);
+
+  const pills = h('div', { className: 'filter-pills' });
+  ['All', 'Downloaded', 'Pending'].forEach(label => {
+    const pill = textEl('button', label, 'pill' + (label === 'All' ? ' active' : ''));
+    pill.addEventListener('click', () => {
+      pills.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      loadFavorites(listArea, label.toLowerCase());
+    });
+    pills.appendChild(pill);
+  });
+  container.appendChild(pills);
+
+  const listArea = h('div', { className: 'favorites-list' });
+  container.appendChild(listArea);
+  loadFavorites(listArea, 'all');
+}
+
+async function loadFavorites(container, filter) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+
+  try {
+    const data = await api('/library/favorites');
+    let favs = data.favorites || [];
+
+    if (filter === 'downloaded') {
+      favs = favs.filter(f => f.is_local);
+    } else if (filter === 'pending') {
+      favs = favs.filter(f => !f.is_local && f.tidal_id);
+    }
+
+    if (favs.length === 0) {
+      const empty = h('div', { className: 'empty-state' });
+      empty.appendChild(textEl('div', filter === 'all' ? 'No favorites yet' : 'None in this category', 'empty-state-title'));
+      empty.appendChild(textEl('div', 'Heart tracks to save them here', 'empty-state-sub'));
+      container.appendChild(empty);
+      return;
+    }
+
+    container.appendChild(renderTrackHeader());
+
+    const trackList = favs.map(f => ({
+      path: f.path,
+      id: f.tidal_id,
+      name: f.name,
+      artist: f.artist,
+      album: f.album,
+      cover_url: f.cover_url,
+      is_local: f.is_local,
+      isrc: f.isrc,
+    }));
+
+    // Pre-load fav cache so hearts show as filled
+    await loadFavCache(trackList);
+
+    trackList.forEach((track, i) => {
+      const row = renderTrackRow(track, i + 1, trackList);
+      if (!track.is_local) {
+        row.style.opacity = '0.6';
+      }
+      container.appendChild(row);
+    });
+  } catch (err) {
+    container.appendChild(textEl('div', 'Failed to load favorites', 'error-text'));
+  }
+}
+
 // ---- DOWNLOADS VIEW ----
 function renderDownloads(container) {
   const resultsArea = h('div', { className: 'results' });
@@ -2346,6 +2508,38 @@ function _saveRecent() {
   try { localStorage.setItem('recentlyPlayed', JSON.stringify(recentlyPlayed)); } catch (_) {}
 }
 
+function updatePlayerHeart() {
+  const current = state.queue[state.queueIndex];
+  let heartEl = document.getElementById('now-heart');
+
+  if (!heartEl) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z');
+    svg.appendChild(path);
+
+    heartEl = h('button', { id: 'now-heart', className: 'heart-btn now-heart', 'aria-label': 'Toggle favorite' });
+    heartEl.appendChild(svg);
+    document.getElementById('now-playing').appendChild(heartEl);
+    heartEl.addEventListener('click', () => {
+      const trk = state.queue[state.queueIndex];
+      if (trk) toggleFavorite(trk, heartEl);
+    });
+  }
+
+  if (!current) {
+    heartEl.style.display = 'none';
+    return;
+  }
+
+  heartEl.style.display = '';
+  const key = current.path || (current.id ? 'tidal:' + current.id : null);
+  heartEl.classList.toggle('hearted', !!(key && _favCache[key]));
+}
+
 function playTrack(track) {
   if (!track) return;
 
@@ -2396,6 +2590,7 @@ function playTrack(track) {
   updateNowPlaying(track);
   generateWaveform();
   highlightPlayingTrack();
+  updatePlayerHeart();
 }
 
 function updateNowPlaying(track) {

@@ -938,6 +938,7 @@ body {
   display: flex;
   align-items: center;
   gap: 16px;
+  position: relative;
 }
 
 .now-art {
@@ -1995,6 +1996,50 @@ body {
 .album-shuffle-btn:disabled {
   opacity: 0.3;
   cursor: default;
+}
+
+/* ---- FAVORITES VIEW ---- */
+.view-title {
+  font-family: var(--serif);
+  font-size: 32px;
+  font-weight: 400;
+  color: var(--text);
+  margin-bottom: 16px;
+}
+
+.favorites-list {
+  margin-top: 8px;
+}
+
+/* ---- HEART / FAVORITE ---- */
+.heart-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  color: var(--text-muted);
+  transition: color 0.15s, transform 0.15s;
+  flex-shrink: 0;
+}
+
+.heart-btn:hover { color: var(--accent); transform: scale(1.15); }
+
+.heart-btn.hearted { color: #e25555; }
+.heart-btn.hearted:hover { color: #ff6b6b; }
+
+.heart-btn svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.5;
+}
+
+.heart-btn.hearted svg { fill: currentColor; }
+
+.now-heart {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 @media (prefers-reduced-motion: reduce) {
