@@ -361,8 +361,8 @@ function _replayedTile(track) {
 function _genreTile(topGenre, breakdown) {
   const tile = h('div', { className: 'bento-tile bento-stat-tile' });
   const body = h('div', { className: 'bento-body' });
-  body.appendChild(textEl('div', 'Top Genre', 'bento-eyebrow'));
   body.appendChild(textEl('div', topGenre || 'None', 'bento-label'));
+  body.appendChild(textEl('div', 'Top genre', 'bento-stat-label'));
   body.appendChild(_barChart(breakdown.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))));
   tile.appendChild(body);
   tile.appendChild(textEl('span', 'View stats', 'bento-hint'));
@@ -373,8 +373,8 @@ function _genreTile(topGenre, breakdown) {
 function _listeningTimeTile(hours, weekly) {
   const tile = h('div', { className: 'bento-tile bento-stat-tile' });
   const body = h('div', { className: 'bento-body' });
-  body.appendChild(textEl('div', 'Listening Time', 'bento-eyebrow'));
   body.appendChild(textEl('div', Math.round(hours) + 'h', 'bento-label'));
+  body.appendChild(textEl('div', 'Listening time', 'bento-stat-label'));
   body.appendChild(_weeklyChart(weekly));
   tile.appendChild(body);
   tile.appendChild(textEl('span', 'View stats', 'bento-hint'));
@@ -385,8 +385,8 @@ function _listeningTimeTile(hours, weekly) {
 function _tracksTile(count, genres) {
   const tile = h('div', { className: 'bento-tile bento-stat-tile' });
   const body = h('div', { className: 'bento-body' });
-  body.appendChild(textEl('div', 'Tracks', 'bento-eyebrow'));
   body.appendChild(textEl('div', count.toLocaleString(), 'bento-label'));
+  body.appendChild(textEl('div', 'Tracks', 'bento-stat-label'));
   if (genres && genres.length > 0) {
     body.appendChild(_barChart(genres.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))));
   }
@@ -399,8 +399,8 @@ function _tracksTile(count, genres) {
 function _albumsTile(count, artists) {
   const tile = h('div', { className: 'bento-tile bento-stat-tile' });
   const body = h('div', { className: 'bento-body' });
-  body.appendChild(textEl('div', 'Albums', 'bento-eyebrow'));
   body.appendChild(textEl('div', count.toLocaleString(), 'bento-label'));
+  body.appendChild(textEl('div', 'Albums', 'bento-stat-label'));
   if (artists && artists.length > 0) {
     body.appendChild(_barChart(artists.slice(0, 4).map(a => ({ label: a.artist, value: a.count }))));
   }
@@ -434,8 +434,9 @@ function _weeklyChart(values) {
   const chart = h('div', { className: 'mini-weekly-chart' });
   for (let i = 0; i < 7; i++) {
     const col = h('div', { className: 'weekly-col' });
-    const bar = h('div', { className: 'weekly-bar' });
-    bar.style.height = Math.round((values[i] / max) * 100) + '%';
+    const pct = values[i] / max;
+    const bar = h('div', { className: 'weekly-bar' + (pct >= 0.85 ? ' peak' : '') });
+    bar.style.height = Math.round(pct * 100) + '%';
     col.appendChild(bar);
     col.appendChild(textEl('span', days[i], 'weekly-day'));
     chart.appendChild(col);
@@ -447,10 +448,14 @@ function _renderRecentStrip(container) {
   const section = h('div', { className: 'home-recent-section' });
   const labelRow = h('div', { className: 'home-recent-header' });
   labelRow.appendChild(textEl('span', 'Recently played', 'home-section-label'));
-
+  const rightBtns = h('div', { className: 'home-recent-btns' });
+  const luckyBtn2 = h('button', { className: 'pill pill-sm', onClick: feelingLucky });
+  luckyBtn2.textContent = "I'm feeling lucky";
+  rightBtns.appendChild(luckyBtn2);
   const statsBtn = h('button', { className: 'pill pill-sm', onClick: () => toast('Stats detail coming soon') });
   statsBtn.textContent = 'Check my stats';
-  labelRow.appendChild(statsBtn);
+  rightBtns.appendChild(statsBtn);
+  labelRow.appendChild(rightBtns);
   section.appendChild(labelRow);
 
   const strip = h('div', { className: 'recent-strip' });

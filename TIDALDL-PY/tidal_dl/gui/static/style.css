@@ -1554,7 +1554,32 @@ body {
 }
 
 .bento-stat-tile {
-  background: linear-gradient(160deg, #1e1b16, #1c1a17 60%, #1a1815);
+  background: #1e1b16;
+  border: 1px solid #2a2520;
+}
+.bento-stat-tile .bento-body {
+  justify-content: flex-start;
+}
+.bento-stat-tile .bento-label {
+  color: var(--accent);
+  font-size: 32px;
+}
+.bento-stat-label {
+  font-size: 10px;
+  color: rgba(240,235,228,0.45);
+  letter-spacing: 0.5px;
+  margin-top: 4px;
+  text-transform: uppercase;
+}
+.bento-artist {
+  background: linear-gradient(145deg, #2a1f14, #3d2e1a);
+}
+.bento-artist.bento-hero {
+  background: linear-gradient(145deg, #3d2a12, #5a3d1a, #2a1f14);
+}
+.bento-replayed {
+  background: linear-gradient(145deg, #1e1a2e, #2a1f3d, #1a1528);
+  border: 1px solid #352a4a;
 }
 
 /* ---- MINI BAR CHART ---- */
@@ -1591,6 +1616,9 @@ body {
   border-radius: 4px;
   transition: width 0.6s ease;
 }
+.bar-row:nth-child(2) .bar-fill { opacity: 0.5; }
+.bar-row:nth-child(3) .bar-fill { opacity: 0.25; }
+.bar-row:nth-child(4) .bar-fill { opacity: 0.15; }
 
 /* ---- MINI WEEKLY CHART ---- */
 .mini-weekly-chart {
@@ -1611,10 +1639,13 @@ body {
 .weekly-bar {
   width: 100%;
   max-width: 18px;
-  background: var(--accent);
+  background: rgba(212,160,83,0.25);
   border-radius: 3px 3px 0 0;
   min-height: 3px;
   transition: height 0.6s ease;
+}
+.weekly-bar.peak {
+  background: var(--accent);
 }
 .weekly-day {
   font-size: 9px;
@@ -1632,8 +1663,13 @@ body {
 .home-recent-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: space-between;
   margin-bottom: 16px;
+}
+.home-recent-btns {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 .home-section-label {
   font-size: 13px;
