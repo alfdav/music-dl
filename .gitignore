@@ -42,3 +42,6 @@ TIDALDL-PY/tidal-gui.spec
 
 # Claude Code
 .claude/
+
+# Superpowers brainstorm artifacts
+.superpowers/
