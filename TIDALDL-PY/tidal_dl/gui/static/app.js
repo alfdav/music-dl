@@ -2328,6 +2328,8 @@ function updateNowPlaying(track) {
 
     if (info) info.classList.remove('changing');
   }, 150);
+
+  if (queuePanel.classList.contains('open')) renderQueue();
 }
 
 function updatePlayButton() {
@@ -2706,6 +2708,74 @@ async function triggerLogin() {
     console.error('[music-dl] login failed:', err);
   }
 }
+
+// ---- QUEUE PANEL ----
+const queuePanel = document.getElementById('queue-panel');
+const queueListEl = document.getElementById('queue-list');
+const btnQueueClose = document.getElementById('queue-close');
+
+function toggleQueue() {
+  queuePanel.classList.toggle('open');
+  if (queuePanel.classList.contains('open')) renderQueue();
+}
+
+function renderQueue() {
+  while (queueListEl.firstChild) queueListEl.removeChild(queueListEl.firstChild);
+
+  if (!state.queue.length) {
+    const empty = h('div', { className: 'queue-item' });
+    empty.textContent = 'Queue is empty';
+    empty.style.color = 'var(--text-muted)';
+    empty.style.justifyContent = 'center';
+    queueListEl.appendChild(empty);
+    return;
+  }
+
+  state.queue.forEach((track, i) => {
+    const item = h('div', {
+      className: 'queue-item' + (i === state.queueIndex ? ' qi-active' : ''),
+    });
+
+    const art = h('img', { className: 'queue-item-art', alt: '' });
+    art.src = track.cover_url || '';
+    art.onerror = function() { this.style.background = 'var(--surface)'; this.removeAttribute('src'); };
+
+    const info = h('div', { className: 'queue-item-info' });
+    info.appendChild(textEl('div', track.name || 'Unknown', 'queue-item-title'));
+    info.appendChild(textEl('div', track.artist || '', 'queue-item-artist'));
+
+    const remove = h('button', {
+      className: 'queue-item-remove',
+      'aria-label': 'Remove from queue',
+    });
+    remove.textContent = '\u00d7';
+    remove.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.queue.splice(i, 1);
+      if (i < state.queueIndex) state.queueIndex--;
+      else if (i === state.queueIndex && state.queue.length === 0) {
+        state.queueIndex = -1;
+      } else if (i === state.queueIndex && state.queueIndex >= state.queue.length) {
+        state.queueIndex = state.queue.length - 1;
+      }
+      renderQueue();
+    });
+
+    item.addEventListener('click', () => {
+      state.queueIndex = i;
+      playTrack(state.queue[i]);
+      renderQueue();
+    });
+
+    item.appendChild(art);
+    item.appendChild(info);
+    item.appendChild(remove);
+    queueListEl.appendChild(item);
+  });
+}
+
+document.getElementById('btn-queue').addEventListener('click', toggleQueue);
+btnQueueClose.addEventListener('click', toggleQueue);
 
 // ---- INIT ----
 refreshStatusLights();
