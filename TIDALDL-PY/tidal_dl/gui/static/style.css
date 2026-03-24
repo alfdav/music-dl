@@ -1578,8 +1578,7 @@ body {
   border: 1px solid #2a2520;
 }
 .bento-stat-tile .bento-body {
-  justify-content: flex-end;
-  gap: 0;
+  justify-content: flex-start;
 }
 .bento-stat-tile .bento-label {
   font-family: 'Crimson Pro', Georgia, serif;
