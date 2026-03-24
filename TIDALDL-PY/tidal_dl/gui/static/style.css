@@ -1275,13 +1275,13 @@ body {
   animation: fadeUp 0.4s ease both;
 }
 
-.track:nth-child(2) { animation-delay: 0.03s; }
-.track:nth-child(3) { animation-delay: 0.06s; }
-.track:nth-child(4) { animation-delay: 0.09s; }
-.track:nth-child(5) { animation-delay: 0.12s; }
-.track:nth-child(6) { animation-delay: 0.15s; }
-.track:nth-child(7) { animation-delay: 0.18s; }
-.track:nth-child(8) { animation-delay: 0.21s; }
+.track:nth-child(2) { animation-delay: 0.02s; }
+.track:nth-child(3) { animation-delay: 0.04s; }
+.track:nth-child(4) { animation-delay: 0.06s; }
+.track:nth-child(5) { animation-delay: 0.08s; }
+.track:nth-child(6) { animation-delay: 0.1s; }
+.track:nth-child(7) { animation-delay: 0.12s; }
+.track:nth-child(8) { animation-delay: 0.15s; }
 
 .search-area { animation: fadeUp 0.5s ease both; }
 .results-header { animation: fadeUp 0.5s ease 0.1s both; }
