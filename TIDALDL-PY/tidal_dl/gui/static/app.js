@@ -446,10 +446,20 @@ function _albumsInsight(count, artists) {
     lines.push(_insight('', artists[0].artist, ' leads with ' + artists[0].count + ' albums'));
   }
   if (artists && artists.length >= 2) {
-    lines.push(_insight('', artists[1].artist, ' follows with ' + artists[1].count));
+    const a = artists[1];
+    if (a.count === artists[0].count) {
+      lines.push(_insight('', a.artist, ' ties at ' + a.count + ' — neck and neck'));
+    } else {
+      lines.push(_insight('', a.artist, ' follows with ' + a.count));
+    }
   }
   if (artists && artists.length >= 3) {
-    lines.push(_insight('', artists[2].artist, ' rounds out the top three with ' + artists[2].count));
+    const a = artists[2];
+    if (artists.length >= 2 && a.count === artists[1].count) {
+      lines.push(_insight('', a.artist, ' also at ' + a.count + ' — three-way race'));
+    } else {
+      lines.push(_insight('', a.artist, ' rounds it out with ' + a.count));
+    }
   }
   if (lines.length === 0) {
     lines.push(_insight('', count.toLocaleString(), ' albums in your collection'));
