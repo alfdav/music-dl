@@ -255,3 +255,32 @@ class LibraryDB:
     def commit(self) -> None:
         assert self._conn
         self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Play tracking
+    # ------------------------------------------------------------------
+
+    def increment_play(self, path: str) -> None:
+        """Bump play_count and set last_played for a scanned track."""
+        assert self._conn
+        now = int(time.time())
+        self._conn.execute(
+            "UPDATE scanned SET play_count = play_count + 1, last_played = ? WHERE path = ?",
+            (now, path),
+        )
+
+    def log_play_event(
+        self,
+        *,
+        path: str | None,
+        artist: str | None,
+        genre: str | None,
+        duration: int | None,
+    ) -> None:
+        """Insert a play event for activity charts."""
+        assert self._conn
+        now = int(time.time())
+        self._conn.execute(
+            "INSERT INTO play_events (path, artist, genre, duration, played_at) VALUES (?, ?, ?, ?, ?)",
+            (path, artist, genre, duration, now),
+        )
