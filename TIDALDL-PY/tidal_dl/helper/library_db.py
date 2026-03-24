@@ -16,6 +16,7 @@ Stored at ``~/.config/music-dl/library.db``.
 
 from __future__ import annotations
 
+import datetime
 import pathlib
 import sqlite3
 import time
@@ -284,3 +285,134 @@ class LibraryDB:
             "INSERT INTO play_events (path, artist, genre, duration, played_at) VALUES (?, ?, ?, ?, ?)",
             (path, artist, genre, duration, now),
         )
+
+    def home_stats(self) -> dict:
+        """Aggregate all data needed for the Home view in one call."""
+        assert self._conn
+        c = self._conn
+
+        # Total plays (sum of play_count on scanned)
+        total_plays = c.execute(
+            "SELECT COALESCE(SUM(play_count), 0) FROM scanned"
+        ).fetchone()[0]
+
+        # Top artist (by sum of play_count)
+        top_artists_rows = c.execute(
+            """SELECT artist, SUM(play_count) as total, path
+               FROM scanned WHERE play_count > 0 AND artist IS NOT NULL
+               GROUP BY artist ORDER BY total DESC LIMIT 5"""
+        ).fetchall()
+
+        top_artist = None
+        top_artists = []
+        for r in top_artists_rows:
+            # Best cover: most-played track by this artist
+            best = c.execute(
+                "SELECT path FROM scanned WHERE artist = ? ORDER BY play_count DESC LIMIT 1",
+                (r["artist"],),
+            ).fetchone()
+            entry = {
+                "name": r["artist"],
+                "play_count": r["total"],
+                "cover_path": best["path"] if best else None,
+            }
+            top_artists.append(entry)
+            if top_artist is None:
+                top_artist = entry
+
+        # Most replayed track
+        most_replayed = None
+        mr = c.execute(
+            """SELECT path, title, artist, album, play_count
+               FROM scanned WHERE play_count > 0
+               ORDER BY play_count DESC LIMIT 1"""
+        ).fetchone()
+        if mr:
+            most_replayed = {
+                "name": mr["title"],
+                "artist": mr["artist"],
+                "album": mr["album"],
+                "play_count": mr["play_count"],
+                "cover_path": mr["path"],
+                "path": mr["path"],
+            }
+
+        # Genre breakdown (from play_events — reflects listening behavior)
+        genre_breakdown = [
+            {"genre": r["genre"], "count": r["cnt"]}
+            for r in c.execute(
+                """SELECT genre, COUNT(*) as cnt FROM play_events
+                   WHERE genre IS NOT NULL GROUP BY genre ORDER BY cnt DESC LIMIT 8"""
+            ).fetchall()
+        ]
+
+        top_genre = genre_breakdown[0]["genre"] if genre_breakdown else None
+
+        # Listening time (from play_events — actual plays)
+        total_seconds = c.execute(
+            "SELECT COALESCE(SUM(duration), 0) FROM play_events"
+        ).fetchone()[0]
+        listening_time_hours = round(total_seconds / 3600, 1)
+
+        # Weekly activity — hours per day for current calendar week (Mon=0..Sun=6)
+        today = datetime.date.today()
+        monday = today - datetime.timedelta(days=today.weekday())
+        week_start = int(datetime.datetime.combine(monday, datetime.time.min).timestamp())
+        week_end = week_start + 7 * 86400
+
+        weekly_raw = c.execute(
+            """SELECT played_at, duration FROM play_events
+               WHERE played_at >= ? AND played_at < ?""",
+            (week_start, week_end),
+        ).fetchall()
+
+        weekly_activity = [0.0] * 7
+        for row in weekly_raw:
+            day_idx = (row["played_at"] - week_start) // 86400
+            if 0 <= day_idx < 7:
+                weekly_activity[day_idx] += (row["duration"] or 0) / 3600
+
+        weekly_activity = [round(h, 1) for h in weekly_activity]
+
+        # Track count + genre breakdown by track count
+        track_count = c.execute(
+            "SELECT COUNT(*) FROM scanned WHERE status != 'unreadable'"
+        ).fetchone()[0]
+
+        track_genres = [
+            {"genre": r["genre"], "count": r["cnt"]}
+            for r in c.execute(
+                """SELECT genre, COUNT(*) as cnt FROM scanned
+                   WHERE genre IS NOT NULL AND status != 'unreadable'
+                   GROUP BY genre ORDER BY cnt DESC LIMIT 4"""
+            ).fetchall()
+        ]
+
+        # Album count + top artists by album count
+        album_count = c.execute(
+            "SELECT COUNT(DISTINCT album) FROM scanned WHERE album IS NOT NULL AND status != 'unreadable'"
+        ).fetchone()[0]
+
+        album_artists = [
+            {"artist": r["artist"], "count": r["cnt"]}
+            for r in c.execute(
+                """SELECT artist, COUNT(DISTINCT album) as cnt FROM scanned
+                   WHERE artist IS NOT NULL AND album IS NOT NULL AND status != 'unreadable'
+                   GROUP BY artist ORDER BY cnt DESC LIMIT 4"""
+            ).fetchall()
+        ]
+
+        return {
+            "top_artist": top_artist,
+            "top_artists": top_artists,
+            "most_replayed": most_replayed,
+            "top_genre": top_genre,
+            "genre_breakdown": genre_breakdown,
+            "listening_time_hours": listening_time_hours,
+            "weekly_activity": weekly_activity,
+            "track_count": track_count,
+            "track_genres": track_genres,
+            "album_count": album_count,
+            "album_artists": album_artists,
+            "total_plays": total_plays,
+        }

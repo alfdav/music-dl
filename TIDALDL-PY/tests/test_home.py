@@ -73,3 +73,54 @@ def test_log_play_event_null_path(db):
     rows = db._conn.execute("SELECT * FROM play_events").fetchall()
     assert len(rows) == 1
     assert rows[0]["path"] is None
+
+
+def test_home_stats_empty(db):
+    """home_stats returns valid structure even with no data."""
+    stats = db.home_stats()
+    assert stats["total_plays"] == 0
+    assert stats["top_artist"] is None
+    assert stats["most_replayed"] is None
+    assert stats["track_count"] == 0
+    assert stats["album_count"] == 0
+    assert stats["listening_time_hours"] == 0
+    assert isinstance(stats["genre_breakdown"], list)
+    assert isinstance(stats["weekly_activity"], list)
+    assert len(stats["weekly_activity"]) == 7
+
+
+def test_home_stats_with_data(db):
+    """home_stats aggregates play data correctly."""
+    # Insert tracks
+    db.record("a.flac", status="tagged", artist="Daft Punk", title="One More Time",
+              album="Discovery", duration=320, genre="Electronic")
+    db.record("b.flac", status="tagged", artist="Daft Punk", title="Around the World",
+              album="Homework", duration=420, genre="Electronic")
+    db.record("c.flac", status="tagged", artist="Coldplay", title="Yellow",
+              album="Parachutes", duration=270, genre="Alt Rock")
+    db.commit()
+
+    # Simulate plays
+    for _ in range(10):
+        db.increment_play("a.flac")
+        db.log_play_event(path="a.flac", artist="Daft Punk", genre="Electronic", duration=320)
+    for _ in range(5):
+        db.increment_play("b.flac")
+        db.log_play_event(path="b.flac", artist="Daft Punk", genre="Electronic", duration=420)
+    for _ in range(3):
+        db.increment_play("c.flac")
+        db.log_play_event(path="c.flac", artist="Coldplay", genre="Alt Rock", duration=270)
+    db.commit()
+
+    stats = db.home_stats()
+    assert stats["total_plays"] == 18
+    assert stats["top_artist"]["name"] == "Daft Punk"
+    assert stats["most_replayed"]["name"] == "One More Time"
+    assert stats["most_replayed"]["play_count"] == 10
+    assert stats["track_count"] == 3
+    assert stats["album_count"] == 3  # Discovery, Homework, Parachutes
+    assert stats["listening_time_hours"] >= 0
+    # genre_breakdown sourced from play_events (18 plays), not scanned (3 tracks)
+    assert len(stats["genre_breakdown"]) >= 1
+    assert stats["genre_breakdown"][0]["genre"] == "Electronic"
+    assert stats["genre_breakdown"][0]["count"] == 15  # 10 + 5 Electronic plays
