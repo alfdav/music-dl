@@ -300,8 +300,13 @@ function _renderHomeGrid(container, data, totalPlays) {
     grid.appendChild(_replayedTile(data.most_replayed));
   }
 
-  if (data.genre_breakdown && data.genre_breakdown.length > 0) {
-    grid.appendChild(_genreTile(data.top_genre, data.genre_breakdown));
+  // Prefer library genre composition (track_genres) over play-event genre (genre_breakdown)
+  // Prefer library genre composition (track_genres) over play-event genre (genre_breakdown)
+  const hasLibraryGenres = data.track_genres && data.track_genres.length > 0;
+  const genreSource = hasLibraryGenres ? data.track_genres : data.genre_breakdown;
+  const genreLabel = genreSource && genreSource.length > 0 ? genreSource[0].genre : null;
+  if (genreSource && genreSource.length > 0) {
+    grid.appendChild(_genreTile(genreLabel, genreSource, hasLibraryGenres));
   }
   if (data.weekly_activity && data.weekly_activity.some(v => v > 0)) {
     grid.appendChild(_listeningTimeTile(data.listening_time_hours, data.weekly_activity));
@@ -315,7 +320,7 @@ function _renderHomeGrid(container, data, totalPlays) {
   }
 
   if (established || data.track_count > 0) {
-    grid.appendChild(_tracksTile(data.track_count, data.track_genres));
+    grid.appendChild(_tracksTile(data.track_count, genreSource));
   }
   if (established || data.album_count > 0) {
     grid.appendChild(_albumsTile(data.album_count, data.album_artists));
@@ -374,10 +379,13 @@ function _insight(before, keyword, after) {
   return el;
 }
 
-function _genreInsight(topGenre, breakdown) {
-  if (breakdown.length >= 2) {
+function _genreInsight(topGenre, breakdown, fromLibrary) {
+  if (fromLibrary && breakdown.length >= 2) {
     const pct = Math.round((breakdown[0].count / breakdown.reduce((s, g) => s + g.count, 0)) * 100);
-    return _insight(pct + '% of your plays are ', topGenre, '');
+    return _insight(pct + '% of your library is ', topGenre, '');
+  }
+  if (breakdown.length >= 2) {
+    return _insight('You\'ve been vibing with ', topGenre, ' lately');
   }
   return _insight('Your world revolves around ', topGenre, '');
 }
@@ -389,8 +397,11 @@ function _listeningInsight(weekly) {
   return _insight('You love listening on ', days[maxIdx], ' the most');
 }
 
-function _tracksInsight(count) {
-  if (count >= 10000) return _insight('', count.toLocaleString(), ' tracks — that\'s a serious collection');
+function _tracksInsight(count, genres) {
+  if (genres && genres.length >= 2) {
+    return _insight('Mostly ', genres[0].genre, ' with a side of ' + genres[1].genre);
+  }
+  if (count >= 10000) return _insight('', count.toLocaleString(), ' tracks — a serious collection');
   if (count >= 1000) return _insight('', count.toLocaleString(), ' tracks and counting');
   return _insight('Your library has ', count.toLocaleString(), ' tracks so far');
 }
@@ -402,12 +413,12 @@ function _albumsInsight(count, artists) {
   return _insight('', count.toLocaleString(), ' albums in your collection');
 }
 
-function _genreTile(topGenre, breakdown) {
+function _genreTile(topGenre, breakdown, fromLibrary) {
   const tile = h('div', { className: 'bento-tile bento-stat-tile' });
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', topGenre || 'None', 'bento-label'));
-  body.appendChild(textEl('div', 'Top genre', 'bento-stat-label'));
-  body.appendChild(_genreInsight(topGenre, breakdown));
+  body.appendChild(textEl('div', fromLibrary ? 'Top genre' : 'Recent genre', 'bento-stat-label'));
+  body.appendChild(_genreInsight(topGenre, breakdown, fromLibrary));
   body.appendChild(_barChart(breakdown.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))));
   tile.appendChild(body);
   tile.appendChild(textEl('span', 'View stats', 'bento-hint'));
@@ -434,7 +445,7 @@ function _tracksTile(count, genres) {
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', count.toLocaleString(), 'bento-label'));
   body.appendChild(textEl('div', 'Tracks', 'bento-stat-label'));
-  body.appendChild(_tracksInsight(count));
+  body.appendChild(_tracksInsight(count, genres));
   if (genres && genres.length > 0) {
     body.appendChild(_barChart(genres.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))));
   }
