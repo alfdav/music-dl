@@ -1986,6 +1986,46 @@ body {
   .album-detail-art-wrap { width: 160px; height: 160px; }
 }
 
+@media (max-width: 768px) {
+  .player {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+    height: auto;
+    padding: 8px 16px 12px;
+    gap: 4px;
+  }
+
+  .now-playing {
+    display: none;
+  }
+
+  .transport {
+    order: 1;
+  }
+
+  .transport .controls {
+    gap: 16px;
+  }
+
+  .volume-area {
+    order: 2;
+    justify-content: center;
+    gap: 12px;
+  }
+
+  .progress {
+    gap: 8px;
+  }
+
+  .sidebar {
+    display: none;
+  }
+
+  .app {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ---- SHORTCUTS HELP OVERLAY ---- */
 .shortcuts-overlay {
   position: fixed;
