@@ -1380,7 +1380,7 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
   artistLink.addEventListener('click', () => navigate('artist:' + encodeURIComponent(artistName)));
   albumMeta.appendChild(artistLink);
 
-  // Play / Shuffle pills
+  // Play / Shuffle / Download Missing pills
   const albumActions = h('div', { className: 'album-actions' });
   const playBtn = h('button', { className: 'pill active album-play-btn' });
   playBtn.textContent = '\u25B6  Play ' + albumName;
@@ -1388,8 +1388,12 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
   const shuffleBtn = h('button', { className: 'pill album-shuffle-btn' });
   shuffleBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Shuffle';
   shuffleBtn.disabled = true;
+  const dlMissingBtn = h('button', { className: 'pill album-dl-btn' });
+  dlMissingBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download Missing';
+  dlMissingBtn.style.display = 'none';
   albumActions.appendChild(playBtn);
   albumActions.appendChild(shuffleBtn);
+  albumActions.appendChild(dlMissingBtn);
   albumMeta.appendChild(albumActions);
 
   albumHeader.appendChild(albumMeta);
@@ -1438,6 +1442,25 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
         state.queueIndex = 0;
         playTrack(shuffled[0]);
       });
+
+      // Show "Download Missing" only if some tracks have a Tidal ID and are not local
+      const nonLocal = tracks.filter(t => !t.is_local && t.id);
+      if (nonLocal.length > 0) {
+        dlMissingBtn.style.display = '';
+        dlMissingBtn.addEventListener('click', async () => {
+          try {
+            await api('/download', {
+              method: 'POST',
+              body: { track_ids: nonLocal.map(t => t.id) },
+            });
+            toast('Downloading ' + nonLocal.length + ' track' + (nonLocal.length !== 1 ? 's' : ''), 'success');
+            updateDlBadge(nonLocal.length);
+            _ensureGlobalSSE();
+          } catch (err) {
+            toast('Download failed: ' + err.message, 'error');
+          }
+        });
+      }
     }
   } catch (err) {
     while (trackList.firstChild) trackList.removeChild(trackList.firstChild);
@@ -1484,6 +1507,57 @@ async function renderAlbumDetail(container, albumId) {
     headerMeta.appendChild(textEl('div', album.name || 'Album', 'album-header-title'));
     headerMeta.appendChild(textEl('div', album.artist || '', 'album-header-artist'));
     headerMeta.appendChild(textEl('div', tracks.length + ' tracks', 'album-header-count'));
+
+    // Play / Shuffle / Download Album pills
+    const albumActions = h('div', { className: 'album-actions' });
+
+    const playBtn = h('button', { className: 'pill active' });
+    playBtn.textContent = '\u25B6  Play';
+    playBtn.addEventListener('click', () => {
+      const playable = tracks.filter(t => t.is_local);
+      if (!playable.length) { toast('No local tracks to play', 'info'); return; }
+      state.queue = playable.slice();
+      state.queueIndex = 0;
+      playTrack(playable[0]);
+    });
+
+    const shuffleBtn = h('button', { className: 'pill' });
+    shuffleBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Shuffle';
+    shuffleBtn.addEventListener('click', () => {
+      const playable = tracks.filter(t => t.is_local);
+      if (!playable.length) { toast('No local tracks to play', 'info'); return; }
+      const shuffled = playable.slice().sort(() => Math.random() - 0.5);
+      state.queue = shuffled;
+      state.queueIndex = 0;
+      playTrack(shuffled[0]);
+    });
+
+    const dlBtn = h('button', { className: 'pill' });
+    dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download Album';
+    dlBtn.addEventListener('click', async () => {
+      const nonLocal = tracks.filter(t => !t.is_local && t.id);
+      if (nonLocal.length === 0) {
+        toast('Album already downloaded', 'info');
+        return;
+      }
+      try {
+        await api('/download', {
+          method: 'POST',
+          body: { track_ids: nonLocal.map(t => t.id) },
+        });
+        toast('Downloading ' + nonLocal.length + ' track' + (nonLocal.length !== 1 ? 's' : ''), 'success');
+        updateDlBadge(nonLocal.length);
+        _ensureGlobalSSE();
+      } catch (err) {
+        toast('Download failed: ' + err.message, 'error');
+      }
+    });
+
+    albumActions.appendChild(playBtn);
+    albumActions.appendChild(shuffleBtn);
+    albumActions.appendChild(dlBtn);
+    headerMeta.appendChild(albumActions);
+
     header.appendChild(headerMeta);
     resultsArea.appendChild(header);
 
