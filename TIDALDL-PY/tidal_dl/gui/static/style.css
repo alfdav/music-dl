@@ -2036,10 +2036,8 @@ body {
 .heart-btn.hearted svg { fill: currentColor; }
 
 .now-heart {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

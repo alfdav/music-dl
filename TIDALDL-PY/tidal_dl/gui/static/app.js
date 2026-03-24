@@ -1434,12 +1434,16 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
       playBtn.addEventListener('click', () => {
         state.queue = tracks.slice();
         state.queueIndex = 0;
+        state.shuffle = false;
+        btnShuffle.classList.remove('active');
         playTrack(tracks[0]);
       });
       shuffleBtn.addEventListener('click', () => {
         const shuffled = tracks.slice().sort(() => Math.random() - 0.5);
         state.queue = shuffled;
         state.queueIndex = 0;
+        state.shuffle = true;
+        btnShuffle.classList.add('active');
         playTrack(shuffled[0]);
       });
 
@@ -1529,6 +1533,8 @@ async function renderAlbumDetail(container, albumId) {
       const shuffled = playable.slice().sort(() => Math.random() - 0.5);
       state.queue = shuffled;
       state.queueIndex = 0;
+      state.shuffle = true;
+      btnShuffle.classList.add('active');
       playTrack(shuffled[0]);
     });
 
@@ -2029,12 +2035,16 @@ async function loadPlaylistTracks(resultsArea, pl) {
       playBtn.addEventListener('click', () => {
         state.queue = tracks.slice();
         state.queueIndex = 0;
+        state.shuffle = false;
+        btnShuffle.classList.remove('active');
         playTrack(tracks[0]);
       });
       shuffleBtn.addEventListener('click', () => {
         const shuffled = tracks.slice().sort(() => Math.random() - 0.5);
         state.queue = shuffled;
         state.queueIndex = 0;
+        state.shuffle = true;
+        btnShuffle.classList.add('active');
         playTrack(shuffled[0]);
       });
     }
@@ -3152,6 +3162,15 @@ function renderQueue() {
 
 document.getElementById('btn-queue').addEventListener('click', toggleQueue);
 btnQueueClose.addEventListener('click', toggleQueue);
+
+// Close queue panel on click outside
+document.addEventListener('click', (e) => {
+  if (!queuePanel.classList.contains('open')) return;
+  if (queuePanel.contains(e.target)) return;
+  // Don't close if clicking the queue toggle button itself
+  if (document.getElementById('btn-queue').contains(e.target)) return;
+  toggleQueue();
+});
 
 // ---- INIT ----
 refreshStatusLights();
