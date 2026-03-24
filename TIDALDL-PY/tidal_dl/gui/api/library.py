@@ -114,6 +114,7 @@ def _db_row_to_track(row: dict) -> dict:
         "album": row.get("album") or "Unknown Album",
         "duration": row.get("duration") or 0,
         "isrc": row.get("isrc") or "",
+        "genre": row.get("genre") or "",
         "quality": row.get("quality") or p.suffix[1:].upper(),
         "format": row.get("format") or p.suffix[1:].upper(),
         "cover_url": "/api/library/art?path=" + quote(row["path"], safe=""),
