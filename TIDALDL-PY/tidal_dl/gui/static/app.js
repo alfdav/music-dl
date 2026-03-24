@@ -231,6 +231,8 @@ if (navSyncBtn) {
 
 // ---- HOME VIEW ----
 async function renderHome(container) {
+  const wrap = h('div', { className: 'home-wrap' });
+
   let data;
   try {
     data = await api('/home');
@@ -240,35 +242,25 @@ async function renderHome(container) {
 
   const totalPlays = data.total_plays || 0;
 
-  // Play count eyebrow
-  if (totalPlays > 0) {
-    container.appendChild(textEl('div', '~' + totalPlays.toLocaleString() + ' plays', 'home-plays-eyebrow'));
-  }
-
   const header = h('div', { className: 'home-header' });
   const title = h('h1', { className: 'home-title' });
   title.appendChild(document.createTextNode(_greeting() + ' welcome to '));
   title.appendChild(h('em', { className: 'home-your' }, 'your'));
   title.appendChild(document.createTextNode(' library'));
   header.appendChild(title);
-
-  if (totalPlays > 0) {
-    const luckyBtn = h('button', { className: 'pill pill-amber home-lucky', onClick: feelingLucky });
-    luckyBtn.textContent = "I'm feeling lucky";
-    header.appendChild(luckyBtn);
-  }
-
-  container.appendChild(header);
+  wrap.appendChild(header);
 
   if (totalPlays === 0) {
-    _renderHomeCold(container);
+    _renderHomeCold(wrap);
   } else {
-    _renderHomeGrid(container, data, totalPlays);
+    _renderHomeGrid(wrap, data, totalPlays);
   }
 
   if (recentlyPlayed.length > 0) {
-    _renderRecentStrip(container);
+    _renderRecentStrip(wrap);
   }
+
+  container.appendChild(wrap);
 }
 
 function _renderHomeCold(container) {
@@ -452,8 +444,17 @@ function _renderRecentStrip(container) {
   const luckyBtn2 = h('button', { className: 'pill pill-sm', onClick: feelingLucky });
   luckyBtn2.textContent = "I'm feeling lucky";
   rightBtns.appendChild(luckyBtn2);
-  const statsBtn = h('button', { className: 'pill pill-sm', onClick: () => toast('Stats detail coming soon') });
-  statsBtn.textContent = 'Check my stats';
+  const statsBtn = h('div', { className: 'pill pill-sm stats-link', onClick: () => toast('Stats detail coming soon') });
+  const statsSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  statsSvg.setAttribute('viewBox', '0 0 24 24');
+  statsSvg.setAttribute('fill', 'none');
+  statsSvg.setAttribute('stroke', 'currentColor');
+  statsSvg.setAttribute('stroke-width', '2');
+  statsSvg.style.cssText = 'width:14px;height:14px;';
+  // SAFE: static SVG paths, no user data
+  statsSvg.innerHTML = '<path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/>'; // eslint-disable-line
+  statsBtn.appendChild(statsSvg);
+  statsBtn.appendChild(document.createTextNode('Check my stats'));
   rightBtns.appendChild(statsBtn);
   labelRow.appendChild(rightBtns);
   section.appendChild(labelRow);
