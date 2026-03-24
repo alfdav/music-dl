@@ -1388,6 +1388,16 @@ body {
   color: var(--accent);
   font-style: italic;
 }
+
+/* Density-based greeting scaling */
+.home-sparse .home-title {
+  font-size: 2.4rem;
+  margin-bottom: 8px;
+}
+.home-moderate .home-title {
+  font-size: 1.9rem;
+}
+/* dense keeps default 1.6rem */
 .home-lucky {
   white-space: nowrap;
   flex-shrink: 0;
@@ -1583,6 +1593,27 @@ body {
   letter-spacing: 0.5px;
   margin-top: 4px;
   text-transform: uppercase;
+}
+
+/* Tile insight text */
+.bento-insight {
+  font-size: 0.75rem;
+  color: #999;
+  line-height: 1.5;
+  margin-top: 10px;
+}
+.insight-gold {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* Density scaling: insights shrink and hide as grid gets crowded */
+.home-moderate .bento-insight {
+  font-size: 0.65rem;
+  margin-top: 6px;
+}
+.home-dense .bento-insight {
+  display: none;
 }
 .bento-artist {
   background: linear-gradient(145deg, #2a1f14, #3d2e1a);

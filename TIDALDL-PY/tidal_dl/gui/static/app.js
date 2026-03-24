@@ -242,6 +242,21 @@ async function renderHome(container) {
 
   const totalPlays = data.total_plays || 0;
 
+  // Count how many tiles will render to determine density
+  let tileCount = 0;
+  if (data.top_artist && data.top_artist.play_count >= 5) tileCount++;
+  if (data.most_replayed && data.most_replayed.play_count >= 10) tileCount++;
+  if (data.genre_breakdown && data.genre_breakdown.length > 0) tileCount++;
+  if (data.weekly_activity && data.weekly_activity.some(v => v > 0)) tileCount++;
+  const extraArtistCount = (data.top_artists || []).slice(1, 3).filter(a => a.play_count >= 3).length;
+  tileCount += extraArtistCount;
+  if (totalPlays >= 100 || data.track_count > 0) tileCount++;
+  if (totalPlays >= 100 || data.album_count > 0) tileCount++;
+
+  // Density class: sparse (≤4), moderate (5-6), dense (7+)
+  const density = tileCount <= 4 ? 'sparse' : tileCount <= 6 ? 'moderate' : 'dense';
+  wrap.classList.add('home-' + density);
+
   const header = h('div', { className: 'home-header' });
   const title = h('h1', { className: 'home-title' });
   title.appendChild(document.createTextNode(_greeting() + ' welcome to '));
@@ -350,11 +365,49 @@ function _replayedTile(track) {
   return tile;
 }
 
+// Build an insight line: text with one gold keyword
+function _insight(before, keyword, after) {
+  const el = h('div', { className: 'bento-insight' });
+  if (before) el.appendChild(document.createTextNode(before));
+  el.appendChild(h('span', { className: 'insight-gold' }, keyword));
+  if (after) el.appendChild(document.createTextNode(after));
+  return el;
+}
+
+function _genreInsight(topGenre, breakdown) {
+  if (breakdown.length >= 2) {
+    const pct = Math.round((breakdown[0].count / breakdown.reduce((s, g) => s + g.count, 0)) * 100);
+    return _insight(pct + '% of your plays are ', topGenre, '');
+  }
+  return _insight('Your world revolves around ', topGenre, '');
+}
+
+function _listeningInsight(weekly) {
+  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const maxIdx = weekly.indexOf(Math.max(...weekly));
+  if (Math.max(...weekly) === 0) return null;
+  return _insight('You love listening on ', days[maxIdx], ' the most');
+}
+
+function _tracksInsight(count) {
+  if (count >= 10000) return _insight('', count.toLocaleString(), ' tracks — that\'s a serious collection');
+  if (count >= 1000) return _insight('', count.toLocaleString(), ' tracks and counting');
+  return _insight('Your library has ', count.toLocaleString(), ' tracks so far');
+}
+
+function _albumsInsight(count, artists) {
+  if (artists && artists.length > 0) {
+    return _insight('', artists[0].artist, ' dominates your shelf with ' + artists[0].count + ' albums');
+  }
+  return _insight('', count.toLocaleString(), ' albums in your collection');
+}
+
 function _genreTile(topGenre, breakdown) {
   const tile = h('div', { className: 'bento-tile bento-stat-tile' });
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', topGenre || 'None', 'bento-label'));
   body.appendChild(textEl('div', 'Top genre', 'bento-stat-label'));
+  body.appendChild(_genreInsight(topGenre, breakdown));
   body.appendChild(_barChart(breakdown.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))));
   tile.appendChild(body);
   tile.appendChild(textEl('span', 'View stats', 'bento-hint'));
@@ -367,6 +420,8 @@ function _listeningTimeTile(hours, weekly) {
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', Math.round(hours) + 'h', 'bento-label'));
   body.appendChild(textEl('div', 'Listening time', 'bento-stat-label'));
+  const ins = _listeningInsight(weekly);
+  if (ins) body.appendChild(ins);
   body.appendChild(_weeklyChart(weekly));
   tile.appendChild(body);
   tile.appendChild(textEl('span', 'View stats', 'bento-hint'));
@@ -379,6 +434,7 @@ function _tracksTile(count, genres) {
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', count.toLocaleString(), 'bento-label'));
   body.appendChild(textEl('div', 'Tracks', 'bento-stat-label'));
+  body.appendChild(_tracksInsight(count));
   if (genres && genres.length > 0) {
     body.appendChild(_barChart(genres.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))));
   }
@@ -393,6 +449,7 @@ function _albumsTile(count, artists) {
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', count.toLocaleString(), 'bento-label'));
   body.appendChild(textEl('div', 'Albums', 'bento-stat-label'));
+  body.appendChild(_albumsInsight(count, artists));
   if (artists && artists.length > 0) {
     body.appendChild(_barChart(artists.slice(0, 4).map(a => ({ label: a.artist, value: a.count }))));
   }
