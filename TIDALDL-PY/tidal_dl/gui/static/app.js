@@ -855,17 +855,124 @@ async function doSearch(resultsArea) {
 
   renderSearchSkeleton(resultsArea);
 
+  // Local results first (instant from SQLite)
+  let localData = null;
   try {
-    const data = await api('/search?q=' + encodeURIComponent(q) + '&type=' + state.searchType + '&limit=50');
-    state.searchResults = data;
-    renderSearchResults(resultsArea, data);
-    refreshStatusLights();
-  } catch (err) {
-    while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
-    resultsArea.appendChild(h('div', { className: 'empty-state' },
-      textEl('div', 'Search failed', 'empty-state-title'),
-      textEl('div', err.message, 'empty-state-sub')
-    ));
+    localData = await api('/library/search?q=' + encodeURIComponent(q) + '&type=' + state.searchType + '&limit=20');
+  } catch (_) { /* local search optional */ }
+
+  // Tidal results (async, may fail if not logged in)
+  let tidalData = null;
+  try {
+    tidalData = await api('/search?q=' + encodeURIComponent(q) + '&type=' + state.searchType + '&limit=50');
+  } catch (_) { /* Tidal unavailable is OK */ }
+
+  state.searchResults = { local: localData, tidal: tidalData };
+  renderUnifiedSearchResults(resultsArea, localData, tidalData);
+  refreshStatusLights();
+}
+
+function renderUnifiedSearchResults(container, localData, tidalData) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+
+  const type = state.searchType;
+
+  // Local results section
+  const localItems = localData ? (localData[type] || []) : [];
+  if (localItems.length > 0) {
+    const localHeader = h('div', { className: 'results-header' });
+    localHeader.appendChild(textEl('h3', 'Your Library', 'results-section-title'));
+    localHeader.appendChild(textEl('span', localItems.length + ' results', 'results-count'));
+    container.appendChild(localHeader);
+
+    if (type === 'tracks') {
+      // Inline column header (renderTrackHeader does not exist as standalone)
+      container.appendChild(h('div', { className: 'track-header' },
+        textEl('div', '#', 'col-label center'),
+        h('div'),
+        textEl('div', 'Title', 'col-label'),
+        textEl('div', 'Album', 'col-label'),
+        textEl('div', 'Quality', 'col-label center'),
+        textEl('div', 'Time', 'col-label right'),
+        h('div')
+      ));
+      localItems.forEach((t, i) => container.appendChild(renderTrackRow(t, i + 1, localItems)));
+    } else if (type === 'albums') {
+      const grid = h('div', { className: 'album-gallery' });
+      localItems.forEach(a => {
+        const card = h('div', { className: 'album-card' });
+        const artWrap = h('div', { className: 'album-card-art-wrap' });
+        const img = h('img', { className: 'album-card-art', alt: a.name || '' });
+        img.src = a.cover_url || '';
+        img.onerror = function() { this.style.background = 'var(--surface)'; };
+        artWrap.appendChild(img);
+        card.appendChild(artWrap);
+        const meta = h('div', { className: 'album-card-meta' });
+        meta.appendChild(textEl('div', a.name || 'Unknown', 'album-card-title'));
+        meta.appendChild(textEl('div', a.artist || '', 'album-card-sub'));
+        card.appendChild(meta);
+        card.addEventListener('click', () => {
+          navigate('localalbum:' + encodeURIComponent(a.artist) + ':' + encodeURIComponent(a.name));
+        });
+        a11yClick(card);
+        grid.appendChild(card);
+      });
+      container.appendChild(grid);
+    } else if (type === 'artists') {
+      const grid = h('div', { className: 'album-gallery' });
+      localItems.forEach(a => {
+        const card = h('div', { className: 'album-card' });
+        const artWrap = h('div', { className: 'album-card-art-wrap' });
+        const img = h('img', { className: 'album-card-art', alt: a.name || '' });
+        img.src = a.cover_url || '';
+        img.onerror = function() { this.style.background = 'var(--surface)'; };
+        artWrap.appendChild(img);
+        card.appendChild(artWrap);
+        const meta = h('div', { className: 'album-card-meta' });
+        meta.appendChild(textEl('div', a.name || 'Unknown', 'album-card-title'));
+        meta.appendChild(textEl('div', a.track_count + ' tracks', 'album-card-sub'));
+        card.appendChild(meta);
+        card.addEventListener('click', () => navigate('artist:' + encodeURIComponent(a.name)));
+        a11yClick(card);
+        grid.appendChild(card);
+      });
+      container.appendChild(grid);
+    }
+  }
+
+  // Divider between local and Tidal sections
+  const tidalItems = tidalData ? (tidalData[type] || []) : [];
+  if (localItems.length > 0 && tidalItems.length > 0) {
+    const divider = h('div', { className: 'search-divider' });
+    divider.appendChild(textEl('span', 'Tidal', 'search-divider-label'));
+    container.appendChild(divider);
+  }
+
+  // Tidal results section — delegate to existing renderer via a sub-container
+  // to prevent it from clearing the local results we just rendered
+  if (tidalItems.length > 0) {
+    if (localItems.length === 0) {
+      const tidalHeader = h('div', { className: 'results-header' });
+      tidalHeader.appendChild(textEl('h3', 'Tidal', 'results-section-title'));
+      tidalHeader.appendChild(textEl('span', tidalItems.length + ' results', 'results-count'));
+      container.appendChild(tidalHeader);
+    }
+
+    // Render Tidal results into a sub-container so renderSearchResults
+    // doesn't wipe the local section already appended above.
+    // When local results are present the divider already labels the section,
+    // so remove the redundant "Search Results" header renderSearchResults adds.
+    const tidalWrap = h('div', {});
+    container.appendChild(tidalWrap);
+    renderSearchResults(tidalWrap, tidalData);
+    if (localItems.length > 0) {
+      const firstHeader = tidalWrap.querySelector('.results-header');
+      if (firstHeader) firstHeader.remove();
+    }
+  }
+
+  if (localItems.length === 0 && tidalItems.length === 0) {
+    container.appendChild(textEl('div', 'No results found', 'search-empty-text'));
   }
 }
 

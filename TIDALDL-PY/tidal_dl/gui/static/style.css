@@ -353,6 +353,44 @@ body {
   border-color: rgba(212, 160, 83, 0.15);
 }
 
+/* ---- UNIFIED SEARCH DIVIDER ---- */
+.search-divider {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 0 12px;
+}
+
+.search-divider::before,
+.search-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--glass-border);
+}
+
+.search-divider-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-muted);
+}
+
+.results-section-title {
+  font-family: var(--serif);
+  font-size: 16px;
+  color: var(--text);
+  margin: 0;
+}
+
+.search-empty-text {
+  text-align: center;
+  padding: 48px 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
 /* ---- ALBUM DETAIL ---- */
 .album-header {
   display: flex;
