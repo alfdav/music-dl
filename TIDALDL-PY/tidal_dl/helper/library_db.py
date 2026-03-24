@@ -109,6 +109,21 @@ class LibraryDB:
             "CREATE INDEX IF NOT EXISTS idx_play_events_at ON play_events(played_at)"
         )
 
+        # download_history table
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS download_history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id    INTEGER,
+                name        TEXT,
+                artist      TEXT,
+                album       TEXT,
+                status      TEXT NOT NULL,
+                error       TEXT,
+                started_at  REAL,
+                finished_at REAL
+            )"""
+        )
+
         # favorites table
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS favorites (
@@ -597,5 +612,38 @@ class LibraryDB:
         assert self._conn
         rows = self._conn.execute(
             "SELECT * FROM favorites WHERE tidal_id IS NOT NULL AND path IS NULL ORDER BY favorited_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Download history
+    # ------------------------------------------------------------------
+
+    def record_download(
+        self,
+        *,
+        track_id: int,
+        name: str,
+        artist: str | None = None,
+        album: str | None = None,
+        status: str,
+        error: str | None = None,
+        started_at: float | None = None,
+        finished_at: float | None = None,
+    ) -> None:
+        """Record a download completion (success or failure)."""
+        assert self._conn
+        self._conn.execute(
+            """INSERT INTO download_history (track_id, name, artist, album, status, error, started_at, finished_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (track_id, name, artist, album, status, error, started_at, finished_at),
+        )
+
+    def download_history(self, limit: int = 50) -> list[dict]:
+        """Return recent download history."""
+        assert self._conn
+        rows = self._conn.execute(
+            "SELECT * FROM download_history ORDER BY finished_at DESC LIMIT ?",
+            (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
