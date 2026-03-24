@@ -425,10 +425,15 @@ function _tracksInsight(count, genres) {
     lines.push(_insight('Mostly ', genres[0].genre, ' · ' + genres[0].count.toLocaleString() + ' tracks'));
     lines.push(_insight('', genres[1].genre, ' follows with ' + genres[1].count.toLocaleString()));
     if (genres[2]) lines.push(_insight('Then ', genres[2].genre, ' at ' + genres[2].count.toLocaleString()));
+  } else if (genres && genres.length === 1) {
+    lines.push(_insight('', genres[0].genre, ' is all we\'ve seen so far'));
+    lines.push(_insight('Sync your library to uncover ', 'all genres', ''));
   } else if (count >= 10000) {
-    lines.push(_insight('', count.toLocaleString(), ' tracks — a serious collection'));
+    lines.push(_insight('', count.toLocaleString(), ' tracks across your collection'));
+    lines.push(_insight('Sync your library to see the ', 'genre breakdown', ''));
   } else if (count >= 1000) {
     lines.push(_insight('', count.toLocaleString(), ' tracks and counting'));
+    lines.push(_insight('Sync to discover your ', 'genre mix', ''));
   } else {
     lines.push(_insight('Your library has ', count.toLocaleString(), ' tracks so far'));
   }
