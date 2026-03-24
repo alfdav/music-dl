@@ -477,7 +477,7 @@ body {
 
 .track-header {
   display: grid;
-  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 40px;
+  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 40px 32px;
   gap: 12px;
   align-items: center;
   padding: 0 14px 10px;
@@ -499,7 +499,7 @@ body {
 
 .track {
   display: grid;
-  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 40px;
+  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 40px 32px;
   gap: 12px;
   align-items: center;
   padding: 10px 14px;
