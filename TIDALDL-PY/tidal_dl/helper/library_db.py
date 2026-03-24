@@ -109,6 +109,26 @@ class LibraryDB:
             "CREATE INDEX IF NOT EXISTS idx_play_events_at ON play_events(played_at)"
         )
 
+        # favorites table
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS favorites (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                path        TEXT,
+                tidal_id    INTEGER,
+                artist      TEXT,
+                title       TEXT,
+                album       TEXT,
+                isrc        TEXT,
+                cover_url   TEXT,
+                favorited_at INTEGER NOT NULL,
+                UNIQUE(path),
+                UNIQUE(tidal_id)
+            )"""
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_favorites_at ON favorites(favorited_at)"
+        )
+
     def close(self) -> None:
         if self._conn:
             self._conn.close()
@@ -191,6 +211,66 @@ class LibraryDB:
             params + [limit, offset],
         ).fetchall()
         return [dict(r) for r in rows], total
+
+    def all_albums(self, query: str = "") -> list[dict]:
+        """Return all albums grouped by album name. Multi-artist albums show 'Various Artists'."""
+        assert self._conn
+        where = "album IS NOT NULL AND status != 'unreadable'"
+        params: list = []
+        if query:
+            where += " AND (album LIKE ? OR artist LIKE ?)"
+            like = f"%{query}%"
+            params.extend([like, like])
+        rows = self._conn.execute(
+            f"""SELECT album, COUNT(*) as track_count, MIN(path) as cover_path,
+                       MAX(quality) as best_quality,
+                       COUNT(DISTINCT artist) as artist_count,
+                       MIN(artist) as first_artist
+                FROM scanned
+                WHERE {where}
+                GROUP BY album
+                ORDER BY album COLLATE NOCASE ASC""",
+            params,
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["artist"] = d["first_artist"] if d["artist_count"] == 1 else "Various Artists"
+            result.append(d)
+        return result
+
+    def albums_by_artist(self, artist: str) -> list[dict]:
+        """Return albums for an artist with track count and a representative path for art."""
+        assert self._conn
+        rows = self._conn.execute(
+            """SELECT album, COUNT(*) as track_count, MIN(path) as cover_path,
+                      GROUP_CONCAT(DISTINCT genre) as genres,
+                      MAX(quality) as best_quality
+               FROM scanned
+               WHERE artist = ? AND album IS NOT NULL AND status != 'unreadable'
+               GROUP BY album ORDER BY album COLLATE NOCASE ASC""",
+            (artist,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def album_tracks(self, artist: str, album: str) -> list[dict]:
+        """Return all tracks for an album. If artist is 'Various Artists', return all artists."""
+        assert self._conn
+        if artist == "Various Artists":
+            rows = self._conn.execute(
+                """SELECT * FROM scanned
+                   WHERE album = ? AND status != 'unreadable'
+                   ORDER BY path ASC""",
+                (album,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """SELECT * FROM scanned
+                   WHERE artist = ? AND album = ? AND status != 'unreadable'
+                   ORDER BY path ASC""",
+                (artist, album),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def untagged(self, *, limit: int = 0) -> list[tuple[str, str, str]]:
         """Return (path, artist, title) for files needing ISRC lookup."""
@@ -311,10 +391,24 @@ class LibraryDB:
                 "SELECT path FROM scanned WHERE artist = ? ORDER BY play_count DESC LIMIT 1",
                 (r["artist"],),
             ).fetchone()
+            # Per-artist stats: track count, album count, top genre
+            artist_tracks = c.execute(
+                "SELECT COUNT(*) FROM scanned WHERE artist = ?", (r["artist"],)
+            ).fetchone()[0]
+            artist_albums = c.execute(
+                "SELECT COUNT(DISTINCT album) FROM scanned WHERE artist = ?", (r["artist"],)
+            ).fetchone()[0]
+            artist_genre_row = c.execute(
+                "SELECT genre FROM scanned WHERE artist = ? AND genre IS NOT NULL AND genre != '' GROUP BY genre ORDER BY COUNT(*) DESC LIMIT 1",
+                (r["artist"],),
+            ).fetchone()
             entry = {
                 "name": r["artist"],
                 "play_count": r["total"],
                 "cover_path": best["path"] if best else None,
+                "track_count": artist_tracks,
+                "album_count": artist_albums,
+                "genre": artist_genre_row["genre"] if artist_genre_row else None,
             }
             top_artists.append(entry)
             if top_artist is None:
@@ -416,3 +510,92 @@ class LibraryDB:
             "album_artists": album_artists,
             "total_plays": total_plays,
         }
+
+    # ------------------------------------------------------------------
+    # Favorites
+    # ------------------------------------------------------------------
+
+    def add_favorite(
+        self,
+        *,
+        path: str | None = None,
+        tidal_id: int | None = None,
+        artist: str | None = None,
+        title: str | None = None,
+        album: str | None = None,
+        isrc: str | None = None,
+        cover_url: str | None = None,
+    ) -> None:
+        """Add a track to favorites. Skip if already exists."""
+        assert self._conn
+        now = int(time.time())
+        if path:
+            existing = self._conn.execute(
+                "SELECT id FROM favorites WHERE path = ?", (path,)
+            ).fetchone()
+            if existing:
+                return
+        if tidal_id:
+            existing = self._conn.execute(
+                "SELECT id FROM favorites WHERE tidal_id = ?", (tidal_id,)
+            ).fetchone()
+            if existing:
+                return
+        self._conn.execute(
+            """INSERT INTO favorites (path, tidal_id, artist, title, album, isrc, cover_url, favorited_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (path, tidal_id, artist, title, album, isrc, cover_url, now),
+        )
+
+    def remove_favorite(self, *, path: str | None = None, tidal_id: int | None = None) -> None:
+        """Remove a favorite by path or tidal_id."""
+        assert self._conn
+        if path:
+            self._conn.execute("DELETE FROM favorites WHERE path = ?", (path,))
+        elif tidal_id:
+            self._conn.execute("DELETE FROM favorites WHERE tidal_id = ?", (tidal_id,))
+
+    def is_favorite(self, *, path: str | None = None, tidal_id: int | None = None) -> bool:
+        """Check if a track is favorited."""
+        assert self._conn
+        if path:
+            return self._conn.execute(
+                "SELECT 1 FROM favorites WHERE path = ?", (path,)
+            ).fetchone() is not None
+        if tidal_id:
+            return self._conn.execute(
+                "SELECT 1 FROM favorites WHERE tidal_id = ?", (tidal_id,)
+            ).fetchone() is not None
+        return False
+
+    def all_favorites(self) -> list[dict]:
+        """Return all favorites ordered by most recent first."""
+        assert self._conn
+        rows = self._conn.execute(
+            "SELECT * FROM favorites ORDER BY favorited_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def favorite_paths(self) -> set[str]:
+        """Return set of favorited local paths for quick lookup."""
+        assert self._conn
+        rows = self._conn.execute(
+            "SELECT path FROM favorites WHERE path IS NOT NULL"
+        ).fetchall()
+        return {r["path"] for r in rows}
+
+    def favorite_tidal_ids(self) -> set[int]:
+        """Return set of favorited tidal IDs for quick lookup."""
+        assert self._conn
+        rows = self._conn.execute(
+            "SELECT tidal_id FROM favorites WHERE tidal_id IS NOT NULL"
+        ).fetchall()
+        return {r["tidal_id"] for r in rows}
+
+    def pending_favorites(self) -> list[dict]:
+        """Return favorites with tidal_id but no local path (auto-download candidates)."""
+        assert self._conn
+        rows = self._conn.execute(
+            "SELECT * FROM favorites WHERE tidal_id IS NOT NULL AND path IS NULL ORDER BY favorited_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
