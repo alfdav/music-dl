@@ -2624,17 +2624,13 @@ function updatePlayerHeart() {
   heartEl.classList.toggle('hearted', !!(key && _favCache[key]));
 }
 
-function playTrack(track) {
-  if (!track) return;
+// ---- PLAY COUNT (30-second threshold) ----
+let _playCountTimer = null;
+let _playCountLogged = false;
 
-  // Track history — dedupe by key, most recent first
-  const idx = recentlyPlayed.findIndex(t => _trackKey(t) === _trackKey(track) && _trackKey(track) !== '');
-  if (idx !== -1) recentlyPlayed.splice(idx, 1);
-  recentlyPlayed.unshift(track);
-  if (recentlyPlayed.length > MAX_RECENT) recentlyPlayed.pop();
-  _saveRecent();
-
-  // Log play event for Home view stats (fire-and-forget)
+function _logPlayEvent(track) {
+  if (_playCountLogged) return;
+  _playCountLogged = true;
   fetch('/api/home/play', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
@@ -2645,6 +2641,29 @@ function playTrack(track) {
       duration: track.duration || null,
     }),
   }).catch(() => {});
+}
+
+function _schedulePlayCount(track) {
+  // Cancel any pending timer from previous track
+  if (_playCountTimer) { clearTimeout(_playCountTimer); _playCountTimer = null; }
+  _playCountLogged = false;
+
+  // Schedule at 30s of playback — for short tracks, 'ended' event handles it
+  _playCountTimer = setTimeout(() => { _logPlayEvent(track); }, 30000);
+}
+
+function playTrack(track) {
+  if (!track) return;
+
+  // Track history — dedupe by key, most recent first
+  const idx = recentlyPlayed.findIndex(t => _trackKey(t) === _trackKey(track) && _trackKey(track) !== '');
+  if (idx !== -1) recentlyPlayed.splice(idx, 1);
+  recentlyPlayed.unshift(track);
+  if (recentlyPlayed.length > MAX_RECENT) recentlyPlayed.pop();
+  _saveRecent();
+
+  // Play count: fires after 30s of playback (or on ended for short tracks)
+  _schedulePlayCount(track);
 
   // Tell other tabs to stop
   _playerChannel.postMessage('pause');
@@ -2810,6 +2829,10 @@ audio.addEventListener('timeupdate', () => {
 });
 
 audio.addEventListener('ended', () => {
+  // Log play for short tracks that ended before 30s threshold
+  const current = state.queue[state.queueIndex];
+  if (current) _logPlayEvent(current);
+
   if (state.repeat) {
     audio.currentTime = 0;
     audio.play().catch(() => {});
@@ -2828,6 +2851,8 @@ audio.addEventListener('pause', () => {
   updatePlayButton();
   setWaveformPlaying(false);
   document.querySelectorAll('.eq-bars').forEach(b => b.classList.add('paused'));
+  // Pause the play count timer — resumes on play
+  if (_playCountTimer) { clearTimeout(_playCountTimer); _playCountTimer = null; }
 });
 
 audio.addEventListener('play', () => {
@@ -2835,6 +2860,16 @@ audio.addEventListener('play', () => {
   updatePlayButton();
   setWaveformPlaying(true);
   document.querySelectorAll('.eq-bars').forEach(b => b.classList.remove('paused'));
+  // Resume play count timer if not yet logged
+  if (!_playCountLogged && !_playCountTimer) {
+    const remaining = Math.max(0, 30 - (audio.currentTime || 0)) * 1000;
+    const current = state.queue[state.queueIndex];
+    if (current && remaining > 0) {
+      _playCountTimer = setTimeout(() => { _logPlayEvent(current); }, remaining);
+    } else if (current) {
+      _logPlayEvent(current);
+    }
+  }
 });
 
 // Seek
