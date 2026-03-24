@@ -231,9 +231,6 @@ if (navSyncBtn) {
 
 // ---- HOME VIEW ----
 async function renderHome(container) {
-  const header = h('div', { className: 'home-header' });
-  header.appendChild(textEl('h1', _greeting() + ' welcome to YOUR library', 'home-title'));
-
   let data;
   try {
     data = await api('/home');
@@ -242,6 +239,18 @@ async function renderHome(container) {
   }
 
   const totalPlays = data.total_plays || 0;
+
+  // Play count eyebrow
+  if (totalPlays > 0) {
+    container.appendChild(textEl('div', '~' + totalPlays.toLocaleString() + ' plays', 'home-plays-eyebrow'));
+  }
+
+  const header = h('div', { className: 'home-header' });
+  const title = h('h1', { className: 'home-title' });
+  title.appendChild(document.createTextNode(_greeting() + ' welcome to '));
+  title.appendChild(h('em', { className: 'home-your' }, 'your'));
+  title.appendChild(document.createTextNode(' library'));
+  header.appendChild(title);
 
   if (totalPlays > 0) {
     const luckyBtn = h('button', { className: 'pill pill-amber home-lucky', onClick: feelingLucky });

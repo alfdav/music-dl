@@ -1385,6 +1385,18 @@ body {
   flex: 1;
   line-height: 1.3;
 }
+.home-plays-eyebrow {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: rgba(240,235,228,0.35);
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+.home-your {
+  color: var(--accent);
+  font-style: italic;
+}
 .home-lucky {
   white-space: nowrap;
   flex-shrink: 0;
@@ -1542,7 +1554,7 @@ body {
 }
 
 .bento-stat-tile {
-  background: #1c1a17;
+  background: linear-gradient(160deg, #1e1b16, #1c1a17 60%, #1a1815);
 }
 
 /* ---- MINI BAR CHART ---- */
