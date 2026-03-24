@@ -124,3 +124,19 @@ def test_home_stats_with_data(db):
     assert len(stats["genre_breakdown"]) >= 1
     assert stats["genre_breakdown"][0]["genre"] == "Electronic"
     assert stats["genre_breakdown"][0]["count"] == 15  # 10 + 5 Electronic plays
+
+
+def test_genre_normalization():
+    """Genre variants are normalized to canonical forms."""
+    from tidal_dl.gui.api.library import _normalize_genre
+
+    assert _normalize_genre("Electronica/Dance") == "Electronic"
+    assert _normalize_genre("Electronica") == "Electronic"
+    assert _normalize_genre("Hip-Hop/Rap") == "Hip-Hop"
+    assert _normalize_genre("Hip Hop") == "Hip-Hop"
+    assert _normalize_genre("R&B/Soul") == "R&B"
+    assert _normalize_genre("Alternative Rock") == "Alt Rock"
+    assert _normalize_genre("Alt-Rock") == "Alt Rock"
+    assert _normalize_genre("Rock") == "Rock"  # passthrough
+    assert _normalize_genre(None) is None
+    assert _normalize_genre("") is None
