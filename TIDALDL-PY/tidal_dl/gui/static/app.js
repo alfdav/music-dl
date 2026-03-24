@@ -1461,6 +1461,18 @@ async function saveSetting(key, value) {
 
 // ---- PLAYER ----
 const audio = document.getElementById('audio');
+
+// ---- SINGLE-TAB PLAYBACK (pause other tabs when this one plays) ----
+const _playerChannel = new BroadcastChannel('music-dl-player');
+_playerChannel.onmessage = (e) => {
+  if (e.data === 'pause') {
+    audio.pause();
+    state.playing = false;
+    updatePlayButton();
+    setWaveformPlaying(false);
+  }
+};
+
 const btnPlay = document.getElementById('btn-play');
 const playIcon = document.getElementById('play-icon');
 const btnPrev = document.getElementById('btn-prev');
@@ -1588,6 +1600,9 @@ function playTrack(track) {
       duration: track.duration || null,
     }),
   }).catch(() => {});
+
+  // Tell other tabs to stop
+  _playerChannel.postMessage('pause');
 
   if (track.is_local && track.local_path) {
     audio.src = '/api/playback/local?path=' + encodeURIComponent(track.local_path);
