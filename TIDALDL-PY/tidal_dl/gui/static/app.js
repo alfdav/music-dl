@@ -455,7 +455,17 @@ function _renderRecentStrip(container) {
       card.appendChild(artPlaceholder);
     }
     card.appendChild(textEl('div', track.name || 'Unknown', 'recent-card-name'));
-    card.appendChild(textEl('div', track.artist || '', 'recent-card-artist'));
+    const artistEl = textEl('div', track.artist || '', 'recent-card-artist');
+    artistEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!track.artist) return;
+      navigate('library');
+      setTimeout(() => {
+        const input = document.querySelector('.lib-search');
+        if (input) { input.value = track.artist; input.dispatchEvent(new Event('input')); }
+      }, 100);
+    });
+    card.appendChild(artistEl);
     card.addEventListener('click', () => {
       if (track.is_local && track.local_path) playTrack(track);
       else if (track.id) playTrack(track);

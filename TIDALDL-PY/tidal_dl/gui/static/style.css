@@ -1006,6 +1006,7 @@ body {
   border-radius: 2px;
   position: relative;
   cursor: pointer;
+  overflow: hidden;
 }
 
 .progress-bar::before {
@@ -1638,11 +1639,17 @@ body {
   white-space: nowrap;
 }
 .recent-card-artist {
-  font-size: 11px;
+  font-size: 13px;
   color: rgba(240,235,228,0.5);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.recent-card-artist:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 /* ---- RESPONSIVE ---- */
