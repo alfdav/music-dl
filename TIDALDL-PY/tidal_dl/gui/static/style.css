@@ -1568,7 +1568,8 @@ body {
   border: 1px solid #2a2520;
 }
 .bento-stat-tile .bento-body {
-  justify-content: flex-start;
+  justify-content: flex-end;
+  gap: 0;
 }
 .bento-stat-tile .bento-label {
   font-family: 'Crimson Pro', Georgia, serif;
@@ -1606,17 +1607,14 @@ body {
 .mini-bar-chart {
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: 6px;
   margin-top: auto;
-  padding-top: 8px;
-  flex: 1;
-  justify-content: flex-end;
+  padding-top: 12px;
 }
 .bar-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1;
 }
 .bar-label {
   font-size: 0.55rem;
@@ -1630,9 +1628,7 @@ body {
 }
 .bar-bg {
   flex: 1;
-  height: 100%;
-  min-height: 5px;
-  max-height: 14px;
+  height: 6px;
   background: rgba(255,255,255,0.04);
   border-radius: 3px;
   overflow: hidden;
@@ -1651,10 +1647,9 @@ body {
   display: flex;
   align-items: flex-end;
   gap: 6px;
-  min-height: 44px;
+  height: 52px;
   margin-top: auto;
-  padding-top: 8px;
-  flex: 1;
+  padding-top: 12px;
 }
 .weekly-col {
   flex: 1;
