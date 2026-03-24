@@ -140,3 +140,40 @@ def test_genre_normalization():
     assert _normalize_genre("Rock") == "Rock"  # passthrough
     assert _normalize_genre(None) is None
     assert _normalize_genre("") is None
+
+
+def test_api_home_returns_200():
+    """GET /api/home returns 200 with expected structure."""
+    from fastapi.testclient import TestClient
+    from tidal_dl.gui import create_app
+
+    client = TestClient(create_app(port=8765))
+    host = {"host": "localhost:8765"}
+    resp = client.get("/api/home", headers=host)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "total_plays" in data
+    assert "weekly_activity" in data
+    assert len(data["weekly_activity"]) == 7
+
+
+def test_api_home_play_returns_204():
+    """POST /api/home/play returns 204."""
+    from fastapi.testclient import TestClient
+    from tidal_dl.gui import create_app
+
+    client = TestClient(create_app(port=8765))
+    host = {"host": "localhost:8765"}
+
+    # Get CSRF token
+    index = client.get("/", headers=host)
+    import re
+    csrf = re.search(r'name="csrf-token" content="([^"]+)"', index.text)
+    token = csrf.group(1) if csrf else ""
+
+    resp = client.post(
+        "/api/home/play",
+        json={"artist": "Daft Punk", "genre": "Electronic", "duration": 320},
+        headers={**host, "X-CSRF-Token": token},
+    )
+    assert resp.status_code == 204
