@@ -456,7 +456,7 @@ function _albumsInsight(count, artists) {
   if (artists && artists.length >= 3) {
     const a = artists[2];
     if (artists.length >= 2 && a.count === artists[1].count) {
-      lines.push(_insight('', a.artist, ' also at ' + a.count + ' — three-way race'));
+      lines.push(_insight('', a.artist, ' tied for second with ' + a.count));
     } else {
       lines.push(_insight('', a.artist, ' rounds it out with ' + a.count));
     }
