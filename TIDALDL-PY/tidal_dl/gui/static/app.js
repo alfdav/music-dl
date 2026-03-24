@@ -372,45 +372,84 @@ function _replayedTile(track) {
 
 // Build an insight line: text with one gold keyword
 function _insight(before, keyword, after) {
-  const el = h('div', { className: 'bento-insight' });
+  const el = h('div', { className: 'bento-insight-line' });
   if (before) el.appendChild(document.createTextNode(before));
   el.appendChild(h('span', { className: 'insight-gold' }, keyword));
   if (after) el.appendChild(document.createTextNode(after));
   return el;
 }
 
-function _genreInsight(topGenre, breakdown, fromLibrary) {
-  if (fromLibrary && breakdown.length >= 2) {
-    const pct = Math.round((breakdown[0].count / breakdown.reduce((s, g) => s + g.count, 0)) * 100);
-    return _insight(pct + '% of your library is ', topGenre, '');
+// Build a multi-line insight block
+function _insightBlock(lines) {
+  const block = h('div', { className: 'bento-insight' });
+  for (const line of lines) {
+    if (line) block.appendChild(line);
   }
-  if (breakdown.length >= 2) {
-    return _insight('You\'ve been vibing with ', topGenre, ' lately');
-  }
-  return _insight('Your world revolves around ', topGenre, '');
+  return block;
 }
 
-function _listeningInsight(weekly) {
+function _genreInsight(topGenre, breakdown, fromLibrary) {
+  const lines = [];
+  if (fromLibrary && breakdown.length >= 2) {
+    const total = breakdown.reduce((s, g) => s + g.count, 0);
+    const pct = Math.round((breakdown[0].count / total) * 100);
+    lines.push(_insight(pct + '% of your library is ', topGenre, ''));
+    if (breakdown[1]) lines.push(_insight('', breakdown[1].genre, ' takes second at ' + Math.round((breakdown[1].count / total) * 100) + '%'));
+  } else if (breakdown.length >= 2) {
+    lines.push(_insight('You\'ve been vibing with ', topGenre, ' lately'));
+    lines.push(_insight('', breakdown[1].genre, ' is not far behind'));
+  } else {
+    lines.push(_insight('Your world revolves around ', topGenre, ''));
+  }
+  return _insightBlock(lines);
+}
+
+function _listeningInsight(hours, weekly) {
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-  const maxIdx = weekly.indexOf(Math.max(...weekly));
-  if (Math.max(...weekly) === 0) return null;
-  return _insight('You love listening on ', days[maxIdx], ' the most');
+  const max = Math.max(...weekly);
+  if (max === 0) return null;
+  const maxIdx = weekly.indexOf(max);
+  const total = weekly.reduce((a, b) => a + b, 0);
+  const lines = [];
+  lines.push(_insight('You listen most on ', days[maxIdx], 's'));
+  if (total > 0) {
+    const avg = (total / 7).toFixed(1);
+    lines.push(_insight('That\'s about ', avg + 'h', ' per day on average'));
+  }
+  return _insightBlock(lines);
 }
 
 function _tracksInsight(count, genres) {
+  const lines = [];
   if (genres && genres.length >= 2) {
-    return _insight('Mostly ', genres[0].genre, ' with a side of ' + genres[1].genre);
+    lines.push(_insight('Mostly ', genres[0].genre, ' · ' + genres[0].count.toLocaleString() + ' tracks'));
+    lines.push(_insight('', genres[1].genre, ' follows with ' + genres[1].count.toLocaleString()));
+    if (genres[2]) lines.push(_insight('Then ', genres[2].genre, ' at ' + genres[2].count.toLocaleString()));
+  } else if (count >= 10000) {
+    lines.push(_insight('', count.toLocaleString(), ' tracks — a serious collection'));
+  } else if (count >= 1000) {
+    lines.push(_insight('', count.toLocaleString(), ' tracks and counting'));
+  } else {
+    lines.push(_insight('Your library has ', count.toLocaleString(), ' tracks so far'));
   }
-  if (count >= 10000) return _insight('', count.toLocaleString(), ' tracks — a serious collection');
-  if (count >= 1000) return _insight('', count.toLocaleString(), ' tracks and counting');
-  return _insight('Your library has ', count.toLocaleString(), ' tracks so far');
+  return _insightBlock(lines);
 }
 
 function _albumsInsight(count, artists) {
-  if (artists && artists.length > 0) {
-    return _insight('', artists[0].artist, ' dominates your shelf with ' + artists[0].count + ' albums');
+  const lines = [];
+  if (artists && artists.length >= 1) {
+    lines.push(_insight('', artists[0].artist, ' leads with ' + artists[0].count + ' albums'));
   }
-  return _insight('', count.toLocaleString(), ' albums in your collection');
+  if (artists && artists.length >= 2) {
+    lines.push(_insight('', artists[1].artist, ' follows with ' + artists[1].count));
+  }
+  if (artists && artists.length >= 3) {
+    lines.push(_insight('', artists[2].artist, ' rounds out the top three'));
+  }
+  if (lines.length === 0) {
+    lines.push(_insight('', count.toLocaleString(), ' albums in your collection'));
+  }
+  return _insightBlock(lines);
 }
 
 function _genreTile(topGenre, breakdown, fromLibrary) {
@@ -431,7 +470,7 @@ function _listeningTimeTile(hours, weekly) {
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', Math.round(hours) + 'h', 'bento-label'));
   body.appendChild(textEl('div', 'Listening time', 'bento-stat-label'));
-  const ins = _listeningInsight(weekly);
+  const ins = _listeningInsight(hours, weekly);
   if (ins) body.appendChild(ins);
   body.appendChild(_weeklyChart(weekly));
   tile.appendChild(body);
