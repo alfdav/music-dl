@@ -1577,6 +1577,17 @@ def isrc_tag(
         console.print(f"[dim]ISRC index updated ({isrc_index.size} total entries).[/dim]")
 
 
+@app.command()
+def gui(
+    port: int = typer.Option(8765, help="Port to serve on."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't auto-open browser."),
+) -> None:
+    """Launch the music-dl web interface."""
+    from tidal_dl.gui.server import run
+
+    run(port=port, open_browser=not no_browser)
+
+
 def main() -> None:
     """Installed entry-point wrapper.
 

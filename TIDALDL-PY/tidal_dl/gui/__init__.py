@@ -1,0 +1,37 @@
+"""music-dl GUI — FastAPI application factory."""
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+
+from tidal_dl.gui.api import api_router
+from tidal_dl.gui.security import CSRFMiddleware, HostValidationMiddleware, generate_csrf_token
+
+_STATIC_DIR = Path(__file__).parent / "static"
+
+
+def create_app(port: int = 8765) -> FastAPI:
+    app = FastAPI(title="music-dl", docs_url="/api/docs", redoc_url=None)
+    csrf_token = generate_csrf_token()
+    app.state.csrf_token = csrf_token
+
+    allowed_hosts = [f"localhost:{port}", f"127.0.0.1:{port}"]
+    app.add_middleware(HostValidationMiddleware, allowed_hosts=allowed_hosts)
+    app.add_middleware(CSRFMiddleware, csrf_token=csrf_token)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[f"http://localhost:{port}", f"http://127.0.0.1:{port}"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
+        allow_headers=["X-CSRF-Token", "Content-Type"],
+    )
+    app.include_router(api_router, prefix="/api")
+
+    @app.get("/", response_class=HTMLResponse)
+    async def index():
+        html = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(html.replace("__CSRF_TOKEN__", csrf_token))
+
+    app.mount("/", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+    return app
