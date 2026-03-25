@@ -2831,11 +2831,12 @@ function updatePlayerHeart() {
     dlEl.appendChild(dlSvg);
     document.getElementById('now-playing').appendChild(dlEl);
     dlEl.addEventListener('click', async () => {
-      const trk = state.queue[state.queueIndex];
-      if (!trk || !trk.id) return;
+      const trk = state.queue[state.queueIndex] || (recentlyPlayed && recentlyPlayed[0]);
+      if (!trk || !trk.id) { toast('No track to download', 'error'); return; }
+      if (trk.is_local) { toast('Already in your library', 'success'); return; }
       dlEl.classList.add('downloading');
       try {
-        await api('/downloads', { method: 'POST', body: JSON.stringify({ track_ids: [trk.id] }) });
+        await api('/download', { method: 'POST', body: { track_ids: [trk.id] } });
         toast('Downloading ' + (trk.name || 'track'));
       } catch (_) {
         toast('Download failed', 'error');
@@ -2858,9 +2859,11 @@ function updatePlayerHeart() {
     heartEl.classList.toggle('hearted', !!(key && _favCache[key]));
     dlEl.style.display = current.is_local ? 'none' : '';
   } else {
-    // No queue context — check if the most recent track was local
+    // No queue context — check recent + audio src for download eligibility
     const recent = recentlyPlayed && recentlyPlayed[0];
-    const isLocal = recent ? recent.is_local : true;
+    const audioSrc = document.getElementById('audio').src || '';
+    const isStream = audioSrc.includes('/playback/stream/');
+    const isLocal = recent ? recent.is_local : !isStream;
     dlEl.style.display = isLocal ? 'none' : '';
   }
 }
