@@ -687,6 +687,7 @@ function _expandToggle(tile) {
   tile.addEventListener('click', () => tile.classList.toggle('bento-expanded'));
   a11yClick(tile);
   tile.appendChild(textEl('span', 'More', 'bento-hint'));
+  tile.appendChild(textEl('span', '\u25BE', 'bento-chevron'));
 }
 
 function _detailBlock(items) {
