@@ -2523,6 +2523,29 @@ async function loadFavorites(container, filter) {
 }
 
 // ---- DOWNLOADS VIEW ----
+
+function _dlArtThumb(coverUrl, trackId) {
+  const wrap = h('div', { className: 'dl-card-art' });
+  if (coverUrl) {
+    wrap.appendChild(h('img', { src: coverUrl, loading: 'lazy', alt: '', className: 'dl-card-art-img' }));
+  } else {
+    const grad = h('div', { className: 'dl-card-art-grad' });
+    grad.style.background = artGradient(trackId);
+    wrap.appendChild(grad);
+  }
+  return wrap;
+}
+
+function _timeAgo(ts) {
+  if (!ts) return '';
+  const diff = (Date.now() / 1000) - ts;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  if (diff < 604800) return Math.floor(diff / 86400) + 'd ago';
+  return new Date(ts * 1000).toLocaleDateString();
+}
+
 function renderDownloads(container) {
   const resultsArea = h('div', { className: 'results' });
   container.appendChild(resultsArea);
@@ -2531,14 +2554,23 @@ function renderDownloads(container) {
     textEl('div', 'Downloads', 'results-title')
   ));
 
-  const activeSection = h('div', { id: 'dl-active' });
-  resultsArea.appendChild(textEl('div', 'Active', 'col-label'));
+  // Active section
+  const activeLabel = textEl('div', 'Active', 'dl-section-label');
+  resultsArea.appendChild(activeLabel);
+  const activeSection = h('div', { id: 'dl-active', className: 'dl-card-list' });
   resultsArea.appendChild(activeSection);
 
-  resultsArea.appendChild(h('div', { style: { height: '24px' } }));
-  resultsArea.appendChild(textEl('div', 'History', 'col-label'));
-  const historySection = h('div', { id: 'dl-history' });
+  // Spacer
+  resultsArea.appendChild(h('div', { style: { height: '32px' } }));
+
+  // History section
+  const historyLabel = textEl('div', 'History', 'dl-section-label');
+  resultsArea.appendChild(historyLabel);
+  const historySection = h('div', { id: 'dl-history', className: 'dl-card-list' });
   resultsArea.appendChild(historySection);
+
+  // Show initial empty state for active section
+  _showActiveEmpty(activeSection);
 
   // Use global SSE — it updates #dl-active automatically
   _ensureGlobalSSE();
@@ -2548,36 +2580,131 @@ function renderDownloads(container) {
 }
 
 function updateActiveDownload(container, data) {
-  let row = container.querySelector('[data-dl-id="' + data.track_id + '"]');
+  let card = container.querySelector('[data-dl-id="' + data.track_id + '"]');
+
   if (data.type === 'complete' || data.type === 'error') {
-    if (row) row.remove();
+    if (card) card.remove();
+    // Check if active section is now empty
+    if (!container.children.length) {
+      _showActiveEmpty(container);
+    }
+    // Refresh history to show the new entry
+    const histEl = document.getElementById('dl-history');
+    if (histEl) loadDownloadHistory(histEl);
     return;
   }
-  if (!row) {
-    row = h('div', { 'data-dl-id': String(data.track_id), style: { padding: '8px 0' } });
-    container.appendChild(row);
+
+  // Remove empty state if present
+  const emptyEl = container.querySelector('.dl-empty');
+  if (emptyEl) emptyEl.remove();
+
+  if (!card) {
+    card = h('div', { 'data-dl-id': String(data.track_id), className: 'dl-card' });
+    container.appendChild(card);
   }
-  while (row.firstChild) row.removeChild(row.firstChild);
-  row.appendChild(textEl('span', data.name || 'Track ' + data.track_id, ''));
-  row.appendChild(textEl('span', ' \u2014 ' + (data.status || ''), 'track-artist'));
+
+  while (card.firstChild) card.removeChild(card.firstChild);
+
+  card.appendChild(_dlArtThumb(data.cover_url, data.track_id));
+
+  const info = h('div', { className: 'dl-card-info' });
+  info.appendChild(textEl('div', data.name || 'Track ' + data.track_id, 'dl-card-name'));
+  if (data.artist) {
+    info.appendChild(textEl('div', data.artist, 'dl-card-artist'));
+  }
+
+  // Progress bar
+  const barWrap = h('div', { className: 'dl-progress-wrap' });
+  const barFill = h('div', { className: 'dl-progress-fill' });
+  if (data.status === 'downloading') {
+    barFill.classList.add('dl-progress-active');
+    barFill.style.width = (data.progress || 0) + '%';
+  } else {
+    // queued
+    barFill.classList.add('dl-progress-queued');
+    barFill.style.width = '0%';
+  }
+  barWrap.appendChild(barFill);
+  info.appendChild(barWrap);
+
+  const statusText = textEl('div',
+    data.status === 'queued' ? 'Waiting...' : 'Downloading',
+    'dl-card-status' + (data.status === 'queued' ? ' dl-status-queued' : '')
+  );
+  info.appendChild(statusText);
+
+  card.appendChild(info);
+}
+
+function _showActiveEmpty(container) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+  const empty = h('div', { className: 'dl-empty' });
+  empty.appendChild(textEl('div', 'No active downloads', 'dl-empty-text'));
+  container.appendChild(empty);
 }
 
 async function loadDownloadHistory(container) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+
   try {
     const data = await api('/downloads/history');
     const downloads = data.downloads || [];
+
     if (downloads.length === 0) {
-      container.appendChild(textEl('div', 'Your downloaded tracks will appear here.', 'track-artist'));
+      const empty = h('div', { className: 'dl-empty-state' });
+      const iconWrap = h('div', { className: 'dl-empty-icon' });
+      // SAFE: static SVG markup
+      iconWrap.innerHTML = ICONS.music; // eslint-disable-line -- static SVG
+      empty.appendChild(iconWrap);
+      empty.appendChild(textEl('div', 'Nothing downloading right now', 'empty-state-title'));
+      empty.appendChild(textEl('div', 'Tracks you download will show up here', 'empty-state-sub'));
+      container.appendChild(empty);
       return;
     }
-    downloads.forEach(dl => {
-      container.appendChild(h('div', { style: { padding: '4px 0' } },
-        textEl('span', dl.name || 'Track ' + dl.track_id, ''),
-        textEl('span', ' \u2014 ' + (dl.status || ''), 'track-artist')
-      ));
+
+    downloads.forEach((dl, i) => {
+      const card = h('div', { className: 'dl-card dl-history-card' });
+      card.style.animationDelay = Math.min(i * 0.03, 0.3) + 's';
+
+      card.appendChild(_dlArtThumb(dl.cover_url, dl.track_id));
+
+      const info = h('div', { className: 'dl-card-info' });
+      info.appendChild(textEl('div', dl.name || 'Track ' + dl.track_id, 'dl-card-name'));
+      if (dl.artist) {
+        info.appendChild(textEl('div', dl.artist, 'dl-card-artist'));
+      }
+
+      // Bottom row: quality badge + status + time
+      const meta = h('div', { className: 'dl-card-meta' });
+
+      if (dl.quality && dl.status === 'done') {
+        const qCls = qualityClass(dl.quality);
+        const qLabel = qualityLabel(dl.quality);
+        const badge = textEl('span', qLabel, 'quality-tag ' + qCls);
+        badge.title = qualityTitle(dl.quality);
+        meta.appendChild(badge);
+      }
+
+      if (dl.status === 'done') {
+        const dot = h('span', { className: 'dl-status-dot dl-status-done' });
+        meta.appendChild(dot);
+        meta.appendChild(textEl('span', 'Done', 'dl-status-label dl-status-done-text'));
+      } else if (dl.status === 'error') {
+        const dot = h('span', { className: 'dl-status-dot dl-status-error' });
+        meta.appendChild(dot);
+        meta.appendChild(textEl('span', 'Failed', 'dl-status-label dl-status-error-text'));
+      }
+
+      if (dl.finished_at) {
+        meta.appendChild(textEl('span', _timeAgo(dl.finished_at), 'dl-card-time'));
+      }
+
+      info.appendChild(meta);
+      card.appendChild(info);
+      container.appendChild(card);
     });
   } catch (_) {
-    container.appendChild(textEl('div', 'Failed to load history.', 'track-artist'));
+    container.appendChild(textEl('div', 'Could not load download history', 'dl-error-text'));
   }
 }
 

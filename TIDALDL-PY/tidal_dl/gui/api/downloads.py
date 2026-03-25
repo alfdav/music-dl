@@ -23,6 +23,9 @@ class DownloadEntry:
     def __init__(self, track_id: int, name: str) -> None:
         self.track_id = track_id
         self.name = name
+        self.artist: str = ""
+        self.cover_url: str = ""
+        self.quality: str = ""
         self.progress: float = 0.0
         self.status: str = "queued"
         self.started_at: float = time.time()
@@ -134,8 +137,15 @@ def trigger_download(track_ids: list[int]) -> dict:
             if entry:
                 if track:
                     entry.name = track.full_name or track.name or entry.name
+                    if track.artists:
+                        entry.artist = ", ".join(a.name for a in track.artists if a.name)
+                    try:
+                        if track.album:
+                            entry.cover_url = track.album.image(320) or ""
+                    except Exception:
+                        pass
                 entry.status = "downloading"
-                _broadcast({"type": "progress", "track_id": tid, "name": entry.name, "status": "downloading", "progress": 0})
+                _broadcast({"type": "progress", "track_id": tid, "name": entry.name, "artist": entry.artist, "cover_url": entry.cover_url, "status": "downloading", "progress": 0})
 
             try:
                 if not track:
@@ -152,11 +162,12 @@ def trigger_download(track_ids: list[int]) -> dict:
                     entry.status = "done"
                     entry.progress = 100
                     entry.finished_at = time.time()
+                    entry.quality = settings.data.quality_audio or ""
 
                     # Persist to DB
-                    artist_name = ""
+                    artist_name = entry.artist
                     album_name = ""
-                    if track.artists:
+                    if not artist_name and track.artists:
                         artist_name = ", ".join(a.name for a in track.artists if a.name)
                     if track.album:
                         album_name = track.album.name or ""
@@ -169,10 +180,12 @@ def trigger_download(track_ids: list[int]) -> dict:
                         status="done",
                         started_at=entry.started_at,
                         finished_at=entry.finished_at,
+                        cover_url=entry.cover_url,
+                        quality=entry.quality,
                     )
                     db.commit()
 
-                    _broadcast({"type": "complete", "track_id": tid, "name": entry.name, "status": "done"})
+                    _broadcast({"type": "complete", "track_id": tid, "name": entry.name, "artist": entry.artist, "cover_url": entry.cover_url, "quality": entry.quality, "status": "done"})
 
             except Exception as exc:
                 with _lock:
@@ -185,14 +198,16 @@ def trigger_download(track_ids: list[int]) -> dict:
                     db.record_download(
                         track_id=tid,
                         name=entry.name,
+                        artist=entry.artist,
                         status="error",
                         error=str(exc),
                         started_at=entry.started_at,
                         finished_at=entry.finished_at,
+                        cover_url=entry.cover_url,
                     )
                     db.commit()
 
-                    _broadcast({"type": "error", "track_id": tid, "name": entry.name, "error": str(exc)})
+                    _broadcast({"type": "error", "track_id": tid, "name": entry.name, "artist": entry.artist, "cover_url": entry.cover_url, "error": str(exc)})
 
         # After all downloads complete, scan download dir for new files
         _scan_new_downloads(db, settings)
@@ -225,7 +240,7 @@ async def downloads_sse() -> StreamingResponse:
     async def event_stream():
         try:
             for entry in _active.values():
-                yield f"data: {_json({'type': 'progress', 'track_id': entry.track_id, 'name': entry.name, 'status': entry.status, 'progress': entry.progress})}\n\n"
+                yield f"data: {_json({'type': 'progress', 'track_id': entry.track_id, 'name': entry.name, 'artist': entry.artist, 'cover_url': entry.cover_url, 'status': entry.status, 'progress': entry.progress})}\n\n"
 
             while True:
                 try:

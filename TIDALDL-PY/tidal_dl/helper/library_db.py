@@ -134,9 +134,20 @@ class LibraryDB:
                 status      TEXT NOT NULL,
                 error       TEXT,
                 started_at  REAL,
-                finished_at REAL
+                finished_at REAL,
+                cover_url   TEXT,
+                quality     TEXT
             )"""
         )
+        # Migrate: add cover_url and quality columns if missing
+        try:
+            self._conn.execute("SELECT cover_url FROM download_history LIMIT 1")
+        except Exception:
+            self._conn.execute("ALTER TABLE download_history ADD COLUMN cover_url TEXT")
+        try:
+            self._conn.execute("SELECT quality FROM download_history LIMIT 1")
+        except Exception:
+            self._conn.execute("ALTER TABLE download_history ADD COLUMN quality TEXT")
 
         # favorites table
         self._conn.execute(
@@ -787,13 +798,15 @@ class LibraryDB:
         error: str | None = None,
         started_at: float | None = None,
         finished_at: float | None = None,
+        cover_url: str | None = None,
+        quality: str | None = None,
     ) -> None:
         """Record a download completion (success or failure)."""
         assert self._conn
         self._conn.execute(
-            """INSERT INTO download_history (track_id, name, artist, album, status, error, started_at, finished_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (track_id, name, artist, album, status, error, started_at, finished_at),
+            """INSERT INTO download_history (track_id, name, artist, album, status, error, started_at, finished_at, cover_url, quality)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (track_id, name, artist, album, status, error, started_at, finished_at, cover_url, quality),
         )
 
     def download_history(self, limit: int = 50) -> list[dict]:

@@ -2518,3 +2518,209 @@ body {
   padding: 10px 16px;
   margin-bottom: 16px;
 }
+
+/* ---- DOWNLOADS PAGE ---- */
+
+.dl-section-label {
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+
+.dl-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dl-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--glass-border);
+  border-radius: 1rem;
+  animation: fadeUp 0.4s ease both;
+}
+
+.dl-history-card {
+  transition: background 0.15s;
+}
+.dl-history-card:hover {
+  background: var(--surface-hover);
+}
+
+.dl-card-art {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.dl-card-art-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dl-card-art-grad {
+  width: 100%;
+  height: 100%;
+  opacity: 0.5;
+}
+
+.dl-card-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dl-card-name {
+  font-family: var(--serif);
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.2px;
+  line-height: 1.3;
+}
+
+.dl-card-artist {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Progress bar */
+.dl-progress-wrap {
+  width: 100%;
+  height: 3px;
+  background: rgba(255, 245, 235, 0.06);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.dl-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.dl-progress-active {
+  background: var(--accent);
+  animation: dlPulse 1.8s ease-in-out infinite;
+}
+
+.dl-progress-queued {
+  background: var(--text-muted);
+  opacity: 0.3;
+}
+
+@keyframes dlPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.dl-card-status {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  letter-spacing: 0.3px;
+}
+
+.dl-status-queued {
+  color: var(--text-muted);
+}
+
+/* History meta row */
+.dl-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  flex-wrap: wrap;
+}
+
+.dl-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dl-status-done { background: var(--green); }
+.dl-status-error { background: var(--red); opacity: 0.6; }
+
+.dl-status-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.3px;
+}
+
+.dl-status-done-text { color: var(--green); opacity: 0.8; }
+.dl-status-error-text { color: var(--red); opacity: 0.6; }
+
+.dl-card-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: auto;
+  letter-spacing: 0.2px;
+}
+
+/* Empty states */
+.dl-empty {
+  padding: 24px 16px;
+  text-align: center;
+}
+
+.dl-empty-text {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 300;
+}
+
+.dl-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 32px 60px;
+  color: var(--text-muted);
+  text-align: center;
+  gap: 16px;
+  animation: fadeUp 0.6s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.dl-empty-icon {
+  width: 40px;
+  height: 40px;
+  opacity: 0.15;
+  color: var(--text-muted);
+}
+
+.dl-empty-icon svg {
+  width: 100%;
+  height: 100%;
+  stroke-width: 1;
+}
+
+.dl-error-text {
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 24px 16px;
+}
