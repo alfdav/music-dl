@@ -1341,8 +1341,8 @@ function renderSearchResults(container, data) {
 }
 
 function _trackKey(t) {
-  // Prefer ISRC for deduplication (same song from different paths), then id, then path
-  return t.isrc || t.id || t.path || t.local_path || '';
+  // id or path is the stable identity — ISRC is NOT unique per file
+  return t.id || t.path || t.local_path || '';
 }
 
 function renderTrackHeader() {
@@ -2306,7 +2306,7 @@ async function loadLibraryArtistGrouped(resultsArea, query) {
 
 // ---- RECENTLY PLAYED VIEW ----
 function _recentRelativeTime(ts) {
-  if (!ts) return '';
+  if (typeof ts !== 'number' || isNaN(ts)) return '';
   const diff = Date.now() - ts;
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return 'just now';
@@ -2320,7 +2320,7 @@ function _recentRelativeTime(ts) {
 }
 
 function _recentTimeGroup(ts) {
-  if (!ts) return 'Earlier';
+  if (typeof ts !== 'number' || isNaN(ts)) return 'Earlier';
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const yesterdayStart = todayStart - 86400000;
@@ -2347,8 +2347,9 @@ function _recentRemoveIcon() {
   return svg;
 }
 
-function _removeRecentEntry(index) {
-  recentlyPlayed.splice(index, 1);
+function _removeRecentEntry(track) {
+  const idx = recentlyPlayed.findIndex(t => _trackKey(t) === _trackKey(track));
+  if (idx !== -1) recentlyPlayed.splice(idx, 1);
   _saveRecent();
   navigate('recent');
 }
@@ -2412,10 +2413,10 @@ function renderRecentlyPlayed(container) {
     // Remove button overlay (visible on hover, same pattern as download button)
     const removeBtn = h('button', { className: 'recent-page-remove-btn', title: 'Remove from history', 'aria-label': 'Remove' });
     removeBtn.appendChild(_recentRemoveIcon());
-    const capturedIndex = i;
+    const capturedTrack = t;
     removeBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      _removeRecentEntry(capturedIndex);
+      _removeRecentEntry(capturedTrack);
     });
     wrapper.appendChild(removeBtn);
 
@@ -2959,7 +2960,10 @@ async function loadDownloadHistory(container) {
           retryBtn.textContent = 'Retrying\u2026';
           try {
             await api('/download', { method: 'POST', body: { track_ids: [dl.track_id] } });
-          } catch (_) { /* SSE will pick up status */ }
+          } catch (_) {
+            retryBtn.disabled = false;
+            retryBtn.textContent = 'Retry';
+          }
         };
         meta.appendChild(retryBtn);
       }
@@ -3124,13 +3128,19 @@ async function loadSettingsForm(container) {
           select.addEventListener('change', () => saveSetting(field.key, select.value));
           row.appendChild(select);
         } else if (field.type === 'toggle') {
-          const toggle = h('div', { className: 'settings-toggle' + (data[field.key] ? ' on' : '') });
+          const toggle = h('div', {
+            className: 'settings-toggle' + (data[field.key] ? ' on' : ''),
+            tabIndex: '0', role: 'switch', 'aria-checked': data[field.key] ? 'true' : 'false',
+          });
           let val = !!data[field.key];
-          toggle.addEventListener('click', () => {
+          const flipToggle = () => {
             val = !val;
             toggle.className = 'settings-toggle' + (val ? ' on' : '');
+            toggle.setAttribute('aria-checked', val ? 'true' : 'false');
             saveSetting(field.key, val);
-          });
+          };
+          toggle.addEventListener('click', flipToggle);
+          toggle.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); flipToggle(); } });
           row.appendChild(toggle);
         }
 
