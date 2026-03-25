@@ -429,15 +429,16 @@ def start_upgrade(req: UpgradeStartRequest) -> dict:
         errors: list[str] = []
 
         for path, direct_tid in all_items:
-            row = db.get(path)
-            if not row:
-                errors.append(f"Not in library: {path}")
-                continue
-
             # If tidal_track_id provided directly (from meta probe), use it
+            # No need to validate path — we already have the Tidal track ID
             if direct_tid:
                 track_ids.append(direct_tid)
                 upgrade_map[direct_tid] = path
+                continue
+
+            row = db.get(path)
+            if not row:
+                errors.append(f"Not in library: {path}")
                 continue
 
             isrc = row.get("isrc")
@@ -509,10 +510,12 @@ def _trigger_upgrade_downloads(
         for tid in track_ids:
             old_path = upgrade_map.get(tid, "")
             track_name = f"Track {tid}"
+            print(f"[upgrade] Processing track {tid}, old_path={old_path}", flush=True)
 
             try:
                 track = tidal.session.track(tid)
                 track_name = track.full_name or track.name or track_name
+                print(f"[upgrade] Resolved: {track_name}", flush=True)
                 artist_name = ""
                 if track.artists:
                     artist_name = ", ".join(a.name for a in track.artists if a.name)
@@ -545,12 +548,14 @@ def _trigger_upgrade_downloads(
             })
 
             try:
+                print(f"[upgrade] Calling dl.item() with quality={quality_enum}", flush=True)
                 outcome, new_path = dl.item(
                     file_template=settings.data.format_track,
                     media=track,
                     quality_audio=quality_enum,
                     duplicate_action_override="redownload",
                 )
+                print(f"[upgrade] outcome={outcome}, new_path={new_path}", flush=True)
 
                 if outcome in (DownloadOutcome.DOWNLOADED, DownloadOutcome.COPIED):
                     # Trash old file if it exists and differs from new
@@ -581,6 +586,8 @@ def _trigger_upgrade_downloads(
                     })
 
             except Exception as exc:
+                print(f"[upgrade] ERROR for {tid}: {exc}", flush=True)
+                import traceback; traceback.print_exc()
                 _broadcast({
                     "type": "upgrade_error",
                     "track_id": tid,
