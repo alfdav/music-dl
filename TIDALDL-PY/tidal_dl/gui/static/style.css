@@ -784,9 +784,12 @@ body {
 }
 
 .nav-item.scanning svg {
-  animation: spin 1.2s linear infinite;
-  opacity: 1;
+  animation: scan-pulse 1.5s ease-in-out infinite;
   color: var(--accent);
+}
+@keyframes scan-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.1); }
 }
 
 /* ---- SKELETON LOADING ---- */

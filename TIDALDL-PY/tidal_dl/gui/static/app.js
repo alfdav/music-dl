@@ -1978,7 +1978,13 @@ async function triggerScan(btn, resultsArea, rescan) {
   libraryScanPoll = setInterval(async () => {
     try {
       const status = await api('/library/scan/status');
-      textNode.textContent = ' Scanning... ' + status.scanned;
+      if (status.scanned > 0) {
+        textNode.textContent = ' New: ' + status.scanned;
+      } else if (status.total > 0) {
+        textNode.textContent = ' Checking... ' + status.total.toLocaleString();
+      } else {
+        textNode.textContent = ' Scanning...';
+      }
       if (status.done || !status.scanning) {
         clearInterval(libraryScanPoll);
         libraryScanPoll = null;
