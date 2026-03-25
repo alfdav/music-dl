@@ -2205,7 +2205,7 @@ async function loadLibraryArtistGrouped(resultsArea, query) {
 
   try {
     // Fetch all tracks sorted by artist (large limit for grouping)
-    const data = await api('/library?sort=artist&limit=5000&offset=0' +
+    const data = await api('/library?sort=artist&limit=200&offset=0' +
       (query ? '&q=' + encodeURIComponent(query) : ''));
     if (reqId !== _libRequestId) return;
     const tracks = data.tracks || [];
@@ -2299,7 +2299,7 @@ async function loadLibraryArtistGrouped(resultsArea, query) {
     while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
     resultsArea.appendChild(h('div', { className: 'empty-state' },
       textEl('div', 'Could not load library', 'empty-state-title'),
-      textEl('div', err.message, 'empty-state-sub')
+      textEl('div', typeof err === 'string' ? err : (err.message || 'Something went wrong'), 'empty-state-sub')
     ));
   }
 }
