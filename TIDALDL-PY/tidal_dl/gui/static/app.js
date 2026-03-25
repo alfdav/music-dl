@@ -885,6 +885,76 @@ function _renderRecentStrip(container) {
 // ---- SEARCH VIEW ----
 let searchDebounce = null;
 
+// ---- RECENT SEARCHES (localStorage) ----
+function _getRecentSearches() {
+  try { return JSON.parse(localStorage.getItem('recentSearches') || '[]'); } catch (_) { return []; }
+}
+function _saveRecentSearch(query, type) {
+  const recent = _getRecentSearches().filter(r => !(r.query === query && r.type === type));
+  recent.unshift({ query, type, ts: Date.now() });
+  if (recent.length > 10) recent.pop();
+  localStorage.setItem('recentSearches', JSON.stringify(recent));
+}
+function _removeRecentSearch(query, type) {
+  const recent = _getRecentSearches().filter(r => !(r.query === query && r.type === type));
+  localStorage.setItem('recentSearches', JSON.stringify(recent));
+}
+function _clearRecentSearches() {
+  localStorage.removeItem('recentSearches');
+}
+
+function _renderRecentSearches(recentEl, input, resultsArea) {
+  while (recentEl.firstChild) recentEl.removeChild(recentEl.firstChild);
+  const recent = _getRecentSearches();
+  if (recent.length === 0) {
+    recentEl.classList.remove('visible');
+    return;
+  }
+  const header = h('div', { className: 'recent-searches-header' },
+    textEl('span', 'Recent searches', 'recent-searches-label')
+  );
+  const clearBtn = h('button', {
+    className: 'recent-searches-clear',
+    onClick: () => {
+      _clearRecentSearches();
+      recentEl.classList.remove('visible');
+    }
+  }, 'Clear all');
+  header.appendChild(clearBtn);
+  recentEl.appendChild(header);
+
+  const chips = h('div', { className: 'recent-searches-chips' });
+  for (const item of recent) {
+    const chip = h('div', { className: 'recent-chip' });
+    chip.appendChild(textEl('span', item.query));
+    chip.appendChild(textEl('span', item.type, 'recent-chip-type'));
+    const x = textEl('span', '\u00d7', 'recent-chip-x');
+    x.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _removeRecentSearch(item.query, item.type);
+      _renderRecentSearches(recentEl, input, resultsArea);
+    });
+    chip.appendChild(x);
+    chip.addEventListener('click', () => {
+      input.value = item.query;
+      state.searchQuery = item.query;
+      state.searchType = item.type;
+      recentEl.classList.remove('visible');
+      doSearch(resultsArea);
+      // Update filter pills to reflect the search type
+      const pillContainer = input.closest('.search-area')?.querySelector('.filter-pills');
+      if (pillContainer) {
+        pillContainer.querySelectorAll('.pill').forEach(p => {
+          p.classList.toggle('active', p.textContent.toLowerCase() === item.type);
+        });
+      }
+    });
+    chips.appendChild(chip);
+  }
+  recentEl.appendChild(chips);
+  recentEl.classList.add('visible');
+}
+
 function renderSearch(container) {
   const searchArea = h('div', { className: 'search-area' });
 
@@ -897,14 +967,33 @@ function renderSearch(container) {
     placeholder: 'Search artists, albums, tracks on Tidal...',
   });
   input.value = state.searchQuery;
+  searchField.appendChild(input);
+  searchRow.appendChild(searchField);
+  searchArea.appendChild(searchRow);
+
+  // Recent searches dropdown
+  const recentSearchesEl = h('div', { className: 'recent-searches' });
+  searchArea.appendChild(recentSearchesEl);
+
   input.addEventListener('input', () => {
     state.searchQuery = input.value;
     clearTimeout(searchDebounce);
     searchDebounce = setTimeout(() => doSearch(resultsArea), 300);
+    if ((input.value || '').trim().length < 2) {
+      _renderRecentSearches(recentSearchesEl, input, resultsArea);
+    } else {
+      recentSearchesEl.classList.remove('visible');
+    }
   });
-  searchField.appendChild(input);
-  searchRow.appendChild(searchField);
-  searchArea.appendChild(searchRow);
+  input.addEventListener('focus', () => {
+    if ((input.value || '').trim().length < 2) {
+      _renderRecentSearches(recentSearchesEl, input, resultsArea);
+    }
+  });
+  input.addEventListener('blur', () => {
+    // Delay to allow click events on chips to fire first
+    setTimeout(() => recentSearchesEl.classList.remove('visible'), 200);
+  });
 
   // Filter pills
   const pills = h('div', { className: 'filter-pills' });
@@ -1006,6 +1095,7 @@ async function doSearch(resultsArea) {
     return;
   }
 
+  _saveRecentSearch(q, state.searchType);
   renderSearchSkeleton(resultsArea);
 
   // Local results first (instant from SQLite)
