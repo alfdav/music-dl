@@ -105,13 +105,28 @@ def _read_metadata(file_path: Path) -> dict | None:
         if audio.info and hasattr(audio.info, "bits_per_sample"):
             quality = f"{audio.info.sample_rate}Hz/{audio.info.bits_per_sample}bit"
 
+        # ISRC: easy mode doesn't map it for MP4/M4A — fall back to raw tags
+        isrc = _tag("isrc")
+        if not isrc:
+            raw = MutagenFile(file_path)
+            if raw and raw.tags:
+                # MP4: stored as freeform atom or direct key
+                for key in ("isrc", "----:com.apple.iTunes:isrc", "TSRC"):
+                    val = raw.tags.get(key)
+                    if val:
+                        if isinstance(val, list):
+                            isrc = str(val[0])
+                        else:
+                            isrc = str(val)
+                        break
+
         return {
             "path": str(file_path),
             "name": _tag("title", file_path.stem),
             "artist": _tag("artist", "Unknown Artist"),
             "album": _tag("album", "Unknown Album"),
             "duration": int(audio.info.length) if audio.info else 0,
-            "isrc": _tag("isrc"),
+            "isrc": isrc,
             "genre": _normalize_genre(_tag("genre")),
             "quality": quality,
             "format": file_path.suffix[1:].upper(),
