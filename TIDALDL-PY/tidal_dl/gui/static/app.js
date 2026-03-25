@@ -1231,15 +1231,7 @@ function renderUnifiedSearchResults(container, localData, tidalData) {
 
     if (type === 'tracks') {
       // Inline column header (renderTrackHeader does not exist as standalone)
-      container.appendChild(h('div', { className: 'track-header' },
-        textEl('div', '#', 'col-label center'),
-        h('div'),
-        textEl('div', 'Title', 'col-label'),
-        textEl('div', 'Album', 'col-label'),
-        textEl('div', 'Quality', 'col-label center'),
-        textEl('div', 'Time', 'col-label right'),
-        h('div')
-      ));
+      container.appendChild(renderTrackHeader());
       var MAX_INITIAL_LOCAL = 5;
       var visibleLocal = localItems.length > MAX_INITIAL_LOCAL ? localItems.slice(0, MAX_INITIAL_LOCAL) : localItems;
       visibleLocal.forEach((t, i) => container.appendChild(renderTrackRow(t, i + 1, localItems)));
@@ -1357,16 +1349,7 @@ function renderSearchResults(container, data) {
     }
 
     // Column headers — static structural content, no user data
-    const colHeader = h('div', { className: 'track-header' },
-      textEl('div', '#', 'col-label center'),
-      h('div'),
-      textEl('div', 'Title', 'col-label'),
-      textEl('div', 'Album', 'col-label'),
-      textEl('div', 'Quality', 'col-label center'),
-      textEl('div', 'Time', 'col-label right'),
-      h('div')
-    );
-    container.appendChild(colHeader);
+    container.appendChild(renderTrackHeader());
 
     const trackList = h('div', { className: 'tracks' });
     tracks.forEach((track, i) => {
@@ -1815,15 +1798,7 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
   wrapper.appendChild(albumHeader);
 
   // Track header
-  wrapper.appendChild(h('div', { className: 'track-header' },
-    textEl('div', '#', 'col-label center'),
-    h('div'),
-    textEl('div', 'Title', 'col-label'),
-    textEl('div', 'Album', 'col-label'),
-    textEl('div', 'Format', 'col-label center'),
-    textEl('div', 'Time', 'col-label right'),
-    h('div')
-  ));
+  wrapper.appendChild(renderTrackHeader());
 
   const trackList = h('div', { className: 'tracks' });
   wrapper.appendChild(trackList);
@@ -2003,15 +1978,7 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
           tidalSection.appendChild(tidalHeader);
 
           // Track header for Tidal section
-          tidalSection.appendChild(h('div', { className: 'track-header' },
-            textEl('div', '#', 'col-label center'),
-            h('div'),
-            textEl('div', 'Title', 'col-label'),
-            textEl('div', 'Album', 'col-label'),
-            textEl('div', 'Format', 'col-label center'),
-            textEl('div', 'Time', 'col-label right'),
-            h('div')
-          ));
+          tidalSection.appendChild(renderTrackHeader());
 
           const tidalTrackList = h('div', { className: 'tracks' });
 
@@ -2137,15 +2104,7 @@ async function renderAlbumDetail(container, albumId) {
     header.appendChild(headerMeta);
     resultsArea.appendChild(header);
 
-    resultsArea.appendChild(h('div', { className: 'track-header' },
-      textEl('div', '#', 'col-label center'),
-      h('div'),
-      textEl('div', 'Title', 'col-label'),
-      textEl('div', 'Album', 'col-label'),
-      textEl('div', 'Quality', 'col-label center'),
-      textEl('div', 'Time', 'col-label right'),
-      h('div')
-    ));
+    resultsArea.appendChild(renderTrackHeader());
 
     const trackList = h('div', { className: 'tracks' });
     tracks.forEach((track, i) => {
@@ -2333,15 +2292,7 @@ async function loadLibrary(resultsArea, append) {
         return 0;
       }
 
-      resultsArea.appendChild(h('div', { className: 'track-header' },
-        textEl('div', '#', 'col-label center'),
-        h('div'),
-        textEl('div', 'Title', 'col-label'),
-        textEl('div', 'Album', 'col-label'),
-        textEl('div', 'Format', 'col-label center'),
-        textEl('div', 'Time', 'col-label right'),
-        h('div')
-      ));
+      resultsArea.appendChild(renderTrackHeader());
 
       const trackList = h('div', { className: 'tracks', id: 'library-tracks' });
       resultsArea.appendChild(trackList);
@@ -2668,7 +2619,7 @@ function renderRecentlyPlayed(container) {
     // Remove button overlay (visible on hover, same pattern as download button)
     const removeBtn = h('button', { className: 'recent-page-remove-btn', title: 'Remove from history', 'aria-label': 'Remove' });
     removeBtn.appendChild(_recentRemoveIcon());
-    const capturedTrack = t;
+    const capturedTrack = track;
     removeBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       _removeRecentEntry(capturedTrack);
@@ -2789,15 +2740,7 @@ async function loadPlaylistTracks(resultsArea, pl) {
   resultsArea.appendChild(plHeader);
 
   // Track header
-  resultsArea.appendChild(h('div', { className: 'track-header' },
-    textEl('div', '#', 'col-label center'),
-    h('div'),
-    textEl('div', 'Title', 'col-label'),
-    textEl('div', 'Album', 'col-label'),
-    textEl('div', 'Quality', 'col-label center'),
-    textEl('div', 'Time', 'col-label right'),
-    h('div')
-  ));
+  resultsArea.appendChild(renderTrackHeader());
 
   const trackList = h('div', { className: 'tracks' });
   resultsArea.appendChild(trackList);

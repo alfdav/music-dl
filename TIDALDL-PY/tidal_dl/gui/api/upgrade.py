@@ -124,27 +124,83 @@ def _probe_tidal_isrc(
             t_isrc = getattr(t, "isrc", None)
             if not t_isrc or t_isrc.upper() != isrc.upper():
                 continue
-
-            # Determine max quality from metadata tags and audio_quality
-            tags = getattr(t, "media_metadata_tags", None) or []
-            audio_quality = getattr(t, "audio_quality", None) or ""
-
-            max_q = str(audio_quality).upper() if audio_quality else "LOSSLESS"
-
-            # Check tags for hi-res indicators
-            tag_upper = [str(tag).upper() for tag in tags]
-            if "HIRES_LOSSLESS" in tag_upper or "HI_RES_LOSSLESS" in tag_upper:
-                max_q = "HI_RES_LOSSLESS"
-            elif "HIRES" in tag_upper or "HI_RES" in tag_upper:
-                max_q = "HI_RES"
-            elif "MQA" in tag_upper:
-                max_q = "HI_RES"
-
-            return {"tidal_track_id": t.id, "max_quality": max_q}
+            return {"tidal_track_id": t.id, "max_quality": _extract_quality(t)}
 
         return None
     except Exception:
         logger.exception("Probe failed for ISRC %s", isrc)
+        return None
+
+
+def _extract_quality(t: Any) -> str:
+    """Extract max quality string from a Tidal track object."""
+    tags = getattr(t, "media_metadata_tags", None) or []
+    audio_quality = getattr(t, "audio_quality", None) or ""
+    max_q = str(audio_quality).upper() if audio_quality else "LOSSLESS"
+    tag_upper = [str(tag).upper() for tag in tags]
+    if "HIRES_LOSSLESS" in tag_upper or "HI_RES_LOSSLESS" in tag_upper:
+        max_q = "HI_RES_LOSSLESS"
+    elif "HIRES" in tag_upper or "HI_RES" in tag_upper:
+        max_q = "HI_RES"
+    elif "MQA" in tag_upper:
+        max_q = "HI_RES"
+    return max_q
+
+
+def _probe_tidal_meta(
+    session: Any, title: str, artist: str, duration: int = 0
+) -> dict | None:
+    """Search Tidal by title+artist and return best match.
+
+    Matches by name similarity and optional duration check (±5s).
+    Used as fallback for tracks without ISRC.
+
+    Returns {"tidal_track_id": int, "max_quality": str, "isrc": str} or None.
+    """
+    from tidalapi.media import Track
+
+    try:
+        query = f"{title} {artist}".strip()
+        if not query:
+            return None
+
+        results = session.search(query, models=[Track], limit=10)
+        tracks = results.get("tracks", []) if isinstance(results, dict) else []
+        if not tracks:
+            tracks = getattr(results, "tracks", []) or []
+
+        # Normalize for comparison
+        def _norm(s: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", s.lower())
+
+        target_title = _norm(title)
+        target_artist = _norm(artist)
+
+        for t in tracks:
+            t_name = _norm(getattr(t, "name", "") or getattr(t, "full_name", "") or "")
+            t_artist = _norm(", ".join(a.name for a in (t.artists or []) if a.name) if hasattr(t, "artists") else "")
+
+            # Title must match closely
+            if target_title not in t_name and t_name not in target_title:
+                continue
+            # Artist must match closely
+            if target_artist not in t_artist and t_artist not in target_artist:
+                continue
+            # Duration check if available (±5 seconds)
+            if duration > 0:
+                t_dur = getattr(t, "duration", 0) or 0
+                if t_dur > 0 and abs(t_dur - duration) > 5:
+                    continue
+
+            return {
+                "tidal_track_id": t.id,
+                "max_quality": _extract_quality(t),
+                "isrc": getattr(t, "isrc", "") or "",
+            }
+
+        return None
+    except Exception:
+        logger.exception("Meta probe failed for %s - %s", artist, title)
         return None
 
 
@@ -179,6 +235,16 @@ def _trash_file(path: str) -> None:
 
 class ProbeRequest(BaseModel):
     isrcs: list[str]
+
+
+class ProbeByMetaItem(BaseModel):
+    path: str
+    title: str
+    artist: str
+
+
+class ProbeByMetaRequest(BaseModel):
+    tracks: list[ProbeByMetaItem]
 
 
 class UpgradeStartRequest(BaseModel):
