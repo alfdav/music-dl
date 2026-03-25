@@ -1489,10 +1489,9 @@ body {
 }
 .home-grid {
   display: grid;
-  grid-template-columns: repeat(var(--cols, 4), 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 12px;
   flex: 1;
-  --cols: 4;
 }
 .home-cold {
   grid-template-columns: 1fr;
@@ -1501,29 +1500,18 @@ body {
   flex: 0;
 }
 
-/* Progressive disclosure — hide lower-priority tiles when window is small */
-.home-grid.density-compact [data-tier="2"],
-.home-grid.density-compact [data-tier="3"] { display: none; }
-.home-grid.density-normal [data-tier="3"] { display: none; }
-
 .bento-tile {
   position: relative;
-  border-radius: 16px;
+  border-radius: 10px;
   background: #1a1814;
   overflow: hidden;
   cursor: pointer;
-  transition: transform 0.2s ease-out, box-shadow 0.2s ease-out;
+  transition: transform 0.15s, border-color 0.2s;
 }
 .bento-tile:hover {
-  transform: scale(1.02);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  transform: translateY(-2px);
 }
-/* Hero spans full width — visual anchor like a music app, not a dashboard */
-.bento-hero { grid-column: 1 / -1; min-height: 320px; }
-.bento-hero .bento-bg-art { opacity: 0.45; }
-.bento-hero .bento-overlay {
-  background: linear-gradient(90deg, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0.2) 60%, transparent 100%);
-}
+.bento-hero { grid-column: span 2; }
 
 .bento-bg-art {
   position: absolute;
@@ -1641,12 +1629,11 @@ body {
   border: 1px solid var(--glass-border);
 }
 .bento-stat-tile .bento-body {
-  justify-content: center;
-  padding: 24px;
+  justify-content: flex-start;
 }
 .bento-stat-tile .bento-label {
   font-family: var(--serif);
-  font-size: 2rem;
+  font-size: 1.5rem;
   color: var(--accent);
   line-height: 1;
 }
@@ -1658,11 +1645,7 @@ body {
   text-transform: uppercase;
 }
 
-/* Hide heavy charts on home — keep personal insight text */
-.home-grid .mini-bar-chart,
-.home-grid .mini-weekly-chart,
-.home-grid .peak-hours-strip { display: none; }
-
+/* Tile insight text */
 .bento-insight {
   margin-top: 10px;
   display: flex;
@@ -1671,12 +1654,28 @@ body {
 }
 .bento-insight-line {
   font-size: 0.75rem;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   line-height: 1.45;
 }
 .insight-gold {
   color: var(--accent);
   font-weight: 500;
+}
+
+/* Density scaling: insights shrink as grid gets crowded */
+.home-moderate .bento-insight-line {
+  font-size: 0.65rem;
+}
+.home-moderate .bento-insight {
+  gap: 3px;
+  margin-top: 6px;
+}
+.home-dense .bento-insight {
+  gap: 2px;
+  margin-top: 4px;
+}
+.home-dense .bento-insight-line {
+  font-size: 0.7rem;
 }
 .bento-artist {
   background: linear-gradient(145deg, #2a1f14, #3d2e1a);
@@ -1695,42 +1694,6 @@ body {
   font-family: inherit;
   font-size: 0.75rem;
   letter-spacing: 0;
-}
-
-/* Zone labels — hidden in bento, tiles speak for themselves */
-.home-zone-label { display: none; }
-
-/* Wide tiles span 2 columns for bento hierarchy */
-.bento-tile.bento-wide { grid-column: span 2; }
-@media (max-width: 600px) {
-  .bento-tile.bento-wide:not(.bento-hero) { grid-column: span 1; }
-}
-
-/* Clickable tile hover */
-.bento-clickable {
-  cursor: pointer;
-  transition: border-color 0.2s, transform 0.15s;
-}
-
-.bento-clickable:hover {
-  border-color: rgba(212, 160, 83, 0.3);
-  transform: translateY(-1px);
-}
-
-/* Peak hours heatmap strip */
-.peak-hours-strip {
-  display: flex;
-  gap: 2px;
-  margin-top: 12px;
-  height: 24px;
-  align-items: flex-end;
-}
-
-.peak-hour-cell {
-  flex: 1;
-  height: 100%;
-  border-radius: 2px;
-  min-width: 4px;
 }
 
 /* ---- MINI BAR CHART ---- */
@@ -2087,6 +2050,9 @@ body {
 
 /* ---- RESPONSIVE ---- */
 @media (max-width: 900px) {
+  .home-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
   .bento-hero { grid-column: span 2; }
   .home-title { font-size: 22px; }
   .album-gallery {
