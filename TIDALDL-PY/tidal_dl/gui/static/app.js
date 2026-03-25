@@ -471,6 +471,20 @@ function _renderHomeGrid(container, data, totalPlays) {
   const established = totalPlays >= 100;
   const grid = h('div', { className: 'home-grid' });
 
+  // Adaptive column count + density classes via ResizeObserver
+  new ResizeObserver(entries => {
+    for (const e of entries) {
+      const w = e.contentRect.width;
+      const cols = Math.max(2, Math.min(6, Math.floor(w / 280)));
+      e.target.style.setProperty('--cols', cols);
+      e.target.classList.toggle('density-compact', cols <= 2);
+    }
+  }).observe(grid);
+
+  // Helper: tag a tile with a priority tier for adaptive hiding
+  function _t(tile, tier) { tile.dataset.tier = tier; return tile; }
+
+  // === Core tiles (always visible) ===
   if (data.top_artist && data.top_artist.play_count >= 5) {
     grid.appendChild(_artistTile(data.top_artist, true));
   }
@@ -490,18 +504,20 @@ function _renderHomeGrid(container, data, totalPlays) {
     grid.appendChild(_listeningTimeTile(data.listening_time_hours, data.weekly_activity));
   }
 
+  // === Secondary tiles (tier 1 — hidden on compact) ===
   const extraArtists = (data.top_artists || []).slice(1, 3);
   for (const a of extraArtists) {
     if (a.play_count >= 3) {
-      grid.appendChild(_artistTile(a, false));
+      grid.appendChild(_t(_artistTile(a, false), 1));
     }
   }
 
+  // === Library tiles (tier 2 — hidden on compact) ===
   if (established || data.track_count > 0) {
-    grid.appendChild(_tracksTile(data.track_count, genreSource));
+    grid.appendChild(_t(_tracksTile(data.track_count, data.track_genres || []), 2));
   }
   if (established || data.album_count > 0) {
-    grid.appendChild(_albumsTile(data.album_count, data.album_artists));
+    grid.appendChild(_t(_albumsTile(data.album_count, data.album_artists), 2));
   }
 
   container.appendChild(grid);

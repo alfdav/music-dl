@@ -1488,11 +1488,16 @@ body {
   padding: 24px;
 }
 .home-grid {
+  --cols: 4;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(var(--cols), 1fr);
   gap: 12px;
   flex: 1;
 }
+
+/* Adaptive: hide lower-priority tiles on narrow viewports */
+.home-grid.density-compact [data-tier="2"] { display: none; }
+.home-grid.density-compact [data-tier="1"] { display: none; }
 .home-cold {
   grid-template-columns: 1fr;
   max-width: 380px;
@@ -1502,14 +1507,19 @@ body {
 
 .bento-tile {
   position: relative;
-  border-radius: 10px;
+  border-radius: 1rem;
   background: #1a1814;
   overflow: hidden;
   cursor: pointer;
-  transition: transform 0.15s, border-color 0.2s;
+  transition: transform 0.3s ease-out, box-shadow 0.3s ease-out;
 }
 .bento-tile:hover {
-  transform: translateY(-2px);
+  transform: translateY(-4px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+}
+.bento-tile:active {
+  transform: translateY(-1px) scale(0.99);
+  transition-duration: 0.1s;
 }
 .bento-hero { grid-column: span 2; }
 
@@ -1537,9 +1547,9 @@ body {
   box-sizing: border-box;
 }
 .bento-eyebrow {
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: 1.2px;
   color: var(--text-muted);
   margin-bottom: 8px;
 }
@@ -1627,6 +1637,10 @@ body {
 .bento-stat-tile {
   background: var(--surface);
   border: 1px solid var(--glass-border);
+  transition: transform 0.3s ease-out, box-shadow 0.3s ease-out, border-color 0.3s ease-out;
+}
+.bento-stat-tile:hover {
+  border-color: rgba(212, 160, 83, 0.15);
 }
 .bento-stat-tile .bento-body {
   justify-content: flex-start;
@@ -1638,10 +1652,10 @@ body {
   line-height: 1;
 }
 .bento-stat-label {
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
   letter-spacing: 0.5px;
-  margin-top: 4px;
+  margin-top: 6px;
   text-transform: uppercase;
 }
 
@@ -1653,9 +1667,9 @@ body {
   gap: 3px;
 }
 .bento-insight-line {
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   color: var(--text-muted);
-  line-height: 1.45;
+  line-height: 1.5;
 }
 .insight-gold {
   color: var(--accent);
