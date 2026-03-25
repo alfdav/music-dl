@@ -109,6 +109,15 @@ class LibraryDB:
             "CREATE INDEX IF NOT EXISTS idx_play_events_at ON play_events(played_at)"
         )
 
+        # artist_images cache (Tidal artist photos)
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS artist_images (
+                artist    TEXT PRIMARY KEY,
+                image_url TEXT,
+                fetched_at INTEGER
+            )"""
+        )
+
         # library_meta table (scan fingerprints, etc.)
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS library_meta (key TEXT PRIMARY KEY, value TEXT)"
@@ -356,6 +365,26 @@ class LibraryDB:
     def commit(self) -> None:
         assert self._conn
         self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Artist image cache
+    # ------------------------------------------------------------------
+
+    def get_artist_image(self, artist: str) -> str | None:
+        """Return cached artist image URL, or None if not cached."""
+        assert self._conn
+        row = self._conn.execute(
+            "SELECT image_url FROM artist_images WHERE artist = ?", (artist,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_artist_image(self, artist: str, image_url: str | None) -> None:
+        """Cache an artist image URL (empty string = confirmed miss)."""
+        assert self._conn
+        self._conn.execute(
+            "INSERT OR REPLACE INTO artist_images (artist, image_url, fetched_at) VALUES (?, ?, ?)",
+            (artist, image_url, int(time.time())),
+        )
 
     # ------------------------------------------------------------------
     # Key-value metadata

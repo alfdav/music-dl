@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -128,3 +128,36 @@ def home_stats():
         stats["most_replayed"].pop("cover_path", None)
 
     return stats
+
+
+@router.get("/home/artist-image")
+def artist_image(name: str = Query(..., description="Artist name")):
+    """Return a Tidal artist photo URL, with DB cache."""
+    db = _get_db()
+    cached = db.get_artist_image(name)
+    if cached is not None:
+        # Empty string = cached miss
+        return {"image_url": cached or None}
+
+    # Look up on Tidal
+    try:
+        from tidalapi.artist import Artist as TidalArtist
+
+        from tidal_dl.gui.api.search import get_tidal_session
+
+        session = get_tidal_session()
+        if session.check_login():
+            results = session.search(name, models=[TidalArtist], limit=1)
+            artists = results.get("artists", [])
+            if artists:
+                url = artists[0].image(480)
+                db.set_artist_image(name, url)
+                db.commit()
+                return {"image_url": url}
+    except Exception:
+        pass
+
+    # No image found — cache the miss so we don't retry
+    db.set_artist_image(name, "")
+    db.commit()
+    return {"image_url": None}

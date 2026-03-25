@@ -551,6 +551,17 @@ function _artistTile(artist, hero) {
   tile.appendChild(textEl('span', 'View albums', 'bento-hint'));
   tile.addEventListener('click', () => navigate('artist:' + encodeURIComponent(artist.name)));
   a11yClick(tile);
+  // Lazy-load artist photo from Tidal (cached on backend)
+  fetch('/api/home/artist-image?name=' + encodeURIComponent(artist.name))
+    .then(r => r.json())
+    .then(data => {
+      if (data.image_url) {
+        const img = tile.querySelector('.bento-bg-art');
+        if (img) { img.src = data.image_url; }
+        else { tile.prepend(h('img', { className: 'bento-bg-art', src: data.image_url, alt: '' })); }
+      }
+    })
+    .catch(() => {});
   return tile;
 }
 
@@ -1178,9 +1189,18 @@ function renderSearchResults(container, data) {
       } else {
         artDiv.appendChild(h('div', { className: 'art-gradient', style: { background: artGradient(item.id) } }));
       }
+      const meta = h('div', { className: 'album-card-meta' });
+      meta.appendChild(textEl('div', item.name || '', 'album-card-title'));
+      if (state.searchType === 'albums' && item.artist) {
+        meta.appendChild(textEl('div', typeof item.artist === 'object' ? item.artist.name : item.artist, 'album-card-sub'));
+      } else if (state.searchType === 'artists') {
+        meta.appendChild(textEl('div', item.roles || 'Artist', 'album-card-sub'));
+      } else if (state.searchType === 'playlists' && item.num_tracks) {
+        meta.appendChild(textEl('div', item.num_tracks + ' tracks', 'album-card-sub'));
+      }
       const card = h('div', { className: 'album-card' },
         artDiv,
-        textEl('div', item.name || '', 'album-card-name')
+        meta
       );
       card.style.cursor = 'pointer';
       if (state.searchType === 'albums' && item.id) {
@@ -2838,8 +2858,36 @@ function updateNowPlaying(track) {
     nowTitle.classList.remove('idle-clickable');
     nowTitle.removeAttribute('onclick');
     nowTitle.removeAttribute('title');
+    // Clickable title → album
     nowTitle.textContent = track.name || 'Unknown';
-    nowSub.textContent = (track.artist || '') + (track.album ? ' \u2014 ' + track.album : '');
+    nowTitle.className = 'now-title now-link';
+    nowTitle.onclick = () => {
+      if (track.is_local && track.album && track.artist) {
+        navigate('localalbum:' + encodeURIComponent(track.artist) + ':' + encodeURIComponent(track.album));
+      }
+    };
+
+    // Clickable artist + album sub-line
+    nowSub.textContent = '';
+    const artistSpan = h('span', { className: 'now-link' });
+    artistSpan.textContent = track.artist || '';
+    artistSpan.onclick = (e) => {
+      e.stopPropagation();
+      if (track.artist) navigate('artist:' + encodeURIComponent(track.artist));
+    };
+    nowSub.appendChild(artistSpan);
+    if (track.album) {
+      nowSub.appendChild(document.createTextNode(' \u2014 '));
+      const albumSpan = h('span', { className: 'now-link' });
+      albumSpan.textContent = track.album;
+      albumSpan.onclick = (e) => {
+        e.stopPropagation();
+        if (track.is_local && track.artist) {
+          navigate('localalbum:' + encodeURIComponent(track.artist) + ':' + encodeURIComponent(track.album));
+        }
+      };
+      nowSub.appendChild(albumSpan);
+    }
 
     // Quality badge
     const nowQuality = document.getElementById('now-quality');
@@ -2856,6 +2904,12 @@ function updateNowPlaying(track) {
     }
 
     nowArt.classList.remove('idle-art');
+    nowArt.classList.add('now-link-art');
+    nowArt.onclick = () => {
+      if (track.is_local && track.album && track.artist) {
+        navigate('localalbum:' + encodeURIComponent(track.artist) + ':' + encodeURIComponent(track.album));
+      }
+    };
     while (nowArt.firstChild) nowArt.removeChild(nowArt.firstChild);
     if (track.cover_url) {
       nowArt.appendChild(h('img', { className: 'now-art-img', src: track.cover_url, alt: '' }));

@@ -123,4 +123,18 @@ def _serialize_item(item: Any) -> dict:
         cover_url = item.image(320)
     except Exception:
         pass
-    return {"id": item.id, "name": getattr(item, "name", ""), "cover_url": cover_url}
+    result = {"id": item.id, "name": getattr(item, "name", ""), "cover_url": cover_url}
+    # Album: include artist name
+    if hasattr(item, "artist") and item.artist:
+        result["artist"] = getattr(item.artist, "name", str(item.artist))
+    # Artist: include roles
+    if hasattr(item, "roles") and item.roles:
+        try:
+            roles = [r.type if hasattr(r, "type") else str(r) for r in item.roles]
+            result["roles"] = ", ".join(r.replace("_", " ").title() for r in roles[:3])
+        except Exception:
+            pass
+    # Playlist: include track count
+    if hasattr(item, "num_tracks"):
+        result["num_tracks"] = item.num_tracks
+    return result
