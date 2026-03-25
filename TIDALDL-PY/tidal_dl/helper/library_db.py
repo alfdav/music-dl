@@ -127,6 +127,21 @@ class LibraryDB:
             )"""
         )
 
+        # quality_probes cache (Tidal quality lookup results)
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS quality_probes (
+                isrc           TEXT PRIMARY KEY,
+                tidal_track_id INTEGER,
+                max_quality    TEXT,
+                probed_at      INTEGER
+            )"""
+        )
+
+        # Index on scanned.isrc for upgrade lookups
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scanned_isrc ON scanned(isrc)"
+        )
+
         # library_meta table (scan fingerprints, etc.)
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS library_meta (key TEXT PRIMARY KEY, value TEXT)"
@@ -472,6 +487,58 @@ class LibraryDB:
             "INSERT OR REPLACE INTO playlist_covers (playlist_id, cover_url, fetched_at) VALUES (?, ?, ?)",
             (playlist_id, url, int(time.time())),
         )
+
+    # ------------------------------------------------------------------
+    # Quality probe cache
+    # ------------------------------------------------------------------
+
+    def get_probe(self, isrc: str) -> dict | None:
+        """Return cached Tidal quality probe for an ISRC, or None."""
+        assert self._conn
+        row = self._conn.execute(
+            "SELECT * FROM quality_probes WHERE isrc = ?", (isrc,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_probes_batch(self, isrcs: list[str]) -> dict[str, dict]:
+        """Return cached probes for a list of ISRCs. Returns {isrc: row_dict}."""
+        assert self._conn
+        if not isrcs:
+            return {}
+        placeholders = ",".join("?" for _ in isrcs)
+        rows = self._conn.execute(
+            f"SELECT * FROM quality_probes WHERE isrc IN ({placeholders})", isrcs
+        ).fetchall()
+        return {r["isrc"]: dict(r) for r in rows}
+
+    def set_probe(
+        self,
+        isrc: str,
+        tidal_track_id: int,
+        max_quality: str,
+    ) -> None:
+        """Cache a Tidal quality probe result."""
+        assert self._conn
+        self._conn.execute(
+            "INSERT OR REPLACE INTO quality_probes (isrc, tidal_track_id, max_quality, probed_at) VALUES (?, ?, ?, ?)",
+            (isrc, tidal_track_id, max_quality, int(time.time())),
+        )
+
+    def upgradeable_tracks(self) -> list[dict]:
+        """Return all local tracks with a non-empty ISRC.
+
+        Tier filtering is done in Python since quality strings are heterogeneous.
+        """
+        assert self._conn
+        rows = self._conn.execute(
+            "SELECT * FROM scanned WHERE isrc IS NOT NULL AND isrc != '' AND status != 'unreadable'"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_probe(self, isrc: str) -> None:
+        """Remove a cached probe (for re-probing)."""
+        assert self._conn
+        self._conn.execute("DELETE FROM quality_probes WHERE isrc = ?", (isrc,))
 
     # ------------------------------------------------------------------
     # Key-value metadata
