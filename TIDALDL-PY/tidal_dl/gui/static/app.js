@@ -2856,6 +2856,7 @@ function updatePlayerHeart() {
 
 // ---- PLAY COUNT (30-second threshold) ----
 let _playCountTimer = null;
+let _playAttemptId = 0;
 let _playCountLogged = false;
 
 function _logPlayEvent(track) {
@@ -2895,12 +2896,17 @@ function playTrack(track) {
   // Play count: fires after 30s of playback (or on ended for short tracks)
   _schedulePlayCount(track);
 
-  // Tell other tabs to stop
-  _playerChannel.postMessage('pause');
-
   // Stop current playback — mute to prevent bleed during source switch
   audio.pause();
   audio.muted = true;
+
+  // Tell other tabs to stop AFTER we've paused our own audio
+  // (BroadcastChannel doesn't send to self, but ordering matters)
+  _playerChannel.postMessage('pause');
+
+  // Track this play attempt so canplay guard knows if it's still current
+  const playId = ++_playAttemptId;
+  state.playing = true;
 
   if (track.is_local && track.local_path) {
     audio.src = '/api/playback/local?path=' + encodeURIComponent(track.local_path);
@@ -2910,8 +2916,8 @@ function playTrack(track) {
 
   // Wait for enough data before playing — prevents buffer underrun artifacts
   audio.addEventListener('canplay', function _onReady() {
-    // Guard: if another tab sent 'pause' while we were loading, honour it
-    if (!state.playing) { audio.muted = false; return; }
+    // Guard: only play if this is still the most recent play attempt
+    if (playId !== _playAttemptId) { audio.muted = false; return; }
     audio.play().then(() => {
       audio.muted = false;
     }).catch(() => {
@@ -2919,7 +2925,6 @@ function playTrack(track) {
       toast('Unable to play track', 'error');
     });
   }, { once: true });
-  state.playing = true;
   updatePlayButton();
   updateNowPlaying(track);
   generateWaveform();
