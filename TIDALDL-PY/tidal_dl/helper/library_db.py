@@ -461,11 +461,18 @@ class LibraryDB:
                    FROM play_events WHERE artist IS NOT NULL
                    GROUP BY artist ORDER BY play_count DESC LIMIT 5"""
             ).fetchall()
-            top_artists = [
-                {"name": r["artist"], "play_count": r["play_count"],
-                 "cover_path": None, "track_count": 0, "album_count": 0, "genre": None}
-                for r in top_artists_rows
-            ]
+            for r in top_artists_rows:
+                # Try to find a cover from the scanned table
+                cover_row = c.execute(
+                    "SELECT path FROM scanned WHERE artist = ? LIMIT 1",
+                    (r["artist"],),
+                ).fetchone()
+                top_artists.append({
+                    "name": r["artist"],
+                    "play_count": r["play_count"],
+                    "cover_path": cover_row["path"] if cover_row else None,
+                    "track_count": 0, "album_count": 0, "genre": None,
+                })
             if top_artists:
                 top_artist = top_artists[0]
 

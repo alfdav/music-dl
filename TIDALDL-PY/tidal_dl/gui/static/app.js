@@ -2746,11 +2746,12 @@ function updatePlayerHeart() {
   if (current) {
     const key = current.path || (current.id ? 'tidal:' + current.id : null);
     heartEl.classList.toggle('hearted', !!(key && _favCache[key]));
-    // Show download button only for non-local (Tidal streaming) tracks
     dlEl.style.display = current.is_local ? 'none' : '';
   } else {
-    // Track showing from previous session — hide download (no queue context)
-    dlEl.style.display = 'none';
+    // No queue context — check if the most recent track was local
+    const recent = recentlyPlayed && recentlyPlayed[0];
+    const isLocal = recent ? recent.is_local : true;
+    dlEl.style.display = isLocal ? 'none' : '';
   }
 }
 
@@ -2976,6 +2977,8 @@ audio.addEventListener('ended', () => {
   } else {
     state.playing = false;
     updatePlayButton();
+    progressFill.style.width = '0%';
+    timeElapsed.textContent = '0:00';
   }
 });
 
