@@ -1021,8 +1021,9 @@ body {
 
 .now-sub-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   margin-top: 3px;
 }
 
@@ -1045,8 +1046,9 @@ body {
 
 .now-sub-row .quality-tag {
   flex-shrink: 0;
-  font-size: 8px;
-  padding: 2px 6px;
+  font-size: 9px;
+  padding: 2px 8px;
+  letter-spacing: 0.5px;
 }
 
 /* Transport */
