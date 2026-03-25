@@ -208,14 +208,14 @@ async function api(path, options) {
 // ---- TOAST ----
 let toastContainer;
 
-function toast(message, type) {
+function toast(message, type, durationMs) {
   if (!toastContainer) {
     toastContainer = h('div', { className: 'toast-container', role: 'status', 'aria-live': 'polite' });
     document.body.appendChild(toastContainer);
   }
   const t = textEl('div', message, 'toast' + (type ? ' ' + type : ''));
   toastContainer.appendChild(t);
-  setTimeout(() => { t.remove(); }, 3000);
+  setTimeout(() => { t.remove(); }, durationMs || (type === 'error' ? 5000 : 3000));
 }
 
 // ---- INLINE CONFIRM ----
@@ -1466,6 +1466,20 @@ function renderTrackRow(track, num, allTracks) {
   });
 
   row.appendChild(heartBtn);
+
+  // Right-click to reveal in Finder (local tracks only)
+  const localPath = track.local_path || track.path;
+  if (localPath) {
+    row.addEventListener('contextmenu', async (e) => {
+      e.preventDefault();
+      try {
+        await api('/downloads/reveal', { method: 'POST', body: { path: localPath } });
+        toast('Revealed in Finder', 'success');
+      } catch (_) {
+        toast('File not found', 'error');
+      }
+    });
+  }
 
   // Click to play
   row.addEventListener('click', () => {
@@ -3740,7 +3754,13 @@ audio.addEventListener('error', () => {
   state.playing = false;
   updatePlayButton();
   setWaveformPlaying(false);
-  toast('Track unavailable — file may be offline', 'error');
+  const current = state.queue[state.queueIndex];
+  const label = current ? (current.name || 'Track') : 'Track';
+  toast(label + ' unavailable — skipping', 'error');
+  // Auto-skip to next track after a brief pause
+  if (state.queueIndex < state.queue.length - 1) {
+    setTimeout(() => { state.queueIndex++; playTrack(state.queue[state.queueIndex]); }, 800);
+  }
 });
 
 audio.addEventListener('play', () => {
