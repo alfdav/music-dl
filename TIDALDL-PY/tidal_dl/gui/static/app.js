@@ -1629,7 +1629,7 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
   _caIcon.style.verticalAlign = '-2px';
   _caIcon.style.marginRight = '4px';
   completeAlbumBtn.appendChild(_caIcon);
-  completeAlbumBtn.appendChild(document.createTextNode('Complete Album'));
+  completeAlbumBtn.appendChild(document.createTextNode('Show on Tidal'));
   completeAlbumBtn.style.display = 'none';
   albumActions.appendChild(playBtn);
   albumActions.appendChild(shuffleBtn);
@@ -1717,7 +1717,7 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
           _caIcon2.style.marginRight = '4px';
           completeAlbumBtn.appendChild(_caIcon2);
           completeAlbumBtn.appendChild(document.createTextNode(
-            'Download All Missing (' + missingTracks.length + ')'
+            'Download ' + missingTracks.length + ' Missing'
           ));
           completeAlbumBtn.disabled = false;
 
@@ -1775,7 +1775,7 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
           _caIcon3.style.verticalAlign = '-2px';
           _caIcon3.style.marginRight = '4px';
           completeAlbumBtn.appendChild(_caIcon3);
-          completeAlbumBtn.appendChild(document.createTextNode('Complete Album'));
+          completeAlbumBtn.appendChild(document.createTextNode('Show on Tidal'));
           _completeAlbumLoaded = false;
           toast('Lookup failed: ' + err.message, 'error');
         }
@@ -2697,6 +2697,9 @@ async function renderFavorites(container) {
   const title = textEl('h1', 'Favorites', 'view-title');
   container.appendChild(title);
 
+  const subtitle = h('div', { className: 'view-subtitle', id: 'fav-subtitle' });
+  container.appendChild(subtitle);
+
   const pills = h('div', { className: 'filter-pills' });
   ['All', 'Downloaded', 'Pending'].forEach(label => {
     const pill = textEl('button', label, 'pill' + (label === 'All' ? ' active' : ''));
@@ -2721,6 +2724,21 @@ async function loadFavorites(container, filter) {
     const data = await api('/library/favorites');
     let favs = data.favorites || [];
 
+    // Update subtitle with track count + total listening time
+    const subtitleEl = document.getElementById('fav-subtitle');
+    if (subtitleEl) {
+      const totalDur = data.total_duration || 0;
+      const parts = [];
+      parts.push(favs.length + (favs.length === 1 ? ' track' : ' tracks'));
+      if (totalDur > 0) {
+        const hrs = Math.floor(totalDur / 3600);
+        const mins = Math.floor((totalDur % 3600) / 60);
+        if (hrs > 0) parts.push(hrs + 'h ' + mins + 'm');
+        else parts.push(mins + ' min');
+      }
+      subtitleEl.textContent = parts.join(' \u00b7 ');
+    }
+
     if (filter === 'downloaded') {
       favs = favs.filter(f => f.is_local);
     } else if (filter === 'pending') {
@@ -2744,6 +2762,8 @@ async function loadFavorites(container, filter) {
       artist: f.artist,
       album: f.album,
       cover_url: f.cover_url,
+      quality: f.quality || null,
+      duration: f.duration || 0,
       is_local: f.is_local,
       isrc: f.isrc,
     }));
@@ -2850,11 +2870,9 @@ function updateActiveDownload(container, data) {
 
   const info = h('div', { className: 'dl-card-info' });
   info.appendChild(textEl('div', data.name || 'Track ' + data.track_id, 'dl-card-name'));
-  if (data.artist) {
-    info.appendChild(textEl('div', data.artist, 'dl-card-artist'));
-  }
-  if (data.album) {
-    info.appendChild(textEl('div', data.album, 'dl-card-album'));
+  if (data.artist || data.album) {
+    const parts = [data.artist, data.album].filter(Boolean);
+    info.appendChild(textEl('div', parts.join(' \u2014 '), 'dl-card-artist'));
   }
 
   // Progress bar
@@ -2909,6 +2927,17 @@ async function loadDownloadHistory(container) {
     downloads.forEach((dl, i) => {
       const card = h('div', { className: 'dl-card dl-history-card' });
       card.style.animationDelay = Math.min(i * 0.03, 0.3) + 's';
+
+      // Click to reveal in Finder
+      if (dl.file_path) {
+        card.style.cursor = 'pointer';
+        card.title = 'Click to reveal in Finder';
+        card.addEventListener('click', async () => {
+          try {
+            await api('/downloads/reveal', { method: 'POST', body: { path: dl.file_path } });
+          } catch (_) {}
+        });
+      }
 
       card.appendChild(_dlArtThumb(dl.cover_url, dl.track_id));
 
