@@ -205,6 +205,19 @@ Key behavior:
 
 Supported audio containers for scanning include FLAC, MP3, M4A, MP4, and OGG.
 
+### Look up and write missing ISRC tags
+
+Batch-tag files in your library with ISRCs looked up from Tidal. Uses a local SQLite database (`~/.config/music-dl/library.db`) to cache scan results, so only new files are read on repeat runs.
+
+```shell
+music-dl isrc-tag /Volumes/Music             # Scan + tag all missing ISRCs
+music-dl isrc-tag /Volumes/Music --limit 50   # Tag at most 50 files
+music-dl isrc-tag /Volumes/Music --dry-run    # Preview without writing
+music-dl isrc-tag /Volumes/Music --rescan     # Force full rescan (ignore cache)
+```
+
+The first run scans the entire library and populates the DB. Subsequent runs skip all known files and only process new additions — going from minutes to seconds on large network-mounted libraries.
+
 ---
 
 ## Command Summary
@@ -229,8 +242,32 @@ music-dl scan [--dry-run] [--all] [--verbose]
 music-dl scan add PATH [--no-scan]
 music-dl scan remove PATH
 music-dl scan show
+music-dl isrc-tag DIR [--limit N] [--dry-run] [--rescan]
+music-dl gui [--port PORT] [--no-browser]
 music-dl --version
 ```
+
+---
+
+## GUI
+
+A browser-based interface for searching, streaming, downloading, and managing your library.
+
+```shell
+music-dl gui
+```
+
+Opens `http://localhost:8765` in your default browser. Features:
+
+- **Search** Tidal's catalog with instant results, local matches highlighted
+- **Stream** tracks directly in the browser (proxied through your session)
+- **Download** tracks with one click — progress via SSE, quality badge visible
+- **Library** browse your local collection (paginated, backed by SQLite cache)
+- **Playlists** view and sync your Tidal playlists
+- **Recently Played** persists across sessions (localStorage)
+- **Settings** configure quality, download path, and preferences
+
+Requires a Tidal OAuth login (click the status light in the sidebar to authenticate).
 
 ---
 
@@ -343,10 +380,15 @@ Use Docker when you want:
 
 ## Disclaimer
 
-- Personal use only
-- Requires a valid TIDAL subscription
-- Do not redistribute copyrighted content
-- You are responsible for complying with local law and TIDAL's terms
+> **This is a personal project built for educational purposes and private use only.**
+
+- This software is provided "as is", without warranty of any kind. Use it at your own risk.
+- This project is **not affiliated with, endorsed by, or connected to TIDAL** in any way.
+- A valid TIDAL subscription is required. This tool does not bypass any paywalls or DRM protections — it uses TIDAL's own API with your authenticated session.
+- **Do not redistribute copyrighted content.** Downloaded files are for personal, offline use in accordance with your subscription terms.
+- You are solely responsible for complying with applicable local laws and TIDAL's Terms of Service.
+- The authors and contributors accept no liability for misuse of this software.
+- This project exists to explore audio APIs, metadata handling, and CLI/GUI design patterns. If TIDAL requests removal, this repository will be taken down.
 
 ---
 

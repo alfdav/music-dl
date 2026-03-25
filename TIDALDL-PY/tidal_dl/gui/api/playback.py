@@ -15,9 +15,9 @@ router = APIRouter()
 def get_download_paths() -> list[str]:
     """Return all configured directories that may contain audio files."""
     settings = Settings()
-    paths = [settings.data.download_base_path]
+    paths = [str(Path(settings.data.download_base_path).expanduser())]
     if settings.data.scan_paths:
-        paths.extend(p.strip() for p in settings.data.scan_paths.split(",") if p.strip())
+        paths.extend(str(Path(p.strip()).expanduser()) for p in settings.data.scan_paths.split(",") if p.strip())
     return paths
 
 
@@ -28,6 +28,15 @@ def serve_local_file(path: str = Query(..., description="Absolute path to audio 
 
     allowed = get_download_paths()
     validated_path = validate_audio_path(path, allowed)
+    # Fallback: if path is in our library DB, we already trusted it during scan
+    if validated_path is None:
+        from tidal_dl.gui.api.library import _path_in_library
+
+        if _path_in_library(path):
+            try:
+                validated_path = Path(path).resolve(strict=True)
+            except (OSError, ValueError):
+                validated_path = None
     if validated_path is None:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -64,22 +73,27 @@ def stream_tidal_track(track_id: int):
                 if not validate_stream_url(stream_url):
                     raise HTTPException(status_code=502, detail="Untrusted stream source")
                 resp = http_requests.get(
-                    stream_url, stream=True, timeout=30, allow_redirects=False
+                    stream_url, stream=True, timeout=30, allow_redirects=True
                 )
                 content_type = resp.headers.get("Content-Type", "audio/flac")
+                headers = {}
+                if resp.headers.get("Content-Length"):
+                    headers["Content-Length"] = resp.headers["Content-Length"]
                 return StreamingResponse(
                     resp.iter_content(chunk_size=8192),
                     media_type=content_type,
-                    headers={"Accept-Ranges": "bytes"},
+                    headers=headers,
                 )
         except HTTPException:
             raise
         except Exception:
             pass
 
-    # Fallback: 30-second preview
+    # Fallback: 30-second preview (host is hardcoded + track_id is int, but validate anyway)
     try:
         preview_url = f"https://listening-test.tidal.com/v1/tracks/{track_id}/preview"
+        if not validate_stream_url(preview_url):
+            raise HTTPException(status_code=502, detail="Untrusted preview source")
         resp = http_requests.get(preview_url, stream=True, timeout=15)
         if resp.status_code == 200:
             return StreamingResponse(

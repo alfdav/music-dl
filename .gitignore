@@ -24,6 +24,9 @@ TIDALDL-PY/exe/
 
 # Config / data (local)
 *.ini
+*.db
+*.sqlite
+*.sqlite3
 settings.json
 usersettings.json
 
@@ -42,6 +45,8 @@ TIDALDL-PY/tidal-gui.spec
 
 # Claude Code
 .claude/
+.claude/settings.local.json
 
 # Superpowers brainstorm artifacts
 .superpowers/
+.checkpoint/

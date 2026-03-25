@@ -41,12 +41,39 @@ class PlayEvent(BaseModel):
 def record_play(event: PlayEvent):
     """Record a play event. Increments scanned.play_count if path matches."""
     db = _get_db()
+    genre = event.genre
+    # If genre missing but we have a file path, read it from the file
+    if not genre and event.path:
+        row = db.get(event.path)
+        if row and row.get("genre"):
+            genre = row["genre"]
+        else:
+            # Last resort: read from file tags directly
+            try:
+                from tidal_dl.gui.api.library import _normalize_genre
+                from mutagen import File as MutagenFile
+
+                audio = MutagenFile(event.path, easy=True)
+                if audio and audio.tags:
+                    raw = audio.tags.get("genre")
+                    if raw and isinstance(raw, list):
+                        genre = _normalize_genre(str(raw[0]))
+                    elif raw:
+                        genre = _normalize_genre(str(raw))
+                    # Update the scanned table so future plays have it
+                    if genre:
+                        db._conn.execute(
+                            "UPDATE scanned SET genre = ? WHERE path = ? AND (genre IS NULL OR genre = '')",
+                            (genre, event.path),
+                        )
+            except Exception:
+                pass
     if event.path:
         db.increment_play(event.path)
     db.log_play_event(
         path=event.path,
         artist=event.artist,
-        genre=event.genre,
+        genre=genre,
         duration=event.duration,
     )
     db.commit()

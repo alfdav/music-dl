@@ -28,6 +28,17 @@ def create_app(port: int = 8765) -> FastAPI:
     )
     app.include_router(api_router, prefix="/api")
 
+    @app.on_event("startup")
+    def _restore_tidal_session():
+        """Restore Tidal OAuth session from saved token on server start."""
+        try:
+            from tidal_dl.config import Tidal
+
+            tidal = Tidal()
+            tidal.login_token(quiet=True)
+        except Exception:
+            pass
+
     @app.get("/", response_class=HTMLResponse)
     async def index():
         html = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")

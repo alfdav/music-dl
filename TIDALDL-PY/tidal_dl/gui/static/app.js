@@ -479,14 +479,27 @@ function _renderHomeGrid(container, data, totalPlays) {
   const established = totalPlays >= 100;
   const grid = h('div', { className: 'home-grid' });
 
-  // Adaptive column count via ResizeObserver
+  // Adaptive column count + progressive disclosure via ResizeObserver
   const resizeObs = new ResizeObserver(entries => {
     for (const entry of entries) {
-      const cols = Math.max(2, Math.min(10, Math.floor(entry.contentRect.width / 300)));
-      entry.target.style.setProperty('--cols', cols);
+      const w = entry.contentRect.width;
+      const cols = Math.max(2, Math.min(10, Math.floor(w / 300)));
+      const el = entry.target;
+      el.style.setProperty('--cols', cols);
+      el.classList.toggle('density-compact', w < 600);
+      el.classList.toggle('density-normal', w >= 600 && w < 1000);
+      el.classList.toggle('density-spacious', w >= 1000);
     }
   });
   resizeObs.observe(grid);
+
+  // Tag a tile with a priority tier for progressive disclosure
+  // wide = span 2 columns for bento hierarchy
+  function _tier(tile, priority, wide) {
+    tile.dataset.tier = priority;
+    if (wide) tile.classList.add('bento-wide');
+    return tile;
+  }
 
   // === IDENTITY ZONE (no label) ===
   if (data.top_artist && data.top_artist.play_count >= 5) {
@@ -505,26 +518,26 @@ function _renderHomeGrid(container, data, totalPlays) {
   const genreSource = hasPlayGenres ? data.genre_breakdown : (data.track_genres || []);
   const genreLabel = genreSource.length > 0 ? genreSource[0].genre : null;
   if (genreSource.length > 0) {
-    grid.appendChild(_genreTile(genreLabel, genreSource, !hasPlayGenres));
+    grid.appendChild(_tier(_genreTile(genreLabel, genreSource, !hasPlayGenres), 1, true));
   }
   if (data.weekly_activity && data.weekly_activity.some(v => v > 0)) {
-    grid.appendChild(_listeningTimeTile(data.listening_time_hours, data.weekly_activity));
+    grid.appendChild(_tier(_listeningTimeTile(data.listening_time_hours, data.weekly_activity), 1, true));
   }
   if (data.week_vs_last) {
-    grid.appendChild(_weekVsWeekTile(data));
+    grid.appendChild(_tier(_weekVsWeekTile(data), 3));
   }
   if (data.streak !== undefined) {
-    grid.appendChild(_streakTile(data.streak));
+    grid.appendChild(_tier(_streakTile(data.streak), 3));
   }
   if (data.peak_hours && data.peak_hours.some(v => v > 0)) {
-    grid.appendChild(_peakHoursTile(data.peak_hours, data.peak_hour));
+    grid.appendChild(_tier(_peakHoursTile(data.peak_hours, data.peak_hour), 3));
   }
 
   // Secondary artists
   const extraArtists = (data.top_artists || []).slice(1, 3);
   for (const a of extraArtists) {
     if (a.play_count >= 3) {
-      grid.appendChild(_artistTile(a, false));
+      grid.appendChild(_tier(_artistTile(a, false), 1));
     }
   }
 
@@ -532,25 +545,25 @@ function _renderHomeGrid(container, data, totalPlays) {
   grid.appendChild(_zoneLabel('library'));
 
   if (established || data.track_count > 0) {
-    grid.appendChild(_tracksTile(data.track_count, genreSource));
+    grid.appendChild(_tier(_tracksTile(data.track_count, genreSource), 2));
   }
   if (established || data.album_count > 0) {
-    grid.appendChild(_albumsTile(data.album_count, data.album_artists));
+    grid.appendChild(_tier(_albumsTile(data.album_count, data.album_artists), 2));
   }
   if (data.favorites_count !== undefined) {
-    grid.appendChild(_favoritesTile(data.favorites_count));
+    grid.appendChild(_tier(_favoritesTile(data.favorites_count), 2));
   }
   if (data.top_album) {
-    grid.appendChild(_topAlbumTile(data.top_album));
+    grid.appendChild(_tier(_topAlbumTile(data.top_album), 2));
   }
   if (data.unplayed_count > 0) {
-    grid.appendChild(_unplayedTile(data.unplayed_count, data.track_count));
+    grid.appendChild(_tier(_unplayedTile(data.unplayed_count, data.track_count), 3));
   }
   if (data.format_breakdown && data.format_breakdown.length > 0) {
-    grid.appendChild(_formatsTile(data.format_breakdown));
+    grid.appendChild(_tier(_formatsTile(data.format_breakdown), 3));
   }
   if (data.collection_growth !== undefined) {
-    grid.appendChild(_collectionGrowthTile(data.collection_growth));
+    grid.appendChild(_tier(_collectionGrowthTile(data.collection_growth), 3));
   }
 
   container.appendChild(grid);

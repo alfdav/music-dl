@@ -159,9 +159,11 @@ def validate_download_path(path_str: str) -> bool:
 
 
 def validate_stream_url(url: str) -> bool:
-    """Validate that a stream URL points to a known Tidal CDN host.
+    """Validate that a stream URL points to Tidal infrastructure.
 
-    Prevents SSRF by ensuring we only proxy requests to Tidal infrastructure.
+    Prevents SSRF by ensuring we only proxy requests to *.tidal.com hosts.
+    Tidal uses many CDN subdomains (sp-pr-cf, fa-cf, etc.) so we match the
+    parent domain rather than maintaining an exhaustive whitelist.
     """
     from urllib.parse import urlparse
 
@@ -173,4 +175,5 @@ def validate_stream_url(url: str) -> bool:
     if parsed.scheme != "https":
         return False
 
-    return parsed.hostname in TIDAL_CDN_HOSTS
+    host = parsed.hostname or ""
+    return host.endswith(".tidal.com") or host == "tidal.com"

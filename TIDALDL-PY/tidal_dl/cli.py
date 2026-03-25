@@ -1374,16 +1374,25 @@ def isrc_tag(
             help="Show what would be tagged without writing.",
         ),
     ] = False,
+    rescan: Annotated[
+        bool,
+        typer.Option(
+            "--rescan",
+            help="Force a full rescan, ignoring the library DB cache.",
+        ),
+    ] = False,
 ) -> None:
     """Look up and write missing ISRC tags via Tidal search.
 
-    Scans audio files for existing artist+title tags, searches Tidal for a
-    match, and writes the ISRC back to the file. Skips files that already
-    have an ISRC. Updates the ISRC index after tagging.
-    """
-    import time as _time
+    Phase 1 (scan): Walks the directory and records every audio file in a
+    local SQLite DB. Files already in the DB are skipped — only new files
+    are opened and read. This makes repeat runs cheap.
 
-    dir_path = Path(directory).expanduser().resolve()
+    Phase 2 (tag): Pulls 'needs_isrc' entries from the DB, searches Tidal,
+    and writes the ISRC back to the file.
+    """
+    import os as _os
+    import time as _time
 
     import mutagen as _mutagen
     import mutagen.flac
@@ -1393,74 +1402,117 @@ def isrc_tag(
     from mutagen.id3 import TSRC
 
     from tidal_dl.helper.isrc_index import IsrcIndex
+    from tidal_dl.helper.library_db import LibraryDB
     from tidal_dl.helper.library_scanner import SCAN_EXTENSIONS, _extract_isrc
+
+    dir_path = Path(directory).expanduser().resolve()
+    console = Console()
+
+    if not dir_path.is_dir():
+        console.print(f"[red]'{dir_path}' is not a directory or is not accessible.[/red]")
+        raise typer.Exit(code=1)
+
+    # Open library DB
+    _db_path = _pathlib.Path(path_config_base()) / "library.db"
+    db = LibraryDB(_db_path)
+    db.open()
+
+    # ── Phase 1: Scan ──────────────────────────────────────────────
+    known_paths = set() if rescan else db.known_paths()
+    console.print(f"[cyan]Scanning {dir_path} (skipping {len(known_paths)} known files)...[/cyan]")
+
+    new_files = 0
+    skipped_known = 0
+    batch_size = 0
+
+    for walk_root, _dirs, walk_files in _os.walk(str(dir_path)):
+        for fname in walk_files:
+            file_path = Path(walk_root) / fname
+            if file_path.suffix.lower() not in SCAN_EXTENSIONS:
+                continue
+
+            path_str = str(file_path)
+
+            if path_str in known_paths:
+                skipped_known += 1
+                continue
+
+            new_files += 1
+
+            # Check if file already has an ISRC tag
+            isrc = _extract_isrc(file_path)
+            if isrc:
+                db.record(path_str, status="has_isrc", isrc=isrc)
+                batch_size += 1
+                if batch_size >= 100:
+                    db.commit()
+                    batch_size = 0
+                continue
+
+            # Read artist + title
+            try:
+                audio = _mutagen.File(path_str, easy=True)
+            except Exception:
+                db.record(path_str, status="error")
+                batch_size += 1
+                continue
+
+            if audio is None or audio.tags is None:
+                db.record(path_str, status="no_tags")
+                batch_size += 1
+                continue
+
+            artist_list = audio.tags.get("artist") or audio.tags.get("albumartist")
+            title_list = audio.tags.get("title")
+
+            if not artist_list or not title_list:
+                db.record(path_str, status="no_tags")
+                batch_size += 1
+                continue
+
+            artist = str(artist_list[0]) if isinstance(artist_list, list) else str(artist_list)
+            title = str(title_list[0]) if isinstance(title_list, list) else str(title_list)
+
+            if artist.strip() and title.strip():
+                db.record(path_str, status="needs_isrc", artist=artist.strip(), title=title.strip())
+            else:
+                db.record(path_str, status="no_tags")
+
+            batch_size += 1
+            if batch_size >= 100:
+                db.commit()
+                batch_size = 0
+
+    db.commit()
+
+    # Status summary
+    counts = db.count_by_status()
+    console.print(
+        f"[cyan]Scan done. {new_files} new files, {skipped_known} cached.[/cyan]\n"
+        f"[dim]DB totals: {counts}[/dim]"
+    )
+
+    # ── Phase 2: Tag ───────────────────────────────────────────────
+    candidates = db.untagged(limit=limit)
+
+    if not candidates:
+        console.print("[green]No files need tagging.[/green]")
+        db.close()
+        raise typer.Exit()
+
+    console.print(f"[cyan]Tagging {len(candidates)} files via Tidal search...[/cyan]")
 
     # Need OAuth for Tidal search
     if not _resolve_session(ctx):
+        db.close()
         raise typer.Exit(code=1)
 
     tidal = _ctx_tidal(ctx)
 
     if tidal.session.user is None:
-        console = Console()
-        console.print("[red]ISRC tagging requires OAuth login for Tidal search.[/red]")
-        console.print("Run [bold]music-dl login[/bold] first.")
+        console.print("[red]ISRC tagging requires OAuth login. Run [bold]music-dl login[/bold] first.[/red]")
+        db.close()
         raise typer.Exit(code=1)
-
-    console = Console()
-    console.print(f"[cyan]Scanning {dir_path} for files missing ISRC tags...[/cyan]")
-
-    # Collect files missing ISRCs with artist+title tags
-    candidates: list[tuple[Path, str, str]] = []  # (path, artist, title)
-    skipped_has_isrc = 0
-    skipped_no_tags = 0
-
-    for file_path in sorted(dir_path.rglob("*")):
-        if not file_path.is_file():
-            continue
-        if file_path.suffix.lower() not in SCAN_EXTENSIONS:
-            continue
-
-        # Skip if already has ISRC
-        if _extract_isrc(file_path):
-            skipped_has_isrc += 1
-            continue
-
-        # Read artist + title via easy tags
-        try:
-            audio = _mutagen.File(str(file_path), easy=True)
-        except Exception:
-            continue
-
-        if audio is None or audio.tags is None:
-            skipped_no_tags += 1
-            continue
-
-        artist_list = audio.tags.get("artist") or audio.tags.get("albumartist")
-        title_list = audio.tags.get("title")
-
-        if not artist_list or not title_list:
-            skipped_no_tags += 1
-            continue
-
-        artist = str(artist_list[0]) if isinstance(artist_list, list) else str(artist_list)
-        title = str(title_list[0]) if isinstance(title_list, list) else str(title_list)
-
-        if artist.strip() and title.strip():
-            candidates.append((file_path, artist.strip(), title.strip()))
-
-    console.print(
-        f"[cyan]Found {len(candidates)} files missing ISRC with artist+title tags.[/cyan]\n"
-        f"[dim]({skipped_has_isrc} already have ISRC, {skipped_no_tags} missing artist/title tags)[/dim]"
-    )
-
-    if not candidates:
-        console.print("[green]Nothing to do.[/green]")
-        raise typer.Exit()
-
-    if limit > 0:
-        candidates = candidates[:limit]
-        console.print(f"[cyan]Processing first {limit} files.[/cyan]")
 
     # Load ISRC index for updating after tagging
     _index_path = _pathlib.Path(path_config_base()) / "isrc_index.json"
@@ -1514,14 +1566,16 @@ def isrc_tag(
     with progress:
         task_id = progress.add_task("Tagging ISRCs", total=len(candidates), status="")
 
-        for file_path, artist, title in candidates:
+        for path_str, artist, title in candidates:
             progress.update(task_id, status=f"{artist} - {title}"[:60])
+            file_path = Path(path_str)
 
             # Search Tidal for this track
             try:
                 results = tidal.session.search(f"{artist} {title}", models=[Track], limit=5)
                 tracks = results.get("tracks", []) or results.get("top_hit", [])
                 if not tracks:
+                    db.record(path_str, status="not_found", artist=artist, title=title)
                     not_found += 1
                     progress.advance(task_id)
                     continue
@@ -1540,6 +1594,7 @@ def isrc_tag(
                     matched_isrc = tracks[0].isrc
 
                 if not matched_isrc:
+                    db.record(path_str, status="not_found", artist=artist, title=title)
                     not_found += 1
                     progress.advance(task_id)
                     continue
@@ -1551,20 +1606,24 @@ def isrc_tag(
                     tagged += 1
                 else:
                     if _write_isrc(file_path, matched_isrc):
+                        db.record(path_str, status="tagged", isrc=matched_isrc, artist=artist, title=title)
                         isrc_index.add(matched_isrc, file_path)
                         tagged += 1
                     else:
+                        db.record(path_str, status="error", artist=artist, title=title)
                         errors += 1
 
             except Exception:
+                db.record(path_str, status="error", artist=artist, title=title)
                 errors += 1
 
             progress.advance(task_id)
-
-            # Brief pause to avoid rate-limiting
             _time.sleep(0.2)
 
-    # Save index
+    db.commit()
+    db.close()
+
+    # Save ISRC index
     if not dry_run and tagged > 0:
         isrc_index.save()
 
