@@ -312,6 +312,7 @@ class PlaylistImporter:
             _ = dl.item(
                 media=track,
                 file_template=file_template,
+                quality_audio=dl.settings.data.quality_audio,
             )
 
         # Report unmatched entries
