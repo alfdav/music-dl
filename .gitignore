@@ -3,6 +3,10 @@
 .idea/
 *.code-workspace
 
+# Tool artifacts
+.firecrawl/
+.playwright-cli/
+
 # Python
 __pycache__/
 *.py[cod]
