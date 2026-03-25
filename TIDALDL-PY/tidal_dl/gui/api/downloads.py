@@ -140,7 +140,11 @@ def trigger_download(track_ids: list[int]) -> dict:
             try:
                 if not track:
                     raise ValueError(f"Could not resolve track {tid}")
-                dl.item(file_template=settings.data.format_track, media=track)
+                dl.item(
+                    file_template=settings.data.format_track,
+                    media=track,
+                    quality_audio=settings.data.quality_audio,
+                )
 
                 with _lock:
                     entry = _active.pop(tid, None)
