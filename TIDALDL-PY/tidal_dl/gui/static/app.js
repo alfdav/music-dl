@@ -1590,12 +1590,17 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
   const shuffleBtn = h('button', { className: 'pill album-shuffle-btn' });
   shuffleBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Shuffle';
   shuffleBtn.disabled = true;
-  const dlMissingBtn = h('button', { className: 'pill album-dl-btn' });
-  dlMissingBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download Missing';
-  dlMissingBtn.style.display = 'none';
+  // "Complete Album" pill — lazily looks up the full album on Tidal
+  const completeAlbumBtn = h('button', { className: 'pill album-dl-btn' });
+  const _caIcon = svgIcon(ICONS.download);
+  _caIcon.style.verticalAlign = '-2px';
+  _caIcon.style.marginRight = '4px';
+  completeAlbumBtn.appendChild(_caIcon);
+  completeAlbumBtn.appendChild(document.createTextNode('Complete Album'));
+  completeAlbumBtn.style.display = 'none';
   albumActions.appendChild(playBtn);
   albumActions.appendChild(shuffleBtn);
-  albumActions.appendChild(dlMissingBtn);
+  albumActions.appendChild(completeAlbumBtn);
   albumMeta.appendChild(albumActions);
 
   albumHeader.appendChild(albumMeta);
@@ -1649,24 +1654,99 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
         playTrack(shuffled[0]);
       });
 
-      // Show "Download Missing" only if some tracks have a Tidal ID and are not local
-      const nonLocal = tracks.filter(t => !t.is_local && t.id);
-      if (nonLocal.length > 0) {
-        dlMissingBtn.style.display = '';
-        dlMissingBtn.addEventListener('click', async () => {
-          try {
-            await api('/download', {
-              method: 'POST',
-              body: { track_ids: nonLocal.map(t => t.id) },
-            });
-            toast('Downloading ' + nonLocal.length + ' track' + (nonLocal.length !== 1 ? 's' : ''), 'success');
-            updateDlBadge(nonLocal.length);
-            _ensureGlobalSSE();
-          } catch (err) {
-            toast('Download failed: ' + err.message, 'error');
+      // Show "Complete Album" — lazy Tidal lookup for missing tracks
+      completeAlbumBtn.style.display = '';
+      let _completeAlbumLoaded = false;
+      completeAlbumBtn.addEventListener('click', async () => {
+        if (_completeAlbumLoaded) return;
+
+        completeAlbumBtn.disabled = true;
+        completeAlbumBtn.textContent = 'Looking up on Tidal\u2026';
+
+        try {
+          const lookup = await api('/albums/lookup?artist=' + encodeURIComponent(artistName) + '&album=' + encodeURIComponent(albumName));
+          _completeAlbumLoaded = true;
+
+          const tidalTracks = lookup.tracks || [];
+          const missingTracks = tidalTracks.filter(t => !t.is_local);
+
+          if (missingTracks.length === 0) {
+            completeAlbumBtn.textContent = 'Album is complete';
+            completeAlbumBtn.disabled = true;
+            toast('You already have every track from this album', 'success');
+            return;
           }
-        });
-      }
+
+          // Update button to show count
+          completeAlbumBtn.textContent = '';
+          const _caIcon2 = svgIcon(ICONS.download);
+          _caIcon2.style.verticalAlign = '-2px';
+          _caIcon2.style.marginRight = '4px';
+          completeAlbumBtn.appendChild(_caIcon2);
+          completeAlbumBtn.appendChild(document.createTextNode(
+            'Download All Missing (' + missingTracks.length + ')'
+          ));
+          completeAlbumBtn.disabled = false;
+
+          // Replace the click handler to download all missing
+          completeAlbumBtn.replaceWith(completeAlbumBtn.cloneNode(true));
+          const dlAllBtn = wrapper.querySelector('.album-dl-btn');
+          dlAllBtn.addEventListener('click', async () => {
+            try {
+              await api('/download', {
+                method: 'POST',
+                body: { track_ids: missingTracks.map(t => t.id) },
+              });
+              toast('Downloading ' + missingTracks.length + ' track' + (missingTracks.length !== 1 ? 's' : ''), 'success');
+              updateDlBadge(missingTracks.length);
+              _ensureGlobalSSE();
+              dlAllBtn.disabled = true;
+              dlAllBtn.textContent = 'Queued';
+            } catch (err) {
+              toast('Download failed: ' + err.message, 'error');
+            }
+          });
+
+          // Add "Available on Tidal" section below local tracks
+          const tidalSection = h('div', { className: 'tidal-missing-section' });
+          const tidalHeader = h('div', { className: 'tidal-missing-header' });
+          tidalHeader.appendChild(textEl('span', 'Available on Tidal', 'tidal-missing-label'));
+          tidalHeader.appendChild(textEl('span', missingTracks.length + ' track' + (missingTracks.length !== 1 ? 's' : '') + ' not in your library', 'tidal-missing-sub'));
+          tidalSection.appendChild(tidalHeader);
+
+          // Track header for Tidal section
+          tidalSection.appendChild(h('div', { className: 'track-header' },
+            textEl('div', '#', 'col-label center'),
+            h('div'),
+            textEl('div', 'Title', 'col-label'),
+            textEl('div', 'Album', 'col-label'),
+            textEl('div', 'Format', 'col-label center'),
+            textEl('div', 'Time', 'col-label right'),
+            h('div')
+          ));
+
+          const tidalTrackList = h('div', { className: 'tracks' });
+
+          // Show ALL tracks from the Tidal album — local ones marked, missing ones with download
+          tidalTracks.forEach((t, i) => {
+            tidalTrackList.appendChild(renderTrackRow(t, i + 1, tidalTracks));
+          });
+
+          tidalSection.appendChild(tidalTrackList);
+          wrapper.appendChild(tidalSection);
+
+        } catch (err) {
+          completeAlbumBtn.disabled = false;
+          completeAlbumBtn.textContent = '';
+          const _caIcon3 = svgIcon(ICONS.download);
+          _caIcon3.style.verticalAlign = '-2px';
+          _caIcon3.style.marginRight = '4px';
+          completeAlbumBtn.appendChild(_caIcon3);
+          completeAlbumBtn.appendChild(document.createTextNode('Complete Album'));
+          _completeAlbumLoaded = false;
+          toast('Lookup failed: ' + err.message, 'error');
+        }
+      });
     }
   } catch (err) {
     while (trackList.firstChild) trackList.removeChild(trackList.firstChild);

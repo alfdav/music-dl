@@ -2081,6 +2081,29 @@ body {
   cursor: default;
 }
 
+/* ---- TIDAL MISSING TRACKS SECTION ---- */
+.tidal-missing-section {
+  margin-top: 32px;
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
+}
+.tidal-missing-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.tidal-missing-label {
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 400;
+  color: var(--text);
+}
+.tidal-missing-sub {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
 /* ---- FAVORITES VIEW ---- */
 .view-title {
   font-family: var(--serif);
