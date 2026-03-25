@@ -178,6 +178,28 @@ async function toggleFavorite(track, btn) {
   }
 }
 
+async function upgradeTrack(track) {
+  const localPath = track.local_path || track.path;
+  if (!localPath) { toast('No local file path', 'error'); return; }
+  const isrc = track.isrc;
+  if (!isrc) { toast('No ISRC — cannot match on Tidal', 'error'); return; }
+
+  toast('Checking Tidal for upgrade...', 'success');
+
+  try {
+    const probeData = await api('/upgrade/probe', { method: 'POST', body: { isrcs: [isrc] } });
+    const result = (probeData.results || [])[0];
+    if (!result || !result.upgradeable) {
+      toast('Already at best available quality', 'success');
+      return;
+    }
+    toast('Upgrading to ' + qualityLabel(result.max_quality) + '...', 'success', 5000);
+    await api('/upgrade/start', { method: 'POST', body: { track_paths: [localPath] } });
+  } catch (err) {
+    toast('Upgrade failed: ' + (err.message || err), 'error');
+  }
+}
+
 // ---- API ----
 const apiCache = {};
 
@@ -1547,6 +1569,15 @@ function renderTrackRow(track, num, allTracks) {
             }
           }
         },
+        // Upgrade Quality — only for local tracks with ISRC below user's target tier
+        ...(() => {
+          if (!track.isrc) return [];
+          const tier = _qualityTier(track.quality || track.format);
+          const targetRank = { 'HI_RES': 3, 'HI_RES_LOSSLESS': 4 }[state.settings?.upgrade_target_quality] || 4;
+          const tierRanks = { 'Common': 0, 'Uncommon': 1, 'Rare': 2, 'Epic': 3, 'Legendary': 4, 'Mythic': 5 };
+          if ((tierRanks[tier.tier] || 0) >= targetRank) return [];
+          return [{ label: 'Upgrade Quality', icon: 'download', action: () => upgradeTrack(track) }];
+        })(),
         'sep',
         {
           label: 'Delete Track',
@@ -4284,5 +4315,7 @@ document.addEventListener('click', (e) => {
 });
 
 // ---- INIT ----
+// Load settings into state for upgrade quality checks
+api('/settings').then(s => { state.settings = s; }).catch(() => {});
 refreshStatusLights();
 navigate(location.hash.slice(1) || 'home');
