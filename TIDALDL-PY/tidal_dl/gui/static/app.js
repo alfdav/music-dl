@@ -443,6 +443,12 @@ async function renderHome(container) {
   header.appendChild(title);
   wrap.appendChild(header);
 
+  if (data.volume_available === false) {
+    const banner = h('div', { className: 'volume-offline-banner' });
+    banner.textContent = 'Your music drive is offline — showing what we remember';
+    wrap.appendChild(banner);
+  }
+
   if (totalPlays === 0) {
     _renderHomeCold(wrap);
   } else {
@@ -501,7 +507,7 @@ function _renderHomeGrid(container, data, totalPlays) {
     grid.appendChild(_genreTile(genreLabel, genreSource, !hasPlayGenres));
   }
   if (data.weekly_activity && data.weekly_activity.some(v => v > 0)) {
-    grid.appendChild(_listeningTimeTile(data.listening_time_hours, data.weekly_activity));
+    grid.appendChild(_listeningTimeTile(data.listening_time_hours, data.weekly_activity, data));
   }
 
   // === Secondary tiles (tier 1 — hidden on compact) ===
@@ -514,10 +520,10 @@ function _renderHomeGrid(container, data, totalPlays) {
 
   // === Library tiles (tier 2 — hidden on compact) ===
   if (established || data.track_count > 0) {
-    grid.appendChild(_t(_tracksTile(data.track_count, data.track_genres || []), 2));
+    grid.appendChild(_t(_tracksTile(data.track_count, data.track_genres || [], data), 2));
   }
   if (established || data.album_count > 0) {
-    grid.appendChild(_t(_albumsTile(data.album_count, data.album_artists), 2));
+    grid.appendChild(_t(_albumsTile(data.album_count, data.album_artists, data), 2));
   }
 
   container.appendChild(grid);
@@ -666,6 +672,24 @@ function _albumsInsight(count, artists) {
   return _insightBlock(lines);
 }
 
+function _expandToggle(tile) {
+  tile.addEventListener('click', () => tile.classList.toggle('bento-expanded'));
+  a11yClick(tile);
+  tile.appendChild(textEl('span', 'More', 'bento-hint'));
+}
+
+function _detailBlock(items) {
+  const block = h('div', { className: 'bento-detail' });
+  items.forEach((item, i) => {
+    const row = h('div', { className: 'bento-detail-row' });
+    row.style.transitionDelay = (i * 40) + 'ms';
+    row.appendChild(textEl('span', item.label, 'bento-detail-key'));
+    row.appendChild(textEl('span', item.value, 'bento-detail-val'));
+    block.appendChild(row);
+  });
+  return block;
+}
+
 function _genreTile(topGenre, breakdown, fromLibrary) {
   const tile = h('div', { className: 'bento-tile bento-stat-tile' });
   const body = h('div', { className: 'bento-body' });
@@ -673,11 +697,20 @@ function _genreTile(topGenre, breakdown, fromLibrary) {
   body.appendChild(textEl('div', fromLibrary ? 'Top genre' : 'Recent genre', 'bento-stat-label'));
   body.appendChild(_genreInsight(topGenre, breakdown, fromLibrary));
   body.appendChild(_barChart(breakdown.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))));
+  // Detail: full genre breakdown beyond top 4
+  const allGenres = breakdown.map(g => ({
+    label: g.genre,
+    value: g.count + (fromLibrary ? ' tracks' : ' plays')
+  }));
+  if (allGenres.length > 4) {
+    body.appendChild(_detailBlock(allGenres.slice(4)));
+  }
   tile.appendChild(body);
+  if (allGenres.length > 4) _expandToggle(tile);
   return tile;
 }
 
-function _listeningTimeTile(hours, weekly) {
+function _listeningTimeTile(hours, weekly, data) {
   const tile = h('div', { className: 'bento-tile bento-stat-tile' });
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', Math.round(hours) + 'h', 'bento-label'));
@@ -685,11 +718,30 @@ function _listeningTimeTile(hours, weekly) {
   const ins = _listeningInsight(hours, weekly);
   if (ins) body.appendChild(ins);
   body.appendChild(_weeklyChart(weekly));
+  // Detail: deeper listening habits
+  const details = [];
+  if (data.peak_hour !== undefined) {
+    const h12 = data.peak_hour % 12 || 12;
+    const ampm = data.peak_hour < 12 ? 'am' : 'pm';
+    details.push({ label: 'You listen most around', value: h12 + ampm });
+  }
+  if (data.streak > 0) details.push({ label: 'Current streak', value: data.streak + ' day' + (data.streak !== 1 ? 's' : '') });
+  if (data.week_vs_last) {
+    const diff = data.week_vs_last.this_week - data.week_vs_last.last_week;
+    details.push({ label: 'This week', value: Math.round(data.week_vs_last.this_week) + ' min' });
+    if (data.week_vs_last.last_week > 0) {
+      const pct = Math.round((diff / data.week_vs_last.last_week) * 100);
+      details.push({ label: 'vs last week', value: (pct >= 0 ? '+' : '') + pct + '%' });
+    }
+  }
+  if (data.total_plays) details.push({ label: 'Lifetime plays', value: data.total_plays.toLocaleString() });
+  if (details.length > 0) body.appendChild(_detailBlock(details));
   tile.appendChild(body);
+  if (details.length > 0) _expandToggle(tile);
   return tile;
 }
 
-function _tracksTile(count, genres) {
+function _tracksTile(count, genres, data) {
   const tile = h('div', { className: 'bento-tile bento-stat-tile' });
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', count.toLocaleString(), 'bento-label'));
@@ -698,11 +750,25 @@ function _tracksTile(count, genres) {
   if (genres && genres.length > 0) {
     body.appendChild(_barChart(genres.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))));
   }
+  // Detail: how your library is stored
+  const details = [];
+  if (data.format_breakdown && data.format_breakdown.length > 0) {
+    for (const f of data.format_breakdown) {
+      const pct = Math.round((f.count / count) * 100);
+      details.push({ label: f.format, value: f.count.toLocaleString() + ' (' + pct + '%)' });
+    }
+  }
+  if (data.unplayed_count > 0) {
+    const pct = Math.round((data.unplayed_count / count) * 100);
+    details.push({ label: 'Never played', value: data.unplayed_count.toLocaleString() + ' (' + pct + '%)' });
+  }
+  if (details.length > 0) body.appendChild(_detailBlock(details));
   tile.appendChild(body);
+  if (details.length > 0) _expandToggle(tile);
   return tile;
 }
 
-function _albumsTile(count, artists) {
+function _albumsTile(count, artists, data) {
   const tile = h('div', { className: 'bento-tile bento-stat-tile' });
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', count.toLocaleString(), 'bento-label'));
@@ -711,7 +777,17 @@ function _albumsTile(count, artists) {
   if (artists && artists.length > 0) {
     body.appendChild(_barChart(artists.slice(0, 4).map(a => ({ label: a.artist, value: a.count }))));
   }
+  // Detail: what you keep coming back to
+  const details = [];
+  if (data.top_album) {
+    details.push({ label: 'Most played album', value: data.top_album.album });
+    details.push({ label: 'Artist', value: data.top_album.artist });
+    if (data.top_album.play_count) details.push({ label: 'Plays', value: data.top_album.play_count.toLocaleString() });
+  }
+  if (data.favorites_count > 0) details.push({ label: 'Favorited', value: data.favorites_count.toLocaleString() + ' tracks' });
+  if (details.length > 0) body.appendChild(_detailBlock(details));
   tile.appendChild(body);
+  if (details.length > 0) _expandToggle(tile);
   return tile;
 }
 
@@ -2630,14 +2706,52 @@ function updatePlayerHeart() {
     });
   }
 
-  if (!current) {
+  // Download button — only for non-local tracks
+  let dlEl = document.getElementById('now-download');
+  if (!dlEl) {
+    const dlSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    dlSvg.setAttribute('viewBox', '0 0 24 24');
+    dlSvg.setAttribute('fill', 'none');
+    dlSvg.setAttribute('stroke', 'currentColor');
+    const dlPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    dlPath.setAttribute('d', 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3');
+    dlSvg.appendChild(dlPath);
+
+    dlEl = h('button', { id: 'now-download', className: 'heart-btn now-download', 'aria-label': 'Download track' });
+    dlEl.appendChild(dlSvg);
+    document.getElementById('now-playing').appendChild(dlEl);
+    dlEl.addEventListener('click', async () => {
+      const trk = state.queue[state.queueIndex];
+      if (!trk || !trk.id) return;
+      dlEl.classList.add('downloading');
+      try {
+        await api('/downloads', { method: 'POST', body: JSON.stringify({ track_ids: [trk.id] }) });
+        toast('Downloading ' + (trk.name || 'track'));
+      } catch (_) {
+        toast('Download failed', 'error');
+      }
+      setTimeout(() => dlEl.classList.remove('downloading'), 2000);
+    });
+  }
+
+  // Hide both buttons only when player is truly idle (no track info showing)
+  const hasTrack = current || nowTitle.textContent.trim();
+  if (!hasTrack) {
     heartEl.style.display = 'none';
+    dlEl.style.display = 'none';
     return;
   }
 
   heartEl.style.display = '';
-  const key = current.path || (current.id ? 'tidal:' + current.id : null);
-  heartEl.classList.toggle('hearted', !!(key && _favCache[key]));
+  if (current) {
+    const key = current.path || (current.id ? 'tidal:' + current.id : null);
+    heartEl.classList.toggle('hearted', !!(key && _favCache[key]));
+    // Show download button only for non-local (Tidal streaming) tracks
+    dlEl.style.display = current.is_local ? 'none' : '';
+  } else {
+    // Track showing from previous session — hide download (no queue context)
+    dlEl.style.display = 'none';
+  }
 }
 
 // ---- PLAY COUNT (30-second threshold) ----
@@ -2872,6 +2986,13 @@ audio.addEventListener('pause', () => {
   document.querySelectorAll('.eq-bars').forEach(b => b.classList.add('paused'));
   // Pause the play count timer — resumes on play
   if (_playCountTimer) { clearTimeout(_playCountTimer); _playCountTimer = null; }
+});
+
+audio.addEventListener('error', () => {
+  state.playing = false;
+  updatePlayButton();
+  setWaveformPlaying(false);
+  toast('Track unavailable — file may be offline', 'error');
 });
 
 audio.addEventListener('play', () => {

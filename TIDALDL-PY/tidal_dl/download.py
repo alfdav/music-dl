@@ -103,6 +103,52 @@ from tidal_dl.model.downloader import (
 )
 
 
+def register_downloaded_track(file_path: pathlib.Path | str) -> None:
+    """Register a newly downloaded track in the library DB.
+
+    Reads metadata with mutagen via the shared ``_read_metadata`` helper and
+    inserts the result into the ``scanned`` table so the track appears in the
+    library immediately — no full library scan required.
+
+    Safe to call from any thread; opens and closes its own DB connection.
+    Silently returns on any error (corrupt file, DB locked, etc.) so it never
+    blocks or breaks the download pipeline.
+    """
+    try:
+        from tidal_dl.gui.api.library import _read_metadata
+        from tidal_dl.helper.library_db import LibraryDB
+
+        fp = pathlib.Path(file_path) if not isinstance(file_path, pathlib.Path) else file_path
+        if not fp.is_file():
+            return
+
+        meta = _read_metadata(fp)
+        if not meta:
+            return
+
+        db = LibraryDB(pathlib.Path(path_config_base()) / "library.db")
+        db.open()
+        try:
+            db.record(
+                str(fp),
+                status="tagged" if meta["isrc"] else "needs_isrc",
+                isrc=meta["isrc"] or None,
+                artist=meta["artist"],
+                title=meta["name"],
+                album=meta["album"],
+                duration=meta["duration"],
+                genre=meta.get("genre"),
+                quality=meta["quality"],
+                fmt=meta["format"],
+            )
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        # Never let library registration break a download.
+        pass
+
+
 # TODO: Set appropriate client string and use it for video download.
 # https://github.com/globocom/m3u8#using-different-http-clients
 class RequestsClient:
@@ -755,6 +801,7 @@ class Download:
                 win_long_path(path_copy_dst).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_path_str, win_long_path(path_copy_dst))
                 self.fn_logger.info(f"Copied '{name_builder_item(media)}' from '{src_path_str}'.")
+                register_downloaded_track(path_copy_dst)
                 return DownloadOutcome.COPIED, path_copy_dst
             else:
                 # Source gone — fall through to normal download
@@ -806,6 +853,7 @@ class Download:
                 self._isrc_index.add(isrc, path_media_dst)
                 self._isrc_index.maybe_flush(every_n=25)
             self._on_successful_track()
+            register_downloaded_track(path_media_dst)
 
         return outcome, path_media_dst
 

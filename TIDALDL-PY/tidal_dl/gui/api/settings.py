@@ -22,12 +22,19 @@ def get_settings() -> dict:
         "quality_audio": str(d.quality_audio),
         "format_track": d.format_track,
         "format_album": d.format_album,
+        "format_playlist": d.format_playlist,
         "cover_album_file": d.cover_album_file,
         "metadata_cover_embed": d.metadata_cover_embed,
         "lyrics_embed": d.lyrics_embed,
         "lyrics_file": d.lyrics_file,
         "skip_existing": d.skip_existing,
+        "skip_duplicate_isrc": d.skip_duplicate_isrc,
         "downloads_concurrent_max": d.downloads_concurrent_max,
+        "download_source": str(d.download_source),
+        "download_source_fallback": d.download_source_fallback,
+        "scan_paths": d.scan_paths,
+        "extract_flac": d.extract_flac,
+        "download_delay": d.download_delay,
     }
 
 
@@ -126,7 +133,16 @@ class SettingsUpdate(BaseModel):
     lyrics_embed: bool | None = None
     lyrics_file: bool | None = None
     skip_existing: bool | None = None
+    skip_duplicate_isrc: bool | None = None
     downloads_concurrent_max: int | None = None
+    download_source: str | None = None
+    download_source_fallback: bool | None = None
+    scan_paths: str | None = None
+    format_track: str | None = None
+    format_album: str | None = None
+    format_playlist: str | None = None
+    extract_flac: bool | None = None
+    download_delay: bool | None = None
 
 
 @router.post("/browse-directory")

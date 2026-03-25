@@ -48,7 +48,7 @@ def record_play(event: PlayEvent):
         if row and row.get("genre"):
             genre = row["genre"]
         else:
-            # Last resort: read from file tags directly
+            # Try reading genre from file tags directly
             try:
                 from tidal_dl.gui.api.library import _normalize_genre
                 from mutagen import File as MutagenFile
@@ -68,6 +68,19 @@ def record_play(event: PlayEvent):
                         )
             except Exception:
                 pass
+    # Fallback: infer genre from the artist's other tracks in the library
+    if not genre and event.artist:
+        try:
+            artist_genre = db._conn.execute(
+                """SELECT genre FROM scanned
+                   WHERE artist = ? AND genre IS NOT NULL AND genre != ''
+                   GROUP BY genre ORDER BY COUNT(*) DESC LIMIT 1""",
+                (event.artist,),
+            ).fetchone()
+            if artist_genre:
+                genre = artist_genre[0]
+        except Exception:
+            pass
     if event.path:
         db.increment_play(event.path)
     db.log_play_event(
@@ -85,6 +98,10 @@ def home_stats():
     """Return aggregated stats for the Home view."""
     db = _get_db()
     stats = db.home_stats()
+
+    # Signal whether the music volume is currently reachable
+    from tidal_dl.gui.api.library import _scan_directories
+    stats["volume_available"] = len(_scan_directories()) > 0
 
     # Convert cover_path to cover_url for artist tiles
     from urllib.parse import quote

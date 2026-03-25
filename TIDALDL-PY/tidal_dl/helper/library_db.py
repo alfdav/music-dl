@@ -109,6 +109,11 @@ class LibraryDB:
             "CREATE INDEX IF NOT EXISTS idx_play_events_at ON play_events(played_at)"
         )
 
+        # library_meta table (scan fingerprints, etc.)
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS library_meta (key TEXT PRIMARY KEY, value TEXT)"
+        )
+
         # download_history table
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS download_history (
@@ -353,6 +358,26 @@ class LibraryDB:
         self._conn.commit()
 
     # ------------------------------------------------------------------
+    # Key-value metadata
+    # ------------------------------------------------------------------
+
+    def get_meta(self, key: str) -> str | None:
+        """Read a value from the library_meta table."""
+        assert self._conn
+        row = self._conn.execute(
+            "SELECT value FROM library_meta WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        """Write a value to the library_meta table."""
+        assert self._conn
+        self._conn.execute(
+            "INSERT OR REPLACE INTO library_meta (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+
+    # ------------------------------------------------------------------
     # Play tracking
     # ------------------------------------------------------------------
 
@@ -386,9 +411,9 @@ class LibraryDB:
         assert self._conn
         c = self._conn
 
-        # Total plays (sum of play_count on scanned)
+        # Total plays (from play_events — authoritative source, survives cache prune)
         total_plays = c.execute(
-            "SELECT COALESCE(SUM(play_count), 0) FROM scanned"
+            "SELECT COUNT(*) FROM play_events"
         ).fetchone()[0]
 
         # Top artist (by sum of play_count)
@@ -429,6 +454,21 @@ class LibraryDB:
             if top_artist is None:
                 top_artist = entry
 
+        # Fallback: derive top artists from play_events when scanned is empty/pruned
+        if not top_artists:
+            top_artists_rows = c.execute(
+                """SELECT artist, COUNT(*) as play_count
+                   FROM play_events WHERE artist IS NOT NULL
+                   GROUP BY artist ORDER BY play_count DESC LIMIT 5"""
+            ).fetchall()
+            top_artists = [
+                {"name": r["artist"], "play_count": r["play_count"],
+                 "cover_path": None, "track_count": 0, "album_count": 0, "genre": None}
+                for r in top_artists_rows
+            ]
+            if top_artists:
+                top_artist = top_artists[0]
+
         # Most replayed track
         most_replayed = None
         mr = c.execute(
@@ -445,6 +485,23 @@ class LibraryDB:
                 "cover_path": mr["path"],
                 "path": mr["path"],
             }
+
+        # Fallback: derive most replayed from play_events when scanned is empty/pruned
+        if not most_replayed:
+            mr_fb = c.execute(
+                """SELECT path, artist, COUNT(*) as play_count
+                   FROM play_events WHERE path IS NOT NULL
+                   GROUP BY path ORDER BY play_count DESC LIMIT 1"""
+            ).fetchone()
+            if mr_fb:
+                most_replayed = {
+                    "name": pathlib.Path(mr_fb["path"]).stem if mr_fb["path"] else "Unknown",
+                    "artist": mr_fb["artist"],
+                    "album": None,
+                    "play_count": mr_fb["play_count"],
+                    "cover_path": mr_fb["path"],
+                    "path": mr_fb["path"],
+                }
 
         # Genre breakdown (from play_events — reflects listening behavior)
         genre_breakdown = [

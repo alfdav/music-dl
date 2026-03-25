@@ -10,6 +10,7 @@ The library lives on a NAS (/Volumes/Music), so scanning is slow. Strategy:
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 
@@ -155,95 +156,241 @@ def _scan_directories() -> list[Path]:
     return dirs
 
 
+def _migrate_volume_prefixes(db: LibraryDB, scan_dirs: list[Path]) -> None:
+    """Rewrite stored path prefixes when a volume remounts under a different name.
+
+    macOS can remount e.g. /Volumes/Music as /Volumes/Music 1.  All paths in
+    the DB become stale.  We detect this by sampling stored paths and comparing
+    their prefix against the current scan directories.  If they diverge, we
+    batch-UPDATE every table that stores file paths.
+    """
+    assert db._conn
+    conn = db._conn
+
+    # Sample a few stored paths to discover what prefix the DB currently holds
+    sample_rows = conn.execute(
+        "SELECT path FROM scanned LIMIT 10"
+    ).fetchall()
+    if not sample_rows:
+        return  # empty DB, nothing to migrate
+
+    stored_paths = [r["path"] for r in sample_rows]
+
+    for scan_dir in scan_dirs:
+        current_prefix = str(scan_dir)
+        # Check if any stored path already starts with this scan dir — no migration needed
+        if any(p.startswith(current_prefix + os.sep) or p.startswith(current_prefix + "/") for p in stored_paths):
+            continue
+
+        # Try to find a stored prefix that looks like a variant of this scan dir.
+        # e.g. current = /Volumes/Music, stored = /Volumes/Music 1/Artist/...
+        # Strategy: walk up from the scan dir to find the mount point, then look
+        # for stored paths sharing the same parent but with a different leaf name.
+        scan_parent = str(Path(current_prefix).parent)  # e.g. /Volumes
+        scan_leaf = Path(current_prefix).name            # e.g. Music
+
+        # Find stored prefixes that share the same parent directory
+        old_prefix = None
+        for sp in stored_paths:
+            if not sp.startswith(scan_parent + "/"):
+                continue
+            # Extract the leaf directory name from the stored path
+            remainder = sp[len(scan_parent) + 1:]  # e.g. "Music 1/Artist/track.flac"
+            stored_leaf = remainder.split("/")[0]    # e.g. "Music 1"
+            if stored_leaf != scan_leaf:
+                candidate = scan_parent + "/" + stored_leaf
+                old_prefix = candidate
+                break
+
+        if not old_prefix:
+            continue
+
+        # Verify this old prefix is actually prevalent (not just one rogue row)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM scanned WHERE path LIKE ? || '/%'",
+            (old_prefix,),
+        ).fetchone()[0]
+        if count == 0:
+            continue
+
+        new_prefix = current_prefix
+        print(f"[library] Volume remount detected: rewriting {count} paths")
+        print(f"[library]   old prefix: {old_prefix}")
+        print(f"[library]   new prefix: {new_prefix}")
+
+        # Batch rewrite all tables that store file paths
+        conn.execute(
+            "UPDATE scanned SET path = replace(path, ?, ?) WHERE path LIKE ? || '/%'",
+            (old_prefix, new_prefix, old_prefix),
+        )
+        conn.execute(
+            "UPDATE play_events SET path = replace(path, ?, ?) WHERE path LIKE ? || '/%'",
+            (old_prefix, new_prefix, old_prefix),
+        )
+        conn.execute(
+            "UPDATE favorites SET path = replace(path, ?, ?) WHERE path IS NOT NULL AND path LIKE ? || '/%'",
+            (old_prefix, new_prefix, old_prefix),
+        )
+        conn.commit()
+        print(f"[library] Volume prefix migration complete — {count} paths updated")
+
+
 def _background_scan(rescan: bool) -> None:
     """Walk all configured dirs, read tags for unknown files, prune deleted ones."""
     global _scan_running, _scan_progress
     try:
         scan_dirs = _scan_directories()
 
+        # Backup DB before scan — single rolling .bak for disaster recovery
+        import shutil
+        db_path = Path(path_config_base()) / "library.db"
+        if db_path.is_file():
+            shutil.copy2(str(db_path), str(db_path) + ".bak")
+
         # Own connection for the background thread — SQLite doesn't share across threads
         db = LibraryDB(Path(path_config_base()) / "library.db")
         db.open()
+
+        # --- Volume remount prefix migration ---
+        # macOS sometimes remounts /Volumes/Music as /Volumes/Music 1 (or back).
+        # Stored absolute paths become stale, causing full rescans and data loss.
+        # Detect and batch-rewrite prefixes before anything else touches the DB.
+        if scan_dirs:
+            _migrate_volume_prefixes(db, scan_dirs)
+
+        # If no scan directories are reachable, skip scan entirely to preserve
+        # the cached library data.  Without this guard the prune logic would
+        # delete every row because disk_paths would be empty.
+        if not scan_dirs:
+            print("[library] No scan directories reachable — skipping scan to preserve cache")
+            _scan_progress = {"scanned": 0, "total": 0, "done": True}
+            db.close()
+            return
+
         known = set() if rescan else db.complete_paths()
+
+        # --- Fast-path: skip walk if nothing changed on disk ---
+        import json as _json
+
+        try:
+            finger = _json.dumps({
+                "dirs": sorted(str(d) for d in scan_dirs),
+                "mtimes": [os.stat(str(d)).st_mtime for d in sorted(scan_dirs)],
+                "known_count": len(known),
+            }, sort_keys=True)
+        except OSError:
+            finger = None
+
+        if not rescan and finger:
+            stored = db.get_meta("scan_fingerprint")
+            if stored == finger:
+                print("[library] Scan directories unchanged — skipping")
+                _scan_progress = {"scanned": 0, "total": 0, "done": True}
+                db.close()
+                return
 
         _scan_progress = {"scanned": 0, "total": 0, "done": False}
         disk_paths: set[str] = set()
         batch = 0
 
         if scan_dirs:
+            # Phase 1: Walk filesystem — fast, just collect paths
             for scan_dir in scan_dirs:
                 for f in scan_dir.rglob("*"):
                     if f.suffix.lower() not in _AUDIO_EXTENSIONS:
                         continue
-                    path_str = str(f)
-                    disk_paths.add(path_str)
+                    disk_paths.add(str(f))
+                    _scan_progress["total"] = len(disk_paths)
 
-                    if path_str not in known:
-                        meta = _read_metadata(f)
-                        if meta:
-                            db.record(
-                                path_str,
-                                status="tagged" if meta["isrc"] else "needs_isrc",
-                                isrc=meta["isrc"] or None,
-                                artist=meta["artist"],
-                                title=meta["name"],
-                                album=meta["album"],
-                                duration=meta["duration"],
-                                genre=meta.get("genre"),
-                                quality=meta["quality"],
-                                fmt=meta["format"],
-                            )
-                        else:
-                            db.record(path_str, status="unreadable")
-                        batch += 1
-                        if batch >= 50:
-                            db.commit()
-                            batch = 0
+            # Phase 2: Read metadata only for NEW files (the diff)
+            new_paths = disk_paths - known
+            _scan_progress["scanned"] = 0
+            for path_str in new_paths:
+                meta = _read_metadata(Path(path_str))
+                if meta:
+                    db.record(
+                        path_str,
+                        status="tagged" if meta["isrc"] else "needs_isrc",
+                        isrc=meta["isrc"] or None,
+                        artist=meta["artist"],
+                        title=meta["name"],
+                        album=meta["album"],
+                        duration=meta["duration"],
+                        genre=meta.get("genre"),
+                        quality=meta["quality"],
+                        fmt=meta["format"],
+                    )
+                else:
+                    db.record(path_str, status="unreadable")
+                batch += 1
+                if batch >= 50:
+                    db.commit()
+                    batch = 0
+                _scan_progress["scanned"] += 1
 
-                    _scan_progress["scanned"] = len(disk_paths)
-
-            # Prune deleted files
+            # Prune deleted files — with safety threshold for volume remounts
             stale = known - disk_paths
-            for p in stale:
-                db.remove(p)
+            if len(stale) > 0.5 * len(known) and len(known) > 100:
+                print(
+                    f"[library] Skipping prune: {len(stale)}/{len(known)} paths would be removed"
+                    " — possible volume remount"
+                )
+            else:
+                for p in stale:
+                    db.remove(p)
 
             if batch > 0 or stale:
                 db.commit()
 
-        # Backfill genres for tracks scanned before genre support was added
+        _scan_progress["done"] = True
+
+        # Save scan fingerprint so next scan can skip if nothing changed
+        if finger:
+            # Recompute with final known_count (scan may have added/removed rows)
+            try:
+                final_known = len(db.complete_paths()) if not rescan else len(disk_paths)
+                finger = _json.dumps({
+                    "dirs": sorted(str(d) for d in scan_dirs),
+                    "mtimes": [os.stat(str(d)).st_mtime for d in sorted(scan_dirs)],
+                    "known_count": final_known,
+                }, sort_keys=True)
+                db.set_meta("scan_fingerprint", finger)
+                db.commit()
+            except OSError:
+                pass
+
+        # Backfill genres for tracks scanned before genre support was added.
+        # Runs AFTER scan is marked done so the UI doesn't show a stuck spinner.
+        # Limit to 200 files per scan to avoid long NAS hangs.
         missing = db._conn.execute(
-            "SELECT path FROM scanned WHERE (genre IS NULL OR genre = '') AND status != 'unreadable'"
+            "SELECT path FROM scanned WHERE (genre IS NULL OR genre = '') AND status != 'unreadable' LIMIT 200"
         ).fetchall()
         if missing:
-            _scan_progress["done"] = False
             gfilled = 0
             for row in missing:
                 p = Path(row[0])
-                if p.exists():
-                    try:
-                        audio = MutagenFile(str(p), easy=True)
-                        if audio and audio.tags:
-                            raw = audio.tags.get("genre")
-                            if raw and isinstance(raw, list):
-                                genre = _normalize_genre(str(raw[0]))
-                            elif raw:
-                                genre = _normalize_genre(str(raw))
-                            else:
-                                genre = None
-                            if genre:
-                                db._conn.execute(
-                                    "UPDATE scanned SET genre = ? WHERE path = ?",
-                                    (genre, row[0]),
-                                )
-                                gfilled += 1
-                    except Exception:
-                        pass
-                _scan_progress["scanned"] = _scan_progress.get("total", 0) + gfilled
+                try:
+                    if not p.exists():
+                        continue
+                    audio = MutagenFile(str(p), easy=True)
+                    if audio and audio.tags:
+                        raw = audio.tags.get("genre")
+                        if raw and isinstance(raw, list):
+                            genre = _normalize_genre(str(raw[0]))
+                        elif raw:
+                            genre = _normalize_genre(str(raw))
+                        else:
+                            genre = None
+                        if genre:
+                            db._conn.execute(
+                                "UPDATE scanned SET genre = ? WHERE path = ?",
+                                (genre, row[0]),
+                            )
+                            gfilled += 1
+                except Exception:
+                    pass
             if gfilled:
                 db.commit()
-
-        _scan_progress["total"] = len(disk_paths)
-        _scan_progress["done"] = True
         db.close()
 
         # Flag invalidation — main thread reopens on next request

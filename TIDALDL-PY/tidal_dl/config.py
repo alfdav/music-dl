@@ -119,26 +119,119 @@ class BaseConfig(Generic[ConfigModelT]):
             with open(path, encoding="utf-8") as f:
                 settings_json = f.read()
 
-            self.data = self.cls_model.from_json(settings_json)
+            self.data = self._tolerant_load(settings_json)
             result = True
-        except (JSONDecodeError, TypeError, FileNotFoundError, ValueError) as e:
-            if isinstance(e, ValueError):
-                path_bak = path + ".bak"
-
-                if os.path.exists(path_bak):
-                    os.remove(path_bak)
-
-                shutil.move(path, path_bak)
-                print(
-                    "Something is wrong with your config. It may be incompatible with this version. "
-                    f"A backup was saved to '{path_bak}' and a new default config was created."
-                )
-
-            self.data = self.cls_model()
+        except (JSONDecodeError, TypeError, FileNotFoundError) as e:
+            if isinstance(e, FileNotFoundError):
+                self.data = self.cls_model()
+            else:
+                # Truly corrupt JSON — attempt recovery from backup
+                self.data = self._recover_from_corrupt(path, settings_json)
 
         self.save(settings_json)
 
         return result
+
+    def _tolerant_load(self, raw_json: str) -> ConfigModelT:
+        """Deserialize JSON into the config model, tolerating schema drift.
+
+        Unknown fields are ignored.  Missing fields get defaults.  Enum values
+        that no longer exist fall back to the field default.
+        """
+        try:
+            return self.cls_model.from_json(raw_json)
+        except (ValueError, KeyError):
+            pass
+
+        # from_json() failed — merge valid fields from disk onto a fresh default
+        return self._merge_raw_onto_defaults(raw_json)
+
+    def _merge_raw_onto_defaults(self, raw_json: str) -> ConfigModelT:
+        """Create a default instance and overlay any valid fields from *raw_json*.
+
+        Returns the merged model.  Fields that fail type coercion are silently
+        skipped (the default value is kept).
+        """
+        import dataclasses
+        import enum
+
+        defaults = self.cls_model()
+        lost_fields: list[str] = []
+
+        try:
+            raw_dict = json.loads(raw_json)
+        except (json.JSONDecodeError, TypeError):
+            return defaults
+
+        if not isinstance(raw_dict, dict):
+            return defaults
+
+        field_names = {f.name for f in dataclasses.fields(defaults)}
+
+        for key, value in raw_dict.items():
+            if key not in field_names:
+                continue
+            try:
+                current_default = getattr(defaults, key)
+
+                # Attempt enum coercion if the field default is an enum member
+                if isinstance(current_default, enum.Enum):
+                    try:
+                        value = type(current_default)(value)
+                    except (ValueError, KeyError):
+                        lost_fields.append(key)
+                        continue
+
+                setattr(defaults, key, value)
+            except Exception:
+                lost_fields.append(key)
+
+        if lost_fields:
+            _console.print(
+                f"[yellow]Warning:[/yellow] Could not restore these settings (using defaults): "
+                f"{', '.join(lost_fields)}"
+            )
+
+        return defaults
+
+    def _recover_from_corrupt(self, path: str, broken_json: str) -> ConfigModelT:
+        """Attempt recovery when the config file is corrupt or incompatible.
+
+        Strategy:
+          1. Back up the broken file to .bak
+          2. Try loading from existing .bak (previous known-good state)
+          3. Merge valid fields from the broken JSON onto defaults
+          4. Fall back to pure defaults as last resort
+        """
+        path_bak = path + ".bak"
+
+        # Back up the broken file
+        try:
+            if os.path.exists(path_bak):
+                os.remove(path_bak)
+            shutil.move(path, path_bak)
+        except OSError:
+            pass
+
+        # Try loading from the .bak file (may be a previous good version)
+        try:
+            with open(path_bak, encoding="utf-8") as f:
+                bak_json = f.read()
+            data = self._tolerant_load(bak_json)
+            _console.print(
+                f"[yellow]Warning:[/yellow] Config was corrupt. Recovered settings from backup '{path_bak}'."
+            )
+            return data
+        except (FileNotFoundError, JSONDecodeError, TypeError, ValueError):
+            pass
+
+        # Merge what we can from the broken JSON
+        merged = self._merge_raw_onto_defaults(broken_json)
+        _console.print(
+            f"[yellow]Warning:[/yellow] Config was corrupt. A backup was saved to '{path_bak}'. "
+            "Recovered as many settings as possible; remaining fields use defaults."
+        )
+        return merged
 
 
 class Settings(BaseConfig[ModelSettings], metaclass=SingletonMeta):
