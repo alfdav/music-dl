@@ -130,7 +130,7 @@ def _serialize_item(item: Any) -> dict:
     # Artist: include roles
     if hasattr(item, "roles") and item.roles:
         try:
-            roles = [r.type if hasattr(r, "type") else str(r) for r in item.roles]
+            roles = [r.value if hasattr(r, "value") else str(r) for r in item.roles]
             result["roles"] = ", ".join(r.replace("_", " ").title() for r in roles[:3])
         except Exception:
             pass

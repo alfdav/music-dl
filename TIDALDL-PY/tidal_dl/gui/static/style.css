@@ -384,6 +384,26 @@ body {
   margin: 0;
 }
 
+.show-more-btn {
+  display: block;
+  width: 100%;
+  padding: 8px 0;
+  margin: 4px 0 8px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.show-more-btn:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
 .search-empty-text {
   text-align: center;
   padding: 48px 0;
@@ -1999,6 +2019,8 @@ body {
 }
 .album-card-meta {
   padding: 10px 12px 12px;
+  min-width: 0;
+  overflow: hidden;
 }
 .album-card-title {
   font-family: var(--serif);
@@ -2013,6 +2035,9 @@ body {
   font-size: 11px;
   color: var(--text-muted);
   margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Album detail view — block layout, not grid */

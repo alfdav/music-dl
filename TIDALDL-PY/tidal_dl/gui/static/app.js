@@ -1121,7 +1121,17 @@ function renderUnifiedSearchResults(container, localData, tidalData) {
   const type = state.searchType;
 
   // Local results section
-  const localItems = localData ? (localData[type] || []) : [];
+  let localItems = localData ? (localData[type] || []) : [];
+  // Deduplicate library tracks by ISRC, falling back to title+artist
+  if (type === 'tracks' && localItems.length > 0) {
+    const seen = new Set();
+    localItems = localItems.filter(t => {
+      const key = t.isrc || ((t.name || '') + '|' + (t.artist || '')).toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
   if (localItems.length > 0) {
     const localHeader = h('div', { className: 'results-header' });
     localHeader.appendChild(textEl('h3', 'Your Library', 'results-section-title'));
@@ -1139,7 +1149,25 @@ function renderUnifiedSearchResults(container, localData, tidalData) {
         textEl('div', 'Time', 'col-label right'),
         h('div')
       ));
-      localItems.forEach((t, i) => container.appendChild(renderTrackRow(t, i + 1, localItems)));
+      var MAX_INITIAL_LOCAL = 5;
+      var visibleLocal = localItems.length > MAX_INITIAL_LOCAL ? localItems.slice(0, MAX_INITIAL_LOCAL) : localItems;
+      visibleLocal.forEach((t, i) => container.appendChild(renderTrackRow(t, i + 1, localItems)));
+      if (localItems.length > MAX_INITIAL_LOCAL) {
+        var showAllBtn = h('button', { className: 'show-more-btn' });
+        showAllBtn.textContent = 'Show all ' + localItems.length + ' tracks';
+        showAllBtn.addEventListener('click', function() {
+          // Remove the button and render remaining tracks before the divider
+          var parent = showAllBtn.parentNode;
+          var nextSibling = showAllBtn.nextSibling;
+          showAllBtn.remove();
+          for (var si = MAX_INITIAL_LOCAL; si < localItems.length; si++) {
+            var row = renderTrackRow(localItems[si], si + 1, localItems);
+            if (nextSibling) parent.insertBefore(row, nextSibling);
+            else parent.appendChild(row);
+          }
+        });
+        container.appendChild(showAllBtn);
+      }
     } else if (type === 'albums') {
       const grid = h('div', { className: 'album-gallery' });
       localItems.forEach(a => {
@@ -1147,7 +1175,7 @@ function renderUnifiedSearchResults(container, localData, tidalData) {
         const artWrap = h('div', { className: 'album-card-art-wrap' });
         const img = h('img', { className: 'album-card-art', alt: a.name || '' });
         img.src = a.cover_url || '';
-        img.onerror = function() { this.style.background = 'var(--surface)'; };
+        img.onerror = function() { this.style.display = 'none'; artWrap.style.background = artGradient(a.name); };
         artWrap.appendChild(img);
         card.appendChild(artWrap);
         const meta = h('div', { className: 'album-card-meta' });
@@ -1168,7 +1196,7 @@ function renderUnifiedSearchResults(container, localData, tidalData) {
         const artWrap = h('div', { className: 'album-card-art-wrap' });
         const img = h('img', { className: 'album-card-art', alt: a.name || '' });
         img.src = a.cover_url || '';
-        img.onerror = function() { this.style.background = 'var(--surface)'; };
+        img.onerror = function() { this.style.display = 'none'; artWrap.style.background = artGradient(a.name); };
         artWrap.appendChild(img);
         card.appendChild(artWrap);
         const meta = h('div', { className: 'album-card-meta' });
@@ -1275,6 +1303,10 @@ function renderSearchResults(container, data) {
       if (item.cover_url) {
         const img = h('img', { src: item.cover_url, loading: 'lazy' });
         img.alt = '';
+        img.onerror = function() {
+          this.style.display = 'none';
+          artDiv.appendChild(h('div', { className: 'art-gradient', style: { background: artGradient(item.id || item.name) } }));
+        };
         artDiv.appendChild(img);
       } else {
         artDiv.appendChild(h('div', { className: 'art-gradient', style: { background: artGradient(item.id) } }));
