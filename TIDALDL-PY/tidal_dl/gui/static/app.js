@@ -1837,69 +1837,76 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
         playTrack(shuffled[0]);
       });
 
-      // Upgrade check — show button if any tracks might be upgradeable
-      const upgradeableTracks = tracks.filter(t => {
-        if (!t.isrc) return false;
-        const tier = _qualityTier(t.quality, t.format);
-        const tierRanks = { 'Common': 0, 'Uncommon': 1, 'Rare': 2, 'Epic': 3, 'Legendary': 4, 'Mythic': 5 };
-        const targetRank = { 'HI_RES': 3, 'HI_RES_LOSSLESS': 4 }[state.settings?.upgrade_target_quality] || 4;
-        return (tierRanks[tier.tier] || 0) < targetRank;
-      });
-      if (upgradeableTracks.length > 0) {
+      // Upgrade check — show button if any tracks are below target quality
+      const _tierRanks = { 'Common': 0, 'Uncommon': 1, 'Rare': 2, 'Epic': 3, 'Legendary': 4, 'Mythic': 5 };
+      const _targetRank = { 'HI_RES': 3, 'HI_RES_LOSSLESS': 4 }[state.settings?.upgrade_target_quality] || 4;
+      const belowTarget = tracks.filter(t => (_tierRanks[_qualityTier(t.quality, t.format).tier] || 0) < _targetRank);
+      const withIsrc = belowTarget.filter(t => t.isrc);
+      const noIsrc = belowTarget.filter(t => !t.isrc);
+
+      if (belowTarget.length > 0) {
         upgradeBtn.style.display = '';
         upgradeBtn.addEventListener('click', async () => {
           upgradeBtn.disabled = true;
           upgradeBtn.textContent = 'Checking...';
           try {
-            const isrcs = upgradeableTracks.map(t => t.isrc);
-            const probeData = await api('/upgrade/probe', { method: 'POST', body: { isrcs: isrcs } });
-            const results = probeData.results || [];
-            const upgradeable = results.filter(r => r.upgradeable);
+            const allUpgradeable = [];
 
-            // Mark rows with upgrade badges
-            results.forEach(r => {
-              const matchTrack = tracks.find(t => t.isrc === r.isrc);
-              if (!matchTrack) return;
-              const row = trackList.querySelector('[data-track-id="' + _trackKey(matchTrack) + '"]');
-              if (!row) return;
-              const existing = row.querySelector('.upgrade-badge');
-              if (existing) existing.remove();
-              if (r.upgradeable) {
-                const badge = h('span', { className: 'upgrade-badge' });
-                badge.textContent = '\u2B06 ' + qualityLabel(r.max_quality);
-                badge.title = 'Upgrade available: ' + (r.max_quality || '');
-                const metaCell = row.querySelector('.track-artist');
-                if (metaCell && metaCell.parentElement) metaCell.parentElement.appendChild(badge);
-              }
-            });
+            // Probe tracks WITH ISRC
+            if (withIsrc.length > 0) {
+              const probeData = await api('/upgrade/probe', { method: 'POST', body: { isrcs: withIsrc.map(t => t.isrc) } });
+              (probeData.results || []).forEach(r => {
+                const mt = tracks.find(t => t.isrc === r.isrc);
+                if (!mt) return;
+                const row = trackList.querySelector('[data-track-id="' + _trackKey(mt) + '"]');
+                if (!row) return;
+                const ex = row.querySelector('.upgrade-badge'); if (ex) ex.remove();
+                if (r.upgradeable) {
+                  const b = h('span', { className: 'upgrade-badge' }); b.textContent = '\u2B06 ' + qualityLabel(r.max_quality);
+                  const mc = row.querySelector('.track-artist'); if (mc && mc.parentElement) mc.parentElement.appendChild(b);
+                  allUpgradeable.push({ path: mt.local_path || mt.path, tidal_track_id: r.tidal_track_id });
+                }
+              });
+            }
 
-            // Tracks without ISRC get "No ISRC" indicator
-            tracks.forEach(t => {
-              if (t.isrc) return;
-              const row = trackList.querySelector('[data-track-id="' + _trackKey(t) + '"]');
-              if (!row || row.querySelector('.upgrade-badge')) return;
-              const badge = h('span', { className: 'upgrade-badge', style: { opacity: '0.5' } });
-              badge.textContent = 'No ISRC';
-              const metaCell = row.querySelector('.track-artist');
-              if (metaCell && metaCell.parentElement) metaCell.parentElement.appendChild(badge);
-            });
+            // Probe tracks WITHOUT ISRC via title+artist
+            if (noIsrc.length > 0) {
+              const metaData = await api('/upgrade/probe-by-meta', {
+                method: 'POST',
+                body: { tracks: noIsrc.map(t => ({ path: t.local_path || t.path, title: t.name || '', artist: t.artist || '' })) }
+              });
+              (metaData.results || []).forEach(r => {
+                const mt = noIsrc.find(t => (t.local_path || t.path) === r.path);
+                if (!mt) return;
+                const row = trackList.querySelector('[data-track-id="' + _trackKey(mt) + '"]');
+                if (!row) return;
+                const ex = row.querySelector('.upgrade-badge'); if (ex) ex.remove();
+                if (r.upgradeable) {
+                  const b = h('span', { className: 'upgrade-badge' }); b.textContent = '\u2B06 ' + qualityLabel(r.max_quality);
+                  const mc = row.querySelector('.track-artist'); if (mc && mc.parentElement) mc.parentElement.appendChild(b);
+                  allUpgradeable.push({ path: r.path, tidal_track_id: r.tidal_track_id });
+                } else if (!r.tidal_track_id) {
+                  const b = h('span', { className: 'upgrade-badge', style: { opacity: '0.5' } }); b.textContent = 'Not found';
+                  const mc = row.querySelector('.track-artist'); if (mc && mc.parentElement) mc.parentElement.appendChild(b);
+                }
+              });
+            }
 
-            if (upgradeable.length === 0) {
-              toast('All tracks at best available quality', 'success');
-              upgradeBtn.textContent = 'All Best Quality';
+            if (allUpgradeable.length === 0) {
+              toast('No upgrades available on Tidal', 'success');
+              upgradeBtn.textContent = 'No Upgrades Available';
             } else {
-              upgradeBtn.textContent = 'Upgrade ' + upgradeable.length + ' Tracks';
+              upgradeBtn.textContent = 'Upgrade ' + allUpgradeable.length + ' Tracks';
               upgradeBtn.disabled = false;
               upgradeBtn.onclick = async () => {
                 upgradeBtn.disabled = true;
                 upgradeBtn.textContent = 'Upgrading...';
-                const paths = upgradeable.map(r => {
-                  const t = tracks.find(tr => tr.isrc === r.isrc);
-                  return t ? (t.local_path || t.path) : null;
-                }).filter(Boolean);
                 try {
-                  await api('/upgrade/start', { method: 'POST', body: { track_paths: paths } });
-                  toast('Upgrade started for ' + paths.length + ' tracks', 'success');
+                  await api('/upgrade/start', {
+                    method: 'POST',
+                    body: { tracks: allUpgradeable.map(u => ({ path: u.path, tidal_track_id: u.tidal_track_id })) }
+                  });
+                  toast('Upgrade started for ' + allUpgradeable.length + ' tracks', 'success');
                 } catch (err) {
                   toast('Upgrade failed', 'error');
                   upgradeBtn.disabled = false;

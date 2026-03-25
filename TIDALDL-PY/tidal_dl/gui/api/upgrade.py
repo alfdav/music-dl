@@ -247,8 +247,14 @@ class ProbeByMetaRequest(BaseModel):
     tracks: list[ProbeByMetaItem]
 
 
+class UpgradeStartItem(BaseModel):
+    path: str
+    tidal_track_id: int | None = None  # If provided, skip ISRC/probe resolution
+
+
 class UpgradeStartRequest(BaseModel):
-    track_paths: list[str]
+    track_paths: list[str] = []  # Simple paths (resolved via ISRC → probe)
+    tracks: list[UpgradeStartItem] = []  # Rich items with optional tidal_track_id
 
 
 # ---------------------------------------------------------------------------
@@ -339,10 +345,74 @@ def probe_isrcs(req: ProbeRequest) -> dict:
         db.close()
 
 
+@router.post("/upgrade/probe-by-meta")
+def probe_by_meta(req: ProbeByMetaRequest) -> dict:
+    """Probe tracks by title+artist when ISRC is missing. Max 20."""
+    if len(req.tracks) > 20:
+        raise HTTPException(status_code=400, detail="Maximum 20 tracks per request")
+    if not req.tracks:
+        raise HTTPException(status_code=400, detail="Provide at least one track")
+
+    from tidal_dl.config import Settings, Tidal
+
+    settings = Settings()
+    target_quality = getattr(settings.data, "upgrade_target_quality", "HI_RES_LOSSLESS")
+    target_rank = TIER_RANK.get(target_quality, 4)
+
+    tidal = Tidal()
+    session = tidal.session
+
+    db = _get_db()
+    try:
+        results = []
+        for i, item in enumerate(req.tracks):
+            if i > 0:
+                time.sleep(2)  # 0.5 req/sec
+
+            # Look up duration from DB
+            row = db.get(item.path)
+            duration = row.get("duration", 0) if row else 0
+
+            probe = _probe_tidal_meta(session, item.title, item.artist, duration)
+            if probe and probe.get("tidal_track_id") and probe.get("max_quality"):
+                # Cache for future use (now we have the ISRC from Tidal)
+                if probe.get("isrc"):
+                    db.set_probe(probe["isrc"], probe["tidal_track_id"], probe["max_quality"])
+                probed_rank = TIER_RANK.get(probe["max_quality"], 0)
+                results.append({
+                    "path": item.path,
+                    "tidal_track_id": probe["tidal_track_id"],
+                    "max_quality": probe["max_quality"],
+                    "isrc": probe.get("isrc", ""),
+                    "upgradeable": probed_rank >= target_rank,
+                })
+            else:
+                results.append({
+                    "path": item.path,
+                    "tidal_track_id": None,
+                    "max_quality": None,
+                    "isrc": None,
+                    "upgradeable": False,
+                })
+
+        db.commit()
+    finally:
+        db.close()
+
+    return {"results": results}
+
+
 @router.post("/upgrade/start")
 def start_upgrade(req: UpgradeStartRequest) -> dict:
     """Trigger upgrade downloads for the given local track paths."""
-    if not req.track_paths:
+    # Build unified list from both track_paths (simple) and tracks (rich)
+    all_items: list[tuple[str, int | None]] = []
+    for p in req.track_paths:
+        all_items.append((p, None))
+    for t in req.tracks:
+        all_items.append((t.path, t.tidal_track_id))
+
+    if not all_items:
         raise HTTPException(status_code=400, detail="Provide at least one track path")
 
     from tidal_dl.config import Settings
@@ -358,10 +428,16 @@ def start_upgrade(req: UpgradeStartRequest) -> dict:
         skipped = 0
         errors: list[str] = []
 
-        for path in req.track_paths:
+        for path, direct_tid in all_items:
             row = db.get(path)
             if not row:
                 errors.append(f"Not in library: {path}")
+                continue
+
+            # If tidal_track_id provided directly (from meta probe), use it
+            if direct_tid:
+                track_ids.append(direct_tid)
+                upgrade_map[direct_tid] = path
                 continue
 
             isrc = row.get("isrc")
