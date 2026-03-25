@@ -436,6 +436,7 @@ function navigate(view) {
     case 'downloads': renderDownloads(container); break;
     case 'settings': renderSettings(container); break;
     case 'djai': renderDjai(container); break;
+    case 'upgrades': renderUpgradeScanner(container); break;
     default:
       if (view.startsWith('localalbum:')) {
         const parts = view.substring(11).split(':');
@@ -3284,6 +3285,7 @@ async function loadSettingsForm(container) {
       { title: 'Quality', fields: [
         { key: 'quality_audio', label: 'Audio Quality', type: 'select', options: ['HI_RES_LOSSLESS', 'HI_RES', 'LOSSLESS', 'HIGH', 'LOW'], helper: 'Higher quality = larger files' },
         { key: 'extract_flac', label: 'Extract FLAC', type: 'toggle', helper: 'Converts MQA to standard FLAC' },
+        { key: 'upgrade_target_quality', label: 'Upgrade Target', type: 'select', options: ['HI_RES_LOSSLESS', 'HI_RES'], helper: 'Minimum quality tier for upgrades' },
       ]},
       { title: 'Downloads', fields: [
         { key: 'downloads_concurrent_max', label: 'Max Concurrent Downloads', type: 'number', helper: '1\u201310 recommended for stability' },
