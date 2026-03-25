@@ -445,21 +445,32 @@ class LibraryDB:
             "SELECT COUNT(*) FROM play_events"
         ).fetchone()[0]
 
-        # Top artist (by sum of play_count)
+        # Top artist (from play_events — authoritative play counts)
         top_artists_rows = c.execute(
-            """SELECT artist, SUM(play_count) as total, path
-               FROM scanned WHERE play_count > 0 AND artist IS NOT NULL
+            """SELECT artist, COUNT(*) as total
+               FROM play_events WHERE artist IS NOT NULL
                GROUP BY artist ORDER BY total DESC LIMIT 5"""
         ).fetchall()
 
         top_artist = None
         top_artists = []
         for r in top_artists_rows:
-            # Best cover: most-played track by this artist
-            best = c.execute(
-                "SELECT path FROM scanned WHERE artist = ? ORDER BY play_count DESC LIMIT 1",
+            # Best cover: most-played track path from play_events, then look up in scanned
+            best_path = c.execute(
+                """SELECT path FROM play_events
+                   WHERE artist = ? AND path IS NOT NULL
+                   GROUP BY path ORDER BY COUNT(*) DESC LIMIT 1""",
                 (r["artist"],),
             ).fetchone()
+            best = None
+            if best_path:
+                best = best_path
+            else:
+                # Fallback: any track by this artist in scanned
+                best = c.execute(
+                    "SELECT path FROM scanned WHERE artist = ? LIMIT 1",
+                    (r["artist"],),
+                ).fetchone()
             # Per-artist stats: track count, album count, top genre
             artist_tracks = c.execute(
                 "SELECT COUNT(*) FROM scanned WHERE artist = ?", (r["artist"],)
@@ -483,61 +494,24 @@ class LibraryDB:
             if top_artist is None:
                 top_artist = entry
 
-        # Fallback: derive top artists from play_events when scanned is empty/pruned
-        if not top_artists:
-            top_artists_rows = c.execute(
-                """SELECT artist, COUNT(*) as play_count
-                   FROM play_events WHERE artist IS NOT NULL
-                   GROUP BY artist ORDER BY play_count DESC LIMIT 5"""
-            ).fetchall()
-            for r in top_artists_rows:
-                # Try to find a cover from the scanned table
-                cover_row = c.execute(
-                    "SELECT path FROM scanned WHERE artist = ? LIMIT 1",
-                    (r["artist"],),
-                ).fetchone()
-                top_artists.append({
-                    "name": r["artist"],
-                    "play_count": r["play_count"],
-                    "cover_path": cover_row["path"] if cover_row else None,
-                    "track_count": 0, "album_count": 0, "genre": None,
-                })
-            if top_artists:
-                top_artist = top_artists[0]
-
-        # Most replayed track
+        # Most replayed track (from play_events — authoritative)
         most_replayed = None
         mr = c.execute(
-            """SELECT path, title, artist, album, play_count
-               FROM scanned WHERE play_count > 0
-               ORDER BY play_count DESC LIMIT 1"""
+            """SELECT pe.path, s.title, pe.artist, s.album, COUNT(*) as play_count
+               FROM play_events pe
+               LEFT JOIN scanned s ON s.path = pe.path
+               WHERE pe.path IS NOT NULL
+               GROUP BY pe.path ORDER BY play_count DESC LIMIT 1"""
         ).fetchone()
         if mr:
             most_replayed = {
-                "name": mr["title"],
+                "name": mr["title"] or pathlib.Path(mr["path"]).stem if mr["path"] else "Unknown",
                 "artist": mr["artist"],
                 "album": mr["album"],
                 "play_count": mr["play_count"],
                 "cover_path": mr["path"],
                 "path": mr["path"],
             }
-
-        # Fallback: derive most replayed from play_events when scanned is empty/pruned
-        if not most_replayed:
-            mr_fb = c.execute(
-                """SELECT path, artist, COUNT(*) as play_count
-                   FROM play_events WHERE path IS NOT NULL
-                   GROUP BY path ORDER BY play_count DESC LIMIT 1"""
-            ).fetchone()
-            if mr_fb:
-                most_replayed = {
-                    "name": pathlib.Path(mr_fb["path"]).stem if mr_fb["path"] else "Unknown",
-                    "artist": mr_fb["artist"],
-                    "album": None,
-                    "play_count": mr_fb["play_count"],
-                    "cover_path": mr_fb["path"],
-                    "path": mr_fb["path"],
-                }
 
         # Genre breakdown (from play_events — reflects listening behavior)
         genre_breakdown = [
