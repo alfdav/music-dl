@@ -41,7 +41,12 @@ def create_app(port: int = 8765) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
+        import time
         html = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        # Cache-bust static assets so browser always gets fresh JS/CSS
+        v = str(int(time.time()))
+        html = html.replace('/style.css', f'/style.css?v={v}')
+        html = html.replace('/app.js', f'/app.js?v={v}')
         return HTMLResponse(html.replace("__CSRF_TOKEN__", csrf_token))
 
     app.mount("/", StaticFiles(directory=str(_STATIC_DIR)), name="static")

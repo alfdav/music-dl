@@ -125,7 +125,7 @@ const state = {
   queueIndex: -1,
   playing: false,
   shuffle: false,
-  repeat: false,
+  repeat: 'off',  // 'off' | 'all' | 'one'
   volume: 0.7,
 };
 
@@ -254,6 +254,7 @@ function inlineConfirm(message, onYes) {
 const _ctxIcons = {
   folder: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5V12a1 1 0 001 1h10a1 1 0 001-1V6a1 1 0 00-1-1H8L6.5 3H3a1 1 0 00-1 1v.5z"/></svg>',
   trash: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.5 7v4M9.5 7v4M4 4.5l.5 8a1 1 0 001 1h5a1 1 0 001-1l.5-8M6 4.5V3a1 1 0 011-1h2a1 1 0 011 1v1.5"/></svg>',
+  disc: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="1.5"/></svg>',
 };
 
 function _createSvgIcon(key) {
@@ -3071,30 +3072,74 @@ async function loadDownloadHistory(container) {
       const card = h('div', { className: 'dl-card dl-history-card' });
       card.style.animationDelay = Math.min(i * 0.03, 0.3) + 's';
 
-      // Click to reveal in Finder
-      if (dl.file_path) {
+      // Click to play track
+      if (dl.file_path && dl.status === 'done') {
         card.style.cursor = 'pointer';
-        card.title = 'Click to reveal in Finder';
-        card.addEventListener('click', async () => {
-          try {
-            await api('/downloads/reveal', { method: 'POST', body: { path: dl.file_path } });
-          } catch (_) {}
+        card.title = 'Click to play';
+        card.addEventListener('click', () => {
+          const track = {
+            is_local: true,
+            local_path: dl.file_path,
+            path: dl.file_path,
+            name: dl.name,
+            artist: dl.artist,
+            album: dl.album,
+            cover_url: dl.cover_url,
+            quality: dl.quality,
+            format: dl.quality,
+          };
+          state.queue = [track];
+          state.queueIndex = 0;
+          playTrack(track);
         });
       }
+
+      // Right-click context menu
+      card.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const items = [];
+        if (dl.album && dl.artist) {
+          items.push({
+            label: 'Go to Album',
+            icon: 'disc',
+            action: () => navigate('localalbum:' + encodeURIComponent(dl.artist) + ':' + encodeURIComponent(dl.album))
+          });
+        }
+        if (dl.file_path) {
+          items.push({
+            label: 'Open in Finder',
+            icon: 'folder',
+            action: async () => {
+              try {
+                await api('/downloads/reveal', { method: 'POST', body: { path: dl.file_path } });
+                toast('Revealed in Finder', 'success');
+              } catch (_) { toast('File not found', 'error'); }
+            }
+          });
+          items.push('sep');
+          items.push({
+            label: 'Delete Track',
+            icon: 'trash',
+            className: 'ctx-danger',
+            action: () => {
+              inlineConfirm('Delete "' + (dl.name || 'track') + '"? This removes the file from disk.', async () => {
+                try {
+                  await api('/library/track', { method: 'DELETE', body: { path: dl.file_path } });
+                  card.remove();
+                  toast('Track deleted', 'success');
+                } catch (err) { toast('Failed to delete', 'error'); }
+              });
+            }
+          });
+        }
+        if (items.length) showContextMenu(e, items);
+      });
 
       card.appendChild(_dlArtThumb(dl.cover_url, dl.track_id));
 
       const info = h('div', { className: 'dl-card-info' });
 
-      // Clickable track name — navigate to album if possible
       const nameEl = textEl('div', dl.name || 'Track ' + dl.track_id, 'dl-card-name');
-      if (dl.album && dl.artist) {
-        nameEl.classList.add('dl-clickable');
-        nameEl.onclick = (e) => {
-          e.stopPropagation();
-          navigate('localalbum:' + encodeURIComponent(dl.artist) + ':' + encodeURIComponent(dl.album));
-        };
-      }
       info.appendChild(nameEl);
 
       if (dl.artist) {
@@ -3810,9 +3855,27 @@ btnShuffle.addEventListener('click', () => {
 });
 
 btnRepeat.addEventListener('click', () => {
-  state.repeat = !state.repeat;
-  btnRepeat.classList.toggle('active', state.repeat);
+  if (state.repeat === 'off') state.repeat = 'all';
+  else if (state.repeat === 'all') state.repeat = 'one';
+  else state.repeat = 'off';
+  btnRepeat.classList.toggle('active', state.repeat !== 'off');
+  _updateRepeatIcon(btnRepeat);
 });
+
+function _updateRepeatIcon(btn) {
+  const badge = btn.querySelector('.repeat-one-badge');
+  if (state.repeat === 'one') {
+    if (!badge) {
+      const b = document.createElement('span');
+      b.className = 'repeat-one-badge';
+      b.textContent = '1';
+      btn.appendChild(b);
+    }
+  } else if (badge) {
+    badge.remove();
+  }
+  btn.title = state.repeat === 'off' ? 'Repeat' : state.repeat === 'all' ? 'Repeat All' : 'Repeat One';
+}
 
 // Progress
 audio.addEventListener('timeupdate', () => {
@@ -3828,13 +3891,16 @@ audio.addEventListener('ended', () => {
   const current = state.queue[state.queueIndex];
   if (current) _logPlayEvent(current);
 
-  if (state.repeat) {
+  if (state.repeat === 'one') {
     audio.currentTime = 0;
     audio.play().catch(() => {});
     return;
   }
   if (state.queueIndex < state.queue.length - 1 || state.shuffle) {
     btnNext.click();
+  } else if (state.repeat === 'all') {
+    state.queueIndex = 0;
+    playTrack(state.queue[0]);
   } else {
     state.playing = false;
     updatePlayButton();

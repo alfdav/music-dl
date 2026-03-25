@@ -1756,6 +1756,10 @@ body {
   justify-content: flex-start;
   padding: 14px;
 }
+.bento-stat-tile .mini-bar-chart,
+.bento-stat-tile .mini-weekly-chart {
+  margin-top: auto;
+}
 .bento-stat-tile .bento-label {
   font-family: var(--serif);
   font-size: 1.5rem;
@@ -3147,4 +3151,20 @@ body {
   height: 1px;
   background: var(--glass-border);
   margin: 4px 0;
+}
+
+/* Repeat-one badge */
+#btn-repeat {
+  position: relative;
+}
+
+.repeat-one-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
+  pointer-events: none;
+  line-height: 1;
 }
