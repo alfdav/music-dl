@@ -88,16 +88,27 @@ def _tier_rank_for_quality(q: str | None) -> int:
     return 0
 
 
-def _probe_tidal_isrc(session: Any, isrc: str) -> dict | None:
-    """Search Tidal by ISRC and return the best quality match.
+def _probe_tidal_isrc(
+    session: Any, isrc: str, title: str = "", artist: str = ""
+) -> dict | None:
+    """Search Tidal for a track and return the best quality match.
+
+    Searches by title+artist (Tidal's search API doesn't support raw ISRC queries),
+    then matches by ISRC in the results.
 
     Returns {"tidal_track_id": int, "max_quality": str} or None.
     """
+    from tidalapi.media import Track
+
     try:
-        results = session.search(isrc, limit=5)
+        # Build search query from title + artist
+        query = f"{title} {artist}".strip()
+        if not query:
+            query = isrc  # fallback, unlikely to work but worth trying
+
+        results = session.search(query, models=[Track], limit=20)
         tracks = results.get("tracks", []) if isinstance(results, dict) else []
         if not tracks:
-            # tidalapi may return an object with .tracks attribute
             tracks = getattr(results, "tracks", []) or []
 
         for t in tracks:
@@ -193,11 +204,23 @@ def probe_isrcs(req: ProbeRequest) -> dict:
         cached = db.get_probes_batch(req.isrcs)
         misses = [isrc for isrc in req.isrcs if isrc not in cached]
 
+        # Look up title/artist for cache misses from scanned table
+        isrc_meta: dict[str, tuple[str, str]] = {}
+        if misses:
+            assert db._conn
+            ph = ",".join("?" for _ in misses)
+            rows = db._conn.execute(
+                f"SELECT isrc, title, artist FROM scanned WHERE isrc IN ({ph})", misses
+            ).fetchall()
+            for r in rows:
+                isrc_meta[r["isrc"]] = (r["title"] or "", r["artist"] or "")
+
         # Probe Tidal for cache misses (0.5 req/sec)
         for i, isrc in enumerate(misses):
             if i > 0:
                 time.sleep(2)
-            result = _probe_tidal_isrc(session, isrc)
+            title, artist = isrc_meta.get(isrc, ("", ""))
+            result = _probe_tidal_isrc(session, isrc, title=title, artist=artist)
             if result:
                 db.set_probe(isrc, result["tidal_track_id"], result["max_quality"])
                 cached[isrc] = {
@@ -510,7 +533,9 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
 
             # Probe Tidal for cache misses
             if probe is None:
-                probe_result = _probe_tidal_isrc(session, isrc)
+                probe_result = _probe_tidal_isrc(
+                    session, isrc, title=t.get("title", ""), artist=t.get("artist", "")
+                )
                 if probe_result:
                     db.set_probe(isrc, probe_result["tidal_track_id"], probe_result["max_quality"])
                     probe = {
