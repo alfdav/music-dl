@@ -330,7 +330,7 @@ def probe_isrcs(req: ProbeRequest) -> dict:
                     "isrc": isrc,
                     "tidal_track_id": probe["tidal_track_id"],
                     "max_quality": probe["max_quality"],
-                    "upgradeable": probed_rank >= target_rank,
+                    "upgradeable": probed_rank > 0,
                 })
             else:
                 results.append({
@@ -384,7 +384,7 @@ def probe_by_meta(req: ProbeByMetaRequest) -> dict:
                     "tidal_track_id": probe["tidal_track_id"],
                     "max_quality": probe["max_quality"],
                     "isrc": probe.get("isrc", ""),
-                    "upgradeable": probed_rank >= target_rank,
+                    "upgradeable": probed_rank > 0,
                 })
             else:
                 results.append({

@@ -1853,6 +1853,7 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
             const allUpgradeable = [];
 
             // Probe tracks WITH ISRC
+            const _qRank = { 'LOW': 0, 'HIGH': 1, 'LOSSLESS': 2, 'HI_RES': 3, 'HI_RES_LOSSLESS': 4 };
             if (withIsrc.length > 0) {
               const probeData = await api('/upgrade/probe', { method: 'POST', body: { isrcs: withIsrc.map(t => t.isrc) } });
               (probeData.results || []).forEach(r => {
@@ -1861,7 +1862,9 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
                 const row = trackList.querySelector('[data-track-id="' + _trackKey(mt) + '"]');
                 if (!row) return;
                 const ex = row.querySelector('.upgrade-badge'); if (ex) ex.remove();
-                if (r.upgradeable) {
+                const localRank = _tierRanks[_qualityTier(mt.quality, mt.format).tier] || 0;
+                const probeRank = _qRank[r.max_quality] || 0;
+                if (r.tidal_track_id && probeRank > localRank) {
                   const b = h('span', { className: 'upgrade-badge' }); b.textContent = '\u2B06 ' + qualityLabel(r.max_quality);
                   const mc = row.querySelector('.track-artist'); if (mc && mc.parentElement) mc.parentElement.appendChild(b);
                   allUpgradeable.push({ path: mt.local_path || mt.path, tidal_track_id: r.tidal_track_id });
@@ -1881,7 +1884,9 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
                 const row = trackList.querySelector('[data-track-id="' + _trackKey(mt) + '"]');
                 if (!row) return;
                 const ex = row.querySelector('.upgrade-badge'); if (ex) ex.remove();
-                if (r.upgradeable) {
+                const mtLocalRank = _tierRanks[_qualityTier(mt.quality, mt.format).tier] || 0;
+                const mtProbeRank = _qRank[r.max_quality] || 0;
+                if (r.tidal_track_id && mtProbeRank > mtLocalRank) {
                   const b = h('span', { className: 'upgrade-badge' }); b.textContent = '\u2B06 ' + qualityLabel(r.max_quality);
                   const mc = row.querySelector('.track-artist'); if (mc && mc.parentElement) mc.parentElement.appendChild(b);
                   allUpgradeable.push({ path: r.path, tidal_track_id: r.tidal_track_id });
