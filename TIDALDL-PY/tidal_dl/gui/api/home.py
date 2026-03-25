@@ -157,6 +157,28 @@ def artist_image(name: str = Query(..., description="Artist name")):
     except Exception:
         pass
 
+    # Fallback: try Deezer (no auth required)
+    try:
+        import json
+        import urllib.parse
+        import urllib.request
+
+        deezer_url = (
+            "https://api.deezer.com/search/artist?q="
+            + urllib.parse.quote(name)
+            + "&limit=1"
+        )
+        resp = urllib.request.urlopen(deezer_url, timeout=5)
+        data = json.loads(resp.read())
+        if data.get("data"):
+            url = data["data"][0].get("picture_xl") or data["data"][0].get("picture_big")
+            if url:
+                db.set_artist_image(name, url)
+                db.commit()
+                return {"image_url": url}
+    except Exception:
+        pass
+
     # No image found — cache the miss so we don't retry
     db.set_artist_image(name, "")
     db.commit()
