@@ -66,6 +66,7 @@ class Settings(DataClassJsonMixin):
     api_cache_enabled: bool = True
     api_cache_ttl_sec: int = 300
     scan_paths: str = ""
+    upgrade_target_quality: str = "HI_RES_LOSSLESS"  # "HI_RES" or "HI_RES_LOSSLESS"
 
 
 @dataclass_json

@@ -33,6 +33,7 @@ def get_settings() -> dict:
         "download_source": str(d.download_source),
         "download_source_fallback": d.download_source_fallback,
         "scan_paths": d.scan_paths,
+        "upgrade_target_quality": d.upgrade_target_quality,
         "extract_flac": d.extract_flac,
         "download_delay": d.download_delay,
     }
@@ -143,6 +144,7 @@ class SettingsUpdate(BaseModel):
     format_playlist: str | None = None
     extract_flac: bool | None = None
     download_delay: bool | None = None
+    upgrade_target_quality: str | None = None
 
 
 @router.post("/browse-directory")
