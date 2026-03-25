@@ -3168,3 +3168,32 @@ body {
   pointer-events: none;
   line-height: 1;
 }
+
+/* Upgrade Scanner */
+.upgrade-scanner-view { padding: 0 20px; max-width: 900px; }
+.upgrade-scanner-header { margin-bottom: 20px; }
+.upgrade-scanner-status { color: var(--text-secondary); font-size: 13px; margin: 8px 0 12px; }
+.upgrade-scanner-controls { display: flex; gap: 8px; }
+.upgrade-progress-bar { height: 4px; background: var(--glass-bg); border-radius: 2px; margin-bottom: 20px; overflow: hidden; }
+.upgrade-progress-fill { height: 100%; background: var(--accent); width: 0; transition: width 0.3s ease; border-radius: 2px; }
+.upgrade-group { margin-bottom: 24px; }
+.upgrade-group-header { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.04em; }
+.upgrade-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: 8px; background: var(--glass-bg); margin-bottom: 4px; }
+.upgrade-row-title { flex: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.upgrade-row-artist { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-secondary); }
+.upgrade-row-quality { flex-shrink: 0; font-size: 11px; color: var(--accent); font-weight: 500; }
+.upgrade-all-btn { margin-bottom: 20px; }
+.upgrade-empty { color: var(--text-secondary); font-size: 14px; padding: 40px 0; text-align: center; }
+/* Upgrade badges */
+.upgrade-badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 8px;
+  background: rgba(234, 179, 8, 0.15);
+  color: rgba(234, 179, 8, 0.9);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  vertical-align: middle;
+}

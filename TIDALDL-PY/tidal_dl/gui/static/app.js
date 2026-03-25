@@ -1783,6 +1783,11 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
   albumActions.appendChild(playBtn);
   albumActions.appendChild(shuffleBtn);
   albumActions.appendChild(completeAlbumBtn);
+  // "Check for Upgrades" pill
+  const upgradeBtn = h('button', { className: 'pill album-upgrade-btn' });
+  upgradeBtn.textContent = 'Check for Upgrades';
+  upgradeBtn.style.display = 'none';
+  albumActions.appendChild(upgradeBtn);
   albumMeta.appendChild(albumActions);
 
   albumHeader.appendChild(albumMeta);
@@ -1835,6 +1840,83 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
         btnShuffle.classList.add('active');
         playTrack(shuffled[0]);
       });
+
+      // Upgrade check — show button if any tracks might be upgradeable
+      const upgradeableTracks = tracks.filter(t => {
+        if (!t.isrc) return false;
+        const tier = _qualityTier(t.quality || t.format);
+        const tierRanks = { 'Common': 0, 'Uncommon': 1, 'Rare': 2, 'Epic': 3, 'Legendary': 4, 'Mythic': 5 };
+        const targetRank = { 'HI_RES': 3, 'HI_RES_LOSSLESS': 4 }[state.settings?.upgrade_target_quality] || 4;
+        return (tierRanks[tier.tier] || 0) < targetRank;
+      });
+      if (upgradeableTracks.length > 0) {
+        upgradeBtn.style.display = '';
+        upgradeBtn.addEventListener('click', async () => {
+          upgradeBtn.disabled = true;
+          upgradeBtn.textContent = 'Checking...';
+          try {
+            const isrcs = upgradeableTracks.map(t => t.isrc);
+            const probeData = await api('/upgrade/probe', { method: 'POST', body: { isrcs: isrcs } });
+            const results = probeData.results || [];
+            const upgradeable = results.filter(r => r.upgradeable);
+
+            // Mark rows with upgrade badges
+            results.forEach(r => {
+              const matchTrack = tracks.find(t => t.isrc === r.isrc);
+              if (!matchTrack) return;
+              const row = trackList.querySelector('[data-track-id="' + _trackKey(matchTrack) + '"]');
+              if (!row) return;
+              const existing = row.querySelector('.upgrade-badge');
+              if (existing) existing.remove();
+              if (r.upgradeable) {
+                const badge = h('span', { className: 'upgrade-badge' });
+                badge.textContent = '\u2B06 ' + qualityLabel(r.max_quality);
+                badge.title = 'Upgrade available: ' + (r.max_quality || '');
+                const metaCell = row.querySelector('.track-artist');
+                if (metaCell && metaCell.parentElement) metaCell.parentElement.appendChild(badge);
+              }
+            });
+
+            // Tracks without ISRC get "No ISRC" indicator
+            tracks.forEach(t => {
+              if (t.isrc) return;
+              const row = trackList.querySelector('[data-track-id="' + _trackKey(t) + '"]');
+              if (!row || row.querySelector('.upgrade-badge')) return;
+              const badge = h('span', { className: 'upgrade-badge', style: { opacity: '0.5' } });
+              badge.textContent = 'No ISRC';
+              const metaCell = row.querySelector('.track-artist');
+              if (metaCell && metaCell.parentElement) metaCell.parentElement.appendChild(badge);
+            });
+
+            if (upgradeable.length === 0) {
+              toast('All tracks at best available quality', 'success');
+              upgradeBtn.textContent = 'All Best Quality';
+            } else {
+              upgradeBtn.textContent = 'Upgrade ' + upgradeable.length + ' Tracks';
+              upgradeBtn.disabled = false;
+              upgradeBtn.onclick = async () => {
+                upgradeBtn.disabled = true;
+                upgradeBtn.textContent = 'Upgrading...';
+                const paths = upgradeable.map(r => {
+                  const t = tracks.find(tr => tr.isrc === r.isrc);
+                  return t ? (t.local_path || t.path) : null;
+                }).filter(Boolean);
+                try {
+                  await api('/upgrade/start', { method: 'POST', body: { track_paths: paths } });
+                  toast('Upgrade started for ' + paths.length + ' tracks', 'success');
+                } catch (err) {
+                  toast('Upgrade failed', 'error');
+                  upgradeBtn.disabled = false;
+                }
+              };
+            }
+          } catch (err) {
+            toast('Upgrade check failed: ' + (err.message || err), 'error');
+            upgradeBtn.textContent = 'Check for Upgrades';
+            upgradeBtn.disabled = false;
+          }
+        });
+      }
 
       // Show "Complete Album" — lazy Tidal lookup for missing tracks
       completeAlbumBtn.style.display = '';
