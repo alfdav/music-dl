@@ -272,7 +272,7 @@ async def downloads_sse() -> StreamingResponse:
 
 @router.get("/downloads/history")
 def downloads_history(limit: int = 50) -> dict:
-    """Recent download history from DB."""
+    """Recent download history from DB, enriched with local file paths."""
     from pathlib import Path
 
     from tidal_dl.helper.library_db import LibraryDB
@@ -281,8 +281,50 @@ def downloads_history(limit: int = 50) -> dict:
     db = LibraryDB(Path(path_config_base()) / "library.db")
     db.open()
     history = db.download_history(limit)
+
+    # Enrich with local file path from scanned table for reveal-in-finder
+    for entry in history:
+        name = entry.get("name")
+        artist = entry.get("artist")
+        if name and artist:
+            assert db._conn
+            row = db._conn.execute(
+                "SELECT path FROM scanned WHERE title = ? AND artist = ? LIMIT 1",
+                (name, artist),
+            ).fetchone()
+            entry["file_path"] = row["path"] if row else None
+        else:
+            entry["file_path"] = None
+
     db.close()
     return {"downloads": history}
+
+
+class RevealRequest(BaseModel):
+    path: str
+
+
+@router.post("/downloads/reveal")
+def reveal_in_finder(req: RevealRequest) -> dict:
+    """Reveal a file in Finder (macOS) or file manager."""
+    import platform
+    import subprocess
+    from pathlib import Path
+
+    file_path = Path(req.path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    system = platform.system()
+    if system == "Darwin":
+        subprocess.Popen(["open", "-R", str(file_path)])
+    elif system == "Windows":
+        subprocess.Popen(["explorer", "/select,", str(file_path)])
+    else:
+        # Linux: open containing folder
+        subprocess.Popen(["xdg-open", str(file_path.parent)])
+
+    return {"status": "ok"}
 
 
 def _json(obj: Any) -> str:

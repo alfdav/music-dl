@@ -681,8 +681,13 @@ def get_favorites():
 
     db = _get_db()
     favs = db.all_favorites()
+    total_duration = 0
     result = []
     for f in favs:
+        quality = f.get("scanned_quality") or ""
+        duration = f.get("scanned_duration") or 0
+        if duration:
+            total_duration += duration
         entry = {
             "id": f["id"],
             "path": f.get("path"),
@@ -692,13 +697,15 @@ def get_favorites():
             "album": f.get("album") or "",
             "isrc": f.get("isrc") or "",
             "cover_url": f.get("cover_url") or "",
+            "quality": quality,
+            "duration": duration,
             "favorited_at": f["favorited_at"],
             "is_local": f.get("path") is not None,
         }
         if entry["path"]:
             entry["cover_url"] = "/api/library/art?path=" + quote(entry["path"], safe="")
         result.append(entry)
-    return {"favorites": result, "total": len(result)}
+    return {"favorites": result, "total": len(result), "total_duration": total_duration}
 
 
 @router.get("/library/favorites/check")

@@ -2200,7 +2200,14 @@ body {
   font-size: 32px;
   font-weight: 400;
   color: var(--text);
+  margin-bottom: 4px;
+}
+
+.view-subtitle {
+  font-size: 13px;
+  color: var(--text-muted);
   margin-bottom: 16px;
+  letter-spacing: 0.02em;
 }
 
 .favorites-list {

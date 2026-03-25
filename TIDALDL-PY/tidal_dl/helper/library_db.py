@@ -294,23 +294,39 @@ class LibraryDB:
         return [dict(r) for r in rows]
 
     def album_tracks(self, artist: str, album: str) -> list[dict]:
-        """Return all tracks for an album. If artist is 'Various Artists', return all artists."""
+        """Return all tracks for an album, deduplicated by title+artist.
+
+        If artist is 'Various Artists', return all artists.
+        Dedup keeps the first occurrence per title (sorted by path length ascending,
+        which naturally prefers canonical paths over recycle-bin copies).
+        """
         assert self._conn
         if artist == "Various Artists":
             rows = self._conn.execute(
                 """SELECT * FROM scanned
                    WHERE album = ? AND status != 'unreadable'
-                   ORDER BY path ASC""",
+                   ORDER BY LENGTH(path) ASC, path ASC""",
                 (album,),
             ).fetchall()
         else:
             rows = self._conn.execute(
                 """SELECT * FROM scanned
                    WHERE artist = ? AND album = ? AND status != 'unreadable'
-                   ORDER BY path ASC""",
+                   ORDER BY LENGTH(path) ASC, path ASC""",
                 (artist, album),
             ).fetchall()
-        return [dict(r) for r in rows]
+        # Deduplicate by (title, artist) — keep first (shortest path)
+        seen: set[tuple[str | None, str | None]] = set()
+        result = []
+        for r in rows:
+            d = dict(r)
+            key = (d.get("title"), d.get("artist"))
+            if key not in seen:
+                seen.add(key)
+                result.append(d)
+        # Re-sort by path for display order
+        result.sort(key=lambda t: t.get("path", ""))
+        return result
 
     def untagged(self, *, limit: int = 0) -> list[tuple[str, str, str]]:
         """Return (path, artist, title) for files needing ISRC lookup."""
@@ -752,10 +768,16 @@ class LibraryDB:
         return False
 
     def all_favorites(self) -> list[dict]:
-        """Return all favorites ordered by most recent first."""
+        """Return all favorites ordered by most recent first, enriched with scanned metadata."""
         assert self._conn
         rows = self._conn.execute(
-            "SELECT * FROM favorites ORDER BY favorited_at DESC"
+            """SELECT f.*,
+                      s.quality  AS scanned_quality,
+                      s.duration AS scanned_duration,
+                      s.format   AS scanned_format
+               FROM favorites f
+               LEFT JOIN scanned s ON s.path = f.path
+               ORDER BY f.favorited_at DESC"""
         ).fetchall()
         return [dict(r) for r in rows]
 
