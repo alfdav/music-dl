@@ -2680,7 +2680,8 @@ function playTrack(track) {
 
   // Wait for enough data before playing — prevents buffer underrun artifacts
   audio.addEventListener('canplay', function _onReady() {
-    audio.removeEventListener('canplay', _onReady);
+    // Guard: if another tab sent 'pause' while we were loading, honour it
+    if (!state.playing) { audio.muted = false; return; }
     audio.play().then(() => {
       audio.muted = false;
     }).catch(() => {
@@ -2783,6 +2784,8 @@ btnPlay.addEventListener('click', () => {
     audio.pause();
     state.playing = false;
   } else {
+    // Tell other tabs to stop before resuming here
+    _playerChannel.postMessage('pause');
     audio.play().catch(() => {});
     state.playing = true;
   }
