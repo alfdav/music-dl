@@ -118,6 +118,15 @@ class LibraryDB:
             )"""
         )
 
+        # playlist_covers cache (Tidal playlist cover URLs)
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS playlist_covers (
+                playlist_id TEXT PRIMARY KEY,
+                cover_url   TEXT,
+                fetched_at  INTEGER
+            )"""
+        )
+
         # library_meta table (scan fingerprints, etc.)
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS library_meta (key TEXT PRIMARY KEY, value TEXT)"
@@ -248,6 +257,37 @@ class LibraryDB:
         rows = self._conn.execute(
             f"SELECT * FROM scanned WHERE {where} "
             f"ORDER BY {order} LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ).fetchall()
+        return [dict(r) for r in rows], total
+
+    def artists_page(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        query: str = "",
+    ) -> tuple[list[dict], int]:
+        """Return paginated artists with track/album counts."""
+        assert self._conn
+        where = "status != 'unreadable' AND artist IS NOT NULL"
+        params: list = []
+        if query:
+            where += " AND artist LIKE ?"
+            params.append(f"%{query}%")
+
+        total = self._conn.execute(
+            f"SELECT COUNT(DISTINCT artist) FROM scanned WHERE {where}", params
+        ).fetchone()[0]
+
+        rows = self._conn.execute(
+            f"""SELECT artist, COUNT(*) as track_count,
+                       COUNT(DISTINCT album) as album_count,
+                       MIN(path) as cover_path
+                FROM scanned
+                WHERE {where}
+                GROUP BY artist
+                ORDER BY artist COLLATE NOCASE ASC
+                LIMIT ? OFFSET ?""",
             params + [limit, offset],
         ).fetchall()
         return [dict(r) for r in rows], total
@@ -411,6 +451,26 @@ class LibraryDB:
         self._conn.execute(
             "INSERT OR REPLACE INTO artist_images (artist, image_url, fetched_at) VALUES (?, ?, ?)",
             (artist, image_url, int(time.time())),
+        )
+
+    # ------------------------------------------------------------------
+    # Playlist cover cache
+    # ------------------------------------------------------------------
+
+    def get_playlist_cover(self, playlist_id: str) -> str | None:
+        """Return cached playlist cover URL, or None if not cached."""
+        assert self._conn
+        row = self._conn.execute(
+            "SELECT cover_url FROM playlist_covers WHERE playlist_id = ?", (playlist_id,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_playlist_cover(self, playlist_id: str, url: str) -> None:
+        """Cache a playlist cover URL."""
+        assert self._conn
+        self._conn.execute(
+            "INSERT OR REPLACE INTO playlist_covers (playlist_id, cover_url, fetched_at) VALUES (?, ?, ?)",
+            (playlist_id, url, int(time.time())),
         )
 
     # ------------------------------------------------------------------

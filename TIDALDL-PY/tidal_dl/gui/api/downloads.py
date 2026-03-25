@@ -164,11 +164,56 @@ def trigger_download(track_ids: list[int]) -> dict:
             try:
                 if not track:
                     raise ValueError(f"Could not resolve track {tid}")
-                dl.item(
-                    file_template=settings.data.format_track,
-                    media=track,
-                    quality_audio=settings.data.quality_audio,
+
+                # Retry with exponential backoff for transient errors
+                import requests
+
+                _RETRYABLE = (
+                    requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout,
+                    requests.exceptions.ChunkedEncodingError,
+                    ConnectionError,
+                    OSError,
                 )
+                _MAX_RETRIES = 3
+                _last_exc: Exception | None = None
+
+                for _attempt in range(_MAX_RETRIES + 1):
+                    try:
+                        dl.item(
+                            file_template=settings.data.format_track,
+                            media=track,
+                            quality_audio=settings.data.quality_audio,
+                        )
+                        _last_exc = None
+                        break  # success
+                    except _RETRYABLE as retry_exc:
+                        _last_exc = retry_exc
+                        if _attempt < _MAX_RETRIES:
+                            backoff = 2 ** (_attempt + 1)  # 2s, 4s, 8s
+                            with _lock:
+                                entry = _active.get(tid)
+                            if entry:
+                                entry.status = "retrying"
+                                _broadcast({"type": "progress", "track_id": tid, "name": entry.name, "artist": entry.artist, "album": entry.album, "cover_url": entry.cover_url, "quality": entry.quality, "status": "retrying", "progress": 0, "retry": _attempt + 1, "max_retries": _MAX_RETRIES})
+                            time.sleep(backoff)
+                    except requests.exceptions.HTTPError as http_exc:
+                        # Retry on 429 Too Many Requests
+                        if hasattr(http_exc, "response") and http_exc.response is not None and http_exc.response.status_code == 429:
+                            _last_exc = http_exc
+                            if _attempt < _MAX_RETRIES:
+                                backoff = 2 ** (_attempt + 1)
+                                with _lock:
+                                    entry = _active.get(tid)
+                                if entry:
+                                    entry.status = "retrying"
+                                    _broadcast({"type": "progress", "track_id": tid, "name": entry.name, "artist": entry.artist, "album": entry.album, "cover_url": entry.cover_url, "quality": entry.quality, "status": "retrying", "progress": 0, "retry": _attempt + 1, "max_retries": _MAX_RETRIES})
+                                time.sleep(backoff)
+                        else:
+                            raise  # permanent HTTP error
+
+                if _last_exc is not None:
+                    raise _last_exc
 
                 with _lock:
                     entry = _active.pop(tid, None)
@@ -292,12 +337,23 @@ def downloads_history(limit: int = 50) -> dict:
     for entry in history:
         name = entry.get("name")
         artist = entry.get("artist")
+        album = entry.get("album")
         if name and artist:
             assert db._conn
-            row = db._conn.execute(
-                "SELECT path FROM scanned WHERE title = ? AND artist = ? LIMIT 1",
-                (name, artist),
-            ).fetchone()
+            # Include album in match to avoid wrong-album hits for same-name tracks
+            if album:
+                row = db._conn.execute(
+                    "SELECT path FROM scanned WHERE title = ? AND artist = ? AND album = ? LIMIT 1",
+                    (name, artist, album),
+                ).fetchone()
+            else:
+                row = None
+            # Fallback without album if no match (e.g. album metadata differs)
+            if not row:
+                row = db._conn.execute(
+                    "SELECT path FROM scanned WHERE title = ? AND artist = ? LIMIT 1",
+                    (name, artist),
+                ).fetchone()
             entry["file_path"] = row["path"] if row else None
         else:
             entry["file_path"] = None

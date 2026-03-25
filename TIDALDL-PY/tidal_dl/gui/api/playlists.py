@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
 from tidal_dl.config import Tidal
 from tidal_dl.gui.api.search import _get_isrc_index, _serialize_track
+from tidal_dl.helper.library_db import LibraryDB
+from tidal_dl.helper.path import path_config_base
 
 router = APIRouter()
 
@@ -24,6 +27,12 @@ def get_tidal_session():
     return tidal.session
 
 
+def _get_playlist_db() -> LibraryDB:
+    db = LibraryDB(Path(path_config_base()) / "library.db")
+    db.open()
+    return db
+
+
 @router.get("/playlists")
 def list_playlists() -> dict:
     """List user's Tidal playlists."""
@@ -36,18 +45,29 @@ def list_playlists() -> dict:
         raise HTTPException(status_code=401, detail="Not logged in to Tidal")
 
     playlists = session.user.playlists() or []
-    result = {
-        "playlists": [
-            {
-                "id": str(pl.id),
+
+    # Use DB-cached playlist covers to survive server restarts
+    db = _get_playlist_db()
+    try:
+        items = []
+        for pl in playlists:
+            pl_id = str(pl.id)
+            cover = db.get_playlist_cover(pl_id)
+            if cover is None:
+                cover = _safe_image(pl)
+                db.set_playlist_cover(pl_id, cover)
+            items.append({
+                "id": pl_id,
                 "name": getattr(pl, "name", ""),
                 "num_tracks": getattr(pl, "num_tracks", 0),
-                "cover_url": _safe_image(pl),
+                "cover_url": cover,
                 "last_updated": getattr(pl, "last_updated", None),
-            }
-            for pl in playlists
-        ]
-    }
+            })
+        db.commit()
+    finally:
+        db.close()
+
+    result = {"playlists": items}
     _playlist_list_cache["data"] = result
     _playlist_list_cache["ts"] = now
     return result

@@ -20,6 +20,7 @@ from tidalapi.playlist import Playlist, UserPlaylist
 
 from tidal_dl.constants import (
     APP_NAME,
+    FILENAME_BYTES_MAX,
     FILENAME_LENGTH_MAX,
     FILENAME_SANITIZE_PLACEHOLDER,
     FORMAT_TEMPLATE_EXPLICIT,
@@ -489,25 +490,40 @@ def path_file_sanitize(
     Returns:
         pathlib.Path: Sanitized path.
     """
-    # Smart truncation: when the filename exceeds the NTFS 255-char limit,
-    # shorten the artist portion (before last " - ") while keeping the track
-    # title intact. Done BEFORE pathvalidate so the sanitizer sees a short
-    # name and won't blindly truncate.
+    # Smart truncation: cap filename to FILENAME_BYTES_MAX (POSIX NAME_MAX)
+    # using byte length for UTF-8 safety on SMB/NAS. Multi-byte characters
+    # (accents, emojis, CJK) can exceed the byte limit even when char count
+    # is under 255. Truncation is byte-aware to avoid splitting multi-byte chars.
     raw_name = path_file.name
-    if len(raw_name) > FILENAME_LENGTH_MAX:
+
+    def _truncate_to_bytes(s: str, max_bytes: int) -> str:
+        """Truncate string to fit within max_bytes of UTF-8 without splitting chars."""
+        encoded = s.encode("utf-8")
+        if len(encoded) <= max_bytes:
+            return s
+        truncated = encoded[:max_bytes]
+        # Decode with error handling to avoid splitting a multi-byte character
+        return truncated.decode("utf-8", errors="ignore")
+
+    if len(raw_name.encode("utf-8")) > FILENAME_BYTES_MAX:
         ext = path_file.suffix
+        ext_bytes = len(ext.encode("utf-8"))
         stem = raw_name[: -len(ext)] if ext else raw_name
         parts = stem.rsplit(" - ", 1)
         if len(parts) == 2:
             prefix, title = parts
-            max_prefix = FILENAME_LENGTH_MAX - len(ext) - len(" - ") - len(title)
-            if max_prefix > 10:
-                prefix = prefix[: max_prefix - 3].rstrip(", ") + "..."
+            sep_bytes = len(" - ".encode("utf-8"))
+            title_bytes = len(title.encode("utf-8"))
+            max_prefix_bytes = FILENAME_BYTES_MAX - ext_bytes - sep_bytes - title_bytes
+            if max_prefix_bytes > 10:
+                prefix = _truncate_to_bytes(prefix, max_prefix_bytes - 3).rstrip(", ") + "..."
                 raw_name = prefix + " - " + title + ext
             else:
-                raw_name = stem[: FILENAME_LENGTH_MAX - len(ext)] + ext
+                stem = _truncate_to_bytes(stem, FILENAME_BYTES_MAX - ext_bytes)
+                raw_name = stem + ext
         else:
-            raw_name = stem[: FILENAME_LENGTH_MAX - len(ext)] + ext
+            stem = _truncate_to_bytes(stem, FILENAME_BYTES_MAX - ext_bytes)
+            raw_name = stem + ext
 
     sanitized_filename = sanitize_filename(
         raw_name, replacement_text="_", validate_after_sanitize=True, platform="auto"

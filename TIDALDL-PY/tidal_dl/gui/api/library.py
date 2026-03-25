@@ -401,6 +401,29 @@ def _background_scan(rescan: bool) -> None:
             _scan_running = False
 
 
+@router.get("/library/artists")
+def library_artists(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    q: str = Query("", description="Search filter"),
+) -> dict:
+    """Return paginated artists with track/album counts."""
+    from urllib.parse import quote
+
+    db = _get_db()
+    rows, total = db.artists_page(limit=limit, offset=offset, query=q.strip())
+    artists = [
+        {
+            "name": r["artist"],
+            "track_count": r["track_count"],
+            "album_count": r["album_count"],
+            "cover_url": "/api/library/art?path=" + quote(r["cover_path"], safe="") if r.get("cover_path") else "",
+        }
+        for r in rows
+    ]
+    return {"artists": artists, "total": total}
+
+
 @router.get("/library/albums")
 def all_albums(q: str = Query("", description="Search filter")):
     """Return all albums in the local library as a gallery."""
