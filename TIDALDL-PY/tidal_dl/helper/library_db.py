@@ -511,6 +511,87 @@ class LibraryDB:
             ).fetchall()
         ]
 
+        # Listening streak — consecutive days ending today with at least one play
+        streak_rows = c.execute(
+            """SELECT DISTINCT date(played_at, 'unixepoch', 'localtime') as d
+               FROM play_events ORDER BY d DESC"""
+        ).fetchall()
+        streak = 0
+        if streak_rows:
+            check = datetime.date.today()
+            for row in streak_rows:
+                d = datetime.date.fromisoformat(row["d"])
+                if d == check:
+                    streak += 1
+                    check -= datetime.timedelta(days=1)
+                elif d < check:
+                    break
+
+        # Peak hours — 24-element list, play count per hour of day
+        peak_hours = [0] * 24
+        for row in c.execute("SELECT played_at FROM play_events").fetchall():
+            hour = datetime.datetime.fromtimestamp(row["played_at"]).hour
+            peak_hours[hour] += 1
+
+        peak_hour = peak_hours.index(max(peak_hours)) if any(h > 0 for h in peak_hours) else None
+
+        # This week vs last week play counts
+        this_week_plays = c.execute(
+            "SELECT COUNT(*) FROM play_events WHERE played_at >= ?",
+            (week_start,),
+        ).fetchone()[0]
+
+        last_week_start = week_start - 7 * 86400
+        last_week_plays = c.execute(
+            "SELECT COUNT(*) FROM play_events WHERE played_at >= ? AND played_at < ?",
+            (last_week_start, week_start),
+        ).fetchone()[0]
+
+        # Tracks never played
+        unplayed_count = c.execute(
+            "SELECT COUNT(*) FROM scanned WHERE (play_count = 0 OR play_count IS NULL) AND status != 'unreadable'"
+        ).fetchone()[0]
+
+        # Track count by audio format
+        format_breakdown = [
+            {"format": r["format"], "count": r["cnt"]}
+            for r in c.execute(
+                """SELECT format, COUNT(*) as cnt FROM scanned
+                   WHERE format IS NOT NULL AND status != 'unreadable'
+                   GROUP BY format ORDER BY cnt DESC"""
+            ).fetchall()
+        ]
+
+        # Album with most combined plays
+        top_album = None
+        ta = c.execute(
+            """SELECT album, artist, SUM(play_count) as total, MIN(path) as cover_path
+               FROM scanned
+               WHERE play_count > 0 AND album IS NOT NULL
+               GROUP BY album, artist
+               ORDER BY total DESC LIMIT 1"""
+        ).fetchone()
+        if ta:
+            top_album = {
+                "album": ta["album"],
+                "artist": ta["artist"],
+                "play_count": ta["total"],
+                "cover_path": ta["cover_path"],
+            }
+
+        # Tracks added in last 30 days
+        thirty_days_ago = int(time.time()) - 30 * 86400
+        collection_growth = c.execute(
+            "SELECT COUNT(*) FROM scanned WHERE scanned_at >= ? AND status != 'unreadable'",
+            (thirty_days_ago,),
+        ).fetchone()[0]
+
+        # Total favorites (table may not exist if migration hasn't run)
+        try:
+            favorites_count = c.execute("SELECT COUNT(*) FROM favorites").fetchone()[0]
+        except Exception:
+            favorites_count = 0
+
         return {
             "top_artist": top_artist,
             "top_artists": top_artists,
@@ -524,6 +605,15 @@ class LibraryDB:
             "album_count": album_count,
             "album_artists": album_artists,
             "total_plays": total_plays,
+            "streak": streak,
+            "peak_hours": peak_hours,
+            "peak_hour": peak_hour,
+            "week_vs_last": {"this_week": this_week_plays, "last_week": last_week_plays},
+            "unplayed_count": unplayed_count,
+            "format_breakdown": format_breakdown,
+            "top_album": top_album,
+            "collection_growth": collection_growth,
+            "favorites_count": favorites_count,
         }
 
     # ------------------------------------------------------------------
