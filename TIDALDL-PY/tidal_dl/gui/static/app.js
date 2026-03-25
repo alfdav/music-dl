@@ -52,9 +52,15 @@ function formatTime(seconds) {
 }
 
 // RPG-tier quality system
-function _qualityTier(q) {
+function _qualityTier(q, fmt) {
   if (!q) return { tier: 'Common', cls: 'quality-common', desc: 'Unknown quality' };
   const ql = q.toUpperCase();
+  const fl = (fmt || '').toUpperCase();
+
+  // Lossy formats always cap at Uncommon regardless of quality string.
+  // An M4A reporting "44100Hz/16bit" is still lossy AAC, not lossless.
+  if (fl === 'MP3' || fl === 'AAC' || fl === 'OGG' || fl === 'M4A')
+    return { tier: 'Uncommon', cls: 'quality-uncommon', desc: (fmt || q) + ' · Lossy' };
 
   // Tidal quality constants
   if (ql === 'DOLBY_ATMOS' || ql.includes('ATMOS') || ql.includes('DOLBY'))
@@ -86,9 +92,9 @@ function _qualityTier(q) {
   return { tier: 'Common', cls: 'quality-common', desc: q };
 }
 
-function qualityClass(q) { return _qualityTier(q).cls; }
-function qualityLabel(q) { return _qualityTier(q).tier; }
-function qualityTitle(q) { return _qualityTier(q).desc; }
+function qualityClass(q, fmt) { return _qualityTier(q, fmt).cls; }
+function qualityLabel(q, fmt) { return _qualityTier(q, fmt).tier; }
+function qualityTitle(q, fmt) { return _qualityTier(q, fmt).desc; }
 
 function artGradient(id) {
   const hue = ((id || 0) * 137.508) % 360;
@@ -1436,9 +1442,21 @@ function renderTrackHeader() {
     textEl('div', 'Title', 'col-label'),
     textEl('div', 'Album', 'col-label'),
     textEl('div', 'Quality', 'col-label center'),
+    textEl('div', 'Format', 'col-label center'),
     textEl('div', 'Time', 'col-label right'),
+    h('div'),
     h('div')
   );
+}
+
+function _extractFormat(track) {
+  const p = track.path || track.local_path || track.file_path || '';
+  if (p) {
+    const ext = p.split('.').pop();
+    if (ext && ext.length <= 5) return ext.toUpperCase();
+  }
+  if (track.format) return track.format.toUpperCase();
+  return '';
 }
 
 function renderTrackRow(track, num, allTracks) {
@@ -1500,9 +1518,12 @@ function renderTrackRow(track, num, allTracks) {
   row.appendChild(albumCell);
 
   // Quality
-  const qTag = textEl('div', qualityLabel(track.quality), 'quality-tag ' + qualityClass(track.quality));
-  qTag.title = qualityTitle(track.quality);
+  const qTag = textEl('div', qualityLabel(track.quality, track.format), 'quality-tag ' + qualityClass(track.quality, track.format));
+  qTag.title = qualityTitle(track.quality, track.format);
   row.appendChild(qTag);
+
+  // Format
+  row.appendChild(textEl('div', _extractFormat(track), 'track-format'));
 
   // Time
   row.appendChild(textEl('div', formatTime(track.duration), 'track-time'));
@@ -1573,7 +1594,7 @@ function renderTrackRow(track, num, allTracks) {
         // Upgrade Quality — only for local tracks with ISRC below user's target tier
         ...(() => {
           if (!track.isrc) return [];
-          const tier = _qualityTier(track.quality || track.format);
+          const tier = _qualityTier(track.quality, track.format);
           const targetRank = { 'HI_RES': 3, 'HI_RES_LOSSLESS': 4 }[state.settings?.upgrade_target_quality] || 4;
           const tierRanks = { 'Common': 0, 'Uncommon': 1, 'Rare': 2, 'Epic': 3, 'Legendary': 4, 'Mythic': 5 };
           if ((tierRanks[tier.tier] || 0) >= targetRank) return [];
@@ -1844,7 +1865,7 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
       // Upgrade check — show button if any tracks might be upgradeable
       const upgradeableTracks = tracks.filter(t => {
         if (!t.isrc) return false;
-        const tier = _qualityTier(t.quality || t.format);
+        const tier = _qualityTier(t.quality, t.format);
         const tierRanks = { 'Common': 0, 'Uncommon': 1, 'Rare': 2, 'Epic': 3, 'Legendary': 4, 'Mythic': 5 };
         const targetRank = { 'HI_RES': 3, 'HI_RES_LOSSLESS': 4 }[state.settings?.upgrade_target_quality] || 4;
         return (tierRanks[tier.tier] || 0) < targetRank;

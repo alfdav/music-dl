@@ -59,14 +59,23 @@ def _get_db() -> LibraryDB:
     return db
 
 
-def _tier_rank_for_quality(q: str | None) -> int:
-    """Map any quality string to a numeric tier rank.
+def _tier_rank_for_quality(q: str | None, fmt: str | None = None) -> int:
+    """Map a quality string + format to a numeric tier rank.
 
     Handles TIER_RANK direct keys (LOSSLESS, HIGH, MP3, FLAC, etc.)
     and local file quality strings like "44100Hz/16bit" or "96000Hz/24bit".
+
+    The *fmt* parameter (file format: FLAC, M4A, MP3, etc.) is used to cap
+    lossy formats at Uncommon (rank 1) regardless of the quality string.
+    Without this, an M4A reporting "44100Hz/16bit" would be ranked Rare.
     """
     if not q:
         return 0
+
+    # Lossy formats cap at Uncommon regardless of quality string
+    _LOSSY_FORMATS = {"MP3", "AAC", "OGG", "M4A"}
+    if fmt and fmt.upper() in _LOSSY_FORMATS:
+        return 1  # Uncommon
 
     # Direct lookup first
     rank = TIER_RANK.get(q.upper())
@@ -302,7 +311,7 @@ def start_upgrade(req: UpgradeStartRequest) -> dict:
                 continue
 
             probed_rank = TIER_RANK.get(probe["max_quality"], 0)
-            local_rank = _tier_rank_for_quality(row.get("quality"))
+            local_rank = _tier_rank_for_quality(row.get("quality"), row.get("format"))
 
             if probed_rank <= local_rank:
                 skipped += 1
@@ -511,7 +520,7 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
             if not isrc:
                 skipped_no_isrc += 1
                 continue
-            local_rank = _tier_rank_for_quality(t.get("quality"))
+            local_rank = _tier_rank_for_quality(t.get("quality"), t.get("format"))
             if local_rank < target_rank:
                 candidates.append(t)
 
@@ -552,7 +561,7 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
             # Check if upgradeable
             if probe.get("tidal_track_id") and probe.get("max_quality"):
                 probed_rank = TIER_RANK.get(probe["max_quality"], 0)
-                local_rank = _tier_rank_for_quality(t.get("quality"))
+                local_rank = _tier_rank_for_quality(t.get("quality"), t.get("format"))
                 if probed_rank > local_rank and probed_rank >= target_rank:
                     upgradeable_results.append({
                         "path": t["path"],
