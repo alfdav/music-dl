@@ -1735,6 +1735,9 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
               _ensureGlobalSSE();
               dlAllBtn.disabled = true;
               dlAllBtn.textContent = 'Queued';
+              // Hide the Tidal section — tracks are downloading
+              const tidalEl = wrapper.querySelector('.tidal-missing-section');
+              if (tidalEl) tidalEl.style.display = 'none';
             } catch (err) {
               toast('Download failed: ' + err.message, 'error');
             }
@@ -2578,23 +2581,32 @@ async function loadPlaylistTracks(resultsArea, pl) {
       });
     }
 
-    // Download Missing
-    dlBtn.addEventListener('click', async () => {
-      dlBtn.textContent = 'Syncing...';
-      dlBtn.style.pointerEvents = 'none';
-      try {
-        const result = await api('/playlists/' + encodeURIComponent(pl.id) + '/sync', { method: 'POST' });
-        if (result.status === 'up_to_date') {
-          toast('All tracks are already local', 'success');
-        } else {
-          toast('Downloading ' + result.missing + ' missing tracks', 'success');
+    // Download Missing — hide if all tracks are local
+    const missingCount = tracks.filter(t => !t.is_local).length;
+    if (missingCount === 0) {
+      dlBtn.style.display = 'none';
+    } else {
+      dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download ' + missingCount + ' Missing';
+      dlBtn.addEventListener('click', async () => {
+        dlBtn.textContent = 'Syncing...';
+        dlBtn.style.pointerEvents = 'none';
+        try {
+          const result = await api('/playlists/' + encodeURIComponent(pl.id) + '/sync', { method: 'POST' });
+          if (result.status === 'up_to_date') {
+            toast('All tracks are already local', 'success');
+            dlBtn.style.display = 'none';
+          } else {
+            toast('Downloading ' + result.missing + ' missing tracks', 'success');
+            dlBtn.textContent = 'Queued';
+            dlBtn.disabled = true;
+          }
+        } catch (err) {
+          toast('Sync failed: ' + err.message, 'error');
+          dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download ' + missingCount + ' Missing';
+          dlBtn.style.pointerEvents = '';
         }
-      } catch (err) {
-        toast('Sync failed: ' + err.message, 'error');
-      }
-      dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download Missing';
-      dlBtn.style.pointerEvents = '';
-    });
+      });
+    }
 
     // Update track count
     plMeta.querySelector('.album-detail-sub').textContent = tracks.length + ' tracks';
@@ -2824,9 +2836,24 @@ function renderDownloads(container) {
   // Spacer
   resultsArea.appendChild(h('div', { style: { height: '32px' } }));
 
-  // History section
-  const historyLabel = textEl('div', 'History', 'dl-section-label');
-  resultsArea.appendChild(historyLabel);
+  // History section header with clear buttons
+  const historyHeader = h('div', { className: 'dl-history-header' });
+  historyHeader.appendChild(textEl('div', 'History', 'dl-section-label'));
+  const clearBtns = h('div', { className: 'dl-clear-btns' });
+  ['Failed', 'Done', 'All'].forEach(label => {
+    const btn = h('button', { className: 'dl-clear-btn' });
+    btn.textContent = 'Clear ' + label;
+    btn.onclick = async () => {
+      const status = label === 'All' ? null : (label === 'Failed' ? 'error' : 'done');
+      const qs = status ? '?status=' + status : '';
+      await api('/downloads/history' + qs, { method: 'DELETE' });
+      const histEl = document.getElementById('dl-history');
+      if (histEl) loadDownloadHistory(histEl);
+    };
+    clearBtns.appendChild(btn);
+  });
+  historyHeader.appendChild(clearBtns);
+  resultsArea.appendChild(historyHeader);
   const historySection = h('div', { id: 'dl-history', className: 'dl-card-list' });
   resultsArea.appendChild(historySection);
 

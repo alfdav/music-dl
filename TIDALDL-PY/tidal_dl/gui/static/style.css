@@ -2623,6 +2623,26 @@ body {
   margin: 0 0 12px;
 }
 
+.dl-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.dl-history-header .dl-section-label { margin: 0; }
+.dl-clear-btns { display: flex; gap: 6px; }
+.dl-clear-btn {
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.dl-clear-btn:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+
 .dl-card-list {
   display: flex;
   flex-direction: column;
@@ -2750,8 +2770,10 @@ body {
 }
 
 .dl-progress-active {
-  background: var(--accent);
-  animation: dlPulse 1.8s ease-in-out infinite;
+  background: linear-gradient(90deg, transparent 0%, var(--accent) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: dlSlide 1.6s ease-in-out infinite;
+  width: 100% !important;
 }
 
 .dl-progress-queued {
@@ -2759,9 +2781,9 @@ body {
   opacity: 0.3;
 }
 
-@keyframes dlPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+@keyframes dlSlide {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
 }
 
 .dl-card-status {

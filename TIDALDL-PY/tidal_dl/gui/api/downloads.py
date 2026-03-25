@@ -103,6 +103,10 @@ def trigger_download(track_ids: list[int]) -> dict:
         for tid in track_ids:
             _active[tid] = DownloadEntry(tid, f"Track {tid}")
 
+    # Broadcast queued state for all tracks so the UI shows the full queue
+    for tid in track_ids:
+        _broadcast({"type": "progress", "track_id": tid, "name": f"Track {tid}", "artist": "", "album": "", "cover_url": "", "quality": "", "status": "queued", "progress": 0})
+
     def _run() -> None:
         import logging
         from pathlib import Path
@@ -152,7 +156,8 @@ def trigger_download(track_ids: list[int]) -> dict:
                             except Exception:
                                 continue
                 # Set quality early so it's available in SSE and history
-                entry.quality = settings.data.quality_audio or "LOSSLESS"
+                _q = settings.data.quality_audio
+                entry.quality = _q.value if hasattr(_q, "value") else str(_q or "LOSSLESS")
                 entry.status = "downloading"
                 _broadcast({"type": "progress", "track_id": tid, "name": entry.name, "artist": entry.artist, "album": entry.album, "cover_url": entry.cover_url, "quality": entry.quality, "status": "downloading", "progress": 0})
 
@@ -173,7 +178,8 @@ def trigger_download(track_ids: list[int]) -> dict:
                     entry.finished_at = time.time()
                     # quality already set before dl.item(); keep as fallback
                     if not entry.quality:
-                        entry.quality = settings.data.quality_audio or "LOSSLESS"
+                        _q = settings.data.quality_audio
+                        entry.quality = _q.value if hasattr(_q, "value") else str(_q or "LOSSLESS")
 
                     # Persist to DB
                     artist_name = entry.artist
@@ -325,6 +331,21 @@ def reveal_in_finder(req: RevealRequest) -> dict:
         subprocess.Popen(["xdg-open", str(file_path.parent)])
 
     return {"status": "ok"}
+
+
+@router.delete("/downloads/history")
+def clear_history(status: str | None = None) -> dict:
+    """Clear download history. Optional ?status=done or ?status=error filter."""
+    from pathlib import Path
+
+    from tidal_dl.helper.library_db import LibraryDB
+    from tidal_dl.helper.path import path_config_base
+
+    db = LibraryDB(Path(path_config_base()) / "library.db")
+    db.open()
+    deleted = db.clear_download_history(status)
+    db.close()
+    return {"deleted": deleted}
 
 
 def _json(obj: Any) -> str:

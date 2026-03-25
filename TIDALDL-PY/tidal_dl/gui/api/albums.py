@@ -147,18 +147,20 @@ def album_lookup(
     except Exception:
         pass  # If DB is unavailable, fall back to ISRC-only matching
 
-    # --- 5. Serialize with is_local annotation ---
+    # --- 5. Serialize with is_local annotation (album-scoped only) ---
     serialized = []
     missing_count = 0
     for t in tidal_tracks:
         data = _serialize_track(t, isrc_index)
-        # Enhance is_local with title+artist fallback
-        if not data["is_local"]:
-            t_title = _normalize(data.get("name", ""))
-            t_artist = _normalize(data.get("artist", ""))
-            t_album = _normalize(data.get("album", ""))
-            if t_title and (t_title, t_artist, t_album) in local_titles:
-                data["is_local"] = True
+        # Override ISRC-based is_local — ISRC is global and causes false positives
+        # across albums (same track on different albums shares an ISRC).
+        # Only trust album-scoped triple match: (title, artist, album).
+        data["is_local"] = False
+        t_title = _normalize(data.get("name", ""))
+        t_artist = _normalize(data.get("artist", ""))
+        t_album = _normalize(data.get("album", ""))
+        if t_title and (t_title, t_artist, t_album) in local_titles:
+            data["is_local"] = True
         if not data["is_local"]:
             missing_count += 1
         serialized.append(data)

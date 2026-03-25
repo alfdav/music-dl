@@ -839,3 +839,13 @@ class LibraryDB:
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def clear_download_history(self, status: str | None = None) -> int:
+        """Delete download history entries. If status is given, only delete that status."""
+        assert self._conn
+        if status:
+            cur = self._conn.execute("DELETE FROM download_history WHERE status = ?", (status,))
+        else:
+            cur = self._conn.execute("DELETE FROM download_history")
+        self._conn.commit()
+        return cur.rowcount
