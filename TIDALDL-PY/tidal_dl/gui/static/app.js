@@ -478,13 +478,13 @@ function _renderHomeGrid(container, data, totalPlays) {
     grid.appendChild(_replayedTile(data.most_replayed));
   }
 
-  // Prefer library genre composition (track_genres) over play-event genre (genre_breakdown)
-  // Prefer library genre composition (track_genres) over play-event genre (genre_breakdown)
-  const hasLibraryGenres = data.track_genres && data.track_genres.length > 0;
-  const genreSource = hasLibraryGenres ? data.track_genres : data.genre_breakdown;
-  const genreLabel = genreSource && genreSource.length > 0 ? genreSource[0].genre : null;
-  if (genreSource && genreSource.length > 0) {
-    grid.appendChild(_genreTile(genreLabel, genreSource, hasLibraryGenres));
+  // Genre tile: show what you LISTEN to (play_events), not what you HAVE (library)
+  // Fall back to library genres only if no play history exists
+  const hasPlayGenres = data.genre_breakdown && data.genre_breakdown.length > 0;
+  const genreSource = hasPlayGenres ? data.genre_breakdown : (data.track_genres || []);
+  const genreLabel = genreSource.length > 0 ? genreSource[0].genre : null;
+  if (genreSource.length > 0) {
+    grid.appendChild(_genreTile(genreLabel, genreSource, !hasPlayGenres));
   }
   if (data.weekly_activity && data.weekly_activity.some(v => v > 0)) {
     grid.appendChild(_listeningTimeTile(data.listening_time_hours, data.weekly_activity));
