@@ -2952,7 +2952,9 @@ function updateNowPlaying(track) {
     nowTitle.textContent = track.name || 'Unknown';
     nowTitle.className = 'now-title now-link';
     nowTitle.onclick = () => {
-      if (track.is_local && track.album && track.artist) {
+      if (track.album_id) {
+        navigateAlbum(track.album_id);
+      } else if (track.album && track.artist) {
         navigate('localalbum:' + encodeURIComponent(track.artist) + ':' + encodeURIComponent(track.album));
       }
     };
@@ -2972,7 +2974,9 @@ function updateNowPlaying(track) {
       albumSpan.textContent = track.album;
       albumSpan.onclick = (e) => {
         e.stopPropagation();
-        if (track.is_local && track.artist) {
+        if (track.album_id) {
+          navigateAlbum(track.album_id);
+        } else if (track.artist) {
           navigate('localalbum:' + encodeURIComponent(track.artist) + ':' + encodeURIComponent(track.album));
         }
       };
@@ -2996,7 +3000,9 @@ function updateNowPlaying(track) {
     nowArt.classList.remove('idle-art');
     nowArt.classList.add('now-link-art');
     nowArt.onclick = () => {
-      if (track.is_local && track.album && track.artist) {
+      if (track.album_id) {
+        navigateAlbum(track.album_id);
+      } else if (track.album && track.artist) {
         navigate('localalbum:' + encodeURIComponent(track.artist) + ':' + encodeURIComponent(track.album));
       }
     };
