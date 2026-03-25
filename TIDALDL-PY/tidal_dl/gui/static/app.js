@@ -1048,9 +1048,10 @@ function renderSearch(container) {
       _renderRecentSearches(recentSearchesEl, input, resultsArea);
     }
   });
+  var _blurTimer = null;
   input.addEventListener('blur', () => {
-    // Delay to allow click events on chips to fire first
-    setTimeout(() => recentSearchesEl.classList.remove('visible'), 200);
+    // Delay to allow click events on chips/pills to fire first
+    _blurTimer = setTimeout(() => recentSearchesEl.classList.remove('visible'), 200);
   });
 
   // Filter pills
@@ -1060,10 +1061,12 @@ function renderSearch(container) {
       'pill' + (state.searchType === type ? ' active' : ''));
     pill.style.cursor = 'pointer';
     pill.addEventListener('click', () => {
+      clearTimeout(_blurTimer);
       state.searchType = type;
       pills.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
       pill.classList.add('active');
       if (state.searchQuery) doSearch(resultsArea);
+      else _renderRecentSearches(recentSearchesEl, input, resultsArea);
     });
     a11yClick(pill);
     pills.appendChild(pill);
