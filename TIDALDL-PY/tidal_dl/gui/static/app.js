@@ -4398,6 +4398,159 @@ document.addEventListener('click', (e) => {
   toggleQueue();
 });
 
+// ---- UPGRADE SCANNER ----
+
+async function renderUpgradeScanner(container) {
+  const wrapper = h('div', { className: 'upgrade-scanner-view' });
+  container.appendChild(wrapper);
+
+  wrapper.appendChild(breadcrumb([{ label: 'Library', view: 'library' }, { label: 'Quality Upgrades' }]));
+
+  const header = h('div', { className: 'upgrade-scanner-header' });
+  header.appendChild(textEl('h2', 'Quality Upgrade Scanner', 'section-title'));
+
+  const statusEl = h('div', { className: 'upgrade-scanner-status' });
+  statusEl.textContent = 'Scan your library for tracks available at higher quality on Tidal.';
+  header.appendChild(statusEl);
+
+  const controls = h('div', { className: 'upgrade-scanner-controls' });
+  const scanBtn = h('button', { className: 'pill active' });
+  scanBtn.textContent = 'Start Scan';
+  const cancelBtn = h('button', { className: 'pill' });
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.display = 'none';
+  controls.appendChild(scanBtn);
+  controls.appendChild(cancelBtn);
+  header.appendChild(controls);
+  wrapper.appendChild(header);
+
+  const progressBar = h('div', { className: 'upgrade-progress-bar' });
+  const progressFill = h('div', { className: 'upgrade-progress-fill' });
+  progressBar.appendChild(progressFill);
+  progressBar.style.display = 'none';
+  wrapper.appendChild(progressBar);
+
+  const resultsEl = h('div', { className: 'upgrade-results' });
+  wrapper.appendChild(resultsEl);
+
+  let eventSource = null;
+
+  scanBtn.addEventListener('click', () => {
+    scanBtn.disabled = true;
+    scanBtn.textContent = 'Scanning...';
+    cancelBtn.style.display = '';
+    progressBar.style.display = '';
+    while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
+
+    eventSource = new EventSource('/api/upgrade/scan');
+    eventSource.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.type === 'scan_progress') {
+        const pct = data.total > 0 ? Math.round((data.checked / data.total) * 100) : 0;
+        progressFill.style.width = pct + '%';
+        statusEl.textContent = 'Checked ' + data.checked + ' / ' + data.total + ' \u2014 ' + data.upgradeable + ' upgradeable' + (data.skipped_no_isrc ? ' \u2014 ' + data.skipped_no_isrc + ' skipped (no ISRC)' : '');
+      } else if (data.type === 'scan_complete') {
+        progressFill.style.width = '100%';
+        statusEl.textContent = 'Done: ' + data.upgradeable + ' upgradeable of ' + data.checked + ' checked' + (data.skipped_no_isrc ? ' (' + data.skipped_no_isrc + ' skipped, no ISRC)' : '');
+        scanBtn.disabled = false;
+        scanBtn.textContent = 'Scan Again';
+        cancelBtn.style.display = 'none';
+        eventSource.close();
+        _renderScanResults(resultsEl, data.results || []);
+      } else if (data.type === 'scan_error') {
+        statusEl.textContent = 'Error: ' + data.error;
+        scanBtn.disabled = false;
+        scanBtn.textContent = 'Retry';
+        cancelBtn.style.display = 'none';
+        eventSource.close();
+      } else if (data.type === 'scan_cancelled') {
+        statusEl.textContent = 'Scan cancelled.';
+        scanBtn.disabled = false;
+        scanBtn.textContent = 'Start Scan';
+        cancelBtn.style.display = 'none';
+        eventSource.close();
+      }
+    };
+    eventSource.onerror = () => {
+      statusEl.textContent = 'Connection lost.';
+      scanBtn.disabled = false;
+      scanBtn.textContent = 'Retry';
+      cancelBtn.style.display = 'none';
+    };
+  });
+
+  cancelBtn.addEventListener('click', async () => {
+    if (eventSource) eventSource.close();
+    try { await api('/upgrade/scan/cancel', { method: 'POST' }); } catch (_) {}
+    cancelBtn.style.display = 'none';
+    scanBtn.disabled = false;
+    scanBtn.textContent = 'Start Scan';
+  });
+}
+
+function _renderScanResults(container, results) {
+  if (!results.length) {
+    container.appendChild(textEl('div', 'All tracks are at their best available quality.', 'upgrade-empty'));
+    return;
+  }
+
+  // Group by quality jump
+  const groups = {};
+  results.forEach(r => {
+    const key = qualityLabel(r.current_quality) + ' \u2192 ' + qualityLabel(r.available_quality);
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(r);
+  });
+
+  // "Upgrade All" button
+  const upgradeAllBtn = h('button', { className: 'pill active upgrade-all-btn' });
+  upgradeAllBtn.textContent = 'Upgrade All (' + results.length + ' tracks)';
+  upgradeAllBtn.addEventListener('click', async () => {
+    upgradeAllBtn.disabled = true;
+    upgradeAllBtn.textContent = 'Upgrading...';
+    const paths = results.map(r => r.path);
+    try {
+      await api('/upgrade/start', { method: 'POST', body: { track_paths: paths } });
+      toast('Upgrade started for ' + paths.length + ' tracks', 'success');
+    } catch (err) {
+      toast('Upgrade failed', 'error');
+      upgradeAllBtn.disabled = false;
+      upgradeAllBtn.textContent = 'Upgrade All (' + results.length + ' tracks)';
+    }
+  });
+  container.appendChild(upgradeAllBtn);
+
+  Object.entries(groups).forEach(([label, tracks]) => {
+    const groupEl = h('div', { className: 'upgrade-group' });
+    const groupHeader = h('div', { className: 'upgrade-group-header' });
+    groupHeader.textContent = label + ' (' + tracks.length + ' tracks)';
+    groupEl.appendChild(groupHeader);
+
+    tracks.forEach(t => {
+      const row = h('div', { className: 'upgrade-row' });
+      row.appendChild(textEl('span', t.title || '', 'upgrade-row-title'));
+      row.appendChild(textEl('span', t.artist || '', 'upgrade-row-artist'));
+      row.appendChild(textEl('span', qualityLabel(t.current_quality) + ' \u2192 ' + qualityLabel(t.available_quality), 'upgrade-row-quality'));
+      const upBtn = h('button', { className: 'pill small' });
+      upBtn.textContent = 'Upgrade';
+      upBtn.addEventListener('click', async () => {
+        upBtn.disabled = true;
+        upBtn.textContent = 'Queued';
+        try {
+          await api('/upgrade/start', { method: 'POST', body: { track_paths: [t.path] } });
+        } catch (_) {
+          upBtn.disabled = false;
+          upBtn.textContent = 'Retry';
+        }
+      });
+      row.appendChild(upBtn);
+      groupEl.appendChild(row);
+    });
+
+    container.appendChild(groupEl);
+  });
+}
+
 // ---- INIT ----
 // Load settings into state for upgrade quality checks
 api('/settings').then(s => { state.settings = s; }).catch(() => {});
