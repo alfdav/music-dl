@@ -46,6 +46,36 @@ QUALITY_RANK: dict[str, int] = {
     quality_name(Quality.hi_res_lossless): 3,
 }
 
+# Tier rank for upgrade comparison — maps quality strings to numeric tiers.
+# Used by the upgrade system to determine if a Tidal quality is higher than local.
+# Dolby Atmos excluded: it's lossy spatial audio, not a fidelity upgrade.
+TIER_RANK: dict[str, int] = {
+    "LOW": 0,
+    "HIGH": 1,
+    "LOSSLESS": 2,
+    "HI_RES": 3,
+    "HI_RES_LOSSLESS": 4,
+    # Local file quality strings
+    "MP3": 1,
+    "AAC": 1,
+    "OGG": 1,
+    "M4A": 1,
+    "FLAC": 2,
+    "WAV": 2,
+}
+
+# Reverse map: Tidal quality string -> tidalapi.media.Quality enum.
+# Used by upgrade system to convert cached probe results to dl.item() args.
+# NOTE: tidalapi has no Quality.hi_res member. HI_RES maps to hi_res_lossless
+# because Tidal serves the best available quality for the account tier at download time.
+QUALITY_STRING_TO_ENUM: dict[str, Quality] = {
+    "LOW": Quality.low_96k,
+    "HIGH": Quality.low_320k,
+    "LOSSLESS": Quality.high_lossless,
+    "HI_RES": Quality.hi_res_lossless,
+    "HI_RES_LOSSLESS": Quality.hi_res_lossless,
+}
+
 # Well-known track ID used to probe the account's maximum quality.
 # Fleetwood Mac – "Dreams" is widely available and tagged HI_RES_LOSSLESS.
 QUALITY_PROBE_TRACK_ID: str = "59727857"
