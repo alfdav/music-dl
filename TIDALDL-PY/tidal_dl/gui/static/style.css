@@ -754,6 +754,39 @@ body {
   background: var(--green);
 }
 
+/* Hide local tags when every track in the list is local — pure noise */
+.all-local .local-tag { display: none; }
+
+/* ---- Library: Artist grouped view ---- */
+.library-artist-groups {
+  display: flex;
+  flex-direction: column;
+}
+.artist-group-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 18px 14px 8px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg);
+  border-bottom: 1px solid var(--glass-border);
+  margin-bottom: 2px;
+}
+.artist-group-name {
+  font-family: var(--serif);
+  font-size: 16px;
+  font-weight: 400;
+  color: var(--text);
+  letter-spacing: 0.3px;
+}
+.artist-group-count {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
 .dl-btn {
   width: 40px;
   height: 40px;
@@ -2567,12 +2600,10 @@ body {
 
 .dl-section-label {
   font-family: var(--serif);
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 400;
-  color: var(--text-muted);
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  margin-bottom: 12px;
+  color: var(--text);
+  margin: 0 0 12px;
 }
 
 .dl-card-list {
@@ -2590,6 +2621,7 @@ body {
   border: 1px solid var(--glass-border);
   border-radius: 1rem;
   animation: fadeUp 0.4s ease both;
+  max-width: 700px;
 }
 
 .dl-history-card {
@@ -2646,6 +2678,42 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.dl-card-album {
+  font-family: var(--serif);
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dl-card-name.dl-clickable {
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.dl-card-name.dl-clickable:hover {
+  color: var(--accent);
+}
+
+.dl-retry-btn {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  color: var(--text-muted);
+  background: rgba(255, 245, 235, 0.06);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+.dl-retry-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 /* Progress bar */
@@ -2767,4 +2835,205 @@ body {
   font-size: 13px;
   color: var(--text-muted);
   padding: 24px 16px;
+}
+
+/* ---- SETTINGS PAGE ---- */
+
+.settings-section {
+  margin-bottom: 20px;
+}
+
+.settings-section-header {
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--text-muted);
+  padding-bottom: 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--glass-border);
+  letter-spacing: 0.02em;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.settings-label-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-label {
+  font-size: 14px;
+  color: var(--text);
+}
+
+.settings-helper {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.settings-input {
+  background: var(--surface);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12px;
+  padding: 8px 12px;
+  transition: border-color 0.15s;
+}
+
+.settings-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.settings-input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Toggle switch */
+.settings-toggle {
+  position: relative;
+  width: 24px;
+  height: 14px;
+  border-radius: 7px;
+  background: var(--surface);
+  border: 1px solid var(--glass-border);
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+  flex-shrink: 0;
+}
+
+.settings-toggle::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 0.2s, background 0.2s;
+}
+
+.settings-toggle.on {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.settings-toggle.on::after {
+  transform: translateX(10px);
+  background: var(--accent);
+}
+
+/* ---- Recently Played page ---- */
+
+.recent-page-row {
+  position: relative;
+}
+
+.recent-page-row .track {
+  padding-right: 90px; /* make room for timestamp + remove */
+}
+
+.recent-page-divider {
+  font-family: var(--serif);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+  padding: 14px 14px 6px;
+  letter-spacing: 0.03em;
+}
+
+.recent-page-time {
+  position: absolute;
+  right: 42px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.recent-page-remove-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.recent-page-remove-btn svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
+}
+
+.recent-page-remove-btn:hover {
+  color: var(--text-secondary);
+  background: var(--surface-hover);
+}
+
+@media (hover: hover) {
+  .recent-page-remove-btn { opacity: 0; }
+  .recent-page-row:hover .recent-page-remove-btn { opacity: 1; }
+}
+@media (hover: none) {
+  .recent-page-remove-btn { opacity: 1; }
+}
+
+.recent-page-clear-btn {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+  margin-left: auto;
+}
+
+.recent-page-clear-btn:hover {
+  color: var(--text-secondary);
+  background: var(--surface-hover);
+}
+
+.recent-page-browse-btn {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  background: var(--surface-hover);
+  border: none;
+  cursor: pointer;
+  padding: 10px 20px;
+  border-radius: 8px;
+  margin-top: 12px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.recent-page-browse-btn:hover {
+  color: var(--text);
+  background: rgba(255, 245, 235, 0.12);
 }

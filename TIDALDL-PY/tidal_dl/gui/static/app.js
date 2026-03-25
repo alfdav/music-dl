@@ -1341,8 +1341,8 @@ function renderSearchResults(container, data) {
 }
 
 function _trackKey(t) {
-  // Local tracks have no Tidal id — use path as unique key
-  return t.id || t.path || t.local_path || '';
+  // Prefer ISRC for deduplication (same song from different paths), then id, then path
+  return t.isrc || t.id || t.path || t.local_path || '';
 }
 
 function renderTrackHeader() {
@@ -1930,11 +1930,16 @@ function renderLibrary(container) {
   libraryQuery = '';
   const searchArea = h('div', { className: 'search-area' });
 
+  const searchRow = h('div', { className: 'search-row' });
+  const searchField = h('div', { className: 'search-field' });
+  searchField.appendChild(svgIcon(ICONS.search));
   const libInput = h('input', {
     type: 'text', className: 'search-input',
     placeholder: 'Search your library...', value: libraryQuery,
   });
-  searchArea.appendChild(libInput);
+  searchField.appendChild(libInput);
+  searchRow.appendChild(searchField);
+  searchArea.appendChild(searchRow);
 
   const pills = h('div', { className: 'filter-pills' });
   for (const sort of ['artist', 'album', 'title']) {
@@ -1948,6 +1953,8 @@ function renderLibrary(container) {
       pill.classList.add('active');
       if (sort === 'album') {
         loadLibraryAlbums(resultsArea, libraryQuery);
+      } else if (sort === 'artist') {
+        loadLibraryArtistGrouped(resultsArea, libraryQuery);
       } else {
         loadLibrary(resultsArea);
       }
@@ -1970,6 +1977,8 @@ function renderLibrary(container) {
       libraryOffset = 0;
       if (librarySort === 'album') {
         loadLibraryAlbums(resultsArea, libraryQuery);
+      } else if (librarySort === 'artist') {
+        loadLibraryArtistGrouped(resultsArea, libraryQuery);
       } else {
         loadLibrary(resultsArea);
       }
@@ -1979,6 +1988,8 @@ function renderLibrary(container) {
   // Load cached results — user clicks Sync Library to scan
   if (librarySort === 'album') {
     loadLibraryAlbums(resultsArea, '');
+  } else if (librarySort === 'artist') {
+    loadLibraryArtistGrouped(resultsArea, '');
   } else {
     loadLibrary(resultsArea, false);
   }
@@ -2083,6 +2094,12 @@ async function loadLibrary(resultsArea, append) {
 
     const trackList = document.getElementById('library-tracks') ||
       resultsArea.querySelector('.tracks');
+
+    // Check if all tracks are local — hide redundant "local" tags
+    const allLocal = tracks.every(t => t.is_local);
+    if (allLocal) trackList.classList.add('all-local');
+    else trackList.classList.remove('all-local');
+
     tracks.forEach((track, i) => {
       track.local_path = track.path;
       trackList.appendChild(renderTrackRow(track, libraryOffset + i + 1, tracks));
@@ -2181,38 +2198,228 @@ async function loadLibraryAlbums(resultsArea, query) {
   }
 }
 
+async function loadLibraryArtistGrouped(resultsArea, query) {
+  const reqId = ++_libRequestId;
+  while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
+  resultsArea.appendChild(h('div', { className: 'skeleton-row' }));
+
+  try {
+    // Fetch all tracks sorted by artist (large limit for grouping)
+    const data = await api('/library?sort=artist&limit=5000&offset=0' +
+      (query ? '&q=' + encodeURIComponent(query) : ''));
+    if (reqId !== _libRequestId) return;
+    const tracks = data.tracks || [];
+
+    while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
+
+    resultsArea.appendChild(h('div', { className: 'results-header' },
+      textEl('div', 'Artists', 'results-title'),
+      textEl('div', (data.total || 0) + ' tracks', 'results-count')
+    ));
+
+    if (tracks.length === 0) {
+      const emptyTitle = query ? 'Nothing for \u201c' + query + '\u201d' : 'No music here yet';
+      const emptySub = query ? 'Try different words or check the spelling.' : 'Hit Sync Library in the sidebar to bring in your collection.';
+      resultsArea.appendChild(h('div', { className: 'empty-state' },
+        svgIcon(ICONS.music),
+        textEl('div', emptyTitle, 'empty-state-title'),
+        textEl('div', emptySub, 'empty-state-sub')
+      ));
+      return;
+    }
+
+    // Group tracks by artist
+    const groups = [];
+    let currentArtist = null;
+    let currentGroup = null;
+    tracks.forEach(t => {
+      t.local_path = t.path;
+      const artist = t.artist || 'Unknown Artist';
+      if (artist !== currentArtist) {
+        currentArtist = artist;
+        currentGroup = { artist: artist, tracks: [] };
+        groups.push(currentGroup);
+      }
+      currentGroup.tracks.push(t);
+    });
+
+    // Sort tracks within each group by album, then track number
+    groups.forEach(g => {
+      g.tracks.sort((a, b) => {
+        const albumCmp = (a.album || '').localeCompare(b.album || '');
+        if (albumCmp !== 0) return albumCmp;
+        return (a.track_number || 0) - (b.track_number || 0);
+      });
+    });
+
+    // Update header with artist count
+    const countEl = resultsArea.querySelector('.results-count');
+    if (countEl) countEl.textContent = groups.length + ' artists \u00b7 ' + (data.total || 0) + ' tracks';
+
+    // Check if all tracks are local
+    const allLocal = tracks.every(t => t.is_local);
+
+    const wrapper = h('div', { className: 'library-artist-groups' + (allLocal ? ' all-local' : '') });
+
+    let globalNum = 0;
+    groups.forEach(g => {
+      // Artist header
+      const header = h('div', { className: 'artist-group-header' },
+        textEl('div', g.artist, 'artist-group-name'),
+        textEl('div', g.tracks.length + ' track' + (g.tracks.length !== 1 ? 's' : ''), 'artist-group-count')
+      );
+      wrapper.appendChild(header);
+
+      // Track list for this group
+      const trackList = h('div', { className: 'tracks' + (allLocal ? ' all-local' : '') });
+      g.tracks.forEach(t => {
+        globalNum++;
+        trackList.appendChild(renderTrackRow(t, globalNum, tracks));
+      });
+      wrapper.appendChild(trackList);
+    });
+
+    resultsArea.appendChild(wrapper);
+
+    // If there are more tracks beyond what we fetched, show load-more
+    if (tracks.length < (data.total || 0)) {
+      const loadMore = h('button', {
+        className: 'load-more pill active',
+      });
+      loadMore.textContent = 'Load more (' + ((data.total || 0) - tracks.length) + ' remaining)';
+      loadMore.addEventListener('click', async () => {
+        // Fall back to flat list for remaining tracks
+        libraryOffset = tracks.length;
+        loadMore.remove();
+        loadLibrary(resultsArea, true);
+      });
+      resultsArea.appendChild(loadMore);
+    }
+  } catch (err) {
+    while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
+    resultsArea.appendChild(h('div', { className: 'empty-state' },
+      textEl('div', 'Could not load library', 'empty-state-title'),
+      textEl('div', err.message, 'empty-state-sub')
+    ));
+  }
+}
+
 // ---- RECENTLY PLAYED VIEW ----
+function _recentRelativeTime(ts) {
+  if (!ts) return '';
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + 'h ago';
+  const days = Math.floor(hrs / 24);
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return days + 'd ago';
+  return Math.floor(days / 7) + 'w ago';
+}
+
+function _recentTimeGroup(ts) {
+  if (!ts) return 'Earlier';
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const yesterdayStart = todayStart - 86400000;
+  const weekStart = todayStart - 6 * 86400000;
+  if (ts >= todayStart) return 'Today';
+  if (ts >= yesterdayStart) return 'Yesterday';
+  if (ts >= weekStart) return 'This Week';
+  return 'Earlier';
+}
+
+function _recentRemoveIcon() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  const l1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  l1.setAttribute('x1', '18'); l1.setAttribute('y1', '6');
+  l1.setAttribute('x2', '6'); l1.setAttribute('y2', '18');
+  const l2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  l2.setAttribute('x1', '6'); l2.setAttribute('y1', '6');
+  l2.setAttribute('x2', '18'); l2.setAttribute('y2', '18');
+  svg.appendChild(l1);
+  svg.appendChild(l2);
+  return svg;
+}
+
+function _removeRecentEntry(index) {
+  recentlyPlayed.splice(index, 1);
+  _saveRecent();
+  navigate('recent');
+}
+
+function _clearRecentHistory() {
+  recentlyPlayed.length = 0;
+  _saveRecent();
+  navigate('recent');
+}
+
 function renderRecentlyPlayed(container) {
   const resultsArea = h('div', { className: 'results' });
   container.appendChild(resultsArea);
 
-  resultsArea.appendChild(h('div', { className: 'results-header' },
+  const headerRow = h('div', { className: 'results-header' },
     textEl('div', 'Recently Played', 'results-title'),
     textEl('div', recentlyPlayed.length + ' tracks', 'results-count')
-  ));
+  );
+  if (recentlyPlayed.length > 0) {
+    const clearBtn = h('button', { className: 'recent-page-clear-btn' }, 'Clear history');
+    clearBtn.addEventListener('click', () => _clearRecentHistory());
+    headerRow.appendChild(clearBtn);
+  }
+  resultsArea.appendChild(headerRow);
 
   if (recentlyPlayed.length === 0) {
+    const browseBtn = h('button', { className: 'recent-page-browse-btn' }, 'Browse your library');
+    browseBtn.addEventListener('click', () => navigate('library'));
+    a11yClick(browseBtn);
     resultsArea.appendChild(h('div', { className: 'empty-state' },
       svgIcon(ICONS.music),
       textEl('div', 'Nothing played yet', 'empty-state-title'),
-      textEl('div', 'Tracks you play will show up here.', 'empty-state-sub')
+      textEl('div', 'Tracks you play will show up here.', 'empty-state-sub'),
+      browseBtn
     ));
     return;
   }
 
-  resultsArea.appendChild(h('div', { className: 'track-header' },
-    textEl('div', '#', 'col-label center'),
-    h('div'),
-    textEl('div', 'Title', 'col-label'),
-    textEl('div', 'Album', 'col-label'),
-    textEl('div', 'Quality', 'col-label center'),
-    textEl('div', 'Time', 'col-label right'),
-    h('div')
-  ));
-
   const trackList = h('div', { className: 'tracks' });
+  let currentGroup = null;
+  let num = 0;
   recentlyPlayed.forEach((track, i) => {
-    trackList.appendChild(renderTrackRow(track, i + 1, recentlyPlayed));
+    // Group dividers
+    const group = _recentTimeGroup(track.played_at);
+    if (group !== currentGroup) {
+      currentGroup = group;
+      trackList.appendChild(textEl('div', group, 'recent-page-divider'));
+    }
+
+    num++;
+    const row = renderTrackRow(track, num, recentlyPlayed);
+
+    // Wrap the row to overlay timestamp and remove button without altering grid columns
+    const wrapper = h('div', { className: 'recent-page-row' });
+    wrapper.appendChild(row);
+
+    // Relative timestamp overlay
+    const timeAgo = textEl('span', _recentRelativeTime(track.played_at), 'recent-page-time');
+    wrapper.appendChild(timeAgo);
+
+    // Remove button overlay (visible on hover, same pattern as download button)
+    const removeBtn = h('button', { className: 'recent-page-remove-btn', title: 'Remove from history', 'aria-label': 'Remove' });
+    removeBtn.appendChild(_recentRemoveIcon());
+    const capturedIndex = i;
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _removeRecentEntry(capturedIndex);
+    });
+    wrapper.appendChild(removeBtn);
+
+    trackList.appendChild(wrapper);
   });
   resultsArea.appendChild(trackList);
 }
@@ -2645,6 +2852,9 @@ function updateActiveDownload(container, data) {
   if (data.artist) {
     info.appendChild(textEl('div', data.artist, 'dl-card-artist'));
   }
+  if (data.album) {
+    info.appendChild(textEl('div', data.album, 'dl-card-album'));
+  }
 
   // Progress bar
   const barWrap = h('div', { className: 'dl-progress-wrap' });
@@ -2672,7 +2882,7 @@ function updateActiveDownload(container, data) {
 function _showActiveEmpty(container) {
   while (container.firstChild) container.removeChild(container.firstChild);
   const empty = h('div', { className: 'dl-empty' });
-  empty.appendChild(textEl('div', 'No active downloads', 'dl-empty-text'));
+  empty.appendChild(textEl('div', 'Your downloads are clear', 'dl-empty-text'));
   container.appendChild(empty);
 }
 
@@ -2689,8 +2899,8 @@ async function loadDownloadHistory(container) {
       // SAFE: static SVG markup
       iconWrap.innerHTML = ICONS.music; // eslint-disable-line -- static SVG
       empty.appendChild(iconWrap);
-      empty.appendChild(textEl('div', 'Nothing downloading right now', 'empty-state-title'));
-      empty.appendChild(textEl('div', 'Tracks you download will show up here', 'empty-state-sub'));
+      empty.appendChild(textEl('div', 'No downloads yet', 'empty-state-title'));
+      empty.appendChild(textEl('div', 'Tracks you download will appear here', 'empty-state-sub'));
       container.appendChild(empty);
       return;
     }
@@ -2702,12 +2912,26 @@ async function loadDownloadHistory(container) {
       card.appendChild(_dlArtThumb(dl.cover_url, dl.track_id));
 
       const info = h('div', { className: 'dl-card-info' });
-      info.appendChild(textEl('div', dl.name || 'Track ' + dl.track_id, 'dl-card-name'));
+
+      // Clickable track name — navigate to album if possible
+      const nameEl = textEl('div', dl.name || 'Track ' + dl.track_id, 'dl-card-name');
+      if (dl.album && dl.artist) {
+        nameEl.classList.add('dl-clickable');
+        nameEl.onclick = (e) => {
+          e.stopPropagation();
+          navigate('localalbum:' + encodeURIComponent(dl.artist) + ':' + encodeURIComponent(dl.album));
+        };
+      }
+      info.appendChild(nameEl);
+
       if (dl.artist) {
         info.appendChild(textEl('div', dl.artist, 'dl-card-artist'));
       }
+      if (dl.album) {
+        info.appendChild(textEl('div', dl.album, 'dl-card-album'));
+      }
 
-      // Bottom row: quality badge + status + time
+      // Bottom row: quality badge + status + time + retry
       const meta = h('div', { className: 'dl-card-meta' });
 
       if (dl.quality && dl.status === 'done') {
@@ -2726,6 +2950,18 @@ async function loadDownloadHistory(container) {
         const dot = h('span', { className: 'dl-status-dot dl-status-error' });
         meta.appendChild(dot);
         meta.appendChild(textEl('span', 'Failed', 'dl-status-label dl-status-error-text'));
+        // Retry button
+        const retryBtn = h('button', { className: 'dl-retry-btn' });
+        retryBtn.textContent = 'Retry';
+        retryBtn.onclick = async (e) => {
+          e.stopPropagation();
+          retryBtn.disabled = true;
+          retryBtn.textContent = 'Retrying\u2026';
+          try {
+            await api('/download', { method: 'POST', body: { track_ids: [dl.track_id] } });
+          } catch (_) { /* SSE will pick up status */ }
+        };
+        meta.appendChild(retryBtn);
       }
 
       if (dl.finished_at) {
@@ -2788,83 +3024,120 @@ async function loadSettingsForm(container) {
     const data = await api('/settings');
     while (container.firstChild) container.removeChild(container.firstChild);
 
-    const fields = [
-      { key: 'download_base_path', label: 'Download Path', type: 'path' },
-      { key: 'quality_audio', label: 'Audio Quality', type: 'select', options: ['HI_RES_LOSSLESS', 'HI_RES', 'LOSSLESS', 'HIGH', 'LOW'] },
-      { key: 'skip_existing', label: 'Skip Existing', type: 'toggle' },
-      { key: 'metadata_cover_embed', label: 'Embed Cover Art', type: 'toggle' },
-      { key: 'lyrics_embed', label: 'Embed Lyrics', type: 'toggle' },
-      { key: 'lyrics_file', label: 'Save Lyrics File', type: 'toggle' },
-      { key: 'cover_album_file', label: 'Save Album Cover', type: 'toggle' },
-      { key: 'downloads_concurrent_max', label: 'Max Concurrent Downloads', type: 'number' },
+    const sections = [
+      { title: 'Storage', fields: [
+        { key: 'download_base_path', label: 'Download Path', type: 'path', helper: 'Where your music is saved' },
+        { key: 'skip_existing', label: 'Skip Existing', type: 'toggle', helper: 'Skip tracks already downloaded to this path' },
+      ]},
+      { title: 'Quality', fields: [
+        { key: 'quality_audio', label: 'Audio Quality', type: 'select', options: ['HI_RES_LOSSLESS', 'HI_RES', 'LOSSLESS', 'HIGH', 'LOW'], helper: 'Higher quality = larger files' },
+        { key: 'extract_flac', label: 'Extract FLAC', type: 'toggle', helper: 'Converts MQA to standard FLAC' },
+      ]},
+      { title: 'Downloads', fields: [
+        { key: 'downloads_concurrent_max', label: 'Max Concurrent Downloads', type: 'number', helper: '1\u201310 recommended for stability' },
+        { key: 'download_delay', label: 'Download Delay', type: 'toggle', helper: 'Adds a pause between downloads to avoid rate limits' },
+      ]},
+      { title: 'Metadata', fields: [
+        { key: 'metadata_cover_embed', label: 'Embed Cover Art', type: 'toggle', helper: 'Saves album art inside the audio file' },
+        { key: 'lyrics_embed', label: 'Embed Lyrics', type: 'toggle', helper: 'Saves synced lyrics inside the audio file' },
+        { key: 'lyrics_file', label: 'Save Lyrics File', type: 'toggle', helper: 'Creates a separate .lrc lyrics file' },
+        { key: 'cover_album_file', label: 'Save Album Cover', type: 'toggle', helper: 'Saves cover.jpg in the album folder' },
+      ]},
+      { title: 'Library', fields: [
+        { key: 'scan_paths', label: 'Scan Paths', type: 'text', helper: 'Additional folders to scan for music' },
+        { key: 'skip_duplicate_isrc', label: 'Skip Duplicate ISRC', type: 'toggle', helper: 'Skips tracks with the same recording code' },
+      ]},
     ];
 
-    fields.forEach(field => {
-      const row = h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--glass-border)' } });
-      row.appendChild(textEl('label', field.label, ''));
+    sections.forEach(section => {
+      const sectionEl = h('div', { className: 'settings-section' });
+      sectionEl.appendChild(textEl('div', section.title, 'settings-section-header'));
 
-      if (field.type === 'path') {
-        const wrapper = h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } });
-        const input = h('input', { className: 'search-input', type: 'text', style: { width: '260px', borderRadius: '8px', padding: '8px 12px' } });
-        input.value = data[field.key] || '';
-        input.addEventListener('blur', () => saveSetting(field.key, input.value));
-        wrapper.appendChild(input);
-        const browseBtn = textEl('button', 'Browse', 'pill active');
-        browseBtn.style.cursor = 'pointer';
-        browseBtn.style.whiteSpace = 'nowrap';
-        browseBtn.addEventListener('click', async () => {
-          browseBtn.textContent = '...';
-          try {
-            const result = await api('/browse-directory', { method: 'POST' });
-            if (result.path) {
-              input.value = result.path;
-              saveSetting(field.key, result.path);
-            }
-          } catch (err) {
-            if (!err.message.includes('No directory selected')) {
-              toast('Browse failed: ' + err.message, 'error');
-            }
-          }
-          browseBtn.textContent = 'Browse';
-        });
-        wrapper.appendChild(browseBtn);
-        row.appendChild(wrapper);
-      } else if (field.type === 'text') {
-        const input = h('input', { className: 'search-input', type: 'text', style: { width: '300px', borderRadius: '8px', padding: '8px 12px' } });
-        input.value = data[field.key] || '';
-        input.addEventListener('blur', () => saveSetting(field.key, input.value));
-        row.appendChild(input);
-      } else if (field.type === 'number') {
-        const input = h('input', { className: 'search-input', type: 'number', style: { width: '80px', borderRadius: '8px', padding: '8px 12px' } });
-        input.value = data[field.key] || 3;
-        input.addEventListener('blur', () => saveSetting(field.key, parseInt(input.value, 10)));
-        row.appendChild(input);
-      } else if (field.type === 'select') {
-        const select = h('select', { className: 'search-input', style: { width: '320px', borderRadius: '8px', padding: '8px 12px', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--glass-border)' } });
-        field.options.forEach(opt => {
-          const option = h('option', { value: opt });
-          const tier = _qualityTier(opt);
-          option.textContent = tier.tier + ' (' + tier.desc + ')';
-          if (data[field.key] === opt) option.selected = true;
-          select.appendChild(option);
-        });
-        select.addEventListener('change', () => saveSetting(field.key, select.value));
-        row.appendChild(select);
-      } else if (field.type === 'toggle') {
-        const btn = textEl('button', data[field.key] ? 'On' : 'Off',
-          'pill' + (data[field.key] ? ' active' : ''));
-        btn.style.cursor = 'pointer';
-        let val = !!data[field.key];
-        btn.addEventListener('click', () => {
-          val = !val;
-          btn.textContent = val ? 'On' : 'Off';
-          btn.className = 'pill' + (val ? ' active' : '');
-          saveSetting(field.key, val);
-        });
-        row.appendChild(btn);
-      }
+      section.fields.forEach(field => {
+        const row = h('div', { className: 'settings-row' });
+        const labelGroup = h('div', { className: 'settings-label-group' });
+        labelGroup.appendChild(textEl('label', field.label, 'settings-label'));
+        if (field.helper) {
+          labelGroup.appendChild(textEl('span', field.helper, 'settings-helper'));
+        }
+        row.appendChild(labelGroup);
 
-      container.appendChild(row);
+        if (field.type === 'path') {
+          const wrapper = h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } });
+          const input = h('input', { className: 'settings-input', type: 'text' });
+          input.style.width = '260px';
+          input.value = data[field.key] || '';
+          input.addEventListener('blur', () => saveSetting(field.key, input.value));
+          wrapper.appendChild(input);
+          const browseBtn = textEl('button', 'Browse', 'pill active');
+          browseBtn.style.cursor = 'pointer';
+          browseBtn.style.whiteSpace = 'nowrap';
+          browseBtn.addEventListener('click', async () => {
+            browseBtn.textContent = '...';
+            try {
+              const result = await api('/browse-directory', { method: 'POST' });
+              if (result.path) {
+                input.value = result.path;
+                saveSetting(field.key, result.path);
+              }
+            } catch (err) {
+              if (!err.message.includes('No directory selected')) {
+                toast('Browse failed: ' + err.message, 'error');
+              }
+            }
+            browseBtn.textContent = 'Browse';
+          });
+          wrapper.appendChild(browseBtn);
+          row.appendChild(wrapper);
+        } else if (field.type === 'text') {
+          const input = h('input', { className: 'settings-input', type: 'text' });
+          input.style.width = '300px';
+          input.value = data[field.key] || '';
+          input.addEventListener('blur', () => saveSetting(field.key, input.value));
+          row.appendChild(input);
+        } else if (field.type === 'number') {
+          const input = h('input', { className: 'settings-input', type: 'number' });
+          input.style.width = '80px';
+          input.min = '1';
+          input.max = '10';
+          input.value = data[field.key] || 3;
+          input.addEventListener('blur', () => {
+            let v = parseInt(input.value, 10);
+            if (isNaN(v) || v < 1) v = 1;
+            if (v > 10) v = 10;
+            input.value = v;
+            saveSetting(field.key, v);
+          });
+          row.appendChild(input);
+        } else if (field.type === 'select') {
+          const select = h('select', { className: 'settings-input' });
+          select.style.width = '320px';
+          select.style.background = 'var(--surface)';
+          select.style.color = 'var(--text)';
+          field.options.forEach(opt => {
+            const option = h('option', { value: opt });
+            const tier = _qualityTier(opt);
+            option.textContent = tier.tier + ' (' + tier.desc + ')';
+            if (data[field.key] === opt) option.selected = true;
+            select.appendChild(option);
+          });
+          select.addEventListener('change', () => saveSetting(field.key, select.value));
+          row.appendChild(select);
+        } else if (field.type === 'toggle') {
+          const toggle = h('div', { className: 'settings-toggle' + (data[field.key] ? ' on' : '') });
+          let val = !!data[field.key];
+          toggle.addEventListener('click', () => {
+            val = !val;
+            toggle.className = 'settings-toggle' + (val ? ' on' : '');
+            saveSetting(field.key, val);
+          });
+          row.appendChild(toggle);
+        }
+
+        sectionEl.appendChild(row);
+      });
+
+      container.appendChild(sectionEl);
     });
   } catch (err) {
     container.appendChild(textEl('div', 'Failed to load settings: ' + err.message, 'track-artist'));
@@ -3145,10 +3418,17 @@ function _schedulePlayCount(track) {
 function playTrack(track) {
   if (!track) return;
 
-  // Track history — dedupe by key, most recent first
-  const idx = recentlyPlayed.findIndex(t => _trackKey(t) === _trackKey(track) && _trackKey(track) !== '');
+  // Track history — dedupe by ISRC first, then by _trackKey, most recent first
+  const key = _trackKey(track);
+  const idx = recentlyPlayed.findIndex(t => {
+    if (key === '') return false;
+    // Check ISRC match first (catches same song from different file paths)
+    if (track.isrc && t.isrc && track.isrc === t.isrc) return true;
+    return _trackKey(t) === key;
+  });
   if (idx !== -1) recentlyPlayed.splice(idx, 1);
-  recentlyPlayed.unshift(track);
+  const entry = Object.assign({}, track, { played_at: Date.now() });
+  recentlyPlayed.unshift(entry);
   if (recentlyPlayed.length > MAX_RECENT) recentlyPlayed.pop();
   _saveRecent();
 
