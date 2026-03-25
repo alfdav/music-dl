@@ -426,13 +426,21 @@ async function renderHome(container) {
   if (data.most_replayed && data.most_replayed.play_count >= 10) tileCount++;
   if (data.genre_breakdown && data.genre_breakdown.length > 0) tileCount++;
   if (data.weekly_activity && data.weekly_activity.some(v => v > 0)) tileCount++;
+  if (data.week_vs_last) tileCount++;
+  if (data.streak !== undefined) tileCount++;
+  if (data.peak_hours && data.peak_hours.some(v => v > 0)) tileCount++;
   const extraArtistCount = (data.top_artists || []).slice(1, 3).filter(a => a.play_count >= 3).length;
   tileCount += extraArtistCount;
   if (totalPlays >= 100 || data.track_count > 0) tileCount++;
   if (totalPlays >= 100 || data.album_count > 0) tileCount++;
+  if (data.favorites_count !== undefined) tileCount++;
+  if (data.top_album) tileCount++;
+  if (data.unplayed_count > 0) tileCount++;
+  if (data.format_breakdown && data.format_breakdown.length > 0) tileCount++;
+  if (data.collection_growth !== undefined) tileCount++;
 
-  // Density class: sparse (≤4), moderate (5-6), dense (7+)
-  const density = tileCount <= 4 ? 'sparse' : tileCount <= 6 ? 'moderate' : 'dense';
+  // Density class: sparse (≤4), moderate (5-8), dense (9+)
+  const density = tileCount <= 4 ? 'sparse' : tileCount <= 8 ? 'moderate' : 'dense';
   wrap.classList.add('home-' + density);
 
   const header = h('div', { className: 'home-header' });
@@ -471,12 +479,25 @@ function _renderHomeGrid(container, data, totalPlays) {
   const established = totalPlays >= 100;
   const grid = h('div', { className: 'home-grid' });
 
+  // Adaptive column count via ResizeObserver
+  const resizeObs = new ResizeObserver(entries => {
+    for (const entry of entries) {
+      const cols = Math.max(2, Math.min(10, Math.floor(entry.contentRect.width / 300)));
+      entry.target.style.setProperty('--cols', cols);
+    }
+  });
+  resizeObs.observe(grid);
+
+  // === IDENTITY ZONE (no label) ===
   if (data.top_artist && data.top_artist.play_count >= 5) {
     grid.appendChild(_artistTile(data.top_artist, true));
   }
   if (data.most_replayed && data.most_replayed.play_count >= 10) {
     grid.appendChild(_replayedTile(data.most_replayed));
   }
+
+  // === ACTIVITY ZONE ===
+  grid.appendChild(_zoneLabel('activity'));
 
   // Genre tile: show what you LISTEN to (play_events), not what you HAVE (library)
   // Fall back to library genres only if no play history exists
@@ -489,7 +510,17 @@ function _renderHomeGrid(container, data, totalPlays) {
   if (data.weekly_activity && data.weekly_activity.some(v => v > 0)) {
     grid.appendChild(_listeningTimeTile(data.listening_time_hours, data.weekly_activity));
   }
+  if (data.week_vs_last) {
+    grid.appendChild(_weekVsWeekTile(data));
+  }
+  if (data.streak !== undefined) {
+    grid.appendChild(_streakTile(data.streak));
+  }
+  if (data.peak_hours && data.peak_hours.some(v => v > 0)) {
+    grid.appendChild(_peakHoursTile(data.peak_hours, data.peak_hour));
+  }
 
+  // Secondary artists
   const extraArtists = (data.top_artists || []).slice(1, 3);
   for (const a of extraArtists) {
     if (a.play_count >= 3) {
@@ -497,11 +528,29 @@ function _renderHomeGrid(container, data, totalPlays) {
     }
   }
 
+  // === LIBRARY ZONE ===
+  grid.appendChild(_zoneLabel('library'));
+
   if (established || data.track_count > 0) {
     grid.appendChild(_tracksTile(data.track_count, genreSource));
   }
   if (established || data.album_count > 0) {
     grid.appendChild(_albumsTile(data.album_count, data.album_artists));
+  }
+  if (data.favorites_count !== undefined) {
+    grid.appendChild(_favoritesTile(data.favorites_count));
+  }
+  if (data.top_album) {
+    grid.appendChild(_topAlbumTile(data.top_album));
+  }
+  if (data.unplayed_count > 0) {
+    grid.appendChild(_unplayedTile(data.unplayed_count, data.track_count));
+  }
+  if (data.format_breakdown && data.format_breakdown.length > 0) {
+    grid.appendChild(_formatsTile(data.format_breakdown));
+  }
+  if (data.collection_growth !== undefined) {
+    grid.appendChild(_collectionGrowthTile(data.collection_growth));
   }
 
   container.appendChild(grid);
@@ -533,7 +582,7 @@ function _artistTile(artist, hero) {
 }
 
 function _replayedTile(track) {
-  const tile = h('div', { className: 'bento-tile bento-replayed bento-hero' });
+  const tile = h('div', { className: 'bento-tile bento-replayed' });
   if (track.cover_url) {
     tile.appendChild(h('img', { className: 'bento-bg-art', src: track.cover_url, alt: '' }));
   }
@@ -651,18 +700,20 @@ function _albumsInsight(count, artists) {
 }
 
 function _genreTile(topGenre, breakdown, fromLibrary) {
-  const tile = h('div', { className: 'bento-tile bento-stat-tile' });
+  const tile = h('div', { className: 'bento-tile bento-stat-tile bento-clickable' });
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', topGenre || 'None', 'bento-label'));
   body.appendChild(textEl('div', fromLibrary ? 'Top genre' : 'Recent genre', 'bento-stat-label'));
   body.appendChild(_genreInsight(topGenre, breakdown, fromLibrary));
   body.appendChild(_barChart(breakdown.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))));
   tile.appendChild(body);
+  tile.addEventListener('click', () => navigate('library'));
+  a11yClick(tile);
   return tile;
 }
 
 function _listeningTimeTile(hours, weekly) {
-  const tile = h('div', { className: 'bento-tile bento-stat-tile' });
+  const tile = h('div', { className: 'bento-tile bento-stat-tile bento-clickable' });
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', Math.round(hours) + 'h', 'bento-label'));
   body.appendChild(textEl('div', 'Listening time', 'bento-stat-label'));
@@ -670,11 +721,13 @@ function _listeningTimeTile(hours, weekly) {
   if (ins) body.appendChild(ins);
   body.appendChild(_weeklyChart(weekly));
   tile.appendChild(body);
+  tile.addEventListener('click', () => navigate('recent'));
+  a11yClick(tile);
   return tile;
 }
 
 function _tracksTile(count, genres) {
-  const tile = h('div', { className: 'bento-tile bento-stat-tile' });
+  const tile = h('div', { className: 'bento-tile bento-stat-tile bento-clickable' });
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', count.toLocaleString(), 'bento-label'));
   body.appendChild(textEl('div', 'Tracks', 'bento-stat-label'));
@@ -683,11 +736,13 @@ function _tracksTile(count, genres) {
     body.appendChild(_barChart(genres.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))));
   }
   tile.appendChild(body);
+  tile.addEventListener('click', () => navigate('library'));
+  a11yClick(tile);
   return tile;
 }
 
 function _albumsTile(count, artists) {
-  const tile = h('div', { className: 'bento-tile bento-stat-tile' });
+  const tile = h('div', { className: 'bento-tile bento-stat-tile bento-clickable' });
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', count.toLocaleString(), 'bento-label'));
   body.appendChild(textEl('div', 'Albums', 'bento-stat-label'));
@@ -696,6 +751,181 @@ function _albumsTile(count, artists) {
     body.appendChild(_barChart(artists.slice(0, 4).map(a => ({ label: a.artist, value: a.count }))));
   }
   tile.appendChild(body);
+  tile.addEventListener('click', () => navigate('library'));
+  a11yClick(tile);
+  return tile;
+}
+
+function _zoneLabel(text) {
+  const label = textEl('div', text, 'home-zone-label');
+  label.style.gridColumn = '1 / -1';
+  return label;
+}
+
+function _weekVsWeekTile(data) {
+  const tile = h('div', { className: 'bento-tile bento-stat-tile bento-clickable' });
+  const body = h('div', { className: 'bento-body' });
+
+  const thisWeek = data.week_vs_last?.this_week || 0;
+  const lastWeek = data.week_vs_last?.last_week || 0;
+  const delta = lastWeek > 0 ? Math.round(((thisWeek - lastWeek) / lastWeek) * 100) : (thisWeek > 0 ? 100 : 0);
+  const sign = delta > 0 ? '+' : '';
+
+  body.appendChild(textEl('div', sign + delta + '%', 'bento-label'));
+  body.appendChild(textEl('div', 'vs last week', 'bento-stat-label'));
+
+  const lines = [];
+  lines.push(_insight(thisWeek + ' plays this week, ', lastWeek + ' last week', ''));
+  body.appendChild(_insightBlock(lines));
+
+  tile.appendChild(body);
+  tile.addEventListener('click', () => navigate('recent'));
+  a11yClick(tile);
+  return tile;
+}
+
+function _streakTile(streak) {
+  const tile = h('div', { className: 'bento-tile bento-stat-tile bento-clickable' });
+  const body = h('div', { className: 'bento-body' });
+
+  body.appendChild(textEl('div', streak + (streak === 1 ? ' day' : ' days'), 'bento-label'));
+  body.appendChild(textEl('div', 'Listening streak', 'bento-stat-label'));
+
+  if (streak === 0) {
+    body.appendChild(_insightBlock([_insight('Play something to ', 'start your streak', '')]));
+  } else if (streak >= 7) {
+    body.appendChild(_insightBlock([_insight('A full week of ', 'daily listening', ' — keep it going')]));
+  }
+
+  tile.appendChild(body);
+  tile.addEventListener('click', () => navigate('recent'));
+  a11yClick(tile);
+  return tile;
+}
+
+function _peakHoursTile(peakHours, peakHour) {
+  const tile = h('div', { className: 'bento-tile bento-stat-tile bento-clickable' });
+  const body = h('div', { className: 'bento-body' });
+
+  let peakLabel = 'No data';
+  if (peakHour !== null && peakHour !== undefined) {
+    const h12 = peakHour === 0 ? 12 : (peakHour > 12 ? peakHour - 12 : peakHour);
+    const ampm = peakHour < 12 ? 'am' : 'pm';
+    peakLabel = h12 + ampm;
+  }
+
+  body.appendChild(textEl('div', peakLabel, 'bento-label'));
+  body.appendChild(textEl('div', 'Peak listening hour', 'bento-stat-label'));
+
+  const strip = h('div', { className: 'peak-hours-strip' });
+  const maxVal = Math.max(...peakHours, 1);
+  peakHours.forEach((count, i) => {
+    const cell = h('div', { className: 'peak-hour-cell' });
+    const intensity = count / maxVal;
+    cell.style.opacity = Math.max(0.1, intensity);
+    cell.style.backgroundColor = 'var(--accent)';
+    cell.title = (i === 0 ? '12am' : (i < 12 ? i + 'am' : (i === 12 ? '12pm' : (i - 12) + 'pm'))) + ': ' + count + ' plays';
+    strip.appendChild(cell);
+  });
+  body.appendChild(strip);
+
+  tile.appendChild(body);
+  tile.addEventListener('click', () => navigate('recent'));
+  a11yClick(tile);
+  return tile;
+}
+
+function _favoritesTile(count) {
+  const tile = h('div', { className: 'bento-tile bento-stat-tile bento-clickable' });
+  const body = h('div', { className: 'bento-body' });
+
+  body.appendChild(textEl('div', String(count), 'bento-label'));
+  body.appendChild(textEl('div', 'Favorites', 'bento-stat-label'));
+
+  if (count === 0) {
+    body.appendChild(_insightBlock([_insight('Heart tracks to ', 'save them here', '')]));
+  }
+
+  tile.appendChild(body);
+  tile.addEventListener('click', () => navigate('favorites'));
+  a11yClick(tile);
+  return tile;
+}
+
+function _topAlbumTile(topAlbum) {
+  const tile = h('div', { className: 'bento-tile bento-stat-tile bento-clickable' });
+  const body = h('div', { className: 'bento-body' });
+
+  body.appendChild(textEl('div', topAlbum.album, 'bento-label'));
+  body.appendChild(textEl('div', 'Most played album', 'bento-stat-label'));
+  body.appendChild(_insightBlock([
+    _insight('', topAlbum.artist, ' — ' + topAlbum.play_count + ' plays'),
+  ]));
+
+  if (topAlbum.cover_path) {
+    const from = '/api/library/art?path=' + encodeURIComponent(topAlbum.cover_path);
+    tile.style.backgroundImage = 'linear-gradient(180deg, rgba(22,20,19,0.7), rgba(22,20,19,0.95)), url(' + from + ')';
+    tile.style.backgroundSize = 'cover';
+    tile.style.backgroundPosition = 'center';
+  }
+
+  tile.appendChild(body);
+  tile.addEventListener('click', () => {
+    navigate('localalbum:' + encodeURIComponent(topAlbum.artist) + ':' + encodeURIComponent(topAlbum.album));
+  });
+  a11yClick(tile);
+  return tile;
+}
+
+function _unplayedTile(unplayedCount, totalTracks) {
+  const tile = h('div', { className: 'bento-tile bento-stat-tile bento-clickable' });
+  const body = h('div', { className: 'bento-body' });
+
+  const pct = totalTracks > 0 ? Math.round((unplayedCount / totalTracks) * 100) : 0;
+
+  body.appendChild(textEl('div', unplayedCount.toLocaleString(), 'bento-label'));
+  body.appendChild(textEl('div', 'Unplayed tracks', 'bento-stat-label'));
+  body.appendChild(_insightBlock([
+    _insight("That's ", pct + '%', ' of your library waiting'),
+  ]));
+
+  tile.appendChild(body);
+  tile.addEventListener('click', () => navigate('library'));
+  a11yClick(tile);
+  return tile;
+}
+
+function _formatsTile(formatBreakdown) {
+  const tile = h('div', { className: 'bento-tile bento-stat-tile bento-clickable' });
+  const body = h('div', { className: 'bento-body' });
+
+  const topFormat = formatBreakdown[0]?.format || 'Unknown';
+  body.appendChild(textEl('div', topFormat, 'bento-label'));
+  body.appendChild(textEl('div', 'Primary format', 'bento-stat-label'));
+  body.appendChild(_barChart(formatBreakdown.slice(0, 4).map(f => ({ label: f.format, value: f.count }))));
+
+  tile.appendChild(body);
+  tile.addEventListener('click', () => navigate('library'));
+  a11yClick(tile);
+  return tile;
+}
+
+function _collectionGrowthTile(growth) {
+  const tile = h('div', { className: 'bento-tile bento-stat-tile bento-clickable' });
+  const body = h('div', { className: 'bento-body' });
+
+  body.appendChild(textEl('div', '+' + growth, 'bento-label'));
+  body.appendChild(textEl('div', 'Tracks added (30 days)', 'bento-stat-label'));
+
+  if (growth === 0) {
+    body.appendChild(_insightBlock([_insight('Your collection has been ', 'steady', ' this month')]));
+  } else {
+    body.appendChild(_insightBlock([_insight("That's about ", Math.round(growth / 30) + ' per day', '')]));
+  }
+
+  tile.appendChild(body);
+  tile.addEventListener('click', () => navigate('library'));
+  a11yClick(tile);
   return tile;
 }
 

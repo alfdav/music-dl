@@ -1489,9 +1489,10 @@ body {
 }
 .home-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(var(--cols, 4), 1fr);
   gap: 12px;
   flex: 1;
+  --cols: 4;
 }
 .home-cold {
   grid-template-columns: 1fr;
@@ -1512,6 +1513,12 @@ body {
   transform: translateY(-2px);
 }
 .bento-hero { grid-column: span 2; }
+
+@media (min-width: 1400px) {
+  .bento-hero {
+    grid-column: span 3;
+  }
+}
 
 .bento-bg-art {
   position: absolute;
@@ -1694,6 +1701,44 @@ body {
   font-family: inherit;
   font-size: 0.75rem;
   letter-spacing: 0;
+}
+
+/* Zone labels within grid */
+.home-zone-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: var(--text-muted);
+  padding: 16px 0 4px;
+  grid-column: 1 / -1;
+}
+
+/* Clickable tile hover */
+.bento-clickable {
+  cursor: pointer;
+  transition: border-color 0.2s, transform 0.15s;
+}
+
+.bento-clickable:hover {
+  border-color: rgba(212, 160, 83, 0.3);
+  transform: translateY(-1px);
+}
+
+/* Peak hours heatmap strip */
+.peak-hours-strip {
+  display: flex;
+  gap: 2px;
+  margin-top: 12px;
+  height: 24px;
+  align-items: flex-end;
+}
+
+.peak-hour-cell {
+  flex: 1;
+  height: 100%;
+  border-radius: 2px;
+  min-width: 4px;
 }
 
 /* ---- MINI BAR CHART ---- */
@@ -2050,9 +2095,6 @@ body {
 
 /* ---- RESPONSIVE ---- */
 @media (max-width: 900px) {
-  .home-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
   .bento-hero { grid-column: span 2; }
   .home-title { font-size: 22px; }
   .album-gallery {
