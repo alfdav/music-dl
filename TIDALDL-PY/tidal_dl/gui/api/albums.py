@@ -129,19 +129,20 @@ def album_lookup(
     # --- 4. Build local-match sets (ISRC + title/artist) ---
     isrc_index = _get_isrc_index()
 
-    # Also query the scanned table for title+artist matches
-    local_titles: set[tuple[str, str]] = set()
+    # Also query the scanned table for title+artist+album matches (album-scoped)
+    local_titles: set[tuple[str, str, str]] = set()
     try:
         db = _get_library_db()
         conn = db._conn
         rows = conn.execute(
-            "SELECT title, artist FROM scanned WHERE status != 'unreadable'"
+            "SELECT title, artist, album FROM scanned WHERE status != 'unreadable'"
         ).fetchall()
         for r in rows:
             t = _normalize(r["title"] or "")
             a = _normalize(r["artist"] or "")
+            alb = _normalize(r["album"] or "")
             if t:
-                local_titles.add((t, a))
+                local_titles.add((t, a, alb))
         db.close()
     except Exception:
         pass  # If DB is unavailable, fall back to ISRC-only matching
@@ -155,7 +156,8 @@ def album_lookup(
         if not data["is_local"]:
             t_title = _normalize(data.get("name", ""))
             t_artist = _normalize(data.get("artist", ""))
-            if t_title and (t_title, t_artist) in local_titles:
+            t_album = _normalize(data.get("album", ""))
+            if t_title and (t_title, t_artist, t_album) in local_titles:
                 data["is_local"] = True
         if not data["is_local"]:
             missing_count += 1
