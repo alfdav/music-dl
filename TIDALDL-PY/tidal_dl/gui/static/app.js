@@ -250,6 +250,63 @@ function inlineConfirm(message, onYes) {
   });
 }
 
+// ---- CONTEXT MENU ----
+const _ctxIcons = {
+  folder: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5V12a1 1 0 001 1h10a1 1 0 001-1V6a1 1 0 00-1-1H8L6.5 3H3a1 1 0 00-1 1v.5z"/></svg>',
+  trash: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.5 7v4M9.5 7v4M4 4.5l.5 8a1 1 0 001 1h5a1 1 0 001-1l.5-8M6 4.5V3a1 1 0 011-1h2a1 1 0 011 1v1.5"/></svg>',
+};
+
+function _createSvgIcon(key) {
+  const t = document.createElement('template');
+  t.innerHTML = _ctxIcons[key];  // safe: hardcoded SVG literals only
+  return t.content.firstChild;
+}
+
+function showContextMenu(e, items) {
+  const old = document.querySelector('.ctx-menu');
+  if (old) old.remove();
+
+  const menu = h('div', { className: 'ctx-menu' });
+
+  items.forEach(item => {
+    if (item === 'sep') {
+      menu.appendChild(h('div', { className: 'ctx-menu-sep' }));
+      return;
+    }
+    const btn = h('button', { className: 'ctx-menu-item' + (item.className ? ' ' + item.className : '') });
+    if (item.icon) btn.appendChild(_createSvgIcon(item.icon));
+    btn.appendChild(document.createTextNode(item.label));
+    btn.addEventListener('click', () => { menu.remove(); item.action(); });
+    menu.appendChild(btn);
+  });
+
+  document.body.appendChild(menu);
+
+  const rect = menu.getBoundingClientRect();
+  let x = e.clientX, y = e.clientY;
+  if (x + rect.width > window.innerWidth) x = window.innerWidth - rect.width - 4;
+  if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 4;
+  if (x < 0) x = 4;
+  if (y < 0) y = 4;
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+
+  function dismiss(ev) {
+    if (!menu.contains(ev.target)) { menu.remove(); cleanup(); }
+  }
+  function onKey(ev) {
+    if (ev.key === 'Escape') { menu.remove(); cleanup(); }
+  }
+  function cleanup() {
+    document.removeEventListener('mousedown', dismiss, true);
+    document.removeEventListener('keydown', onKey, true);
+  }
+  setTimeout(() => {
+    document.addEventListener('mousedown', dismiss, true);
+    document.addEventListener('keydown', onKey, true);
+  }, 0);
+}
+
 // ---- SHORTCUTS HELP OVERLAY ----
 function toggleShortcutsHelp() {
   const existing = document.querySelector('.shortcuts-overlay');
@@ -1467,17 +1524,59 @@ function renderTrackRow(track, num, allTracks) {
 
   row.appendChild(heartBtn);
 
-  // Right-click to reveal in Finder (local tracks only)
+  // Right-click context menu (local tracks only)
   const localPath = track.local_path || track.path;
   if (localPath) {
-    row.addEventListener('contextmenu', async (e) => {
+    row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      try {
-        await api('/downloads/reveal', { method: 'POST', body: { path: localPath } });
-        toast('Revealed in Finder', 'success');
-      } catch (_) {
-        toast('File not found', 'error');
-      }
+      const trackName = track.name || track.title || 'this track';
+      showContextMenu(e, [
+        {
+          label: 'Open in Finder',
+          icon: 'folder',
+          action: async () => {
+            try {
+              await api('/downloads/reveal', { method: 'POST', body: { path: localPath } });
+              toast('Revealed in Finder', 'success');
+            } catch (_) {
+              toast('File not found', 'error');
+            }
+          }
+        },
+        'sep',
+        {
+          label: 'Delete Track',
+          icon: 'trash',
+          className: 'ctx-danger',
+          action: () => {
+            inlineConfirm('Delete "' + trackName + '"? This removes the file from disk and your library.', async () => {
+              try {
+                await api('/library/track', { method: 'DELETE', body: { path: localPath } });
+
+                // Remove row from DOM
+                row.remove();
+
+                // If this track is currently playing, stop playback
+                const current = state.queue[state.queueIndex];
+                if (current && _trackKey(current) === _trackKey(track)) {
+                  audio.pause();
+                  audio.src = '';
+                  state.playing = false;
+                  updatePlayButton();
+                  setWaveformPlaying(false);
+                }
+
+                // Remove from queue if present
+                state.queue = state.queue.filter(t => _trackKey(t) !== _trackKey(track));
+
+                toast('Track deleted', 'success');
+              } catch (err) {
+                toast('Failed to delete track', 'error');
+              }
+            });
+          }
+        }
+      ]);
     });
   }
 

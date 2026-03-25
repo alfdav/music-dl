@@ -306,6 +306,47 @@ def downloads_history(limit: int = 50) -> dict:
     return {"downloads": history}
 
 
+class DeleteTrackRequest(BaseModel):
+    path: str
+
+
+@router.delete("/library/track")
+def delete_track(req: DeleteTrackRequest) -> dict:
+    """Delete a track file from disk and remove from library DB."""
+    import os
+    import platform
+    import subprocess
+    from pathlib import Path
+
+    from tidal_dl.helper.library_db import LibraryDB
+    from tidal_dl.helper.path import path_config_base
+
+    file_path = Path(req.path)
+
+    # Delete from disk
+    if file_path.exists():
+        try:
+            os.remove(str(file_path))
+        except OSError:
+            if platform.system() == "Darwin":
+                posix = str(file_path).replace('"', '\\"')
+                subprocess.run(
+                    ["osascript", "-e", f'tell application "Finder" to delete POSIX file "{posix}"'],
+                    capture_output=True,
+                )
+            else:
+                raise HTTPException(status_code=500, detail="Failed to delete file")
+
+    # Remove from library DB
+    db = LibraryDB(Path(path_config_base()) / "library.db")
+    db.open()
+    db.remove(str(file_path))
+    db.commit()
+    db.close()
+
+    return {"status": "deleted", "path": str(file_path)}
+
+
 class RevealRequest(BaseModel):
     path: str
 
