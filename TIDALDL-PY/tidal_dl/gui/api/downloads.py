@@ -256,20 +256,23 @@ def trigger_download(track_ids: list[int]) -> dict:
                     entry.status = "error"
                     entry.finished_at = time.time()
 
-                    # Persist error to DB too
-                    db.record_download(
-                        track_id=tid,
-                        name=entry.name,
-                        artist=entry.artist,
-                        album=entry.album,
-                        status="error",
-                        error=str(exc),
-                        started_at=entry.started_at,
-                        finished_at=entry.finished_at,
-                        cover_url=entry.cover_url,
-                        quality=entry.quality,
-                    )
-                    db.commit()
+                    # Persist error to DB — wrapped so broadcast always fires
+                    try:
+                        db.record_download(
+                            track_id=tid,
+                            name=entry.name,
+                            artist=entry.artist,
+                            album=entry.album,
+                            status="error",
+                            error=str(exc),
+                            started_at=entry.started_at,
+                            finished_at=entry.finished_at,
+                            cover_url=entry.cover_url,
+                            quality=entry.quality,
+                        )
+                        db.commit()
+                    except Exception:
+                        logger.exception("Failed to persist download error for track %s", tid)
 
                     _broadcast({"type": "error", "track_id": tid, "name": entry.name, "artist": entry.artist, "album": entry.album, "cover_url": entry.cover_url, "error": str(exc)})
 

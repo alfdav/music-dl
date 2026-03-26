@@ -442,7 +442,13 @@ class Tidal(BaseConfig[ModelToken], metaclass=SingletonMeta):
                 token_type: str | None = self.data.token_type
                 access_token: str | None = self.data.access_token
                 refresh_token: str = self.data.refresh_token or ""
-                expiry_time = datetime.fromtimestamp(self.data.expiry_time) if self.data.expiry_time > 0 else None
+                _raw_exp = self.data.expiry_time
+                if isinstance(_raw_exp, datetime):
+                    expiry_time = _raw_exp
+                elif _raw_exp and _raw_exp > 0:
+                    expiry_time = datetime.fromtimestamp(_raw_exp)
+                else:
+                    expiry_time = None
 
                 if token_type is None or access_token is None:
                     return False

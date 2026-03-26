@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -332,8 +333,7 @@ def _cleanup_old_staging() -> None:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/duplicates/preview")
-def preview_duplicates() -> dict:
+def _preview_sync() -> dict:
     """Scan library for duplicate tracks and return grouped results."""
     from tidal_dl.gui.api.library import _scan_running
 
@@ -363,8 +363,12 @@ def preview_duplicates() -> dict:
         db.close()
 
 
-@router.post("/duplicates/clean")
-def clean_duplicates() -> dict:
+@router.get("/duplicates/preview")
+async def preview_duplicates() -> dict:
+    return await asyncio.to_thread(_preview_sync)
+
+
+def _clean_sync() -> dict:
     """Move duplicate files to staging and remove from DB."""
     from tidal_dl.gui.api.library import _scan_running
 
@@ -428,6 +432,11 @@ def clean_duplicates() -> dict:
     finally:
         _release_lock()
         db.close()
+
+
+@router.post("/duplicates/clean")
+async def clean_duplicates() -> dict:
+    return await asyncio.to_thread(_clean_sync)
 
 
 @router.post("/duplicates/undo")

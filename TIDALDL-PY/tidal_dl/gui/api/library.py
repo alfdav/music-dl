@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Query
@@ -46,16 +47,26 @@ def _normalize_genre(raw: str | None) -> str | None:
 
 
 _db: LibraryDB | None = None
+_db_opened_at: float = 0
+_DB_MAX_AGE = 300  # Force reconnect every 5 min to catch stale NAS handles
 _scan_lock = threading.Lock()
 _scan_running = False
 _scan_progress = {"scanned": 0, "total": 0, "done": True}
 
 
 def _get_db() -> LibraryDB:
-    global _db
+    global _db, _db_opened_at
+    now = time.time()
+    if _db is not None and (now - _db_opened_at) > _DB_MAX_AGE:
+        try:
+            _db.close()
+        except Exception:
+            pass
+        _db = None
     if _db is None:
         _db = LibraryDB(Path(path_config_base()) / "library.db")
         _db.open()
+        _db_opened_at = now
     else:
         # Validate the connection is still alive (NAS mounts can drop)
         try:
@@ -63,6 +74,7 @@ def _get_db() -> LibraryDB:
         except Exception:
             _db = LibraryDB(Path(path_config_base()) / "library.db")
             _db.open()
+            _db_opened_at = now
     return _db
 
 
