@@ -2896,9 +2896,11 @@ function _ensureGlobalSSE() {
       } else if (data.type === 'upgrade_progress') {
         _updateUpgradeRow(data.old_path, 'upgrading', data.name);
       }
-      // Also update the downloads view if visible
-      const activeEl = document.getElementById('dl-active');
-      if (activeEl) updateActiveDownload(activeEl, data);
+      // Also update the downloads view if visible (only for standard download events)
+      if (data.type === 'progress' || data.type === 'complete' || data.type === 'error') {
+        const activeEl = document.getElementById('dl-active');
+        if (activeEl) updateActiveDownload(activeEl, data);
+      }
     } catch (_) {}
   };
   _globalSSE.onerror = () => {

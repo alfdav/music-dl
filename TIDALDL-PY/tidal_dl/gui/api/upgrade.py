@@ -598,6 +598,10 @@ def _trigger_upgrade_downloads(
 
                     with _lock:
                         _active.pop(tid, None)
+                    # Remove from cached scan results so scanner doesn't show stale entries
+                    _scan_state["results"] = [r for r in _scan_state["results"] if r.get("path") != old_path]
+                    if _scan_state["upgradeable"] > 0:
+                        _scan_state["upgradeable"] = len(_scan_state["results"])
                     _broadcast({"type": "complete", "track_id": tid, "name": track_name, "artist": artist_name, "album": album_name, "cover_url": cover_url, "quality": quality_str, "status": "done"})
                     _broadcast({"type": "upgrade_complete", "track_id": tid, "name": track_name, "artist": artist_name, "status": "done", "old_path": old_path, "new_path": str(new_path)})
 
