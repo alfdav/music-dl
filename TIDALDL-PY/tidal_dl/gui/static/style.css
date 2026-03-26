@@ -3207,3 +3207,19 @@ body {
   letter-spacing: 0.02em;
   vertical-align: middle;
 }
+
+/* Duplicate cleanup */
+.dup-summary { margin-bottom: 16px; }
+.dup-summary-text { font-size: 14px; font-weight: 500; margin-bottom: 8px; }
+.dup-stale-note { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }
+.dup-scan-btn { margin-left: auto; }
+.dup-clean-btn { margin-bottom: 16px; }
+.dup-undo-btn { margin-left: 8px; margin-bottom: 16px; }
+.dup-groups { display: flex; flex-direction: column; gap: 8px; }
+.dup-group-card { background: var(--glass-bg); border-radius: 10px; padding: 10px 14px; }
+.dup-keeper, .dup-duplicate { display: flex; align-items: center; gap: 10px; padding: 4px 0; font-size: 12px; }
+.dup-duplicate { opacity: 0.5; text-decoration: line-through; }
+.dup-keep-badge { font-size: 10px; font-weight: 700; color: rgba(100, 200, 100, 0.9); flex-shrink: 0; width: 60px; }
+.dup-remove-badge { font-size: 10px; font-weight: 700; color: rgba(200, 100, 100, 0.7); flex-shrink: 0; width: 60px; }
+.dup-tier { font-size: 11px; color: var(--text-secondary); flex-shrink: 0; width: 80px; }
+.dup-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 11px; direction: rtl; text-align: left; }

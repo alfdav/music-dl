@@ -2190,6 +2190,12 @@ function renderLibrary(container) {
     pills.appendChild(pill);
   }
 
+  // Duplicates button
+  const dupBtn = h('button', { className: 'pill dup-scan-btn' });
+  dupBtn.textContent = 'Find Duplicates';
+  dupBtn.addEventListener('click', () => _showDuplicatePreview(resultsArea));
+  pills.appendChild(dupBtn);
+
   searchArea.appendChild(pills);
   container.appendChild(searchArea);
 
@@ -2219,6 +2225,100 @@ function renderLibrary(container) {
     loadLibraryArtistGrouped(resultsArea, '');
   } else {
     loadLibrary(resultsArea, false);
+  }
+}
+
+async function _showDuplicatePreview(container) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+  container.appendChild(textEl('div', 'Scanning for duplicates...', 'upgrade-scanner-status'));
+
+  try {
+    const data = await api('/duplicates/preview');
+    while (container.firstChild) container.removeChild(container.firstChild);
+
+    // Summary
+    const summary = h('div', { className: 'dup-summary' });
+    if (data.stale_count > 0) {
+      summary.appendChild(textEl('div', data.stale_count + ' stale records pruned (files no longer on disk)', 'dup-stale-note'));
+    }
+    if (data.total_groups === 0) {
+      summary.appendChild(textEl('div', 'No duplicates found \u2014 your library is clean!', 'upgrade-empty'));
+      container.appendChild(summary);
+      return;
+    }
+    summary.appendChild(textEl('div', 'Found ' + data.total_groups + ' duplicate groups (' + data.total_duplicates + ' extra copies)', 'dup-summary-text'));
+    container.appendChild(summary);
+
+    // Clean Up button
+    const cleanBtn = h('button', { className: 'pill active dup-clean-btn' });
+    cleanBtn.textContent = 'Clean Up ' + data.total_duplicates + ' Duplicates';
+    container.appendChild(cleanBtn);
+
+    // Group list
+    const groupList = h('div', { className: 'dup-groups' });
+    (data.groups || []).forEach(g => {
+      const card = h('div', { className: 'dup-group-card' });
+      // Keeper
+      const keeperRow = h('div', { className: 'dup-keeper' });
+      keeperRow.appendChild(textEl('span', '\u2713 KEEP', 'dup-keep-badge'));
+      keeperRow.appendChild(textEl('span', (g.keeper.tier || '') + ' \u00B7 ' + (g.keeper.format || ''), 'dup-tier'));
+      keeperRow.appendChild(textEl('span', g.keeper.path, 'dup-path'));
+      card.appendChild(keeperRow);
+      // Duplicates
+      (g.duplicates || []).forEach(d => {
+        const dupRow = h('div', { className: 'dup-duplicate' });
+        dupRow.appendChild(textEl('span', '\u2717 REMOVE', 'dup-remove-badge'));
+        dupRow.appendChild(textEl('span', (d.tier || '') + ' \u00B7 ' + (d.format || ''), 'dup-tier'));
+        dupRow.appendChild(textEl('span', d.path, 'dup-path'));
+        card.appendChild(dupRow);
+      });
+      groupList.appendChild(card);
+    });
+    container.appendChild(groupList);
+
+    // Wire clean button
+    cleanBtn.addEventListener('click', async () => {
+      cleanBtn.disabled = true;
+      cleanBtn.textContent = 'Cleaning...';
+      try {
+        const result = await api('/duplicates/clean', { method: 'POST' });
+        cleanBtn.textContent = 'Cleaned ' + result.duplicates_moved + ' duplicates';
+        toast('Removed ' + result.duplicates_moved + ' duplicates. Undo available for 5 minutes.', 'success', 8000);
+
+        // Show undo button
+        if (result.undo_available) {
+          const undoBtn = h('button', { className: 'pill dup-undo-btn' });
+          undoBtn.textContent = 'Undo Cleanup';
+          undoBtn.addEventListener('click', async () => {
+            undoBtn.disabled = true;
+            undoBtn.textContent = 'Restoring...';
+            try {
+              const undoResult = await api('/duplicates/undo', { method: 'POST' });
+              toast('Restored ' + undoResult.restored + ' files', 'success');
+              undoBtn.textContent = 'Restored';
+            } catch (err) {
+              toast('Undo failed: ' + (err.message || err), 'error');
+              undoBtn.disabled = false;
+            }
+          });
+          cleanBtn.parentElement.insertBefore(undoBtn, cleanBtn.nextSibling);
+
+          // Auto-hide undo after 5 minutes
+          setTimeout(() => { undoBtn.remove(); }, 300000);
+        }
+      } catch (err) {
+        toast('Cleanup failed: ' + (err.message || err), 'error');
+        cleanBtn.disabled = false;
+        cleanBtn.textContent = 'Retry Clean Up';
+      }
+    });
+  } catch (err) {
+    while (container.firstChild) container.removeChild(container.firstChild);
+    if (err.message && err.message.includes('409')) {
+      container.appendChild(textEl('div', 'A library scan is running \u2014 try again after it completes.', 'upgrade-empty'));
+    } else {
+      container.appendChild(textEl('div', 'Failed to scan for duplicates: ' + (err.message || err), 'upgrade-empty'));
+    }
   }
 }
 
