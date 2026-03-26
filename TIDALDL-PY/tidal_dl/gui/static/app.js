@@ -427,7 +427,8 @@ function navigate(view) {
     }
   }
 
-  // Clear view safely
+  // Run cleanup hooks (e.g. close EventSource connections) before tearing down DOM
+  if (viewEl._viewCleanup) { viewEl._viewCleanup(); viewEl._viewCleanup = null; }
   while (viewEl.firstChild) viewEl.removeChild(viewEl.firstChild);
 
   const container = h('div', { className: 'view-enter' });
@@ -2885,6 +2886,16 @@ function _ensureGlobalSSE() {
         toast('Download failed: ' + (data.error || 'unknown'), 'error');
         _dlComplete(data.track_id, false);
       }
+      // Upgrade events — update badge and inline scanner rows
+      else if (data.type === 'upgrade_complete') {
+        updateDlBadge(-1);
+        _updateUpgradeRow(data.old_path, 'done', data.name);
+      } else if (data.type === 'upgrade_error') {
+        updateDlBadge(-1);
+        _updateUpgradeRow(data.old_path, 'error', data.error);
+      } else if (data.type === 'upgrade_progress') {
+        _updateUpgradeRow(data.old_path, 'upgrading', data.name);
+      }
       // Also update the downloads view if visible
       const activeEl = document.getElementById('dl-active');
       if (activeEl) updateActiveDownload(activeEl, data);
@@ -2907,6 +2918,27 @@ function updateDlBadge(delta) {
   if (count < 0) count = 0;
   badge.textContent = count;
   badge.style.display = count > 0 ? '' : 'none';
+}
+
+function _updateUpgradeRow(oldPath, status, detail) {
+  if (!oldPath) return;
+  const row = document.querySelector('.upgrade-row[data-track-path="' + CSS.escape(oldPath) + '"]');
+  if (!row) return;
+  const btn = row.querySelector('button');
+  if (!btn) return;
+  if (status === 'upgrading') {
+    btn.disabled = true;
+    btn.textContent = 'Downloading\u2026';
+  } else if (status === 'done') {
+    btn.disabled = true;
+    btn.textContent = 'Done';
+    btn.classList.add('done');
+    row.style.opacity = '0.5';
+  } else if (status === 'error') {
+    btn.disabled = false;
+    btn.textContent = 'Retry';
+    btn.classList.add('error');
+  }
 }
 
 // ---- FAVORITES VIEW ----
@@ -4411,57 +4443,105 @@ async function renderUpgradeScanner(container) {
 
   let eventSource = null;
 
-  scanBtn.addEventListener('click', () => {
-    scanBtn.disabled = true;
-    scanBtn.textContent = 'Scanning...';
-    cancelBtn.style.display = '';
-    progressBar.style.display = '';
-    while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
+  function _scanProgressText(d) {
+    return 'Checked ' + d.checked + ' / ' + d.total + ' \u2014 ' + d.upgradeable + ' upgradeable' + (d.skipped_no_isrc ? ' \u2014 ' + d.skipped_no_isrc + ' skipped (no ISRC)' : '');
+  }
+  function _scanDoneText(d) {
+    return 'Done: ' + d.upgradeable + ' upgradeable of ' + d.checked + ' checked' + (d.skipped_no_isrc ? ' (' + d.skipped_no_isrc + ' skipped, no ISRC)' : '');
+  }
 
+  function _handleScanEvent(data) {
+    if (data.type === 'scan_progress') {
+      const pct = data.total > 0 ? Math.round((data.checked / data.total) * 100) : 0;
+      progressFill.style.width = pct + '%';
+      statusEl.textContent = _scanProgressText(data);
+    } else if (data.type === 'scan_complete') {
+      progressFill.style.width = '100%';
+      statusEl.textContent = _scanDoneText(data);
+      scanBtn.disabled = false;
+      scanBtn.textContent = 'Scan Again';
+      cancelBtn.style.display = 'none';
+      if (eventSource) { eventSource.close(); eventSource = null; }
+      _renderScanResults(resultsEl, data.results || []);
+    } else if (data.type === 'scan_error') {
+      statusEl.textContent = 'Error: ' + data.error;
+      scanBtn.disabled = false;
+      scanBtn.textContent = 'Retry';
+      cancelBtn.style.display = 'none';
+      if (eventSource) { eventSource.close(); eventSource = null; }
+    } else if (data.type === 'scan_cancelled') {
+      statusEl.textContent = 'Scan cancelled.';
+      scanBtn.disabled = false;
+      scanBtn.textContent = 'Start Scan';
+      cancelBtn.style.display = 'none';
+      if (eventSource) { eventSource.close(); eventSource = null; }
+    }
+  }
+
+  function _connectSSE() {
     eventSource = new EventSource('/api/upgrade/scan');
-    eventSource.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      if (data.type === 'scan_progress') {
-        const pct = data.total > 0 ? Math.round((data.checked / data.total) * 100) : 0;
-        progressFill.style.width = pct + '%';
-        statusEl.textContent = 'Checked ' + data.checked + ' / ' + data.total + ' \u2014 ' + data.upgradeable + ' upgradeable' + (data.skipped_no_isrc ? ' \u2014 ' + data.skipped_no_isrc + ' skipped (no ISRC)' : '');
-      } else if (data.type === 'scan_complete') {
-        progressFill.style.width = '100%';
-        statusEl.textContent = 'Done: ' + data.upgradeable + ' upgradeable of ' + data.checked + ' checked' + (data.skipped_no_isrc ? ' (' + data.skipped_no_isrc + ' skipped, no ISRC)' : '');
-        scanBtn.disabled = false;
-        scanBtn.textContent = 'Scan Again';
-        cancelBtn.style.display = 'none';
-        eventSource.close();
-        _renderScanResults(resultsEl, data.results || []);
-      } else if (data.type === 'scan_error') {
-        statusEl.textContent = 'Error: ' + data.error;
-        scanBtn.disabled = false;
-        scanBtn.textContent = 'Retry';
-        cancelBtn.style.display = 'none';
-        eventSource.close();
-      } else if (data.type === 'scan_cancelled') {
-        statusEl.textContent = 'Scan cancelled.';
-        scanBtn.disabled = false;
-        scanBtn.textContent = 'Start Scan';
-        cancelBtn.style.display = 'none';
-        eventSource.close();
-      }
-    };
+    eventSource.onmessage = (e) => _handleScanEvent(JSON.parse(e.data));
     eventSource.onerror = () => {
       statusEl.textContent = 'Connection lost.';
       scanBtn.disabled = false;
       scanBtn.textContent = 'Retry';
       cancelBtn.style.display = 'none';
     };
-  });
+  }
+
+  function _startScan() {
+    scanBtn.disabled = true;
+    scanBtn.textContent = 'Scanning...';
+    cancelBtn.style.display = '';
+    progressBar.style.display = '';
+    while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
+    _connectSSE();
+  }
+
+  scanBtn.addEventListener('click', _startScan);
 
   cancelBtn.addEventListener('click', async () => {
-    if (eventSource) eventSource.close();
+    if (eventSource) { eventSource.close(); eventSource = null; }
     try { await api('/upgrade/scan/cancel', { method: 'POST' }); } catch (_) {}
     cancelBtn.style.display = 'none';
     scanBtn.disabled = false;
     scanBtn.textContent = 'Start Scan';
   });
+
+  // Restore state from backend on mount
+  try {
+    const cached = await api('/upgrade/scan/status');
+    if (cached.status === 'running') {
+      // Scan is in progress — show current progress and reconnect SSE
+      scanBtn.disabled = true;
+      scanBtn.textContent = 'Scanning...';
+      cancelBtn.style.display = '';
+      progressBar.style.display = '';
+      if (cached.total > 0) {
+        const pct = Math.round((cached.checked / cached.total) * 100);
+        progressFill.style.width = pct + '%';
+        statusEl.textContent = _scanProgressText(cached);
+      } else {
+        statusEl.textContent = 'Scan in progress\u2026';
+      }
+      _connectSSE();
+    } else if (cached.status === 'complete') {
+      // Scan finished while we were away — render cached results
+      progressBar.style.display = '';
+      progressFill.style.width = '100%';
+      statusEl.textContent = _scanDoneText(cached);
+      scanBtn.textContent = 'Scan Again';
+      _renderScanResults(resultsEl, cached.results || []);
+    } else if (cached.status === 'error') {
+      statusEl.textContent = 'Error: ' + (cached.error || 'Unknown error');
+      scanBtn.textContent = 'Retry';
+    }
+  } catch (_) {
+    // Status endpoint unavailable — fall through to default idle state
+  }
+
+  // Register cleanup so navigate() closes the EventSource before tearing down DOM
+  viewEl._viewCleanup = () => { if (eventSource) { eventSource.close(); eventSource = null; } };
 }
 
 function _renderScanResults(container, results) {
@@ -4486,8 +4566,9 @@ function _renderScanResults(container, results) {
     upgradeAllBtn.textContent = 'Upgrading...';
     const paths = results.map(r => r.path);
     try {
-      await api('/upgrade/start', { method: 'POST', body: { track_paths: paths } });
-      toast('Upgrade started for ' + paths.length + ' tracks', 'success');
+      const resp = await api('/upgrade/start', { method: 'POST', body: { track_paths: paths } });
+      if (resp.count > 0) { updateDlBadge(resp.count); _ensureGlobalSSE(); }
+      toast('Upgrade started for ' + resp.count + ' tracks', 'success');
     } catch (err) {
       toast('Upgrade failed', 'error');
       upgradeAllBtn.disabled = false;
@@ -4513,12 +4594,14 @@ function _renderScanResults(container, results) {
         upBtn.disabled = true;
         upBtn.textContent = 'Queued';
         try {
-          await api('/upgrade/start', { method: 'POST', body: { track_paths: [t.path] } });
+          const resp = await api('/upgrade/start', { method: 'POST', body: { track_paths: [t.path] } });
+          if (resp.count > 0) { updateDlBadge(resp.count); _ensureGlobalSSE(); }
         } catch (_) {
           upBtn.disabled = false;
           upBtn.textContent = 'Retry';
         }
       });
+      row.dataset.trackPath = t.path;
       row.appendChild(upBtn);
       groupEl.appendChild(row);
     });

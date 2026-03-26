@@ -19,7 +19,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from tidal_dl.constants import QUALITY_STRING_TO_ENUM, TIER_RANK
-from tidal_dl.gui.api.downloads import _broadcast
+from tidal_dl.gui.api.downloads import DownloadEntry, _active, _broadcast, _lock
 from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.path import path_config_base
 
@@ -29,7 +29,17 @@ logger = logging.getLogger("music-dl.upgrade")
 # ---------------------------------------------------------------------------
 # Module-level state for bulk scan SSE
 # ---------------------------------------------------------------------------
-_scan_state: dict[str, Any] = {"running": False, "cancel": None}
+_scan_state: dict[str, Any] = {
+    "running": False,
+    "cancel": None,
+    "status": "idle",        # idle | running | complete | error | cancelled
+    "checked": 0,
+    "total": 0,
+    "upgradeable": 0,
+    "skipped_no_isrc": 0,
+    "results": [],           # final scan_complete results (survives navigation)
+    "error": None,
+}
 _scan_clients: list[asyncio.Queue] = []
 _MAX_SSE_CLIENTS = 5
 
@@ -510,22 +520,48 @@ def _trigger_upgrade_downloads(
         for tid in track_ids:
             old_path = upgrade_map.get(tid, "")
             track_name = f"Track {tid}"
-            print(f"[upgrade] Processing track {tid}, old_path={old_path}", flush=True)
+
+            # Register in shared download queue so Downloads tab shows it
+            with _lock:
+                entry = DownloadEntry(tid, track_name)
+                entry.status = "queued"
+                _active[tid] = entry
+            _broadcast({"type": "progress", "track_id": tid, "name": track_name, "artist": "", "album": "", "cover_url": "", "quality": "", "status": "queued", "progress": 0})
 
             try:
                 track = tidal.session.track(tid)
                 track_name = track.full_name or track.name or track_name
-                print(f"[upgrade] Resolved: {track_name}", flush=True)
                 artist_name = ""
+                album_name = ""
+                cover_url = ""
                 if track.artists:
                     artist_name = ", ".join(a.name for a in track.artists if a.name)
+                if track.album:
+                    album_name = track.album.name or ""
+                    for size in (320, 160):
+                        try:
+                            url = track.album.image(size)
+                            if url:
+                                cover_url = url
+                                break
+                        except Exception:
+                            continue
+
+                with _lock:
+                    entry = _active.get(tid)
+                if entry:
+                    entry.name = track_name
+                    entry.artist = artist_name
+                    entry.album = album_name
+                    entry.cover_url = cover_url
+                    entry.status = "downloading"
+                _broadcast({"type": "progress", "track_id": tid, "name": track_name, "artist": artist_name, "album": album_name, "cover_url": cover_url, "quality": "", "status": "downloading", "progress": 0})
+
             except Exception as exc:
-                _broadcast({
-                    "type": "upgrade_error",
-                    "track_id": tid,
-                    "name": track_name,
-                    "error": str(exc),
-                })
+                with _lock:
+                    _active.pop(tid, None)
+                _broadcast({"type": "error", "track_id": tid, "name": track_name, "artist": "", "album": "", "cover_url": "", "error": str(exc)})
+                _broadcast({"type": "upgrade_error", "track_id": tid, "name": track_name, "error": str(exc), "old_path": old_path})
                 continue
 
             # Get probe to determine quality enum for download
@@ -538,24 +574,17 @@ def _trigger_upgrade_downloads(
             if quality_enum is None:
                 quality_enum = QUALITY_STRING_TO_ENUM.get("HI_RES_LOSSLESS")
 
-            _broadcast({
-                "type": "upgrade_progress",
-                "track_id": tid,
-                "name": track_name,
-                "artist": artist_name,
-                "status": "upgrading",
-                "old_path": old_path,
-            })
+            if entry:
+                entry.quality = quality_str
+            _broadcast({"type": "upgrade_progress", "track_id": tid, "name": track_name, "artist": artist_name, "status": "upgrading", "old_path": old_path})
 
             try:
-                print(f"[upgrade] Calling dl.item() with quality={quality_enum}", flush=True)
                 outcome, new_path = dl.item(
                     file_template=settings.data.format_track,
                     media=track,
                     quality_audio=quality_enum,
                     duplicate_action_override="redownload",
                 )
-                print(f"[upgrade] outcome={outcome}, new_path={new_path}", flush=True)
 
                 if outcome in (DownloadOutcome.DOWNLOADED, DownloadOutcome.COPIED):
                     # Trash old file if it exists and differs from new
@@ -567,34 +596,32 @@ def _trigger_upgrade_downloads(
                     register_downloaded_track(new_path)
                     db.commit()
 
-                    _broadcast({
-                        "type": "upgrade_complete",
-                        "track_id": tid,
-                        "name": track_name,
-                        "artist": artist_name,
-                        "status": "done",
-                        "old_path": old_path,
-                        "new_path": str(new_path),
-                    })
+                    with _lock:
+                        _active.pop(tid, None)
+                    _broadcast({"type": "complete", "track_id": tid, "name": track_name, "artist": artist_name, "album": album_name, "cover_url": cover_url, "quality": quality_str, "status": "done"})
+                    _broadcast({"type": "upgrade_complete", "track_id": tid, "name": track_name, "artist": artist_name, "status": "done", "old_path": old_path, "new_path": str(new_path)})
+
+                    # Record in download history
+                    db.record_download(
+                        track_id=tid, name=track_name, artist=artist_name,
+                        album=album_name, status="done",
+                        started_at=entry.started_at if entry else time.time(),
+                        finished_at=time.time(),
+                        cover_url=cover_url, quality=quality_str,
+                    )
+                    db.commit()
                 else:
-                    _broadcast({
-                        "type": "upgrade_error",
-                        "track_id": tid,
-                        "name": track_name,
-                        "artist": artist_name,
-                        "error": f"Download outcome: {outcome}",
-                    })
+                    with _lock:
+                        _active.pop(tid, None)
+                    err_msg = f"Download outcome: {outcome}"
+                    _broadcast({"type": "error", "track_id": tid, "name": track_name, "artist": artist_name, "album": album_name, "cover_url": cover_url, "error": err_msg})
+                    _broadcast({"type": "upgrade_error", "track_id": tid, "name": track_name, "artist": artist_name, "error": err_msg, "old_path": old_path})
 
             except Exception as exc:
-                print(f"[upgrade] ERROR for {tid}: {exc}", flush=True)
-                import traceback; traceback.print_exc()
-                _broadcast({
-                    "type": "upgrade_error",
-                    "track_id": tid,
-                    "name": track_name,
-                    "artist": artist_name,
-                    "error": str(exc),
-                })
+                with _lock:
+                    _active.pop(tid, None)
+                _broadcast({"type": "error", "track_id": tid, "name": track_name, "artist": artist_name, "album": album_name, "cover_url": cover_url, "error": str(exc)})
+                _broadcast({"type": "upgrade_error", "track_id": tid, "name": track_name, "artist": artist_name, "error": str(exc), "old_path": old_path})
     finally:
         db.close()
 
@@ -610,11 +637,30 @@ async def scan_sse() -> StreamingResponse:
     if len(_scan_clients) >= _MAX_SSE_CLIENTS:
         raise HTTPException(status_code=429, detail="Too many SSE connections")
 
+    # If scan already finished (complete/error/cancelled), return cached terminal event
+    if not _scan_state["running"] and _scan_state["status"] in ("complete", "error", "cancelled"):
+        terminal = _scan_state.copy()
+        terminal.pop("cancel", None)
+        terminal.pop("running", None)
+
+        async def cached_stream():
+            if terminal["status"] == "complete":
+                yield f"data: {_json({'type': 'scan_complete', 'checked': terminal['checked'], 'total': terminal['total'], 'upgradeable': terminal['upgradeable'], 'skipped_no_isrc': terminal['skipped_no_isrc'], 'results': terminal['results']})}\n\n"
+            elif terminal["status"] == "error":
+                yield f"data: {_json({'type': 'scan_error', 'error': terminal.get('error', 'Unknown error')})}\n\n"
+            else:
+                yield f"data: {_json({'type': 'scan_cancelled', 'checked': terminal['checked'], 'total': terminal['total']})}\n\n"
+
+        return StreamingResponse(cached_stream(), media_type="text/event-stream")
+
     # Start scan if not already running
     if not _scan_state["running"]:
         cancel_event = threading.Event()
-        _scan_state["running"] = True
-        _scan_state["cancel"] = cancel_event
+        _scan_state.update(
+            running=True, cancel=cancel_event, status="running",
+            checked=0, total=0, upgradeable=0, skipped_no_isrc=0,
+            results=[], error=None,
+        )
         thread = threading.Thread(target=_start_bulk_scan, args=(cancel_event,), daemon=True)
         thread.start()
 
@@ -655,6 +701,7 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
         tidal = Tidal()
         session = tidal.session
         if not session.check_login():
+            _scan_state.update(status="error", error="Not logged in to Tidal")
             _scan_broadcast({"type": "scan_error", "error": "Not logged in to Tidal"})
             return
 
@@ -683,6 +730,7 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
 
         for t in candidates:
             if cancel_event.is_set():
+                _scan_state.update(status="cancelled", checked=checked, total=total)
                 _scan_broadcast({"type": "scan_cancelled", "checked": checked, "total": total})
                 return
 
@@ -725,8 +773,13 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
 
             checked += 1
 
-            # Broadcast progress every 5 tracks
+            # Cache + broadcast progress every 5 tracks
             if checked % 5 == 0 or checked == total:
+                _scan_state.update(
+                    checked=checked, total=total,
+                    upgradeable=len(upgradeable_results),
+                    skipped_no_isrc=skipped_no_isrc,
+                )
                 _scan_broadcast({
                     "type": "scan_progress",
                     "checked": checked,
@@ -735,6 +788,12 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
                     "skipped_no_isrc": skipped_no_isrc,
                 })
 
+        _scan_state.update(
+            status="complete", checked=checked, total=total,
+            upgradeable=len(upgradeable_results),
+            skipped_no_isrc=skipped_no_isrc,
+            results=upgradeable_results,
+        )
         _scan_broadcast({
             "type": "scan_complete",
             "checked": checked,
@@ -746,11 +805,26 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
 
     except Exception as exc:
         logger.exception("Bulk scan failed")
+        _scan_state.update(status="error", error=str(exc))
         _scan_broadcast({"type": "scan_error", "error": str(exc)})
     finally:
         _scan_state["running"] = False
         _scan_state["cancel"] = None
         db.close()
+
+
+@router.get("/upgrade/scan/status")
+def scan_status() -> dict:
+    """Return cached scan state without triggering a new scan."""
+    return {
+        "status": _scan_state["status"],
+        "checked": _scan_state["checked"],
+        "total": _scan_state["total"],
+        "upgradeable": _scan_state["upgradeable"],
+        "skipped_no_isrc": _scan_state["skipped_no_isrc"],
+        "results": _scan_state["results"] if _scan_state["status"] == "complete" else [],
+        "error": _scan_state.get("error"),
+    }
 
 
 @router.post("/upgrade/scan/cancel")
