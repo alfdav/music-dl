@@ -260,7 +260,7 @@ def _cleanup_old_staging() -> None:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api/duplicates/preview")
+@router.get("/duplicates/preview")
 def preview_duplicates() -> dict:
     """Scan library for duplicate tracks and return grouped results."""
     from tidal_dl.gui.api.library import _scan_running
@@ -286,7 +286,7 @@ def preview_duplicates() -> dict:
         db.close()
 
 
-@router.post("/api/duplicates/clean")
+@router.post("/duplicates/clean")
 def clean_duplicates() -> dict:
     """Move duplicate files to staging and remove from DB."""
     global _cleanup_running, _last_cleanup
@@ -354,7 +354,7 @@ def clean_duplicates() -> dict:
         db.close()
 
 
-@router.post("/api/duplicates/undo")
+@router.post("/duplicates/undo")
 def undo_cleanup() -> dict:
     """Restore files from the last cleanup operation."""
     global _last_cleanup
