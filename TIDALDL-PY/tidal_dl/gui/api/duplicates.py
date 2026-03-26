@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import os
 import re
 import shutil
@@ -17,20 +19,11 @@ from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.path import path_config_base
 
 router = APIRouter()
-
-# ---------------------------------------------------------------------------
-# Module-level state
-# ---------------------------------------------------------------------------
-
-_cleanup_running = False
-_last_cleanup: dict[str, Any] = {
-    "staging_path": None,
-    "moved_files": [],  # list of {"original": str, "staged": str, "db_row": dict}
-    "stale_pruned": 0,
-    "expires_at": 0.0,
-}
+logger = logging.getLogger("music-dl.duplicates")
 
 _TIER_NAMES = {4: "Legendary", 3: "Epic", 2: "Rare", 1: "Uncommon", 0: "Common"}
+_LOCK_FILENAME = "cleanup.lock"
+_MANIFEST_FILENAME = "manifest.json"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -42,6 +35,80 @@ def _get_db() -> LibraryDB:
     db = LibraryDB(Path(path_config_base()) / "library.db")
     db.open()
     return db
+
+
+def _staging_base() -> Path:
+    return Path(path_config_base()) / "undo-staging"
+
+
+def _lock_path() -> Path:
+    return Path(path_config_base()) / _LOCK_FILENAME
+
+
+def _is_cleanup_running() -> bool:
+    """Check file-based lock. Stale locks (>10 min) are auto-cleared."""
+    lp = _lock_path()
+    if not lp.exists():
+        return False
+    try:
+        age = time.time() - lp.stat().st_mtime
+        if age > 600:  # 10 min = definitely stale
+            lp.unlink(missing_ok=True)
+            logger.warning("Cleared stale cleanup lock (age %.0fs)", age)
+            return False
+        return True
+    except OSError:
+        return False
+
+
+def _acquire_lock() -> None:
+    _lock_path().write_text(str(os.getpid()))
+
+
+def _release_lock() -> None:
+    _lock_path().unlink(missing_ok=True)
+
+
+def _write_manifest(staging_dir: Path, moved_files: list[dict], expires_at: float) -> None:
+    """Persist undo manifest to disk alongside staged files."""
+    manifest = {
+        "staging_path": str(staging_dir),
+        "moved_files": moved_files,
+        "expires_at": expires_at,
+    }
+    (staging_dir / _MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+
+
+def _read_manifest(staging_dir: Path) -> dict | None:
+    """Read manifest from a staging dir. Returns None if missing/corrupt."""
+    mf = staging_dir / _MANIFEST_FILENAME
+    if not mf.exists():
+        return None
+    try:
+        return json.loads(mf.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _find_active_manifest() -> dict | None:
+    """Find the most recent non-expired staging manifest (survives crash)."""
+    base = _staging_base()
+    if not base.exists():
+        return None
+    best: dict | None = None
+    best_ts = 0
+    for d in base.iterdir():
+        if not d.is_dir():
+            continue
+        try:
+            ts = int(d.name)
+        except ValueError:
+            continue
+        manifest = _read_manifest(d)
+        if manifest and manifest.get("expires_at", 0) > time.time() and ts > best_ts:
+            best = manifest
+            best_ts = ts
+    return best
 
 
 def _path_score(path: str) -> int:
@@ -234,25 +301,30 @@ def _find_duplicate_groups(db: LibraryDB) -> list[dict]:
 
 
 def _staging_dir(ts: int) -> Path:
-    d = Path(path_config_base()) / "undo-staging" / str(ts)
+    d = _staging_base() / str(ts)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def _cleanup_old_staging() -> None:
-    """Delete staging dirs older than 5 minutes."""
-    base = Path(path_config_base()) / "undo-staging"
+    """Delete staging dirs whose manifest has expired (or has no manifest)."""
+    base = _staging_base()
     if not base.exists():
         return
     now = time.time()
     for d in base.iterdir():
-        if d.is_dir():
-            try:
-                ts = int(d.name)
-                if now - ts > 300:
-                    shutil.rmtree(d, ignore_errors=True)
-            except ValueError:
-                pass
+        if not d.is_dir():
+            continue
+        try:
+            ts = int(d.name)
+        except ValueError:
+            continue
+        manifest = _read_manifest(d)
+        # No manifest = orphaned from a crash with no recovery possible, or very old
+        if manifest is None and now - ts > 300:
+            shutil.rmtree(d, ignore_errors=True)
+        elif manifest and manifest.get("expires_at", 0) < now:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +339,7 @@ def preview_duplicates() -> dict:
 
     if _scan_running:
         raise HTTPException(status_code=409, detail="Library scan in progress")
-    if _cleanup_running:
+    if _is_cleanup_running():
         raise HTTPException(status_code=409, detail="Cleanup already in progress")
 
     db = _get_db()
@@ -276,11 +348,16 @@ def preview_duplicates() -> dict:
         stale_count = _prune_stale(db, reachable)
         groups = _find_duplicate_groups(db)
         total_duplicates = sum(len(g["duplicates"]) for g in groups)
+
+        # Check if there's an active undo manifest (from this or a previous run)
+        active_manifest = _find_active_manifest()
+
         return {
             "stale_count": stale_count,
             "groups": groups,
             "total_groups": len(groups),
             "total_duplicates": total_duplicates,
+            "undo_available": active_manifest is not None,
         }
     finally:
         db.close()
@@ -289,16 +366,14 @@ def preview_duplicates() -> dict:
 @router.post("/duplicates/clean")
 def clean_duplicates() -> dict:
     """Move duplicate files to staging and remove from DB."""
-    global _cleanup_running, _last_cleanup
-
     from tidal_dl.gui.api.library import _scan_running
 
     if _scan_running:
         raise HTTPException(status_code=409, detail="Library scan in progress")
-    if _cleanup_running:
+    if _is_cleanup_running():
         raise HTTPException(status_code=409, detail="Cleanup already in progress")
 
-    _cleanup_running = True
+    _acquire_lock()
     db = _get_db()
     try:
         _cleanup_old_staging()
@@ -325,7 +400,11 @@ def clean_duplicates() -> dict:
                     + Path(original_path).suffix
                 )
                 staged_path = str(staging / staged_name)
-                shutil.move(original_path, staged_path)
+                try:
+                    shutil.move(original_path, staged_path)
+                except OSError as exc:
+                    logger.warning("Failed to stage %s: %s", original_path, exc)
+                    continue
                 moved_files.append({
                     "original": original_path,
                     "staged": staged_path,
@@ -335,33 +414,29 @@ def clean_duplicates() -> dict:
 
         db.commit()
 
-        _last_cleanup = {
-            "staging_path": str(staging),
-            "moved_files": moved_files,
-            "stale_pruned": stale_pruned,
-            "expires_at": time.time() + 300,
-        }
+        # Persist manifest to disk — survives crash
+        expires_at = time.time() + 300
+        _write_manifest(staging, moved_files, expires_at)
 
         return {
             "stale_pruned": stale_pruned,
             "groups_cleaned": len(groups),
             "duplicates_moved": len(moved_files),
-            "undo_available": True,
-            "undo_expires_at": _last_cleanup["expires_at"],
+            "undo_available": len(moved_files) > 0,
+            "undo_expires_at": expires_at,
         }
     finally:
-        _cleanup_running = False
+        _release_lock()
         db.close()
 
 
 @router.post("/duplicates/undo")
 def undo_cleanup() -> dict:
-    """Restore files from the last cleanup operation."""
-    global _last_cleanup
-
-    if _last_cleanup["expires_at"] <= time.time():
-        raise HTTPException(status_code=410, detail="Undo window expired")
-    if not _last_cleanup["moved_files"]:
+    """Restore files from the most recent cleanup (reads manifest from disk)."""
+    manifest = _find_active_manifest()
+    if not manifest:
+        raise HTTPException(status_code=410, detail="No active undo — window expired or no cleanup found")
+    if not manifest.get("moved_files"):
         raise HTTPException(status_code=404, detail="Nothing to undo")
 
     db = _get_db()
@@ -370,7 +445,7 @@ def undo_cleanup() -> dict:
         failed = 0
         errors: list[str] = []
 
-        for entry in _last_cleanup["moved_files"]:
+        for entry in manifest["moved_files"]:
             original_path = entry["original"]
             staged_path = entry["staged"]
             row = entry["db_row"]
@@ -397,12 +472,10 @@ def undo_cleanup() -> dict:
 
         db.commit()
 
-        _last_cleanup = {
-            "staging_path": None,
-            "moved_files": [],
-            "stale_pruned": 0,
-            "expires_at": 0.0,
-        }
+        # Remove the staging dir now that files are restored
+        staging_path = manifest.get("staging_path")
+        if staging_path:
+            shutil.rmtree(staging_path, ignore_errors=True)
 
         return {"restored": restored, "failed": failed, "errors": errors}
     finally:
