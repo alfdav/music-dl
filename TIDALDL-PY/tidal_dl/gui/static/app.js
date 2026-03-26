@@ -168,18 +168,28 @@ async function toggleFavorite(track, btn) {
     cover_url: track.cover_url || null,
   };
 
+  // Optimistic toggle — update UI immediately, revert on failure
+  const key = track.path || (track.id ? 'tidal:' + track.id : null);
+  const wasFav = key ? !!_favCache[key] : btn.classList.contains('hearted');
+  btn.classList.toggle('hearted', !wasFav);
+  if (key) _favCache[key] = !wasFav;
+  updatePlayerHeart();
+
   try {
     const res = await api('/library/favorites/toggle', {
       method: 'POST',
       body,
     });
 
-    const key = track.path || (track.id ? 'tidal:' + track.id : null);
+    // Sync with server truth in case of race
     if (key) _favCache[key] = res.favorited;
-
     btn.classList.toggle('hearted', res.favorited);
     updatePlayerHeart();
   } catch (err) {
+    // Revert optimistic update
+    btn.classList.toggle('hearted', wasFav);
+    if (key) _favCache[key] = wasFav;
+    updatePlayerHeart();
     toast('Failed to update favorite', 'error');
   }
 }
@@ -3198,10 +3208,18 @@ function renderDownloads(container) {
   const historySection = h('div', { id: 'dl-history', className: 'dl-card-list' });
   resultsArea.appendChild(historySection);
 
-  // Show initial empty state for active section
-  _showActiveEmpty(activeSection);
+  // Seed active section from current server state, then let SSE keep it updated
+  api('/downloads/active/snapshot').then(data => {
+    const entries = data.active || [];
+    if (entries.length === 0) {
+      _showActiveEmpty(activeSection);
+    } else {
+      entries.forEach(e => updateActiveDownload(activeSection, { type: 'progress', ...e }));
+    }
+  }).catch(() => {
+    _showActiveEmpty(activeSection);
+  });
 
-  // Use global SSE — it updates #dl-active automatically
   _ensureGlobalSSE();
 
   // Load history
@@ -4546,6 +4564,7 @@ async function renderUpgradeScanner(container) {
   let eventSource = null;
 
   function _scanProgressText(d) {
+    if (d.phase) return d.phase;
     return 'Checked ' + d.checked + ' / ' + d.total + ' \u2014 ' + d.upgradeable + ' upgradeable' + (d.skipped_no_isrc ? ' \u2014 ' + d.skipped_no_isrc + ' skipped (no ISRC)' : '');
   }
   function _scanDoneText(d) {
@@ -4610,11 +4629,10 @@ async function renderUpgradeScanner(container) {
     scanBtn.textContent = 'Start Scan';
   });
 
-  // Restore state from backend on mount
+  // Restore state from backend on mount (lightweight — no results payload)
   try {
     const cached = await api('/upgrade/scan/status');
     if (cached.status === 'running') {
-      // Scan is in progress — show current progress and reconnect SSE
       scanBtn.disabled = true;
       scanBtn.textContent = 'Scanning...';
       cancelBtn.style.display = '';
@@ -4628,12 +4646,16 @@ async function renderUpgradeScanner(container) {
       }
       _connectSSE();
     } else if (cached.status === 'complete') {
-      // Scan finished while we were away — render cached results
       progressBar.style.display = '';
       progressFill.style.width = '100%';
       statusEl.textContent = _scanDoneText(cached);
       scanBtn.textContent = 'Scan Again';
-      _renderScanResults(resultsEl, cached.results || []);
+      // Fetch full results separately (can be 600KB+)
+      api('/upgrade/scan/status?include_results=true').then(full => {
+        _renderScanResults(resultsEl, full.results || []);
+      }).catch(() => {
+        statusEl.textContent = _scanDoneText(cached) + ' (failed to load results — scan again)';
+      });
     } else if (cached.status === 'error') {
       statusEl.textContent = 'Error: ' + (cached.error || 'Unknown error');
       scanBtn.textContent = 'Retry';
@@ -4666,9 +4688,9 @@ function _renderScanResults(container, results) {
   upgradeAllBtn.addEventListener('click', async () => {
     upgradeAllBtn.disabled = true;
     upgradeAllBtn.textContent = 'Upgrading...';
-    const paths = results.map(r => r.path);
+    const tracks = results.map(r => ({ path: r.path, tidal_track_id: r.tidal_track_id || null }));
     try {
-      const resp = await api('/upgrade/start', { method: 'POST', body: { track_paths: paths } });
+      const resp = await api('/upgrade/start', { method: 'POST', body: { tracks } });
       if (resp.count > 0) { updateDlBadge(resp.count); _ensureGlobalSSE(); }
       toast('Upgrade started for ' + resp.count + ' tracks', 'success');
     } catch (err) {
@@ -4696,9 +4718,13 @@ function _renderScanResults(container, results) {
         upBtn.disabled = true;
         upBtn.textContent = 'Queued';
         try {
-          const resp = await api('/upgrade/start', { method: 'POST', body: { track_paths: [t.path] } });
+          const resp = await api('/upgrade/start', { method: 'POST', body: {
+            tracks: [{ path: t.path, tidal_track_id: t.tidal_track_id || null }]
+          }});
           if (resp.count > 0) { updateDlBadge(resp.count); _ensureGlobalSSE(); }
-        } catch (_) {
+          else if (resp.errors && resp.errors.length) { throw new Error(resp.errors[0]); }
+        } catch (err) {
+          toast('Upgrade failed: ' + (err.message || 'unknown'), 'error');
           upBtn.disabled = false;
           upBtn.textContent = 'Retry';
         }

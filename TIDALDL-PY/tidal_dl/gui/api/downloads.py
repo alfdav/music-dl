@@ -292,6 +292,19 @@ def download(req: DownloadRequest) -> dict:
     return trigger_download(req.track_ids)
 
 
+@router.get("/downloads/active/snapshot")
+def downloads_snapshot() -> dict:
+    """Return current in-progress downloads (non-SSE)."""
+    with _lock:
+        entries = [
+            {"track_id": e.track_id, "name": e.name, "artist": e.artist,
+             "album": e.album, "cover_url": e.cover_url, "quality": e.quality,
+             "status": e.status, "progress": e.progress}
+            for e in _active.values()
+        ]
+    return {"active": entries}
+
+
 @router.get("/downloads/active")
 async def downloads_sse() -> StreamingResponse:
     """Server-Sent Events stream for download progress."""

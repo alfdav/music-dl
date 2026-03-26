@@ -591,6 +591,7 @@ def _trigger_upgrade_downloads(
                     if old_path and str(new_path) != old_path and os.path.exists(old_path):
                         _trash_file(old_path)
                         db.remove(old_path)
+                        db.commit()  # ensure removal is persisted immediately
 
                     # Register new file in library
                     register_downloaded_track(new_path)
@@ -606,10 +607,13 @@ def _trigger_upgrade_downloads(
                     _broadcast({"type": "upgrade_complete", "track_id": tid, "name": track_name, "artist": artist_name, "status": "done", "old_path": old_path, "new_path": str(new_path)})
 
                     # Record in download history
+                    started = entry.started_at if entry else None
+                    if started and not isinstance(started, (int, float)):
+                        started = started.timestamp()
                     db.record_download(
                         track_id=tid, name=track_name, artist=artist_name,
                         album=album_name, status="done",
-                        started_at=entry.started_at if entry else time.time(),
+                        started_at=started or time.time(),
                         finished_at=time.time(),
                         cover_url=cover_url, quality=quality_str,
                     )
@@ -711,18 +715,53 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
 
         # Get all tracks with ISRCs
         all_tracks = db.upgradeable_tracks()
+        all_count = len(all_tracks)
 
-        # Filter: only tracks below target quality
+        _scan_state.update(status="running", total=all_count)
+        _scan_broadcast({"type": "scan_progress", "checked": 0, "total": all_count,
+                         "upgradeable": 0, "skipped_no_isrc": 0,
+                         "phase": "Verifying library files..."})
+
+        # Filter: only tracks below target quality that exist on disk
         candidates = []
         skipped_no_isrc = 0
-        for t in all_tracks:
+        stale_paths: list[str] = []
+        for i, t in enumerate(all_tracks):
+            if cancel_event.is_set():
+                _scan_state.update(status="cancelled")
+                _scan_broadcast({"type": "scan_cancelled", "checked": 0, "total": all_count})
+                return
+
             isrc = t.get("isrc")
             if not isrc:
                 skipped_no_isrc += 1
                 continue
+            # Skip entries whose files no longer exist (orphaned DB rows)
+            if not os.path.exists(t["path"]):
+                stale_paths.append(t["path"])
+                continue
             local_rank = _tier_rank_for_quality(t.get("quality"), t.get("format"))
             if local_rank < target_rank:
                 candidates.append(t)
+
+            # Broadcast file verification progress every 200 tracks
+            if (i + 1) % 200 == 0 or (i + 1) == all_count:
+                _scan_broadcast({"type": "scan_progress", "checked": 0, "total": all_count,
+                                 "upgradeable": 0, "skipped_no_isrc": skipped_no_isrc,
+                                 "phase": f"Verifying files... {i + 1:,} / {all_count:,}"})
+
+        # Clean up stale DB entries — only if less than 5% are stale
+        # (protects against NAS disconnection nuking the entire library)
+        if stale_paths:
+            stale_pct = len(stale_paths) / max(all_count, 1)
+            if stale_pct < 0.05:
+                for sp in stale_paths:
+                    db.remove(sp)
+                db.commit()
+                logger.info("Cleaned %d stale scanned entries", len(stale_paths))
+            else:
+                logger.warning("Skipped stale cleanup: %d/%d (%.0f%%) entries missing — possible volume offline",
+                               len(stale_paths), all_count, stale_pct * 100)
 
         total = len(candidates)
         checked = 0
@@ -817,18 +856,90 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
         db.close()
 
 
+def _rebuild_results_from_db() -> list[dict]:
+    """Reconstruct upgradeable results from scanned + quality_probes tables.
+
+    Called when _scan_state is idle (e.g. after server restart) to avoid
+    forcing the user to re-scan. Returns the same structure as a live scan.
+    """
+    from tidal_dl.config import Settings
+
+    settings = Settings()
+    target_quality = getattr(settings.data, "upgrade_target_quality", "HI_RES_LOSSLESS")
+    target_rank = TIER_RANK.get(target_quality, 4)
+
+    db = _get_db()
+    try:
+        all_tracks = db.upgradeable_tracks()
+        all_isrcs = [t["isrc"] for t in all_tracks if t.get("isrc")]
+        if not all_isrcs:
+            return []
+        cached_probes = db.get_probes_batch(all_isrcs)
+        results = []
+        for t in all_tracks:
+            isrc = t.get("isrc")
+            if not isrc:
+                continue
+            probe = cached_probes.get(isrc)
+            if not probe or not probe.get("tidal_track_id") or not probe.get("max_quality"):
+                continue
+            probed_rank = TIER_RANK.get(probe["max_quality"], 0)
+            local_rank = _tier_rank_for_quality(t.get("quality"), t.get("format"))
+            if probed_rank > local_rank and probed_rank >= target_rank:
+                results.append({
+                    "path": t["path"],
+                    "title": t.get("title", ""),
+                    "artist": t.get("artist", ""),
+                    "album": t.get("album", ""),
+                    "current_quality": t.get("quality", ""),
+                    "available_quality": probe["max_quality"],
+                    "isrc": isrc,
+                    "tidal_track_id": probe["tidal_track_id"],
+                })
+        return results
+    finally:
+        db.close()
+
+
 @router.get("/upgrade/scan/status")
-def scan_status() -> dict:
-    """Return cached scan state without triggering a new scan."""
-    return {
-        "status": _scan_state["status"],
+def scan_status(include_results: bool = Query(False)) -> dict:
+    """Return cached scan state without triggering a new scan.
+
+    When idle (e.g. after server restart), reconstructs results from DB
+    so the user never has to re-scan just because the server restarted.
+    """
+    status = _scan_state["status"]
+
+    # If idle and probes exist in DB, rebuild from DB
+    if status == "idle":
+        try:
+            results = _rebuild_results_from_db()
+            if results:
+                # Populate _scan_state so subsequent calls are instant
+                _scan_state.update(
+                    status="complete",
+                    checked=len(results),
+                    total=len(results),
+                    upgradeable=len(results),
+                    results=results,
+                )
+                status = "complete"
+        except Exception:
+            pass  # fall through to idle
+
+    resp: dict = {
+        "status": status,
         "checked": _scan_state["checked"],
         "total": _scan_state["total"],
         "upgradeable": _scan_state["upgradeable"],
         "skipped_no_isrc": _scan_state["skipped_no_isrc"],
-        "results": _scan_state["results"] if _scan_state["status"] == "complete" else [],
         "error": _scan_state.get("error"),
     }
+    if include_results and status == "complete":
+        resp["results"] = _scan_state["results"]
+    else:
+        resp["results"] = []
+    return resp
 
 
 @router.post("/upgrade/scan/cancel")

@@ -486,14 +486,16 @@ class Tidal(BaseConfig[ModelToken], metaclass=SingletonMeta):
         self.set_option("token_type", self.session.token_type)
         self.set_option("access_token", self.session.access_token)
         self.set_option("refresh_token", self.session.refresh_token)
-        self.set_option("expiry_time", self.session.expiry_time)
+        _exp = self.session.expiry_time
+        self.set_option("expiry_time", _exp.timestamp() if hasattr(_exp, "timestamp") else _exp)
         self.save()
 
         with contextlib.suppress(OSError, NotImplementedError):
             os.chmod(self.file_path, 0o600)
 
     def _ensure_token_fresh(self, refresh_window_sec: int = 300) -> bool:
-        expiry_time = float(getattr(self.data, "expiry_time", 0) or 0)
+        _raw_exp = getattr(self.data, "expiry_time", 0) or 0
+        expiry_time = _raw_exp.timestamp() if hasattr(_raw_exp, "timestamp") else float(_raw_exp)
         if expiry_time <= 0:
             return False
         if expiry_time - time.time() > refresh_window_sec:
