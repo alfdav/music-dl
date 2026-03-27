@@ -127,6 +127,27 @@ def home_stats():
     if stats.get("most_replayed"):
         stats["most_replayed"].pop("cover_path", None)
 
+    # Convert this_week cover paths to URLs
+    tw = stats.get("this_week", {})
+    if tw.get("top_artist") and tw["top_artist"].get("cover_path"):
+        tw["top_artist"]["cover_url"] = (
+            "/api/library/art?path=" + quote(tw["top_artist"]["cover_path"], safe="")
+        )
+    for a in tw.get("top_artists", []):
+        if a.get("cover_path"):
+            a["cover_url"] = "/api/library/art?path=" + quote(a["cover_path"], safe="")
+    if tw.get("most_replayed") and tw["most_replayed"].get("cover_path"):
+        tw["most_replayed"]["cover_url"] = (
+            "/api/library/art?path=" + quote(tw["most_replayed"]["cover_path"], safe="")
+        )
+    # Strip internal cover_path from this_week
+    if tw.get("top_artist"):
+        tw["top_artist"].pop("cover_path", None)
+    for a in tw.get("top_artists", []):
+        a.pop("cover_path", None)
+    if tw.get("most_replayed"):
+        tw["most_replayed"].pop("cover_path", None)
+
     return stats
 
 

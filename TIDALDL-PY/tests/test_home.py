@@ -263,6 +263,25 @@ def test_home_stats_this_week_top_artists_list(db):
     assert tw["top_artists"][2]["name"] == "C"
 
 
+def test_api_home_includes_this_week():
+    """GET /api/home response includes this_week key."""
+    from fastapi.testclient import TestClient
+    from tidal_dl.gui import create_app
+
+    client = TestClient(create_app(port=8765))
+    host = {"host": "localhost:8765"}
+    resp = client.get("/api/home", headers=host)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "this_week" in data
+    assert "total_plays" in data["this_week"]
+    # cover_path should not leak into API response
+    if data["this_week"].get("top_artist"):
+        assert "cover_path" not in data["this_week"]["top_artist"]
+    if data["this_week"].get("most_replayed"):
+        assert "cover_path" not in data["this_week"]["most_replayed"]
+
+
 def test_top_album_from_play_events(db):
     """top_album should be derived from play_events, not scanned.play_count."""
     now = int(time.time())
