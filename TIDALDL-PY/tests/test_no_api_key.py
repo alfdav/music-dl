@@ -268,7 +268,7 @@ class TestSettings:
         from dataclasses import fields
 
         s = Settings()
-        assert len(fields(s.data)) == 47  # updated: +1 for scan_paths
+        assert len(fields(s.data)) == 48  # updated: +1 for scan_paths
 
     def test_settings_default_quality(self, clear_singletons, tmp_path, monkeypatch):
         from tidalapi.media import Quality
@@ -281,7 +281,11 @@ class TestSettings:
         s = Settings()
         assert s.data.quality_audio == Quality.hi_res_lossless
 
-    def test_settings_default_base_path(self, clear_singletons):
+    def test_settings_default_base_path(self, clear_singletons, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "tidal_dl.config.path_file_settings",
+            lambda: str(tmp_path / "settings.json"),
+        )
         s = Settings()
         assert s.data.download_base_path == "~/download"
 

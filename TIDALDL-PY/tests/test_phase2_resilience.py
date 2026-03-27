@@ -99,17 +99,24 @@ def test_tidal_ensure_token_fresh(monkeypatch):
     called = {"refresh": 0, "persist": 0}
 
     class DummySession:
-        def token_refresh(self):
+        token_type = "Bearer"
+        access_token = "test"
+        refresh_token = "test_refresh"
+        expiry_time = time.time() + 3600
+
+        def token_refresh(self, refresh_token):
             called["refresh"] += 1
 
     tidal.session = DummySession()
-    tidal.data.expiry_time = time.time() + 60
+    tidal.data.expiry_time = time.time() + 60  # within 300s refresh window
+    tidal.data.refresh_token = "test_refresh"
 
     def _persist():
         called["persist"] += 1
 
     monkeypatch.setattr(tidal, "token_persist", _persist)
-    tidal._ensure_token_fresh()
+    result = tidal._ensure_token_fresh()
+    assert result is True
     assert called["refresh"] == 1
     assert called["persist"] == 1
 
