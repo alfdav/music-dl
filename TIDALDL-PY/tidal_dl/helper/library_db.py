@@ -590,6 +590,95 @@ class LibraryDB:
             (path, artist, genre, duration, now),
         )
 
+    def _windowed_stats(self, since: int) -> dict:
+        """Return play stats for play_events with played_at >= since."""
+        assert self._conn
+        c = self._conn
+
+        total_plays = c.execute(
+            "SELECT COUNT(*) FROM play_events WHERE played_at >= ?", (since,)
+        ).fetchone()[0]
+
+        top_artists_rows = c.execute(
+            """SELECT artist, COUNT(*) as total
+               FROM play_events WHERE artist IS NOT NULL AND played_at >= ?
+               GROUP BY artist ORDER BY total DESC LIMIT 5""",
+            (since,),
+        ).fetchall()
+
+        top_artist = None
+        top_artists = []
+        for r in top_artists_rows:
+            best_path = c.execute(
+                """SELECT path FROM play_events
+                   WHERE artist = ? AND path IS NOT NULL AND played_at >= ?
+                   GROUP BY path ORDER BY COUNT(*) DESC LIMIT 1""",
+                (r["artist"], since),
+            ).fetchone()
+            if not best_path:
+                best_path = c.execute(
+                    "SELECT path FROM scanned WHERE artist = ? LIMIT 1",
+                    (r["artist"],),
+                ).fetchone()
+            artist_tracks = c.execute(
+                "SELECT COUNT(*) FROM scanned WHERE artist = ?", (r["artist"],)
+            ).fetchone()[0]
+            artist_albums = c.execute(
+                "SELECT COUNT(DISTINCT album) FROM scanned WHERE artist = ?", (r["artist"],)
+            ).fetchone()[0]
+            artist_genre_row = c.execute(
+                "SELECT genre FROM scanned WHERE artist = ? AND genre IS NOT NULL AND genre != '' GROUP BY genre ORDER BY COUNT(*) DESC LIMIT 1",
+                (r["artist"],),
+            ).fetchone()
+            entry = {
+                "name": r["artist"],
+                "play_count": r["total"],
+                "cover_path": best_path["path"] if best_path else None,
+                "track_count": artist_tracks,
+                "album_count": artist_albums,
+                "genre": artist_genre_row["genre"] if artist_genre_row else None,
+            }
+            top_artists.append(entry)
+            if top_artist is None:
+                top_artist = entry
+
+        most_replayed = None
+        mr = c.execute(
+            """SELECT pe.path, s.title, pe.artist, s.album, COUNT(*) as play_count
+               FROM play_events pe
+               LEFT JOIN scanned s ON s.path = pe.path
+               WHERE pe.path IS NOT NULL AND pe.played_at >= ?
+               GROUP BY pe.path ORDER BY play_count DESC LIMIT 1""",
+            (since,),
+        ).fetchone()
+        if mr:
+            most_replayed = {
+                "name": mr["title"] or pathlib.Path(mr["path"]).stem if mr["path"] else "Unknown",
+                "artist": mr["artist"],
+                "album": mr["album"],
+                "play_count": mr["play_count"],
+                "cover_path": mr["path"],
+                "path": mr["path"],
+            }
+
+        genre_breakdown = [
+            {"genre": r["genre"], "count": r["cnt"]}
+            for r in c.execute(
+                """SELECT genre, COUNT(*) as cnt FROM play_events
+                   WHERE genre IS NOT NULL AND played_at >= ?
+                   GROUP BY genre ORDER BY cnt DESC LIMIT 8""",
+                (since,),
+            ).fetchall()
+        ]
+
+        return {
+            "total_plays": total_plays,
+            "top_artist": top_artist,
+            "top_artists": top_artists,
+            "most_replayed": most_replayed,
+            "genre_breakdown": genre_breakdown,
+        }
+
     def home_stats(self) -> dict:
         """Aggregate all data needed for the Home view in one call."""
         assert self._conn
@@ -784,22 +873,27 @@ class LibraryDB:
             ).fetchall()
         ]
 
-        # Album with most combined plays
+        # Album with most combined plays (from play_events — authoritative source)
         top_album = None
         ta = c.execute(
-            """SELECT album, artist, SUM(play_count) as total, MIN(path) as cover_path
-               FROM scanned
-               WHERE play_count > 0 AND album IS NOT NULL
-               GROUP BY album, artist
+            """SELECT s.album, pe.artist, COUNT(*) as total, MIN(pe.path) as cover_path
+               FROM play_events pe
+               LEFT JOIN scanned s ON s.path = pe.path
+               WHERE pe.path IS NOT NULL AND s.album IS NOT NULL
+               GROUP BY s.album, pe.artist
                ORDER BY total DESC LIMIT 1"""
         ).fetchone()
-        if ta:
+        if ta and ta["album"]:
             top_album = {
                 "album": ta["album"],
                 "artist": ta["artist"],
                 "play_count": ta["total"],
                 "cover_path": ta["cover_path"],
             }
+
+        # Rolling 7-day windowed stats
+        seven_days_ago = int(time.time()) - 7 * 86400
+        this_week = self._windowed_stats(seven_days_ago)
 
         # Tracks added in last 30 days
         thirty_days_ago = int(time.time()) - 30 * 86400
@@ -836,6 +930,7 @@ class LibraryDB:
             "top_album": top_album,
             "collection_growth": collection_growth,
             "favorites_count": favorites_count,
+            "this_week": this_week,
         }
 
     # ------------------------------------------------------------------

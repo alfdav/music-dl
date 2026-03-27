@@ -1,4 +1,6 @@
 """Tests for Home view — DB schema, play tracking, aggregation, API."""
+import time
+
 import pytest
 
 from tidal_dl.helper.library_db import LibraryDB
@@ -177,3 +179,111 @@ def test_api_home_play_returns_204():
         headers={**host, "X-CSRF-Token": token},
     )
     assert resp.status_code == 204
+
+
+def test_home_stats_this_week_with_recent_plays(db):
+    """this_week reflects only plays in the last 7 days."""
+    now = int(time.time())
+    old = now - 30 * 86400  # 30 days ago
+
+    db.record("a.flac", status="tagged", artist="Linkin Park", title="Numb",
+              album="Meteora", duration=200, genre="Rock")
+    db.record("b.flac", status="tagged", artist="Deftones", title="Change",
+              album="White Pony", duration=300, genre="Alt Rock")
+    db.commit()
+
+    for _ in range(50):
+        db._conn.execute(
+            "INSERT INTO play_events (path, artist, genre, duration, played_at) VALUES (?,?,?,?,?)",
+            ("a.flac", "Linkin Park", "Rock", 200, old),
+        )
+    for _ in range(8):
+        db._conn.execute(
+            "INSERT INTO play_events (path, artist, genre, duration, played_at) VALUES (?,?,?,?,?)",
+            ("b.flac", "Deftones", "Alt Rock", 300, now - 3600),
+        )
+    db.commit()
+
+    stats = db.home_stats()
+
+    assert stats["top_artist"]["name"] == "Linkin Park"
+    assert stats["top_artist"]["play_count"] == 50
+
+    assert stats["this_week"]["total_plays"] == 8
+    assert stats["this_week"]["top_artist"]["name"] == "Deftones"
+    assert stats["this_week"]["top_artist"]["play_count"] == 8
+    assert stats["this_week"]["most_replayed"]["name"] == "Change"
+    assert stats["this_week"]["most_replayed"]["play_count"] == 8
+    assert stats["this_week"]["genre_breakdown"][0]["genre"] == "Alt Rock"
+
+
+def test_home_stats_this_week_empty_when_no_recent(db):
+    """this_week.total_plays is 0 when no plays in last 7 days."""
+    now = int(time.time())
+    old = now - 30 * 86400
+
+    db.record("a.flac", status="tagged", artist="Linkin Park", title="Numb",
+              album="Meteora", duration=200, genre="Rock")
+    db.commit()
+
+    for _ in range(10):
+        db._conn.execute(
+            "INSERT INTO play_events (path, artist, genre, duration, played_at) VALUES (?,?,?,?,?)",
+            ("a.flac", "Linkin Park", "Rock", 200, old),
+        )
+    db.commit()
+
+    stats = db.home_stats()
+    assert stats["this_week"]["total_plays"] == 0
+    assert stats["this_week"]["top_artist"] is None
+    assert stats["this_week"]["most_replayed"] is None
+
+
+def test_home_stats_this_week_top_artists_list(db):
+    """this_week.top_artists returns up to 5 artists sorted by play count."""
+    now = int(time.time())
+    db.record("a.flac", status="tagged", artist="A", title="T1", album="Al", duration=100)
+    db.record("b.flac", status="tagged", artist="B", title="T2", album="Al", duration=100)
+    db.record("c.flac", status="tagged", artist="C", title="T3", album="Al", duration=100)
+    db.commit()
+
+    for i, (path, artist, count) in enumerate([("a.flac", "A", 10), ("b.flac", "B", 5), ("c.flac", "C", 2)]):
+        for _ in range(count):
+            db._conn.execute(
+                "INSERT INTO play_events (path, artist, genre, duration, played_at) VALUES (?,?,?,?,?)",
+                (path, artist, "Rock", 100, now - 3600),
+            )
+    db.commit()
+
+    stats = db.home_stats()
+    tw = stats["this_week"]
+    assert len(tw["top_artists"]) == 3
+    assert tw["top_artists"][0]["name"] == "A"
+    assert tw["top_artists"][1]["name"] == "B"
+    assert tw["top_artists"][2]["name"] == "C"
+
+
+def test_top_album_from_play_events(db):
+    """top_album should be derived from play_events, not scanned.play_count."""
+    now = int(time.time())
+    db.record("a.flac", status="tagged", artist="Daft Punk", title="One More Time",
+              album="Discovery", duration=320, genre="Electronic")
+    db.record("b.flac", status="tagged", artist="Daft Punk", title="Around the World",
+              album="Homework", duration=420, genre="Electronic")
+    db.commit()
+
+    for _ in range(10):
+        db._conn.execute(
+            "INSERT INTO play_events (path, artist, genre, duration, played_at) VALUES (?,?,?,?,?)",
+            ("a.flac", "Daft Punk", "Electronic", 320, now - 3600),
+        )
+    for _ in range(3):
+        db._conn.execute(
+            "INSERT INTO play_events (path, artist, genre, duration, played_at) VALUES (?,?,?,?,?)",
+            ("b.flac", "Daft Punk", "Electronic", 420, now - 3600),
+        )
+    db.commit()
+
+    stats = db.home_stats()
+    assert stats["top_album"]["album"] == "Discovery"
+    assert stats["top_album"]["play_count"] == 10
