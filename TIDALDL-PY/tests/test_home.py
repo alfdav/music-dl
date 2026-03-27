@@ -351,6 +351,18 @@ def test_recent_albums(db):
     assert stats["recent_albums"][0]["album"] == "Album 4"
 
 
+def test_home_stats_includes_card_inspect_fields(db):
+    """home_stats includes best_streak, completionist_albums, recent_albums."""
+    stats = db.home_stats()
+    assert "best_streak" in stats
+    assert isinstance(stats["best_streak"], int)
+    assert "completionist_albums" in stats
+    assert "complete" in stats["completionist_albums"]
+    assert "total" in stats["completionist_albums"]
+    assert "recent_albums" in stats
+    assert isinstance(stats["recent_albums"], list)
+
+
 def test_top_album_from_play_events(db):
     """top_album should be derived from play_events, not scanned.play_count."""
     now = int(time.time())
