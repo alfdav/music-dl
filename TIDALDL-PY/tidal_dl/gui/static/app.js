@@ -216,6 +216,17 @@ async function upgradeTrack(track) {
   }
 }
 
+// ---- GLOBAL 409 HANDLER ----
+const _origFetch = window.fetch;
+window.fetch = async (...args) => {
+  const resp = await _origFetch(...args);
+  if (resp.status === 409) {
+    const data = await resp.clone().json().catch(() => null);
+    toast(data?.detail || 'Operation in progress \u2014 try again shortly.', 'error');
+  }
+  return resp;
+};
+
 // ---- API ----
 const apiCache = {};
 
@@ -479,6 +490,9 @@ function navigate(view) {
       scrollEl.scrollTop = 0;
     }
   }
+
+  // Check for error banners after view renders
+  _checkErrorBanners();
 }
 
 navItems.forEach(n => {
@@ -4738,8 +4752,337 @@ function _renderScanResults(container, results) {
   });
 }
 
+// ---- SETUP WIZARD ----
+
+async function _checkSetup() {
+  try {
+    const resp = await fetch('/api/setup/status');
+    const data = await resp.json();
+    if (!data.setup_complete) {
+      _renderWizard(data);
+      return true;
+    }
+  } catch (e) {
+    console.error('Setup check failed:', e);
+  }
+  return false;
+}
+
+function _renderWizard(setupData) {
+  // Hide sidebar + player, show wizard fullscreen
+  const appEl = document.querySelector('.app');
+  const playerEl = document.querySelector('.player');
+  if (appEl) appEl.style.display = 'none';
+  if (playerEl) playerEl.style.display = 'none';
+
+  // Remove any existing wizard
+  const existing = document.querySelector('.setup-wizard');
+  if (existing) existing.remove();
+
+  const wizard = h('div', { className: 'setup-wizard' });
+  document.body.appendChild(wizard);
+
+  if (!setupData.logged_in) {
+    _wizardStepLogin(wizard, setupData);
+  } else if (!setupData.scan_paths_configured) {
+    _wizardStepPaths(wizard);
+  }
+}
+
+function _teardownWizard() {
+  const wizard = document.querySelector('.setup-wizard');
+  if (wizard) wizard.remove();
+  const appEl = document.querySelector('.app');
+  const playerEl = document.querySelector('.player');
+  if (appEl) appEl.style.display = '';
+  if (playerEl) playerEl.style.display = '';
+}
+
+function _wizardStepLogin(wizard, setupData) {
+  while (wizard.firstChild) wizard.removeChild(wizard.firstChild);
+
+  const card = h('div', { className: 'wizard-card' });
+
+  // Step indicator
+  card.appendChild(textEl('div', 'Step 1 of 2', 'wizard-step-label'));
+  card.appendChild(textEl('h2', 'Connect your Tidal account', 'wizard-title'));
+  card.appendChild(textEl('p', 'Sign in to stream and download from Tidal. You\'ll be given a code to enter on Tidal\'s website.', 'wizard-desc'));
+
+  const connectBtn = textEl('button', 'Connect to Tidal', 'wizard-btn');
+  const statusArea = h('div', { className: 'wizard-status' });
+
+  connectBtn.addEventListener('click', async () => {
+    connectBtn.disabled = true;
+    connectBtn.textContent = 'Starting...';
+    statusArea.textContent = '';
+
+    try {
+      const data = await api('/auth/login', { method: 'POST' });
+
+      if (data.status === 'already_logged_in') {
+        // Re-check setup and advance
+        const fresh = await fetch('/api/setup/status').then(r => r.json());
+        if (fresh.setup_complete) {
+          _teardownWizard();
+          _initApp();
+        } else {
+          _renderWizard(fresh);
+        }
+        return;
+      }
+
+      // Show device code
+      while (statusArea.firstChild) statusArea.removeChild(statusArea.firstChild);
+
+      const codeBox = h('div', { className: 'device-code' });
+      codeBox.appendChild(textEl('div', 'Go to the link below and enter this code:', 'device-code-label'));
+
+      const codeEl = h('div', { className: 'code' });
+      codeEl.textContent = data.user_code || '';
+      codeBox.appendChild(codeEl);
+
+      if (data.verification_uri) {
+        const linkEl = h('a', {
+          className: 'wizard-link',
+          href: data.verification_uri,
+          target: '_blank',
+          rel: 'noopener',
+        });
+        linkEl.textContent = data.verification_uri;
+        codeBox.appendChild(linkEl);
+
+        // Also auto-open in browser
+        window.open(data.verification_uri, '_blank');
+      }
+
+      statusArea.appendChild(codeBox);
+
+      const spinnerRow = h('div', { className: 'wizard-spinner-row' });
+      spinnerRow.appendChild(h('div', { className: 'spinner' }));
+      spinnerRow.appendChild(textEl('span', 'Waiting for you to confirm in browser...', 'wizard-waiting-text'));
+      statusArea.appendChild(spinnerRow);
+
+      connectBtn.textContent = 'Waiting...';
+
+      // Poll login status
+      const poll = setInterval(async () => {
+        try {
+          const status = await api('/auth/login/status');
+          if (status.status === 'success') {
+            clearInterval(poll);
+            // Re-check setup and advance
+            const fresh = await fetch('/api/setup/status').then(r => r.json());
+            if (fresh.setup_complete) {
+              _teardownWizard();
+              _initApp();
+            } else {
+              _renderWizard(fresh);
+            }
+          } else if (status.status === 'failed' || status.status === 'timeout') {
+            clearInterval(poll);
+            while (statusArea.firstChild) statusArea.removeChild(statusArea.firstChild);
+            const errMsg = status.status === 'timeout'
+              ? 'Login timed out. Please try again.'
+              : 'Login failed. Please try again.';
+            statusArea.appendChild(textEl('div', errMsg, 'wizard-error'));
+            connectBtn.disabled = false;
+            connectBtn.textContent = 'Retry';
+          }
+        } catch (_) {
+          clearInterval(poll);
+          statusArea.appendChild(textEl('div', 'Connection lost. Please try again.', 'wizard-error'));
+          connectBtn.disabled = false;
+          connectBtn.textContent = 'Retry';
+        }
+      }, 2000);
+
+    } catch (err) {
+      statusArea.appendChild(textEl('div', 'Failed to start login: ' + err.message, 'wizard-error'));
+      connectBtn.disabled = false;
+      connectBtn.textContent = 'Retry';
+    }
+  });
+
+  card.appendChild(connectBtn);
+  card.appendChild(statusArea);
+  wizard.appendChild(card);
+}
+
+function _wizardStepPaths(wizard) {
+  while (wizard.firstChild) wizard.removeChild(wizard.firstChild);
+
+  const card = h('div', { className: 'wizard-card' });
+  const paths = [];
+
+  // Step indicator
+  card.appendChild(textEl('div', 'Step 2 of 2', 'wizard-step-label'));
+  card.appendChild(textEl('h2', 'Where\'s your music?', 'wizard-title'));
+  card.appendChild(textEl('p', 'Tell us where to find your existing music files. You can add multiple folders.', 'wizard-desc'));
+
+  // Path input row
+  const inputRow = h('div', { className: 'path-input-row' });
+  const pathInput = h('input', { className: 'settings-input wizard-path-input', type: 'text', placeholder: '/path/to/your/music' });
+  inputRow.appendChild(pathInput);
+
+  const browseBtn = textEl('button', 'Browse', 'wizard-btn-sm');
+  browseBtn.addEventListener('click', async () => {
+    browseBtn.textContent = '...';
+    try {
+      const result = await api('/browse-directory', { method: 'POST' });
+      if (result.path) {
+        pathInput.value = result.path;
+      }
+    } catch (err) {
+      if (!err.message.includes('No directory selected')) {
+        toast('Browse failed: ' + err.message, 'error');
+      }
+    }
+    browseBtn.textContent = 'Browse';
+  });
+  inputRow.appendChild(browseBtn);
+
+  const addBtn = textEl('button', 'Add', 'wizard-btn-sm');
+  addBtn.addEventListener('click', async () => {
+    const val = pathInput.value.trim();
+    if (!val) return;
+    if (paths.includes(val)) {
+      toast('Path already added', 'error');
+      return;
+    }
+
+    // Validate path
+    addBtn.disabled = true;
+    addBtn.textContent = '...';
+    try {
+      const check = await api('/setup/validate-path', { method: 'POST', body: { path: val } });
+      if (!check.valid) {
+        toast(check.error || 'Invalid path', 'error');
+        addBtn.disabled = false;
+        addBtn.textContent = 'Add';
+        return;
+      }
+    } catch (err) {
+      toast('Validation failed: ' + err.message, 'error');
+      addBtn.disabled = false;
+      addBtn.textContent = 'Add';
+      return;
+    }
+
+    paths.push(val);
+    pathInput.value = '';
+    addBtn.disabled = false;
+    addBtn.textContent = 'Add';
+    _renderPathList();
+  });
+  inputRow.appendChild(addBtn);
+
+  card.appendChild(inputRow);
+
+  // Path list
+  const pathListEl = h('div', { className: 'wizard-paths' });
+  card.appendChild(pathListEl);
+
+  function _renderPathList() {
+    while (pathListEl.firstChild) pathListEl.removeChild(pathListEl.firstChild);
+    paths.forEach((p, i) => {
+      const row = h('div', { className: 'wizard-path-row' });
+      const pathText = textEl('span', p, 'wizard-path-text');
+      row.appendChild(pathText);
+      const removeBtn = textEl('button', '\u00d7', 'wizard-path-remove');
+      removeBtn.addEventListener('click', () => {
+        paths.splice(i, 1);
+        _renderPathList();
+      });
+      row.appendChild(removeBtn);
+      pathListEl.appendChild(row);
+    });
+    continueBtn.disabled = paths.length === 0;
+  }
+
+  // Continue button
+  const statusArea = h('div', { className: 'wizard-status' });
+  const continueBtn = textEl('button', 'Continue', 'wizard-btn');
+  continueBtn.disabled = true;
+
+  continueBtn.addEventListener('click', async () => {
+    if (paths.length === 0) return;
+    continueBtn.disabled = true;
+    continueBtn.textContent = 'Saving...';
+
+    try {
+      // Save scan_paths
+      await api('/settings', { method: 'PATCH', body: { scan_paths: paths.join(',') } });
+
+      // Start initial scan
+      continueBtn.textContent = 'Starting library scan...';
+      await api('/library/scan', { method: 'POST' }).catch(() => {});
+
+      // Done — launch the app
+      _teardownWizard();
+      _initApp();
+    } catch (err) {
+      statusArea.appendChild(textEl('div', 'Failed to save: ' + err.message, 'wizard-error'));
+      continueBtn.disabled = false;
+      continueBtn.textContent = 'Continue';
+    }
+  });
+
+  card.appendChild(continueBtn);
+  card.appendChild(statusArea);
+  wizard.appendChild(card);
+}
+
+// ---- ERROR BANNERS ----
+
+async function _checkErrorBanners() {
+  // Remove existing banners
+  document.querySelectorAll('.error-banner').forEach(b => b.remove());
+
+  // Check auth status
+  try {
+    const auth = await api('/auth/status');
+    if (!auth.logged_in) {
+      const banner = h('div', { className: 'error-banner' });
+      banner.appendChild(textEl('span', 'Tidal session expired.'));
+      const reloginBtn = textEl('button', 'Re-connect', 'banner-action');
+      reloginBtn.addEventListener('click', () => navigate('settings'));
+      banner.appendChild(reloginBtn);
+      const mainEl = document.querySelector('.main');
+      if (mainEl) mainEl.insertBefore(banner, mainEl.firstChild);
+    }
+  } catch (_) { /* silent */ }
+
+  // Library view: check scan_paths
+  if (state.view === 'library') {
+    try {
+      const settings = state.settings || await api('/settings');
+      const scanPaths = (settings.scan_paths || '').trim();
+      if (!scanPaths) {
+        const banner = h('div', { className: 'error-banner' });
+        banner.appendChild(textEl('span', 'No music directories configured.'));
+        const settingsBtn = textEl('button', 'Set up', 'banner-action');
+        settingsBtn.addEventListener('click', () => navigate('settings'));
+        banner.appendChild(settingsBtn);
+        const mainEl = document.querySelector('.main');
+        if (mainEl) mainEl.insertBefore(banner, mainEl.firstChild);
+      }
+    } catch (_) { /* silent */ }
+  }
+}
+
 // ---- INIT ----
-// Load settings into state for upgrade quality checks
-api('/settings').then(s => { state.settings = s; }).catch(() => {});
-refreshStatusLights();
-navigate(location.hash.slice(1) || 'home');
+
+function _initApp() {
+  // Load settings into state for upgrade quality checks
+  api('/settings').then(s => { state.settings = s; }).catch(() => {});
+  refreshStatusLights();
+  navigate(location.hash.slice(1) || 'home');
+}
+
+// Setup check on load — wizard or normal app
+(async () => {
+  const needsSetup = await _checkSetup();
+  if (!needsSetup) {
+    _initApp();
+  }
+})();

@@ -1,0 +1,11 @@
+services:
+  music-dl:
+    build: ./TIDALDL-PY
+    ports:
+      - "8765:8765"
+    volumes:
+      - ${MUSIC_DL_CONFIG:-~/.config/music-dl}:/config
+      - ${MUSIC_DIR:-./music}:/music
+    environment:
+      - MUSIC_DL_CONFIG_DIR=/config
+    restart: unless-stopped

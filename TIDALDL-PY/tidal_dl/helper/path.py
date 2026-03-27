@@ -72,6 +72,9 @@ def path_home() -> str:
 
 
 def path_config_base() -> str:
+    custom = os.environ.get("MUSIC_DL_CONFIG_DIR", "")
+    if custom:
+        return custom
     path_user_custom: str = os.environ.get("XDG_CONFIG_HOME", "")
     path_config: str = ".config" if not path_user_custom else ""
     base_dir = os.path.join(path_home(), path_config, APP_NAME)

@@ -54,3 +54,9 @@ TIDALDL-PY/tidal-gui.spec
 # Superpowers brainstorm artifacts
 .superpowers/
 .checkpoint/
+.playwright/
+test-results/
+*.pyc
+.venv/
+output/
+docs/superpowers/

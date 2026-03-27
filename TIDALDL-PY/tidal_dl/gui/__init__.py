@@ -26,6 +26,22 @@ def create_app(port: int = 8765) -> FastAPI:
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["X-CSRF-Token", "Content-Type"],
     )
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.requests import Request
+
+    class TokenRefreshMiddleware(BaseHTTPMiddleware):
+        _TIDAL_PATHS = ("/api/search", "/api/download", "/api/playlists")
+
+        async def dispatch(self, request: Request, call_next):
+            if any(request.url.path.startswith(p) for p in self._TIDAL_PATHS):
+                try:
+                    from tidal_dl.config import Tidal as _Tidal
+                    _Tidal()._ensure_token_fresh()
+                except Exception:
+                    pass
+            return await call_next(request)
+
+    app.add_middleware(TokenRefreshMiddleware)
     app.include_router(api_router, prefix="/api")
 
     @app.on_event("startup")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -85,11 +87,13 @@ def auth_login() -> dict:
 
         def _wait_for_login():
             try:
-                future.result()  # blocks until user completes browser login
+                future.result(timeout=300)  # 5 min timeout
                 if tidal.login_finalize():
                     _login_state["status"] = "success"
                 else:
                     _login_state["status"] = "failed"
+            except TimeoutError:
+                _login_state["status"] = "timeout"
             except Exception:
                 _login_state["status"] = "failed"
 
@@ -191,8 +195,11 @@ def update_settings(update: SettingsUpdate) -> dict:
     updates = update.model_dump(exclude_none=True)
 
     if "download_base_path" in updates:
-        if not validate_download_path(updates["download_base_path"]):
+        path = updates["download_base_path"]
+        if not validate_download_path(path):
             raise HTTPException(status_code=400, detail="Invalid download path")
+        if path and not os.access(path, os.W_OK):
+            raise HTTPException(status_code=400, detail="Download path is not writable")
 
     s = Settings()
     for field, value in updates.items():
