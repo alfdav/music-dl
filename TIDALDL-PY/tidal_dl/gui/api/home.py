@@ -119,6 +119,11 @@ def home_stats():
             "/api/library/art?path=" + quote(stats["most_replayed"]["cover_path"], safe="")
         )
 
+    # Convert recent_albums cover paths
+    for a in stats.get("recent_albums", []):
+        if a.get("cover_path"):
+            a["cover_url"] = "/api/library/art?path=" + quote(a["cover_path"], safe="")
+
     # Remove internal cover_path from response — only expose cover_url
     if stats.get("top_artist"):
         stats["top_artist"].pop("cover_path", None)
@@ -126,6 +131,8 @@ def home_stats():
         a.pop("cover_path", None)
     if stats.get("most_replayed"):
         stats["most_replayed"].pop("cover_path", None)
+    for a in stats.get("recent_albums", []):
+        a.pop("cover_path", None)
 
     # Convert this_week cover paths to URLs
     tw = stats.get("this_week", {})
@@ -154,13 +161,39 @@ def home_stats():
 @router.get("/home/artist-image")
 def artist_image(name: str = Query(..., description="Artist name")):
     """Return a Tidal artist photo URL, with DB cache."""
-    db = _get_db()
+    try:
+        db = _get_db()
+    except Exception:
+        return {"image_url": None}
+
     cached = db.get_artist_image(name)
     if cached is not None:
         # Empty string = cached miss
         return {"image_url": cached or None}
 
-    # Look up on Tidal
+    # Deezer first — no auth, fast, no session overhead
+    try:
+        import json
+        import urllib.parse
+        import urllib.request
+
+        deezer_url = (
+            "https://api.deezer.com/search/artist?q="
+            + urllib.parse.quote(name)
+            + "&limit=1"
+        )
+        resp = urllib.request.urlopen(deezer_url, timeout=3)
+        data = json.loads(resp.read())
+        if data.get("data"):
+            url = data["data"][0].get("picture_xl") or data["data"][0].get("picture_big")
+            if url:
+                db.set_artist_image(name, url)
+                db.commit()
+                return {"image_url": url}
+    except Exception:
+        pass
+
+    # Tidal fallback — only if session is already active (avoid cold-start)
     try:
         from tidalapi.artist import Artist as TidalArtist
 
@@ -178,29 +211,10 @@ def artist_image(name: str = Query(..., description="Artist name")):
     except Exception:
         pass
 
-    # Fallback: try Deezer (no auth required)
+    # No image found — cache the miss so we don't retry
     try:
-        import json
-        import urllib.parse
-        import urllib.request
-
-        deezer_url = (
-            "https://api.deezer.com/search/artist?q="
-            + urllib.parse.quote(name)
-            + "&limit=1"
-        )
-        resp = urllib.request.urlopen(deezer_url, timeout=5)
-        data = json.loads(resp.read())
-        if data.get("data"):
-            url = data["data"][0].get("picture_xl") or data["data"][0].get("picture_big")
-            if url:
-                db.set_artist_image(name, url)
-                db.commit()
-                return {"image_url": url}
+        db.set_artist_image(name, "")
+        db.commit()
     except Exception:
         pass
-
-    # No image found — cache the miss so we don't retry
-    db.set_artist_image(name, "")
-    db.commit()
     return {"image_url": None}

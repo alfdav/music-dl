@@ -1808,18 +1808,6 @@ body {
 .bento-artist.bento-hero {
   background: linear-gradient(145deg, #3d2a12, #5a3d1a, #2a1f14);
 }
-.bento-replayed {
-  background: linear-gradient(145deg, #1e1a2e, #2a1f3d, #1a1528);
-  border: 1px solid var(--glass-border);
-}
-
-/* Song tile (Most Replayed) specific */
-.bento-replayed .bento-sub {
-  color: var(--text-secondary);
-  font-family: inherit;
-  font-size: 0.75rem;
-  letter-spacing: 0;
-}
 
 /* ---- SPLIT TILE (two cards in one compartment) ---- */
 .bento-split {
@@ -1829,6 +1817,14 @@ body {
   background: transparent;
   border: none;
   padding: 0;
+}
+/* Disable tile-level hover on split container — each half animates independently */
+.bento-split:hover {
+  transform: none;
+  box-shadow: none;
+}
+.bento-split:active {
+  transform: none;
 }
 .bento-split .bento-half {
   flex: 1;
@@ -1841,6 +1837,16 @@ body {
   background: var(--surface);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius);
+  cursor: pointer;
+  transition: transform 0.3s ease-out, box-shadow 0.3s ease-out;
+}
+.bento-split .bento-half:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+}
+.bento-split .bento-half:active {
+  transform: translateY(-1px) scale(0.99);
+  transition-duration: 0.1s;
 }
 .bento-split .bento-half .bento-body {
   padding: 0;
@@ -1876,6 +1882,7 @@ body {
   gap: 5px;
   margin-top: 8px;
   padding-top: 0;
+  width: 100%;
 }
 .bar-row {
   display: flex;
@@ -3515,6 +3522,16 @@ body {
   font-size: 10px;
   letter-spacing: 1px;
   color: rgba(240,235,228,0.3);
+}
+
+.card-content-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .card-stats {

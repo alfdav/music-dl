@@ -930,34 +930,32 @@ class LibraryDB:
             best_streak = max(best_streak, current_run)
 
         # Completionist albums: albums where every scanned track has been played
-        completionist_complete = 0
-        completionist_total = 0
-        album_rows = c.execute(
-            """SELECT album, artist, COUNT(*) as track_count
-               FROM scanned
-               WHERE album IS NOT NULL AND status != 'unreadable'
-               GROUP BY album, artist"""
-        ).fetchall()
-        completionist_total = len(album_rows)
-        for ar in album_rows:
-            played = c.execute(
-                """SELECT COUNT(DISTINCT pe.path) FROM play_events pe
-                   JOIN scanned s ON s.path = pe.path
-                   WHERE s.album = ? AND s.artist = ?""",
-                (ar["album"], ar["artist"]),
-            ).fetchone()[0]
-            if played >= ar["track_count"]:
-                completionist_complete += 1
+        # Single query instead of N+1
+        completionist_row = c.execute(
+            """SELECT
+                 COUNT(*) as total,
+                 SUM(CASE WHEN played_count >= track_count THEN 1 ELSE 0 END) as complete
+               FROM (
+                 SELECT s.album, s.artist, COUNT(*) as track_count,
+                        COUNT(DISTINCT pe.path) as played_count
+                 FROM scanned s
+                 LEFT JOIN play_events pe ON pe.path = s.path
+                 WHERE s.album IS NOT NULL AND s.status != 'unreadable'
+                 GROUP BY s.album, s.artist
+               )"""
+        ).fetchone()
+        completionist_total = completionist_row["total"] if completionist_row else 0
+        completionist_complete = completionist_row["complete"] if completionist_row else 0
 
         # Recently scanned albums (3 most recent by rowid)
         recent_albums = [
-            {"album": r["album"], "artist": r["artist"]}
+            {"album": r["album"], "artist": r["artist"], "cover_path": r["cover_path"]}
             for r in c.execute(
-                """SELECT album, artist, MAX(rowid) as latest
+                """SELECT album, artist, MAX(rowid) as latest, MIN(path) as cover_path
                    FROM scanned
                    WHERE album IS NOT NULL AND status != 'unreadable'
                    GROUP BY album, artist
-                   ORDER BY latest DESC LIMIT 3"""
+                   ORDER BY latest DESC LIMIT 9"""
             ).fetchall()
         ]
 

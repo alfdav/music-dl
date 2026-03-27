@@ -612,10 +612,6 @@ function _renderHomeGrid(container, data, totalPlays) {
   if (heroArtist && heroArtist.play_count >= 5) {
     grid.appendChild(_artistTile(heroArtist, true));
   }
-  if (data.most_replayed && data.most_replayed.play_count >= 10) {
-    grid.appendChild(_replayedTile(data.most_replayed));
-  }
-
   // Genre tile: prefer this_week genre data, split if on-repeat qualifies
   const recentGenres = hasRecent && tw.genre_breakdown && tw.genre_breakdown.length > 0;
   const hasPlayGenres = recentGenres || (data.genre_breakdown && data.genre_breakdown.length > 0);
@@ -703,26 +699,6 @@ function _artistTile(artist, hero) {
   return tile;
 }
 
-function _replayedTile(track) {
-  const tile = h('div', { className: 'bento-tile bento-replayed bento-hero' });
-  if (track.cover_url) {
-    tile.appendChild(h('img', { className: 'bento-bg-art', src: track.cover_url, alt: '' }));
-  }
-  tile.appendChild(h('div', { className: 'bento-overlay bento-overlay-purple' }));
-  const body = h('div', { className: 'bento-body' });
-  body.appendChild(textEl('div', 'Most Replayed', 'bento-eyebrow'));
-  body.appendChild(textEl('div', track.name, 'bento-label'));
-  body.appendChild(textEl('div', track.artist + ' \u2014 ' + track.album, 'bento-sub'));
-  body.appendChild(textEl('div', track.play_count + ' plays', 'bento-stat'));
-  tile.appendChild(body);
-  tile.appendChild(textEl('span', 'Play', 'bento-hint'));
-  tile.addEventListener('click', () => {
-    const t = { ...track, local_path: track.path, is_local: true };
-    playTrack(t);
-  });
-  a11yClick(tile);
-  return tile;
-}
 
 // Build an insight line: text with one gold keyword
 function _insight(before, keyword, after) {
@@ -937,9 +913,14 @@ const _inspect = (() => {
     body.appendChild(textEl('div', data.statLabel, 'bento-stat-label'));
 
     // Content area — render function provided by the deck builder
+    // Wrapped in a flex container that fills the middle space and centers content
     if (data.renderContent) {
       const content = data.renderContent();
-      if (content) body.appendChild(content);
+      if (content) {
+        const contentWrap = h('div', { className: 'card-content-area' });
+        contentWrap.appendChild(content);
+        body.appendChild(contentWrap);
+      }
     }
 
     // Stats key-value pairs
@@ -1197,6 +1178,104 @@ const _inspect = (() => {
 
 // ---- DECK BUILDERS (card content per tile type) ----
 
+// SVG ring chart — renders a donut arc with percentage label
+function _ringChart(pct, label, opts) {
+  const size = (opts && opts.size) || 150;
+  const stroke = (opts && opts.stroke) || 10;
+  const color = (opts && opts.color) || 'var(--accent)';
+  const trackColor = (opts && opts.trackColor) || 'rgba(212,160,83,0.12)';
+  const r = (size - stroke) / 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ - (Math.min(Math.max(pct, 0), 100) / 100) * circ;
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('width', size);
+  svg.setAttribute('height', size);
+  svg.setAttribute('viewBox', '0 0 ' + size + ' ' + size);
+  svg.style.display = 'block';
+  svg.style.margin = '0 auto';
+
+  // Track
+  const track = document.createElementNS(ns, 'circle');
+  track.setAttribute('cx', size / 2);
+  track.setAttribute('cy', size / 2);
+  track.setAttribute('r', r);
+  track.setAttribute('fill', 'none');
+  track.setAttribute('stroke', trackColor);
+  track.setAttribute('stroke-width', stroke);
+  svg.appendChild(track);
+
+  // Arc
+  const arc = document.createElementNS(ns, 'circle');
+  arc.setAttribute('cx', size / 2);
+  arc.setAttribute('cy', size / 2);
+  arc.setAttribute('r', r);
+  arc.setAttribute('fill', 'none');
+  arc.setAttribute('stroke', color);
+  arc.setAttribute('stroke-width', stroke);
+  arc.setAttribute('stroke-linecap', 'round');
+  arc.setAttribute('stroke-dasharray', circ);
+  arc.setAttribute('stroke-dashoffset', offset);
+  arc.setAttribute('transform', 'rotate(-90 ' + size / 2 + ' ' + size / 2 + ')');
+  svg.appendChild(arc);
+
+  // Center label
+  if (label) {
+    const text = document.createElementNS(ns, 'text');
+    text.setAttribute('x', size / 2);
+    text.setAttribute('y', size / 2);
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('dominant-baseline', 'central');
+    text.setAttribute('fill', color);
+    text.setAttribute('font-family', 'var(--mono)');
+    text.setAttribute('font-size', size < 100 ? '12' : '16');
+    text.textContent = label;
+    svg.appendChild(text);
+  }
+  return svg;
+}
+
+// Horizontal comparison bars (this vs that)
+function _comparisonBars(items) {
+  const max = Math.max(...items.map(i => i.value), 1);
+  const wrap = h('div', { style: 'display:flex;flex-direction:column;gap:14px;width:100%;' });
+  for (const item of items) {
+    const row = h('div', { style: 'display:flex;flex-direction:column;gap:3px;' });
+    const labelRow = h('div', { style: 'display:flex;justify-content:space-between;font-size:12px;' });
+    const lbl = h('span', { style: 'color:var(--text-muted);' });
+    lbl.textContent = item.label;
+    const val = h('span', { style: 'color:' + (item.color || 'var(--text-secondary)') + ';font-family:var(--mono);' });
+    val.textContent = item.display || String(item.value);
+    labelRow.appendChild(lbl);
+    labelRow.appendChild(val);
+    row.appendChild(labelRow);
+    const barBg = h('div', { style: 'height:8px;border-radius:4px;background:rgba(212,160,83,0.1);overflow:hidden;' });
+    const fill = h('div', { style: 'height:100%;border-radius:4px;background:' + (item.color || 'var(--accent)') + ';width:' + Math.round((item.value / max) * 100) + '%;transition:width 0.3s ease;' });
+    barBg.appendChild(fill);
+    row.appendChild(barBg);
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+// Album art thumbnail grid
+function _albumArtGrid(albums) {
+  const grid = h('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:4px;border-radius:8px;overflow:hidden;max-width:240px;margin:0 auto;' });
+  const shown = albums.slice(0, 9);
+  for (const a of shown) {
+    if (a.cover_url) {
+      const img = h('img', { src: a.cover_url, alt: a.album || '', style: 'width:100%;aspect-ratio:1;object-fit:cover;display:block;' });
+      img.loading = 'lazy';
+      grid.appendChild(img);
+    } else {
+      const placeholder = h('div', { style: 'width:100%;aspect-ratio:1;background:rgba(212,160,83,0.08);' });
+      grid.appendChild(placeholder);
+    }
+  }
+  return grid;
+}
+
 function _listeningTimeDeck(data) {
   const deck = [];
   const hrs = data.listening_time_hours || 0;
@@ -1243,7 +1322,7 @@ function _listeningTimeDeck(data) {
       statLabel: 'Peak hour',
       rarity: data.peak_hour >= 22 || data.peak_hour <= 4 ? 'uncommon' : 'common',
       renderContent: () => {
-        const chart = h('div', { style: 'display:flex;align-items:flex-end;gap:1px;margin-top:12px;height:40px;' });
+        const chart = h('div', { style: 'display:flex;align-items:flex-end;gap:2px;height:80px;width:100%;' });
         const max = Math.max(...data.peak_hours, 1);
         for (let i = 0; i < 24; i++) {
           const pct = (data.peak_hours[i] / max) * 100;
@@ -1273,7 +1352,7 @@ function _listeningTimeDeck(data) {
       title: data.streak + (data.streak === 1 ? ' day' : ' days'),
       statLabel: 'Streak',
       rarity: streakRarity,
-      renderContent: null,
+      renderContent: () => _ringChart(streakPct, streakPct + '%', { color: streakRarity === 'legendary' ? 'var(--accent)' : streakRarity === 'epic' ? 'rgba(160,120,210,0.8)' : 'rgba(126,201,122,0.7)' }),
       stats: [
         { key: 'Current streak', value: data.streak + ' days' },
         { key: 'Best ever', value: bestStreak + ' days' },
@@ -1294,7 +1373,10 @@ function _listeningTimeDeck(data) {
       title: (pct >= 0 ? '+' : '') + pct + '%',
       statLabel: 'vs last week',
       rarity: Math.abs(pct) >= 50 ? 'uncommon' : 'common',
-      renderContent: null,
+      renderContent: () => _comparisonBars([
+        { label: 'This week', value: tw, display: Math.round(tw) + ' min', color: 'var(--accent)' },
+        { label: 'Last week', value: lw, display: Math.round(lw) + ' min', color: 'rgba(212,160,83,0.35)' },
+      ]),
       stats: [
         { key: 'This week', value: Math.round(tw) + ' min (' + twTracks + ' plays)' },
         { key: 'Last week', value: Math.round(lw) + ' min' },
@@ -1339,7 +1421,7 @@ function _genreDeck(topGenre, breakdown, fromLibrary, data) {
       title: rarestPct + '%',
       statLabel: 'Deep cut',
       rarity: rarestPct <= 5 ? 'rare' : 'common',
-      renderContent: null,
+      renderContent: () => _ringChart(rarestPct, rarest.genre, { color: 'rgba(100,160,220,0.7)' }),
       stats: [
         { key: 'Rarest genre', value: rarest.genre },
         { key: 'Plays', value: rarest.count.toLocaleString() },
@@ -1360,7 +1442,10 @@ function _genreDeck(topGenre, breakdown, fromLibrary, data) {
       title: weekTop,
       statLabel: 'Shifting',
       rarity: 'uncommon',
-      renderContent: null,
+      renderContent: () => _comparisonBars([
+        { label: 'This week: ' + weekTop, value: weekTopCount, display: weekTopCount + ' plays', color: 'var(--accent)' },
+        { label: 'All-time: ' + allTimeTop, value: allTimeTopCount, display: allTimeTopCount + ' plays', color: 'rgba(212,160,83,0.35)' },
+      ]),
       stats: [
         { key: 'This week\'s #1', value: weekTop + ' (' + weekTopCount + ' plays)' },
         { key: 'All-time #1', value: allTimeTop + ' (' + allTimeTopCount + ' plays)' },
@@ -1429,7 +1514,7 @@ function _tracksDeck(count, genres, data) {
       title: data.unplayed_count.toLocaleString(),
       statLabel: 'Unplayed',
       rarity: unplayedPct < 10 ? 'uncommon' : 'common',
-      renderContent: null,
+      renderContent: () => _ringChart(100 - unplayedPct, playedPct + '% played', { color: unplayedPct < 10 ? 'rgba(126,201,122,0.7)' : 'var(--accent)' }),
       stats: [
         { key: 'Never played', value: data.unplayed_count.toLocaleString() + ' tracks' },
         { key: 'Unplayed share', value: unplayedPct + '% of library' },
@@ -1479,7 +1564,7 @@ function _albumsDeck(count, artists, data) {
       title: ca.complete + ' / ' + ca.total,
       statLabel: 'Completionist',
       rarity,
-      renderContent: null,
+      renderContent: () => _ringChart(pct, pct + '%', { color: pct >= 50 ? 'rgba(126,201,122,0.7)' : 'var(--accent)' }),
       stats: [
         { key: 'Fully played', value: ca.complete + ' albums' },
         { key: 'Partially explored', value: incomplete + ' albums' },
@@ -1495,7 +1580,7 @@ function _albumsDeck(count, artists, data) {
       title: data.recent_albums.length + ' new',
       statLabel: 'Recently added',
       rarity: 'common',
-      renderContent: null,
+      renderContent: () => _albumArtGrid(data.recent_albums),
       stats: [
         ...data.recent_albums.map(a => ({ key: a.artist, value: a.album })),
         { key: 'Library growth', value: (data.collection_growth || 0) + ' tracks this month' },
