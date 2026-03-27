@@ -1881,6 +1881,42 @@ body {
   letter-spacing: 0;
 }
 
+/* ---- SPLIT TILE (two half-tiles stacked vertically) ---- */
+.bento-split {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.bento-split .bento-half {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.bento-split .bento-half:first-child {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.bento-split .bento-half .bento-body {
+  padding: 0;
+  height: auto;
+}
+.bento-split .bento-half .bento-insight {
+  display: none;
+}
+.bento-on-repeat .bento-label {
+  font-size: 0.9rem;
+  -webkit-line-clamp: 1;
+}
+.bento-on-repeat .bento-sub {
+  font-size: 0.7rem;
+}
+.bento-on-repeat .bento-stat {
+  font-size: 0.6rem;
+}
+
 /* ---- MINI BAR CHART ---- */
 .mini-bar-chart {
   display: flex;
