@@ -5052,8 +5052,8 @@ function _wizardStepPaths(wizard) {
     continueBtn.textContent = 'Saving...';
 
     try {
-      // Save scan_paths
-      await api('/settings', { method: 'PATCH', body: { scan_paths: paths.join(',') } });
+      // Save scan_paths + set download path to first scan path
+      await api('/settings', { method: 'PATCH', body: { scan_paths: paths.join(','), download_base_path: paths[0] } });
 
       // Start initial scan
       continueBtn.textContent = 'Starting library scan...';
