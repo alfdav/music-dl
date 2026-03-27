@@ -627,10 +627,19 @@ function _renderHomeGrid(container, data, totalPlays) {
   const onRepeatTrack = hasRecent && tw.most_replayed && tw.most_replayed.play_count >= 3
     ? tw.most_replayed : null;
   if (genreSource.length > 0) {
-    grid.appendChild(_genreTile(genreLabel, genreSource, fromLibrary, onRepeatTrack));
+    const genreTile = _genreTile(genreLabel, genreSource, fromLibrary, onRepeatTrack);
+    genreTile._homeData = data;
+    // For split tiles, also set on the genre half
+    if (onRepeatTrack) {
+      const genreHalf = genreTile.querySelector('.bento-half:not(.bento-on-repeat)');
+      if (genreHalf) genreHalf._homeData = data;
+    }
+    grid.appendChild(genreTile);
   }
   if (data.weekly_activity && data.weekly_activity.some(v => v > 0)) {
-    grid.appendChild(_listeningTimeTile(data.listening_time_hours, data.weekly_activity, data));
+    const ltTile = _listeningTimeTile(data.listening_time_hours, data.weekly_activity, data);
+    ltTile._homeData = data;
+    grid.appendChild(ltTile);
   }
 
   // === Secondary tiles (tier 1 — hidden on compact) ===
@@ -645,10 +654,14 @@ function _renderHomeGrid(container, data, totalPlays) {
 
   // === Library tiles (tier 2 — hidden on compact) ===
   if (established || data.track_count > 0) {
-    grid.appendChild(_t(_tracksTile(data.track_count, data.track_genres || [], data), 2));
+    const tTile = _tracksTile(data.track_count, data.track_genres || [], data);
+    tTile._homeData = data;
+    grid.appendChild(_t(tTile, 2));
   }
   if (established || data.album_count > 0) {
-    grid.appendChild(_t(_albumsTile(data.album_count, data.album_artists, data), 2));
+    const aTile = _albumsTile(data.album_count, data.album_artists, data);
+    aTile._homeData = data;
+    grid.appendChild(_t(aTile, 2));
   }
 
   container.appendChild(grid);
@@ -808,25 +821,6 @@ function _albumsInsight(count, artists) {
   return _insightBlock(lines);
 }
 
-function _expandToggle(tile) {
-  tile.addEventListener('click', () => tile.classList.toggle('bento-expanded'));
-  a11yClick(tile);
-  tile.appendChild(textEl('span', 'More', 'bento-hint'));
-  tile.appendChild(textEl('span', '\u25BE', 'bento-chevron'));
-}
-
-function _detailBlock(items) {
-  const block = h('div', { className: 'bento-detail' });
-  items.forEach((item, i) => {
-    const row = h('div', { className: 'bento-detail-row' });
-    row.style.transitionDelay = (i * 40) + 'ms';
-    row.appendChild(textEl('span', item.label, 'bento-detail-key'));
-    row.appendChild(textEl('span', item.value, 'bento-detail-val'));
-    block.appendChild(row);
-  });
-  return block;
-}
-
 function _genreTile(topGenre, breakdown, fromLibrary, onRepeatTrack) {
   if (onRepeatTrack) {
     // Split tile: condensed genre on top, on-repeat on bottom
@@ -837,6 +831,12 @@ function _genreTile(topGenre, breakdown, fromLibrary, onRepeatTrack) {
     body.appendChild(textEl('div', fromLibrary ? 'Top genre' : 'Recent genre', 'bento-stat-label'));
     body.appendChild(_barChart(breakdown.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))));
     genreHalf.appendChild(body);
+    genreHalf.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const deck = _genreDeck(topGenre, breakdown, fromLibrary, genreHalf._homeData || {});
+      if (deck.length > 1) _inspect.open(genreHalf, deck);
+    });
+    a11yClick(genreHalf);
     tile.appendChild(genreHalf);
     tile.appendChild(_onRepeatHalf(onRepeatTrack));
     return tile;
@@ -848,16 +848,14 @@ function _genreTile(topGenre, breakdown, fromLibrary, onRepeatTrack) {
   body.appendChild(textEl('div', fromLibrary ? 'Top genre' : 'Recent genre', 'bento-stat-label'));
   body.appendChild(_genreInsight(topGenre, breakdown, fromLibrary));
   body.appendChild(_barChart(breakdown.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))));
-  // Detail: full genre breakdown beyond top 4
-  const allGenres = breakdown.map(g => ({
-    label: g.genre,
-    value: g.count + (fromLibrary ? ' tracks' : ' plays')
-  }));
-  if (allGenres.length > 4) {
-    body.appendChild(_detailBlock(allGenres.slice(4)));
-  }
   tile.appendChild(body);
-  if (allGenres.length > 4) _expandToggle(tile);
+  tile._inspectDeck = null; // lazy — built on click
+  tile._inspectDeckArgs = { topGenre, breakdown, fromLibrary };
+  tile.addEventListener('click', () => {
+    if (!tile._inspectDeck) tile._inspectDeck = _genreDeck(tile._inspectDeckArgs.topGenre, tile._inspectDeckArgs.breakdown, tile._inspectDeckArgs.fromLibrary, tile._homeData || {});
+    if (tile._inspectDeck.length > 1) _inspect.open(tile, tile._inspectDeck);
+  });
+  a11yClick(tile);
   return tile;
 }
 
@@ -1173,6 +1171,244 @@ const _inspect = (() => {
   return { open, dismiss, isOpen };
 })();
 
+// ---- DECK BUILDERS (card content per tile type) ----
+
+function _listeningTimeDeck(data) {
+  const deck = [];
+  // Card 0: Main (what bento already shows)
+  deck.push({
+    title: Math.round(data.listening_time_hours) + 'h',
+    statLabel: 'Listening time',
+    rarity: 'common',
+    renderContent: () => {
+      const wrap = h('div');
+      const ins = _listeningInsight(data.listening_time_hours, data.weekly_activity);
+      if (ins) wrap.appendChild(ins);
+      wrap.appendChild(_weeklyChart(data.weekly_activity));
+      return wrap;
+    },
+    stats: [],
+    flavor: null,
+  });
+  // Card 1: Peak Hour
+  if (data.peak_hour !== undefined && data.peak_hours) {
+    const h12 = data.peak_hour % 12 || 12;
+    const ampm = data.peak_hour < 12 ? 'am' : 'pm';
+    deck.push({
+      title: h12 + ampm,
+      statLabel: 'Peak hour',
+      rarity: data.peak_hour >= 22 || data.peak_hour <= 4 ? 'uncommon' : 'common',
+      renderContent: () => {
+        // Mini 24-bar chart from peak_hours array
+        const chart = h('div', { style: 'display:flex;align-items:flex-end;gap:1px;margin-top:12px;height:40px;' });
+        const max = Math.max(...data.peak_hours, 1);
+        for (let i = 0; i < 24; i++) {
+          const pct = (data.peak_hours[i] / max) * 100;
+          const bar = h('div', {
+            style: `flex:1;background:${i === data.peak_hour ? 'var(--accent)' : 'rgba(212,160,83,0.15)'};height:${Math.max(2, pct)}%;border-radius:1px;`
+          });
+          chart.appendChild(bar);
+        }
+        return chart;
+      },
+      stats: [
+        { key: 'Most active', value: h12 + ':00' + ampm },
+        { key: 'Least active', value: (() => {
+          const minH = data.peak_hours.indexOf(Math.min(...data.peak_hours));
+          const m12 = minH % 12 || 12;
+          return m12 + ':00' + (minH < 12 ? 'am' : 'pm');
+        })() },
+      ],
+      flavor: data.peak_hour >= 0 && data.peak_hour <= 4 ? 'Nothing good happens after midnight. Except music.' : null,
+    });
+  }
+  // Card 2: Streak
+  if (data.streak !== undefined) {
+    const streakRarity = data.streak >= 30 ? 'legendary' : data.streak >= 14 ? 'epic' : data.streak >= 7 ? 'rare' : data.streak >= 3 ? 'uncommon' : 'common';
+    deck.push({
+      title: data.streak + (data.streak === 1 ? ' day' : ' days'),
+      statLabel: 'Streak',
+      rarity: streakRarity,
+      renderContent: null,
+      stats: [
+        { key: 'Current', value: data.streak + ' days' },
+        { key: 'Best ever', value: (data.best_streak || data.streak) + ' days' },
+      ],
+      flavor: data.streak >= 30 ? 'Gotta catch \'em all.' : null,
+    });
+  }
+  // Card 3: Week vs Last
+  if (data.week_vs_last && data.week_vs_last.last_week > 0) {
+    const diff = data.week_vs_last.this_week - data.week_vs_last.last_week;
+    const pct = Math.round((diff / data.week_vs_last.last_week) * 100);
+    deck.push({
+      title: (pct >= 0 ? '+' : '') + pct + '%',
+      statLabel: 'vs last week',
+      rarity: 'common',
+      renderContent: null,
+      stats: [
+        { key: 'This week', value: Math.round(data.week_vs_last.this_week) + ' min' },
+        { key: 'Last week', value: Math.round(data.week_vs_last.last_week) + ' min' },
+        { key: 'Change', value: (pct >= 0 ? '+' : '') + pct + '%', color: pct >= 0 ? 'var(--green)' : 'var(--red)' },
+      ],
+      flavor: null,
+    });
+  }
+  return deck;
+}
+
+function _genreDeck(topGenre, breakdown, fromLibrary, data) {
+  const deck = [];
+  const tw = data.this_week || {};
+  // Card 0: Main
+  deck.push({
+    title: topGenre || 'None',
+    statLabel: fromLibrary ? 'Top genre' : 'Recent genre',
+    rarity: 'common',
+    renderContent: () => _barChart(breakdown.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))),
+    stats: breakdown.slice(0, 6).map(g => ({ key: g.genre, value: g.count + (fromLibrary ? ' tracks' : ' plays') })),
+    flavor: null,
+  });
+  // Card 1: Deep Cut (rarest genre with plays)
+  if (breakdown.length >= 3) {
+    const rarest = breakdown[breakdown.length - 1];
+    const total = breakdown.reduce((s, g) => s + g.count, 0);
+    const pct = total > 0 ? Math.round((rarest.count / total) * 100) : 0;
+    deck.push({
+      title: pct + '%',
+      statLabel: 'Deep cut',
+      rarity: pct <= 5 ? 'rare' : 'common',
+      renderContent: null,
+      stats: [
+        { key: 'Rarest genre', value: rarest.genre },
+        { key: 'Plays', value: rarest.count.toString() },
+        { key: 'Share', value: pct + '% of total' },
+      ],
+      flavor: pct <= 5 ? 'A person of refined and unusual taste.' : null,
+    });
+  }
+  // Card 2: Shifting (this week vs all-time)
+  const allTimeTop = data.genre_breakdown && data.genre_breakdown[0] ? data.genre_breakdown[0].genre : null;
+  const weekTop = tw.genre_breakdown && tw.genre_breakdown[0] ? tw.genre_breakdown[0].genre : null;
+  if (allTimeTop && weekTop && allTimeTop !== weekTop) {
+    deck.push({
+      title: weekTop,
+      statLabel: 'Shifting',
+      rarity: 'uncommon',
+      renderContent: null,
+      stats: [
+        { key: 'This week', value: weekTop },
+        { key: 'All-time', value: allTimeTop },
+      ],
+      flavor: 'Tastes evolve. The ear knows what it wants.',
+    });
+  }
+  return deck;
+}
+
+function _tracksDeck(count, genres, data) {
+  const deck = [];
+  // Card 0: Main
+  deck.push({
+    title: count.toLocaleString(),
+    statLabel: 'Tracks',
+    rarity: 'common',
+    renderContent: () => {
+      if (genres && genres.length > 0) {
+        return _barChart(genres.slice(0, 4).map(g => ({ label: g.genre, value: g.count })));
+      }
+      return null;
+    },
+    stats: [],
+    flavor: null,
+  });
+  // Card 1: Quality
+  if (data.format_breakdown && data.format_breakdown.length > 0) {
+    const topFormat = data.format_breakdown[0];
+    const topPct = Math.round((topFormat.count / count) * 100);
+    const lossless = data.format_breakdown.filter(f => ['FLAC', 'WAV', 'ALAC', 'AIFF'].includes(f.format.toUpperCase())).reduce((s, f) => s + f.count, 0);
+    const losslessPct = Math.round((lossless / count) * 100);
+    const qualityRarity = losslessPct >= 80 ? 'rare' : 'common';
+    deck.push({
+      title: topFormat.format + ' ' + topPct + '%',
+      statLabel: 'Quality',
+      rarity: qualityRarity,
+      renderContent: () => _barChart(data.format_breakdown.slice(0, 4).map(f => ({ label: f.format, value: f.count }))),
+      stats: [
+        { key: 'Lossless', value: losslessPct + '%' },
+        { key: 'Formats', value: data.format_breakdown.length.toString() },
+      ],
+      flavor: losslessPct >= 80 ? 'Your ears deserve nothing less.' : null,
+    });
+  }
+  // Card 2: Unplayed
+  if (data.unplayed_count > 0) {
+    const unplayedPct = Math.round((data.unplayed_count / count) * 100);
+    deck.push({
+      title: data.unplayed_count.toLocaleString(),
+      statLabel: 'Unplayed',
+      rarity: unplayedPct < 10 ? 'uncommon' : 'common',
+      renderContent: null,
+      stats: [
+        { key: 'Never played', value: data.unplayed_count.toLocaleString() + ' tracks' },
+        { key: 'Share', value: unplayedPct + '% of library' },
+      ],
+      flavor: unplayedPct < 10 ? 'Achievement unlocked: No stone unturned.' : null,
+    });
+  }
+  return deck;
+}
+
+function _albumsDeck(count, artists, data) {
+  const deck = [];
+  // Card 0: Main
+  deck.push({
+    title: count.toLocaleString(),
+    statLabel: 'Albums',
+    rarity: 'common',
+    renderContent: () => {
+      if (artists && artists.length > 0) {
+        return _barChart(artists.slice(0, 4).map(a => ({ label: a.artist, value: a.count })));
+      }
+      return null;
+    },
+    stats: data.top_album ? [
+      { key: 'Most played', value: data.top_album.album },
+      { key: 'Artist', value: data.top_album.artist },
+    ] : [],
+    flavor: null,
+  });
+  // Card 1: Completionist
+  if (data.completionist_albums && data.completionist_albums.total > 0) {
+    const ca = data.completionist_albums;
+    const pct = Math.round((ca.complete / ca.total) * 100);
+    const rarity = pct >= 100 ? 'legendary' : pct >= 50 ? 'epic' : 'common';
+    deck.push({
+      title: ca.complete + ' / ' + ca.total,
+      statLabel: 'Completionist',
+      rarity,
+      renderContent: null,
+      stats: [
+        { key: 'Fully played', value: ca.complete + ' albums' },
+        { key: 'Completion', value: pct + '%' },
+      ],
+      flavor: pct >= 100 ? 'Achievement unlocked: No stone unturned.' : null,
+    });
+  }
+  // Card 2: Recent
+  if (data.recent_albums && data.recent_albums.length > 0) {
+    deck.push({
+      title: data.recent_albums.length + ' new',
+      statLabel: 'Recent',
+      rarity: 'common',
+      renderContent: null,
+      stats: data.recent_albums.map(a => ({ key: a.artist, value: a.album })),
+      flavor: null,
+    });
+  }
+  return deck;
+}
+
 function _listeningTimeTile(hours, weekly, data) {
   const tile = h('div', { className: 'bento-tile bento-stat-tile' });
   const body = h('div', { className: 'bento-body' });
@@ -1181,26 +1417,12 @@ function _listeningTimeTile(hours, weekly, data) {
   const ins = _listeningInsight(hours, weekly);
   if (ins) body.appendChild(ins);
   body.appendChild(_weeklyChart(weekly));
-  // Detail: deeper listening habits
-  const details = [];
-  if (data.peak_hour !== undefined) {
-    const h12 = data.peak_hour % 12 || 12;
-    const ampm = data.peak_hour < 12 ? 'am' : 'pm';
-    details.push({ label: 'You listen most around', value: h12 + ampm });
-  }
-  if (data.streak > 0) details.push({ label: 'Current streak', value: data.streak + ' day' + (data.streak !== 1 ? 's' : '') });
-  if (data.week_vs_last) {
-    const diff = data.week_vs_last.this_week - data.week_vs_last.last_week;
-    details.push({ label: 'This week', value: Math.round(data.week_vs_last.this_week) + ' min' });
-    if (data.week_vs_last.last_week > 0) {
-      const pct = Math.round((diff / data.week_vs_last.last_week) * 100);
-      details.push({ label: 'vs last week', value: (pct >= 0 ? '+' : '') + pct + '%' });
-    }
-  }
-  if (data.total_plays) details.push({ label: 'Lifetime plays', value: data.total_plays.toLocaleString() });
-  if (details.length > 0) body.appendChild(_detailBlock(details));
   tile.appendChild(body);
-  if (details.length > 0) _expandToggle(tile);
+  tile.addEventListener('click', () => {
+    const deck = _listeningTimeDeck(tile._homeData || data);
+    if (deck.length > 1) _inspect.open(tile, deck);
+  });
+  a11yClick(tile);
   return tile;
 }
 
@@ -1213,21 +1435,12 @@ function _tracksTile(count, genres, data) {
   if (genres && genres.length > 0) {
     body.appendChild(_barChart(genres.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))));
   }
-  // Detail: how your library is stored
-  const details = [];
-  if (data.format_breakdown && data.format_breakdown.length > 0) {
-    for (const f of data.format_breakdown) {
-      const pct = Math.round((f.count / count) * 100);
-      details.push({ label: f.format, value: f.count.toLocaleString() + ' (' + pct + '%)' });
-    }
-  }
-  if (data.unplayed_count > 0) {
-    const pct = Math.round((data.unplayed_count / count) * 100);
-    details.push({ label: 'Never played', value: data.unplayed_count.toLocaleString() + ' (' + pct + '%)' });
-  }
-  if (details.length > 0) body.appendChild(_detailBlock(details));
   tile.appendChild(body);
-  if (details.length > 0) _expandToggle(tile);
+  tile.addEventListener('click', () => {
+    const deck = _tracksDeck(count, genres, tile._homeData || data);
+    if (deck.length > 1) _inspect.open(tile, deck);
+  });
+  a11yClick(tile);
   return tile;
 }
 
@@ -1240,17 +1453,12 @@ function _albumsTile(count, artists, data) {
   if (artists && artists.length > 0) {
     body.appendChild(_barChart(artists.slice(0, 4).map(a => ({ label: a.artist, value: a.count }))));
   }
-  // Detail: what you keep coming back to
-  const details = [];
-  if (data.top_album) {
-    details.push({ label: 'Most played album', value: data.top_album.album });
-    details.push({ label: 'Artist', value: data.top_album.artist });
-    if (data.top_album.play_count) details.push({ label: 'Plays', value: data.top_album.play_count.toLocaleString() });
-  }
-  if (data.favorites_count > 0) details.push({ label: 'Favorited', value: data.favorites_count.toLocaleString() + ' tracks' });
-  if (details.length > 0) body.appendChild(_detailBlock(details));
   tile.appendChild(body);
-  if (details.length > 0) _expandToggle(tile);
+  tile.addEventListener('click', () => {
+    const deck = _albumsDeck(count, artists, tile._homeData || data);
+    if (deck.length > 1) _inspect.open(tile, deck);
+  });
+  a11yClick(tile);
   return tile;
 }
 
