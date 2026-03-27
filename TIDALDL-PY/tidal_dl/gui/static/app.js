@@ -587,6 +587,8 @@ function _renderHomeCold(container) {
 
 function _renderHomeGrid(container, data, totalPlays) {
   const established = totalPlays >= 100;
+  const tw = data.this_week || {};
+  const hasRecent = (tw.total_plays || 0) > 0;
   const grid = h('div', { className: 'home-grid' });
 
   // Adaptive column count + density classes via ResizeObserver
@@ -603,27 +605,36 @@ function _renderHomeGrid(container, data, totalPlays) {
   function _t(tile, tier) { tile.dataset.tier = tier; return tile; }
 
   // === Core tiles (always visible) ===
-  if (data.top_artist && data.top_artist.play_count >= 5) {
-    grid.appendChild(_artistTile(data.top_artist, true));
+  // Prefer this_week artist data when available
+  const heroArtist = hasRecent && tw.top_artist ? tw.top_artist : data.top_artist;
+  if (heroArtist && heroArtist.play_count >= 5) {
+    grid.appendChild(_artistTile(heroArtist, true));
   }
   if (data.most_replayed && data.most_replayed.play_count >= 10) {
     grid.appendChild(_replayedTile(data.most_replayed));
   }
 
-  // Genre tile: show what you LISTEN to (play_events), not what you HAVE (library)
-  // Fall back to library genres only if no play history exists
-  const hasPlayGenres = data.genre_breakdown && data.genre_breakdown.length > 0;
-  const genreSource = hasPlayGenres ? data.genre_breakdown : (data.track_genres || []);
+  // Genre tile: prefer this_week genre data, split if on-repeat qualifies
+  const recentGenres = hasRecent && tw.genre_breakdown && tw.genre_breakdown.length > 0;
+  const hasPlayGenres = recentGenres || (data.genre_breakdown && data.genre_breakdown.length > 0);
+  const genreSource = recentGenres ? tw.genre_breakdown
+    : (data.genre_breakdown && data.genre_breakdown.length > 0) ? data.genre_breakdown
+    : (data.track_genres || []);
   const genreLabel = genreSource.length > 0 ? genreSource[0].genre : null;
+  const fromLibrary = !recentGenres && !(data.genre_breakdown && data.genre_breakdown.length > 0);
+  const onRepeatTrack = hasRecent && tw.most_replayed && tw.most_replayed.play_count >= 3
+    ? tw.most_replayed : null;
   if (genreSource.length > 0) {
-    grid.appendChild(_genreTile(genreLabel, genreSource, !hasPlayGenres));
+    grid.appendChild(_genreTile(genreLabel, genreSource, fromLibrary, onRepeatTrack));
   }
   if (data.weekly_activity && data.weekly_activity.some(v => v > 0)) {
     grid.appendChild(_listeningTimeTile(data.listening_time_hours, data.weekly_activity, data));
   }
 
   // === Secondary tiles (tier 1 — hidden on compact) ===
-  const extraArtists = (data.top_artists || []).slice(1, 3);
+  const allTimeExtra = (data.top_artists || []).slice(1, 3);
+  const recentExtra = hasRecent ? (tw.top_artists || []).slice(1, 3) : [];
+  const extraArtists = recentExtra.length > 0 ? recentExtra : allTimeExtra;
   for (const a of extraArtists) {
     if (a.play_count >= 3) {
       grid.appendChild(_t(_artistTile(a, false), 1));
@@ -814,7 +825,21 @@ function _detailBlock(items) {
   return block;
 }
 
-function _genreTile(topGenre, breakdown, fromLibrary) {
+function _genreTile(topGenre, breakdown, fromLibrary, onRepeatTrack) {
+  if (onRepeatTrack) {
+    // Split tile: condensed genre on top, on-repeat on bottom
+    const tile = h('div', { className: 'bento-tile bento-stat-tile bento-split' });
+    const genreHalf = h('div', { className: 'bento-half' });
+    const body = h('div', { className: 'bento-body' });
+    body.appendChild(textEl('div', topGenre || 'None', 'bento-label'));
+    body.appendChild(textEl('div', fromLibrary ? 'Top genre' : 'Recent genre', 'bento-stat-label'));
+    body.appendChild(_barChart(breakdown.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))));
+    genreHalf.appendChild(body);
+    tile.appendChild(genreHalf);
+    tile.appendChild(_onRepeatHalf(onRepeatTrack));
+    return tile;
+  }
+  // Full-size genre tile — unchanged
   const tile = h('div', { className: 'bento-tile bento-stat-tile' });
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', topGenre || 'None', 'bento-label'));
@@ -832,6 +857,23 @@ function _genreTile(topGenre, breakdown, fromLibrary) {
   tile.appendChild(body);
   if (allGenres.length > 4) _expandToggle(tile);
   return tile;
+}
+
+function _onRepeatHalf(track) {
+  const half = h('div', { className: 'bento-half bento-on-repeat' });
+  const body = h('div', { className: 'bento-body' });
+  body.appendChild(textEl('div', 'On repeat', 'bento-eyebrow'));
+  body.appendChild(textEl('div', track.name || 'Unknown', 'bento-label'));
+  body.appendChild(textEl('div', track.artist || '', 'bento-sub'));
+  body.appendChild(textEl('div', track.play_count + ' plays this week', 'bento-stat'));
+  half.appendChild(body);
+  half.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const t = { ...track, local_path: track.path, is_local: true };
+    playTrack(t);
+  });
+  a11yClick(half);
+  return half;
 }
 
 function _listeningTimeTile(hours, weekly, data) {
