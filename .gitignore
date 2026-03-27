@@ -59,4 +59,4 @@ test-results/
 *.pyc
 .venv/
 output/
-docs/superpowers/
+**/docs/superpowers/
