@@ -3569,6 +3569,19 @@ body {
   transform: scale(1.3);
 }
 
+.inspect-hint {
+  position: fixed;
+  bottom: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  z-index: 152;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* Inspect card internal typography — matches Format B */
 .inspect-card .bento-label {
   font-family: var(--serif);

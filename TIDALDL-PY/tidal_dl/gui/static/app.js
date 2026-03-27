@@ -891,8 +891,8 @@ const _inspect = (() => {
   const EASE_BOUNCE = 'cubic-bezier(0.175, 0.885, 0.32, 1.275)';
   const FAN_ANGLE = 6; // degrees between cards
   const FAN_LIFT = -12; // px vertical lift per offset
-  const CARD_W = Math.min(240, window.innerWidth * 0.7);
-  const CARD_H = CARD_W * 1.5;
+  const CARD_W = Math.min(340, window.innerWidth * 0.85);
+  const CARD_H = Math.min(CARD_W * 1.5, window.innerHeight * 0.6);
 
   function _noteIcon() {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -1104,6 +1104,22 @@ const _inspect = (() => {
     if (cards.length > 1) {
       setTimeout(() => { if (_state) _createDots(cards.length, scrim); }, DUR + 50);
     }
+
+    // Controls hint — show after 3s of no interaction
+    let _hintTimer = setTimeout(() => {
+      if (!_state || cards.length <= 1) return;
+      const hint = h('div', { className: 'inspect-hint' });
+      hint.appendChild(textEl('span', '\u2190 \u2192  browse', ''));
+      hint.appendChild(textEl('span', ' \u00b7 ', ''));
+      hint.appendChild(textEl('span', 'esc  close', ''));
+      hint.style.opacity = '0';
+      scrim.appendChild(hint);
+      const hintAnim = hint.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 400, fill: 'forwards' });
+      hintAnim.finished.then(() => { hintAnim.commitStyles(); hintAnim.cancel(); });
+    }, 3000);
+    const _clearHintOnInteract = () => { clearTimeout(_hintTimer); const existing = scrim.querySelector('.inspect-hint'); if (existing) existing.remove(); };
+    scrim.addEventListener('click', _clearHintOnInteract, { once: true });
+    document.addEventListener('keydown', _clearHintOnInteract, { once: true });
 
     // Scrim click to dismiss
     scrim.addEventListener('click', (e) => {
