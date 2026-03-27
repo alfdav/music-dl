@@ -861,17 +861,15 @@ function _genreTile(topGenre, breakdown, fromLibrary, onRepeatTrack) {
 
 function _onRepeatHalf(track) {
   const half = h('div', { className: 'bento-half bento-on-repeat' });
-  const row = h('div', { className: 'on-repeat-row' });
   if (track.cover_url) {
-    row.appendChild(h('img', { className: 'on-repeat-art', src: track.cover_url, alt: track.album || '' }));
+    half.appendChild(h('img', { className: 'bento-bg-art', src: track.cover_url, alt: '' }));
   }
+  half.appendChild(h('div', { className: 'bento-overlay' }));
   const body = h('div', { className: 'bento-body' });
-  body.appendChild(textEl('div', 'On repeat', 'bento-eyebrow'));
   body.appendChild(textEl('div', track.name || 'Unknown', 'bento-label'));
-  body.appendChild(textEl('div', track.artist || '', 'bento-sub'));
-  body.appendChild(textEl('div', track.play_count + ' plays this week', 'bento-stat'));
-  row.appendChild(body);
-  half.appendChild(row);
+  body.appendChild(textEl('div', track.play_count + ' plays this week', 'bento-sub'));
+  body.appendChild(textEl('div', track.artist + ' \u2014 On repeat', 'bento-stat'));
+  half.appendChild(body);
   half.addEventListener('click', (e) => {
     e.stopPropagation();
     const t = { ...track, local_path: track.path, is_local: true };

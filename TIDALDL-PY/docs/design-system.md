@@ -172,6 +172,35 @@ padding: 0;
 - On-repeat half follows **Format A** (image tile pattern — bg art, content bottom)
 - Each half must be independently correct — you should be able to extract it and it looks like a proper tile
 
+**CSS cascade warning:** The outer tile has class `bento-stat-tile` (for the genre half). This means `.bento-stat-tile .bento-label { color: var(--accent) }` bleeds into the on-repeat half. The on-repeat half must explicitly reset: `.bento-on-repeat .bento-label { color: var(--text) }`.
+
+**Format A half (on-repeat) specifics:**
+```css
+.bento-split .bento-half.bento-on-repeat {
+  position: relative;   /* anchor for absolute bg-art/overlay */
+  padding: 0;           /* bg-art fills edge to edge */
+  cursor: pointer;
+}
+.bento-split .bento-half.bento-on-repeat .bento-body {
+  flex: 1;              /* fill the half */
+  justify-content: flex-end;  /* text at bottom */
+  padding: 14px;        /* text breathing room */
+  position: relative;
+  z-index: 1;           /* above bg-art and overlay */
+}
+```
+
+**Format B half (genre) specifics:**
+```css
+.bento-split .bento-half .bento-body {
+  padding: 0;           /* half provides padding */
+  flex: 1;              /* fill the half so margin-top:auto works on chart */
+  display: flex;
+  flex-direction: column;
+}
+/* .mini-bar-chart already has margin-top:auto from .bento-stat-tile rule */
+```
+
 ---
 
 ## 5. Interaction Patterns

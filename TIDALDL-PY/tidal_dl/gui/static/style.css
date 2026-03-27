@@ -1912,14 +1912,21 @@ body {
   display: none;
 }
 
-/* On-repeat half — same format as artist tiles */
+/* On-repeat half — Format A (image tile), identical to artist/replayed tiles */
 .bento-split .bento-half.bento-on-repeat {
   position: relative;
   cursor: pointer;
-  justify-content: flex-end;
+  padding: 0;
 }
 .bento-split .bento-half.bento-on-repeat .bento-body {
-  flex: none;
+  flex: 1;
+  justify-content: flex-end;
+  padding: 14px;
+  position: relative;
+  z-index: 1;
+}
+.bento-on-repeat .bento-label {
+  color: var(--text);
 }
 
 /* ---- MINI BAR CHART ---- */
