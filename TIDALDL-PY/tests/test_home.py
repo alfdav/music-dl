@@ -293,6 +293,64 @@ def test_home_stats_empty_includes_this_week(db):
     assert isinstance(stats["this_week"]["top_artists"], list)
 
 
+def test_best_streak(db):
+    """best_streak returns longest consecutive-day play run."""
+    now = int(time.time())
+    day = 86400
+    # Seed: 5 consecutive days, gap, then 3 consecutive days
+    for i in range(5):
+        db.log_play_event("track.flac", artist="A", genre="Rock", played_at=now - (i * day))
+    for i in range(3):
+        db.log_play_event("track.flac", artist="A", genre="Rock", played_at=now - ((i + 7) * day))
+    db.commit()
+
+    stats = db.home_stats()
+    assert stats["best_streak"] == 5
+
+
+def test_best_streak_empty(db):
+    """best_streak is 0 when no play events exist."""
+    stats = db.home_stats()
+    assert stats["best_streak"] == 0
+
+
+def test_completionist_albums(db):
+    """completionist_albums counts albums with every track played."""
+    now = int(time.time())
+    # Album A: 3 tracks, all played
+    for i in range(3):
+        path = f"/music/albumA/track{i}.flac"
+        db.record(path, status="tagged", artist="X", album="Album A", title=f"T{i}")
+        db.log_play_event(path, artist="X", genre="Pop", played_at=now - i)
+    # Album B: 3 tracks, only 1 played
+    for i in range(3):
+        path = f"/music/albumB/track{i}.flac"
+        db.record(path, status="tagged", artist="X", album="Album B", title=f"T{i}")
+    db.log_play_event("/music/albumB/track0.flac", artist="X", genre="Pop", played_at=now)
+    # Album C: 2 tracks, both played
+    for i in range(2):
+        path = f"/music/albumC/track{i}.flac"
+        db.record(path, status="tagged", artist="Y", album="Album C", title=f"T{i}")
+        db.log_play_event(path, artist="Y", genre="Jazz", played_at=now - i)
+    db.commit()
+
+    stats = db.home_stats()
+    assert stats["completionist_albums"]["complete"] == 2  # Album A and C
+    assert stats["completionist_albums"]["total"] >= 3
+
+
+def test_recent_albums(db):
+    """recent_albums returns 3 most recently scanned albums."""
+    for i in range(5):
+        db.record(f"/music/album{i}/t.flac", status="tagged", artist=f"A{i}", album=f"Album {i}", title="T")
+    db.commit()
+
+    stats = db.home_stats()
+    assert len(stats["recent_albums"]) == 3
+    # Most recent should be last inserted
+    assert stats["recent_albums"][0]["album"] == "Album 4"
+
+
 def test_top_album_from_play_events(db):
     """top_album should be derived from play_events, not scanned.play_count."""
     now = int(time.time())

@@ -576,18 +576,19 @@ class LibraryDB:
 
     def log_play_event(
         self,
+        path: str | None = None,
         *,
-        path: str | None,
-        artist: str | None,
-        genre: str | None,
-        duration: int | None,
+        artist: str | None = None,
+        genre: str | None = None,
+        duration: int | None = None,
+        played_at: int | None = None,
     ) -> None:
         """Insert a play event for activity charts."""
         assert self._conn
-        now = int(time.time())
+        ts = played_at if played_at is not None else int(time.time())
         self._conn.execute(
             "INSERT INTO play_events (path, artist, genre, duration, played_at) VALUES (?, ?, ?, ?, ?)",
-            (path, artist, genre, duration, now),
+            (path, artist, genre, duration, ts),
         )
 
     def _windowed_stats(self, since: int) -> dict:
@@ -908,6 +909,58 @@ class LibraryDB:
         except Exception:
             favorites_count = 0
 
+        # Best-ever listening streak (longest consecutive-day run)
+        best_streak = 0
+        streak_days = [
+            r[0]
+            for r in c.execute(
+                "SELECT DISTINCT date(played_at, 'unixepoch', 'localtime') as d FROM play_events ORDER BY d"
+            ).fetchall()
+        ]
+        if streak_days:
+            current_run = 1
+            for i in range(1, len(streak_days)):
+                prev = datetime.datetime.strptime(streak_days[i - 1], "%Y-%m-%d")
+                curr = datetime.datetime.strptime(streak_days[i], "%Y-%m-%d")
+                if (curr - prev).days == 1:
+                    current_run += 1
+                else:
+                    best_streak = max(best_streak, current_run)
+                    current_run = 1
+            best_streak = max(best_streak, current_run)
+
+        # Completionist albums: albums where every scanned track has been played
+        completionist_complete = 0
+        completionist_total = 0
+        album_rows = c.execute(
+            """SELECT album, artist, COUNT(*) as track_count
+               FROM scanned
+               WHERE album IS NOT NULL AND status != 'unreadable'
+               GROUP BY album, artist"""
+        ).fetchall()
+        completionist_total = len(album_rows)
+        for ar in album_rows:
+            played = c.execute(
+                """SELECT COUNT(DISTINCT pe.path) FROM play_events pe
+                   JOIN scanned s ON s.path = pe.path
+                   WHERE s.album = ? AND s.artist = ?""",
+                (ar["album"], ar["artist"]),
+            ).fetchone()[0]
+            if played >= ar["track_count"]:
+                completionist_complete += 1
+
+        # Recently scanned albums (3 most recent by rowid)
+        recent_albums = [
+            {"album": r["album"], "artist": r["artist"]}
+            for r in c.execute(
+                """SELECT album, artist, MAX(rowid) as latest
+                   FROM scanned
+                   WHERE album IS NOT NULL AND status != 'unreadable'
+                   GROUP BY album, artist
+                   ORDER BY latest DESC LIMIT 3"""
+            ).fetchall()
+        ]
+
         return {
             "top_artist": top_artist,
             "top_artists": top_artists,
@@ -931,6 +984,9 @@ class LibraryDB:
             "collection_growth": collection_growth,
             "favorites_count": favorites_count,
             "this_week": this_week,
+            "best_streak": best_streak,
+            "completionist_albums": {"complete": completionist_complete, "total": completionist_total},
+            "recent_albums": recent_albums,
         }
 
     # ------------------------------------------------------------------
