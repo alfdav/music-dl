@@ -955,7 +955,7 @@ class LibraryDB:
                    FROM scanned
                    WHERE album IS NOT NULL AND status != 'unreadable'
                    GROUP BY album, artist
-                   ORDER BY latest DESC LIMIT 9"""
+                   ORDER BY latest DESC LIMIT 3"""
             ).fetchall()
         ]
 

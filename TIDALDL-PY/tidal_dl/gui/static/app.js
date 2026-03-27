@@ -666,14 +666,13 @@ function _renderHomeGrid(container, data, totalPlays) {
 
 function _artistTile(artist, hero) {
   const tile = h('div', { className: 'bento-tile bento-artist' + (hero ? ' bento-hero' : '') });
-  if (artist.cover_url) {
-    tile.appendChild(h('img', { className: 'bento-bg-art', src: artist.cover_url, alt: '' }));
-  }
+  // Artist photo only — no album cover fallback (prevents flash of album art)
+  const img = h('img', { className: 'bento-bg-art', alt: '', style: 'opacity:0;transition:opacity 0.3s ease;' });
+  tile.appendChild(img);
   tile.appendChild(h('div', { className: 'bento-overlay' }));
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', artist.name, 'bento-label'));
   body.appendChild(textEl('div', artist.play_count + ' plays', 'bento-sub'));
-  // Per-artist stats
   const stats = [];
   if (artist.track_count) stats.push(artist.track_count + ' tracks');
   if (artist.album_count) stats.push(artist.album_count + ' albums');
@@ -685,17 +684,17 @@ function _artistTile(artist, hero) {
   tile.appendChild(textEl('span', 'View albums', 'bento-hint'));
   tile.addEventListener('click', () => navigate('artist:' + encodeURIComponent(artist.name)));
   a11yClick(tile);
-  // Lazy-load artist photo from Tidal (cached on backend)
+  // Load artist photo (cached on backend, ~30ms)
   fetch('/api/home/artist-image?name=' + encodeURIComponent(artist.name))
     .then(r => r.json())
     .then(data => {
-      if (data.image_url) {
-        const img = tile.querySelector('.bento-bg-art');
-        if (img) { img.src = data.image_url; }
-        else { tile.prepend(h('img', { className: 'bento-bg-art', src: data.image_url, alt: '' })); }
-      }
+      const url = data.image_url || (artist.cover_url);
+      if (url) { img.src = url; img.onload = () => { img.style.opacity = '1'; }; }
     })
-    .catch(() => {});
+    .catch(() => {
+      // Last resort: use album cover from local file
+      if (artist.cover_url) { img.src = artist.cover_url; img.onload = () => { img.style.opacity = '1'; }; }
+    });
   return tile;
 }
 
@@ -1261,8 +1260,8 @@ function _comparisonBars(items) {
 
 // Album art thumbnail grid
 function _albumArtGrid(albums) {
-  const grid = h('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:4px;border-radius:8px;overflow:hidden;max-width:240px;margin:0 auto;' });
-  const shown = albums.slice(0, 9);
+  const grid = h('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:6px;border-radius:8px;overflow:hidden;max-width:280px;margin:0 auto;' });
+  const shown = albums.slice(0, 3);
   for (const a of shown) {
     if (a.cover_url) {
       const img = h('img', { src: a.cover_url, alt: a.album || '', style: 'width:100%;aspect-ratio:1;object-fit:cover;display:block;' });
@@ -1582,8 +1581,11 @@ function _albumsDeck(count, artists, data) {
       rarity: 'common',
       renderContent: () => _albumArtGrid(data.recent_albums),
       stats: [
-        ...data.recent_albums.map(a => ({ key: a.artist, value: a.album })),
-        { key: 'Library growth', value: (data.collection_growth || 0) + ' tracks this month' },
+        ...data.recent_albums.slice(0, 3).map(a => ({
+          key: (a.artist || '').length > 18 ? a.artist.slice(0, 16) + '…' : a.artist,
+          value: (a.album || '').length > 20 ? a.album.slice(0, 18) + '…' : a.album,
+        })),
+        { key: 'Library growth', value: (data.collection_growth || 0).toLocaleString() + ' tracks' },
       ],
       flavor: 'Fresh additions to the collection.',
     });
