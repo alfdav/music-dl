@@ -116,6 +116,14 @@ Run the test suite:
 pytest
 ```
 
+Run the release smoke gate from the repository root:
+
+```shell
+./scripts/release-smoke.sh
+```
+
+That gate covers the GUI command path, app factory/static assets, setup flow, token refresh, package branding, package build, and the published Docker build context.
+
 ## Security
 
 The GUI binds to `localhost` only — it is not accessible from other machines. CSRF protection is enabled for all write operations. Do not expose port 8765 to untrusted networks.

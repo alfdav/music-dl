@@ -1864,7 +1864,7 @@ function renderSearch(container) {
   container.appendChild(resultsArea);
 
   if (state.searchResults && state.searchQuery) {
-    renderSearchResults(resultsArea, state.searchResults);
+    renderUnifiedSearchResults(resultsArea, state.searchResults.local, state.searchResults.tidal);
   } else {
     renderSearchEmpty(resultsArea);
   }
@@ -4378,17 +4378,6 @@ audio.pause();
 audio.removeAttribute('src');
 audio.load();
 
-// ---- SINGLE-TAB PLAYBACK (pause other tabs when this one plays) ----
-const _playerChannel = new BroadcastChannel('music-dl-player');
-_playerChannel.onmessage = (e) => {
-  if (e.data === 'pause') {
-    audio.pause();
-    state.playing = false;
-    updatePlayButton();
-    setWaveformPlaying(false);
-  }
-};
-
 const btnPlay = document.getElementById('btn-play');
 const playIcon = document.getElementById('play-icon');
 const btnPrev = document.getElementById('btn-prev');
@@ -4650,9 +4639,6 @@ function playTrack(track) {
   // Play count: fires after 30s of playback (or on ended for short tracks)
   _schedulePlayCount(track);
 
-  // Tell other tabs to stop
-  _playerChannel.postMessage('pause');
-
   // Stop current playback — mute to prevent bleed during source switch
   audio.pause();
   audio.muted = true;
@@ -4809,8 +4795,6 @@ btnPlay.addEventListener('click', () => {
     audio.pause();
     state.playing = false;
   } else {
-    // Tell other tabs to stop before resuming here
-    _playerChannel.postMessage('pause');
     audio.play().catch(() => {});
     state.playing = true;
   }

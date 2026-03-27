@@ -29,3 +29,12 @@ def test_static_js_served():
     client = _make_client()
     resp = client.get("/app.js", headers=_HOST_HEADER)
     assert resp.status_code == 200
+
+
+def test_static_js_does_not_force_single_tab_playback():
+    client = _make_client()
+    resp = client.get("/app.js", headers=_HOST_HEADER)
+
+    assert resp.status_code == 200
+    assert "BroadcastChannel('music-dl-player')" not in resp.text
+    assert '_playerChannel.postMessage(\'pause\')' not in resp.text
