@@ -1712,20 +1712,6 @@ body {
 }
 .bento-tile:hover .bento-hint { opacity: 1; }
 
-.bento-chevron {
-  position: absolute;
-  bottom: 8px;
-  right: 10px;
-  font-size: 10px;
-  color: rgba(212,160,83,0.4);
-  transition: transform 0.3s ease-out;
-  z-index: 3;
-  pointer-events: none;
-}
-.bento-expanded .bento-chevron {
-  transform: rotate(180deg);
-}
-
 .bento-lucky {
   display: flex;
   flex-direction: column;
@@ -1782,52 +1768,6 @@ body {
   letter-spacing: 0.5px;
   margin-top: 6px;
   text-transform: uppercase;
-}
-
-/* Expandable tile detail — smooth reveal on click */
-.bento-detail {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-top: 0;
-  margin-top: 0;
-  border-top: 1px solid transparent;
-  max-height: 0;
-  opacity: 0;
-  overflow: hidden;
-  transition: max-height 0.4s cubic-bezier(0.16, 1, 0.3, 1),
-              opacity 0.3s ease-out 0.05s,
-              margin-top 0.3s ease-out,
-              padding-top 0.3s ease-out,
-              border-color 0.3s ease-out;
-}
-.bento-expanded .bento-detail {
-  max-height: 300px;
-  opacity: 1;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-color: var(--glass-border);
-}
-.bento-detail-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  opacity: 0;
-  transform: translateY(6px);
-  transition: opacity 0.25s ease-out, transform 0.25s ease-out;
-}
-.bento-expanded .bento-detail-row {
-  opacity: 1;
-  transform: translateY(0);
-}
-.bento-detail-key {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-}
-.bento-detail-val {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  font-family: var(--mono);
 }
 
 /* Tile insight text */
@@ -3507,4 +3447,143 @@ body {
 
 @keyframes wizardSpin {
   to { transform: rotate(360deg); }
+}
+
+/* ---- CARD INSPECT OVERLAY ---- */
+.inspect-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.inspect-card {
+  position: fixed;
+  background: var(--surface);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  will-change: transform, opacity;
+  transform-origin: bottom center;
+}
+.inspect-card.inspect-front {
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  z-index: 152;
+}
+.inspect-card.inspect-back {
+  opacity: 0.4;
+  z-index: 151;
+  cursor: pointer;
+}
+.inspect-card.inspect-back:hover {
+  opacity: 0.6;
+}
+
+/* Rarity border glows */
+.inspect-card[data-rarity="common"]    { border-color: rgba(240,235,228,0.15); }
+.inspect-card[data-rarity="uncommon"]  { border-color: rgba(126,201,122,0.25); }
+.inspect-card[data-rarity="rare"]      { border-color: rgba(100,160,220,0.25); }
+.inspect-card[data-rarity="epic"]      { border-color: rgba(160,120,210,0.25); }
+.inspect-card[data-rarity="legendary"] { border-color: rgba(212,160,83,0.25); }
+
+/* Rarity label colors */
+.inspect-card[data-rarity="uncommon"] .card-rarity  { color: rgba(126,201,122,0.5); }
+.inspect-card[data-rarity="rare"] .card-rarity      { color: rgba(100,160,220,0.5); }
+.inspect-card[data-rarity="epic"] .card-rarity      { color: rgba(160,120,210,0.5); }
+.inspect-card[data-rarity="legendary"] .card-rarity  { color: rgba(212,160,83,0.5); }
+
+.card-corner {
+  position: absolute;
+  font-size: 12px;
+  opacity: 0.3;
+  pointer-events: none;
+}
+.card-corner.top-left { top: 8px; left: 10px; }
+.card-corner.bottom-right { bottom: 8px; right: 10px; transform: rotate(180deg); }
+
+.card-rarity {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 1px;
+  color: rgba(240,235,228,0.3);
+}
+
+.card-stats {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border-top: 1px solid var(--glass-border);
+  padding-top: 10px;
+}
+.card-stats-row {
+  display: flex;
+  justify-content: space-between;
+}
+.card-stats-key {
+  font-size: 9px;
+  color: var(--text-muted);
+}
+.card-stats-val {
+  font-size: 9px;
+  color: var(--text-secondary);
+  font-family: var(--mono);
+}
+
+.card-flavor {
+  margin-top: 8px;
+  font-size: 7.5px;
+  color: rgba(240, 235, 228, 0.2);
+  font-style: italic;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.pip-dots {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  z-index: 152;
+}
+.pip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+.pip-dot.active {
+  background: rgba(255, 255, 255, 0.95);
+  transform: scale(1.3);
+}
+
+/* Inspect card internal typography — matches Format B */
+.inspect-card .bento-label {
+  font-family: var(--serif);
+  font-size: 1.5rem;
+  color: var(--accent);
+  line-height: 1;
+}
+.inspect-card .bento-stat-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inspect-card, .inspect-scrim, .pip-dot {
+    transition-duration: 0.01ms !important;
+  }
 }
