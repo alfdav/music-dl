@@ -3461,7 +3461,7 @@ body {
 
 .inspect-card {
   position: fixed;
-  background: var(--surface);
+  background: var(--bg-warm);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius);
   padding: 18px;
