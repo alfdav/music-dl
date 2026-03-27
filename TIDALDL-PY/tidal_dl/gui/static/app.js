@@ -1028,7 +1028,14 @@ const _inspect = (() => {
     if (_state) return; // already open
 
     const rect = tileEl.getBoundingClientRect();
-    tileEl.style.opacity = '0';
+    // Use visibility:hidden for half-tiles (preserves space, doesn't affect siblings)
+    // Use opacity:0 for standalone tiles
+    const isHalf = tileEl.classList.contains('bento-half');
+    if (isHalf) {
+      tileEl.style.visibility = 'hidden';
+    } else {
+      tileEl.style.opacity = '0';
+    }
 
     // Create scrim
     const scrim = h('div', { className: 'inspect-scrim' });
@@ -1174,6 +1181,7 @@ const _inspect = (() => {
     returnAnim.finished.then(() => {
       returnAnim.commitStyles(); returnAnim.cancel();
       originalTile.style.opacity = '';
+      originalTile.style.visibility = '';
       scrim.remove();
     });
     scrimFade.finished.then(() => { scrimFade.commitStyles(); scrimFade.cancel(); });
@@ -1191,83 +1199,110 @@ const _inspect = (() => {
 
 function _listeningTimeDeck(data) {
   const deck = [];
-  // Card 0: Main (what bento already shows)
+  const hrs = data.listening_time_hours || 0;
+  const days = Math.round(hrs / 24 * 10) / 10;
+  const avgPerDay = data.weekly_activity ? Math.round(data.weekly_activity.reduce((a, b) => a + b, 0) / 7 * 10) / 10 : 0;
+  const totalPlays = data.total_plays || 0;
+  const avgTrackLen = totalPlays > 0 ? Math.round((hrs * 60) / totalPlays * 10) / 10 : 0;
+  // Card 0: Main
   deck.push({
-    title: Math.round(data.listening_time_hours) + 'h',
+    title: Math.round(hrs) + 'h',
     statLabel: 'Listening time',
     rarity: 'common',
     renderContent: () => {
       const wrap = h('div');
-      const ins = _listeningInsight(data.listening_time_hours, data.weekly_activity);
+      const ins = _listeningInsight(hrs, data.weekly_activity);
       if (ins) wrap.appendChild(ins);
       wrap.appendChild(_weeklyChart(data.weekly_activity));
       return wrap;
     },
-    stats: [],
-    flavor: null,
+    stats: [
+      { key: 'Total time', value: Math.round(hrs) + ' hours (' + days + ' days)' },
+      { key: 'Lifetime plays', value: totalPlays.toLocaleString() },
+      { key: 'Avg per day', value: avgPerDay + 'h' },
+      { key: 'Avg track length', value: avgTrackLen + ' min' },
+    ],
+    flavor: hrs >= 1000 ? 'You have listened for over a thousand hours. Respect.' : null,
   });
   // Card 1: Peak Hour
   if (data.peak_hour !== undefined && data.peak_hours) {
     const h12 = data.peak_hour % 12 || 12;
     const ampm = data.peak_hour < 12 ? 'am' : 'pm';
+    const totalHourPlays = data.peak_hours.reduce((a, b) => a + b, 0);
+    const peakPct = totalHourPlays > 0 ? Math.round((data.peak_hours[data.peak_hour] / totalHourPlays) * 100) : 0;
+    const morningPlays = data.peak_hours.slice(6, 12).reduce((a, b) => a + b, 0);
+    const afternoonPlays = data.peak_hours.slice(12, 18).reduce((a, b) => a + b, 0);
+    const eveningPlays = data.peak_hours.slice(18, 24).reduce((a, b) => a + b, 0);
+    const nightPlays = data.peak_hours.slice(0, 6).reduce((a, b) => a + b, 0);
+    const periods = [
+      { name: 'Night owl', val: nightPlays }, { name: 'Morning', val: morningPlays },
+      { name: 'Afternoon', val: afternoonPlays }, { name: 'Evening', val: eveningPlays },
+    ].sort((a, b) => b.val - a.val);
     deck.push({
       title: h12 + ampm,
       statLabel: 'Peak hour',
       rarity: data.peak_hour >= 22 || data.peak_hour <= 4 ? 'uncommon' : 'common',
       renderContent: () => {
-        // Mini 24-bar chart from peak_hours array
         const chart = h('div', { style: 'display:flex;align-items:flex-end;gap:1px;margin-top:12px;height:40px;' });
         const max = Math.max(...data.peak_hours, 1);
         for (let i = 0; i < 24; i++) {
           const pct = (data.peak_hours[i] / max) * 100;
-          const bar = h('div', {
+          chart.appendChild(h('div', {
             style: `flex:1;background:${i === data.peak_hour ? 'var(--accent)' : 'rgba(212,160,83,0.15)'};height:${Math.max(2, pct)}%;border-radius:1px;`
-          });
-          chart.appendChild(bar);
+          }));
         }
         return chart;
       },
       stats: [
-        { key: 'Most active', value: h12 + ':00' + ampm },
-        { key: 'Least active', value: (() => {
-          const minH = data.peak_hours.indexOf(Math.min(...data.peak_hours));
-          const m12 = minH % 12 || 12;
-          return m12 + ':00' + (minH < 12 ? 'am' : 'pm');
-        })() },
+        { key: 'Peak hour', value: h12 + ':00' + ampm + ' (' + peakPct + '% of plays)' },
+        { key: 'You\'re a', value: periods[0].name + ' listener' },
+        { key: 'Morning (6am-12)', value: morningPlays.toLocaleString() + ' plays' },
+        { key: 'Afternoon (12-6pm)', value: afternoonPlays.toLocaleString() + ' plays' },
+        { key: 'Evening (6pm-12)', value: eveningPlays.toLocaleString() + ' plays' },
+        { key: 'Late night (12-6am)', value: nightPlays.toLocaleString() + ' plays' },
       ],
-      flavor: data.peak_hour >= 0 && data.peak_hour <= 4 ? 'Nothing good happens after midnight. Except music.' : null,
+      flavor: data.peak_hour >= 0 && data.peak_hour <= 4 ? 'Nothing good happens after midnight. Except music.' : (data.peak_hour >= 6 && data.peak_hour <= 9 ? 'Early bird gets the best playlists.' : null),
     });
   }
   // Card 2: Streak
   if (data.streak !== undefined) {
     const streakRarity = data.streak >= 30 ? 'legendary' : data.streak >= 14 ? 'epic' : data.streak >= 7 ? 'rare' : data.streak >= 3 ? 'uncommon' : 'common';
+    const bestStreak = data.best_streak || data.streak;
+    const streakPct = bestStreak > 0 ? Math.round((data.streak / bestStreak) * 100) : 0;
     deck.push({
       title: data.streak + (data.streak === 1 ? ' day' : ' days'),
       statLabel: 'Streak',
       rarity: streakRarity,
       renderContent: null,
       stats: [
-        { key: 'Current', value: data.streak + ' days' },
-        { key: 'Best ever', value: (data.best_streak || data.streak) + ' days' },
+        { key: 'Current streak', value: data.streak + ' days' },
+        { key: 'Best ever', value: bestStreak + ' days' },
+        { key: 'vs personal best', value: streakPct + '%', color: streakPct >= 100 ? 'var(--green)' : null },
+        { key: 'Lifetime plays', value: totalPlays.toLocaleString() },
       ],
-      flavor: data.streak >= 30 ? 'Gotta catch \'em all.' : null,
+      flavor: data.streak >= 30 ? 'Gotta catch \'em all.' : (data.streak >= bestStreak && data.streak >= 3 ? 'New personal best. Keep going.' : null),
     });
   }
   // Card 3: Week vs Last
   if (data.week_vs_last && data.week_vs_last.last_week > 0) {
-    const diff = data.week_vs_last.this_week - data.week_vs_last.last_week;
-    const pct = Math.round((diff / data.week_vs_last.last_week) * 100);
+    const tw = data.week_vs_last.this_week;
+    const lw = data.week_vs_last.last_week;
+    const diff = tw - lw;
+    const pct = Math.round((diff / lw) * 100);
+    const twTracks = data.this_week ? data.this_week.total_plays || 0 : 0;
     deck.push({
       title: (pct >= 0 ? '+' : '') + pct + '%',
       statLabel: 'vs last week',
-      rarity: 'common',
+      rarity: Math.abs(pct) >= 50 ? 'uncommon' : 'common',
       renderContent: null,
       stats: [
-        { key: 'This week', value: Math.round(data.week_vs_last.this_week) + ' min' },
-        { key: 'Last week', value: Math.round(data.week_vs_last.last_week) + ' min' },
+        { key: 'This week', value: Math.round(tw) + ' min (' + twTracks + ' plays)' },
+        { key: 'Last week', value: Math.round(lw) + ' min' },
         { key: 'Change', value: (pct >= 0 ? '+' : '') + pct + '%', color: pct >= 0 ? 'var(--green)' : 'var(--red)' },
+        { key: 'Avg per day (this wk)', value: Math.round(tw / 7) + ' min' },
+        { key: 'Avg per day (last wk)', value: Math.round(lw / 7) + ' min' },
       ],
-      flavor: null,
+      flavor: pct >= 100 ? 'You doubled your listening. The ears want what they want.' : null,
     });
   }
   return deck;
@@ -1276,45 +1311,61 @@ function _listeningTimeDeck(data) {
 function _genreDeck(topGenre, breakdown, fromLibrary, data) {
   const deck = [];
   const tw = data.this_week || {};
+  const total = breakdown.reduce((s, g) => s + g.count, 0);
+  const topPct = total > 0 && breakdown[0] ? Math.round((breakdown[0].count / total) * 100) : 0;
   // Card 0: Main
   deck.push({
     title: topGenre || 'None',
     statLabel: fromLibrary ? 'Top genre' : 'Recent genre',
     rarity: 'common',
     renderContent: () => _barChart(breakdown.slice(0, 4).map(g => ({ label: g.genre, value: g.count }))),
-    stats: breakdown.slice(0, 6).map(g => ({ key: g.genre, value: g.count + (fromLibrary ? ' tracks' : ' plays') })),
-    flavor: null,
+    stats: [
+      ...breakdown.slice(0, 6).map(g => {
+        const gPct = total > 0 ? Math.round((g.count / total) * 100) : 0;
+        return { key: g.genre, value: g.count + (fromLibrary ? ' tracks' : ' plays') + ' (' + gPct + '%)' };
+      }),
+      { key: 'Total genres', value: breakdown.length.toString() },
+      { key: 'Dominance', value: topPct + '% ' + (topGenre || 'None') },
+    ],
+    flavor: topPct >= 60 ? 'You know what you like.' : (breakdown.length >= 6 ? 'Eclectic taste. Hard to pin down.' : null),
   });
-  // Card 1: Deep Cut (rarest genre with plays)
+  // Card 1: Deep Cut
   if (breakdown.length >= 3) {
     const rarest = breakdown[breakdown.length - 1];
-    const total = breakdown.reduce((s, g) => s + g.count, 0);
-    const pct = total > 0 ? Math.round((rarest.count / total) * 100) : 0;
+    const rarestPct = total > 0 ? Math.round((rarest.count / total) * 100) : 0;
+    const top2 = breakdown.slice(0, 2).reduce((s, g) => s + g.count, 0);
+    const top2Pct = total > 0 ? Math.round((top2 / total) * 100) : 0;
     deck.push({
-      title: pct + '%',
+      title: rarestPct + '%',
       statLabel: 'Deep cut',
-      rarity: pct <= 5 ? 'rare' : 'common',
+      rarity: rarestPct <= 5 ? 'rare' : 'common',
       renderContent: null,
       stats: [
         { key: 'Rarest genre', value: rarest.genre },
-        { key: 'Plays', value: rarest.count.toString() },
-        { key: 'Share', value: pct + '% of total' },
+        { key: 'Plays', value: rarest.count.toLocaleString() },
+        { key: 'Share of library', value: rarestPct + '%' },
+        { key: 'Top 2 genres share', value: top2Pct + '% of all plays' },
+        { key: 'Diversity', value: breakdown.length + ' genres explored' },
       ],
-      flavor: pct <= 5 ? 'A person of refined and unusual taste.' : null,
+      flavor: rarestPct <= 5 ? 'A person of refined and unusual taste.' : null,
     });
   }
-  // Card 2: Shifting (this week vs all-time)
+  // Card 2: Shifting
   const allTimeTop = data.genre_breakdown && data.genre_breakdown[0] ? data.genre_breakdown[0].genre : null;
   const weekTop = tw.genre_breakdown && tw.genre_breakdown[0] ? tw.genre_breakdown[0].genre : null;
   if (allTimeTop && weekTop && allTimeTop !== weekTop) {
+    const weekTopCount = tw.genre_breakdown[0].count;
+    const allTimeTopCount = data.genre_breakdown[0].count;
     deck.push({
       title: weekTop,
       statLabel: 'Shifting',
       rarity: 'uncommon',
       renderContent: null,
       stats: [
-        { key: 'This week', value: weekTop },
-        { key: 'All-time', value: allTimeTop },
+        { key: 'This week\'s #1', value: weekTop + ' (' + weekTopCount + ' plays)' },
+        { key: 'All-time #1', value: allTimeTop + ' (' + allTimeTopCount + ' plays)' },
+        { key: 'Weekly genres', value: (tw.genre_breakdown || []).length + ' active' },
+        { key: 'All-time genres', value: breakdown.length + ' total' },
       ],
       flavor: 'Tastes evolve. The ear knows what it wants.',
     });
@@ -1324,6 +1375,8 @@ function _genreDeck(topGenre, breakdown, fromLibrary, data) {
 
 function _tracksDeck(count, genres, data) {
   const deck = [];
+  const played = count - (data.unplayed_count || 0);
+  const playedPct = count > 0 ? Math.round((played / count) * 100) : 0;
   // Card 0: Main
   deck.push({
     title: count.toLocaleString(),
@@ -1335,14 +1388,21 @@ function _tracksDeck(count, genres, data) {
       }
       return null;
     },
-    stats: [],
-    flavor: null,
+    stats: [
+      { key: 'Total tracks', value: count.toLocaleString() },
+      { key: 'Played at least once', value: played.toLocaleString() + ' (' + playedPct + '%)' },
+      { key: 'Albums', value: (data.album_count || 0).toLocaleString() },
+      { key: 'Genres', value: (genres || []).length.toString() },
+      { key: 'Lifetime plays', value: (data.total_plays || 0).toLocaleString() },
+    ],
+    flavor: count >= 1000 ? 'A library worthy of Alexandria.' : null,
   });
   // Card 1: Quality
   if (data.format_breakdown && data.format_breakdown.length > 0) {
     const topFormat = data.format_breakdown[0];
     const topPct = Math.round((topFormat.count / count) * 100);
     const lossless = data.format_breakdown.filter(f => ['FLAC', 'WAV', 'ALAC', 'AIFF'].includes(f.format.toUpperCase())).reduce((s, f) => s + f.count, 0);
+    const lossy = count - lossless;
     const losslessPct = Math.round((lossless / count) * 100);
     const qualityRarity = losslessPct >= 80 ? 'rare' : 'common';
     deck.push({
@@ -1351,15 +1411,20 @@ function _tracksDeck(count, genres, data) {
       rarity: qualityRarity,
       renderContent: () => _barChart(data.format_breakdown.slice(0, 4).map(f => ({ label: f.format, value: f.count }))),
       stats: [
-        { key: 'Lossless', value: losslessPct + '%' },
-        { key: 'Formats', value: data.format_breakdown.length.toString() },
+        ...data.format_breakdown.map(f => {
+          const fPct = Math.round((f.count / count) * 100);
+          return { key: f.format, value: f.count.toLocaleString() + ' (' + fPct + '%)' };
+        }),
+        { key: 'Lossless total', value: lossless.toLocaleString() + ' (' + losslessPct + '%)' },
+        { key: 'Lossy total', value: lossy.toLocaleString() + ' (' + (100 - losslessPct) + '%)' },
       ],
-      flavor: losslessPct >= 80 ? 'Your ears deserve nothing less.' : null,
+      flavor: losslessPct >= 80 ? 'Your ears deserve nothing less.' : (losslessPct <= 20 ? 'There\'s a whole world of lossless out there.' : null),
     });
   }
   // Card 2: Unplayed
   if (data.unplayed_count > 0) {
     const unplayedPct = Math.round((data.unplayed_count / count) * 100);
+    const playRatio = played > 0 ? Math.round((data.total_plays || 0) / played * 10) / 10 : 0;
     deck.push({
       title: data.unplayed_count.toLocaleString(),
       statLabel: 'Unplayed',
@@ -1367,9 +1432,11 @@ function _tracksDeck(count, genres, data) {
       renderContent: null,
       stats: [
         { key: 'Never played', value: data.unplayed_count.toLocaleString() + ' tracks' },
-        { key: 'Share', value: unplayedPct + '% of library' },
+        { key: 'Unplayed share', value: unplayedPct + '% of library' },
+        { key: 'Played at least once', value: played.toLocaleString() },
+        { key: 'Avg replays per played track', value: playRatio + 'x' },
       ],
-      flavor: unplayedPct < 10 ? 'Achievement unlocked: No stone unturned.' : null,
+      flavor: unplayedPct < 10 ? 'Achievement unlocked: No stone unturned.' : (unplayedPct >= 50 ? 'Half your library is waiting to be discovered.' : null),
     });
   }
   return deck;
@@ -1377,6 +1444,8 @@ function _tracksDeck(count, genres, data) {
 
 function _albumsDeck(count, artists, data) {
   const deck = [];
+  const avgTracksPerAlbum = count > 0 && data.track_count ? Math.round(data.track_count / count) : 0;
+  const uniqueArtists = artists ? artists.length : 0;
   // Card 0: Main
   deck.push({
     title: count.toLocaleString(),
@@ -1388,16 +1457,23 @@ function _albumsDeck(count, artists, data) {
       }
       return null;
     },
-    stats: data.top_album ? [
-      { key: 'Most played', value: data.top_album.album },
-      { key: 'Artist', value: data.top_album.artist },
-    ] : [],
-    flavor: null,
+    stats: [
+      ...(data.top_album ? [
+        { key: 'Most played album', value: data.top_album.album },
+        { key: 'Artist', value: data.top_album.artist },
+        { key: 'Plays', value: (data.top_album.play_count || 0).toLocaleString() },
+      ] : []),
+      { key: 'Unique artists', value: uniqueArtists.toLocaleString() },
+      { key: 'Avg tracks per album', value: avgTracksPerAlbum.toString() },
+      { key: 'Favorites', value: (data.favorites_count || 0).toLocaleString() + ' tracks' },
+    ],
+    flavor: count >= 100 ? 'A collection worth curating.' : null,
   });
   // Card 1: Completionist
   if (data.completionist_albums && data.completionist_albums.total > 0) {
     const ca = data.completionist_albums;
     const pct = Math.round((ca.complete / ca.total) * 100);
+    const incomplete = ca.total - ca.complete;
     const rarity = pct >= 100 ? 'legendary' : pct >= 50 ? 'epic' : 'common';
     deck.push({
       title: ca.complete + ' / ' + ca.total,
@@ -1406,20 +1482,25 @@ function _albumsDeck(count, artists, data) {
       renderContent: null,
       stats: [
         { key: 'Fully played', value: ca.complete + ' albums' },
-        { key: 'Completion', value: pct + '%' },
+        { key: 'Partially explored', value: incomplete + ' albums' },
+        { key: 'Completion rate', value: pct + '%', color: pct >= 50 ? 'var(--green)' : null },
+        { key: 'Total albums', value: ca.total.toLocaleString() },
       ],
-      flavor: pct >= 100 ? 'Achievement unlocked: No stone unturned.' : null,
+      flavor: pct >= 100 ? 'Achievement unlocked: No stone unturned.' : (pct <= 10 ? 'So many albums, so little time.' : null),
     });
   }
   // Card 2: Recent
   if (data.recent_albums && data.recent_albums.length > 0) {
     deck.push({
       title: data.recent_albums.length + ' new',
-      statLabel: 'Recent',
+      statLabel: 'Recently added',
       rarity: 'common',
       renderContent: null,
-      stats: data.recent_albums.map(a => ({ key: a.artist, value: a.album })),
-      flavor: null,
+      stats: [
+        ...data.recent_albums.map(a => ({ key: a.artist, value: a.album })),
+        { key: 'Library growth', value: (data.collection_growth || 0) + ' tracks this month' },
+      ],
+      flavor: 'Fresh additions to the collection.',
     });
   }
   return deck;
