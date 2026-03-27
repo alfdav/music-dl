@@ -419,6 +419,8 @@ let _lastNavHash = '';
 const _viewState = {};
 
 function navigate(view) {
+  // Dismiss card inspect if open
+  if (_inspect.isOpen()) _inspect.dismiss();
   if (!view) view = 'home';
 
   // Save outgoing view state
@@ -878,6 +880,298 @@ function _onRepeatHalf(track) {
   a11yClick(half);
   return half;
 }
+
+// ---- CARD INSPECT OVERLAY ----
+// TCG-inspired stat card inspect: click tile → fan deck → keyboard browse → dismiss
+
+const _inspect = (() => {
+  let _state = null; // { scrim, cards, activeIndex, originalTile, originalRect, cleanup }
+  const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const DUR = REDUCED_MOTION ? 0 : 300;
+  const DUR_FAST = REDUCED_MOTION ? 0 : 200;
+  const EASE_PRIMARY = 'cubic-bezier(0.22, 0.61, 0.36, 1)';
+  const EASE_BOUNCE = 'cubic-bezier(0.175, 0.885, 0.32, 1.275)';
+  const FAN_ANGLE = 6; // degrees between cards
+  const FAN_LIFT = -12; // px vertical lift per offset
+  const CARD_W = Math.min(240, window.innerWidth * 0.7);
+  const CARD_H = CARD_W * 1.5;
+
+  function _noteIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('width', '12');
+    svg.setAttribute('height', '12');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'currentColor');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z');
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function _makeCard(data, index) {
+    const card = h('div', { className: 'inspect-card' });
+    card.style.width = CARD_W + 'px';
+    card.style.height = CARD_H + 'px';
+    card.dataset.index = index;
+    card.dataset.rarity = data.rarity || 'common';
+
+    // TCG corner marks
+    const tl = h('div', { className: 'card-corner top-left' });
+    tl.appendChild(_noteIcon());
+    card.appendChild(tl);
+    const br = h('div', { className: 'card-corner bottom-right' });
+    br.appendChild(_noteIcon());
+    card.appendChild(br);
+
+    // Rarity label
+    if (data.rarity && data.rarity !== 'common') {
+      card.appendChild(textEl('span', data.rarity.toUpperCase(), 'card-rarity'));
+    }
+
+    // Body — Format B layout
+    const body = h('div', { className: 'bento-body' });
+    body.style.padding = '0';
+    body.style.flex = '1';
+    body.style.display = 'flex';
+    body.style.flexDirection = 'column';
+
+    body.appendChild(textEl('div', data.title, 'bento-label'));
+    body.appendChild(textEl('div', data.statLabel, 'bento-stat-label'));
+
+    // Content area — render function provided by the deck builder
+    if (data.renderContent) {
+      const content = data.renderContent();
+      if (content) body.appendChild(content);
+    }
+
+    // Stats key-value pairs
+    if (data.stats && data.stats.length > 0) {
+      const statsEl = h('div', { className: 'card-stats' });
+      for (const s of data.stats) {
+        const row = h('div', { className: 'card-stats-row' });
+        row.appendChild(textEl('span', s.key, 'card-stats-key'));
+        const val = textEl('span', s.value, 'card-stats-val');
+        if (s.color) val.style.color = s.color;
+        row.appendChild(val);
+        statsEl.appendChild(row);
+      }
+      body.appendChild(statsEl);
+    }
+
+    // Flavor text
+    if (data.flavor) {
+      body.appendChild(textEl('div', data.flavor, 'card-flavor'));
+    }
+
+    card.appendChild(body);
+    return card;
+  }
+
+  function _fanPosition(index, activeIndex, total) {
+    if (index === activeIndex) return { angle: 0, lift: 0, z: total + 1, opacity: 1 };
+    const offset = index - activeIndex;
+    return {
+      angle: offset * FAN_ANGLE,
+      lift: Math.abs(offset) * FAN_LIFT,
+      z: total - Math.abs(offset),
+      opacity: 0.4,
+    };
+  }
+
+  function _setFan(cards, activeIndex) {
+    cards.forEach((card, i) => {
+      const pos = _fanPosition(i, activeIndex, cards.length);
+      const isFront = i === activeIndex;
+      card.className = 'inspect-card ' + (isFront ? 'inspect-front' : 'inspect-back');
+      card.dataset.rarity = card._data.rarity || 'common';
+      card.style.zIndex = pos.z;
+      card.style.transform = `translate(${_state.centerX}px, ${_state.centerY}px) rotate(${pos.angle}deg) translateY(${pos.lift}px)`;
+      card.style.opacity = pos.opacity;
+    });
+  }
+
+  function _animateSwap(fromIndex, toIndex) {
+    if (!_state) return;
+    const cards = _state.cards;
+    _state.activeIndex = toIndex;
+
+    cards.forEach((card, i) => {
+      const pos = _fanPosition(i, toIndex, cards.length);
+      const isFront = i === toIndex;
+      card.className = 'inspect-card ' + (isFront ? 'inspect-front' : 'inspect-back');
+      card.dataset.rarity = card._data.rarity || 'common';
+      const anim = card.animate([
+        { transform: card.style.transform, opacity: parseFloat(card.style.opacity) },
+        { transform: `translate(${_state.centerX}px, ${_state.centerY}px) rotate(${pos.angle}deg) translateY(${pos.lift}px)`, opacity: pos.opacity }
+      ], { duration: DUR, easing: EASE_PRIMARY, fill: 'forwards' });
+      anim.finished.then(() => { anim.commitStyles(); anim.cancel(); });
+      card.style.zIndex = pos.z;
+    });
+
+    _updateDots(toIndex);
+  }
+
+  function _createDots(count, container) {
+    const dots = h('div', { className: 'pip-dots' });
+    for (let i = 0; i < count; i++) {
+      dots.appendChild(h('div', { className: 'pip-dot' + (i === 0 ? ' active' : '') }));
+    }
+    container.appendChild(dots);
+    return dots;
+  }
+
+  function _updateDots(activeIndex) {
+    if (!_state) return;
+    const dots = _state.scrim.querySelectorAll('.pip-dot');
+    dots.forEach((d, i) => d.classList.toggle('active', i === activeIndex));
+  }
+
+  function open(tileEl, deckData) {
+    if (_state) return; // already open
+
+    const rect = tileEl.getBoundingClientRect();
+    tileEl.style.opacity = '0';
+
+    // Create scrim
+    const scrim = h('div', { className: 'inspect-scrim' });
+    scrim.style.opacity = '0';
+    document.body.appendChild(scrim);
+
+    // Animate scrim in
+    const scrimAnim = scrim.animate(
+      [{ opacity: 0 }, { opacity: 1 }],
+      { duration: DUR_FAST, fill: 'forwards' }
+    );
+    scrimAnim.finished.then(() => { scrimAnim.commitStyles(); scrimAnim.cancel(); });
+
+    // Calculate center position
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const centerX = (vw - CARD_W) / 2;
+    const centerY = (vh - CARD_H) / 2 - 20; // slight upward offset for pip dots
+
+    // Build cards
+    const cards = deckData.map((data, i) => {
+      const card = _makeCard(data, i);
+      card._data = data;
+      card.style.position = 'fixed';
+      card.style.top = '0';
+      card.style.left = '0';
+      // Start all cards at the tile's position
+      card.style.transform = `translate(${rect.left}px, ${rect.top}px) scale(${rect.width / CARD_W}, ${rect.height / CARD_H})`;
+      card.style.opacity = '0';
+      scrim.appendChild(card);
+      return card;
+    });
+
+    _state = {
+      scrim, cards, activeIndex: 0,
+      originalTile: tileEl, originalRect: rect,
+      centerX, centerY,
+    };
+
+    // Animate main card (index 0) from tile position to center
+    const mainCard = cards[0];
+    mainCard.style.opacity = '1';
+    const mainAnim = mainCard.animate([
+      { transform: `translate(${rect.left}px, ${rect.top}px) scale(${rect.width / CARD_W}, ${rect.height / CARD_H})`, opacity: 1 },
+      { transform: `translate(${centerX}px, ${centerY}px) scale(1)`, opacity: 1 }
+    ], { duration: DUR, easing: EASE_PRIMARY, fill: 'forwards' });
+    mainAnim.finished.then(() => {
+      mainAnim.commitStyles(); mainAnim.cancel();
+      // Fan out remaining cards with stagger
+      cards.forEach((card, i) => {
+        if (i === 0) { card.className = 'inspect-card inspect-front'; card.dataset.rarity = card._data.rarity || 'common'; return; }
+        const pos = _fanPosition(i, 0, cards.length);
+        const delay = Math.abs(i) * 50;
+        card.style.opacity = '0';
+        const fanAnim = card.animate([
+          { transform: `translate(${centerX}px, ${centerY}px) rotate(0deg)`, opacity: 0 },
+          { transform: `translate(${centerX}px, ${centerY}px) rotate(${pos.angle}deg) translateY(${pos.lift}px)`, opacity: pos.opacity }
+        ], { duration: 250, delay, easing: EASE_BOUNCE, fill: 'forwards' });
+        fanAnim.finished.then(() => { fanAnim.commitStyles(); fanAnim.cancel(); });
+        card.className = 'inspect-card inspect-back';
+        card.dataset.rarity = card._data.rarity || 'common';
+        card.style.zIndex = pos.z;
+
+        // Click background card to swap
+        card.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (_state && _state.activeIndex !== i) _animateSwap(_state.activeIndex, i);
+        });
+      });
+    });
+
+    // Pip dots
+    if (cards.length > 1) {
+      setTimeout(() => { if (_state) _createDots(cards.length, scrim); }, DUR + 50);
+    }
+
+    // Scrim click to dismiss
+    scrim.addEventListener('click', (e) => {
+      if (e.target === scrim) dismiss();
+    });
+
+    // Keyboard handler
+    function onKey(e) {
+      if (!_state) return;
+      const key = e.key;
+      if (key === 'ArrowRight' || key === 'd' || key === 'D') {
+        e.preventDefault(); e.stopPropagation();
+        const next = _state.activeIndex + 1;
+        if (next < _state.cards.length) _animateSwap(_state.activeIndex, next);
+      } else if (key === 'ArrowLeft' || key === 'a' || key === 'A') {
+        e.preventDefault(); e.stopPropagation();
+        const prev = _state.activeIndex - 1;
+        if (prev >= 0) _animateSwap(_state.activeIndex, prev);
+      } else if (key === 'Escape') {
+        e.preventDefault(); e.stopPropagation();
+        dismiss();
+      }
+    }
+    // Capture phase so we get it before the global handler
+    document.addEventListener('keydown', onKey, true);
+    _state.cleanup = () => document.removeEventListener('keydown', onKey, true);
+  }
+
+  function dismiss() {
+    if (!_state) return;
+    const { scrim, cards, originalTile, cleanup } = _state;
+    // Re-measure original tile position (may have scrolled)
+    const rect = originalTile.getBoundingClientRect();
+
+    // Fade out non-active cards
+    cards.forEach((card, i) => {
+      if (i === _state.activeIndex) return;
+      const fadeOut = card.animate([{ opacity: parseFloat(card.style.opacity) }, { opacity: 0 }], { duration: DUR_FAST, fill: 'forwards' });
+      fadeOut.finished.then(() => { fadeOut.commitStyles(); fadeOut.cancel(); });
+    });
+
+    // Animate active card back to original position
+    const active = cards[_state.activeIndex];
+    const returnAnim = active.animate([
+      { transform: active.style.transform, opacity: 1 },
+      { transform: `translate(${rect.left}px, ${rect.top}px) scale(${rect.width / CARD_W}, ${rect.height / CARD_H})`, opacity: 0.5 }
+    ], { duration: DUR, easing: 'ease-in', fill: 'forwards' });
+
+    // Fade scrim
+    const scrimFade = scrim.animate([{ opacity: 1 }, { opacity: 0 }], { duration: DUR_FAST, delay: 100, fill: 'forwards' });
+
+    returnAnim.finished.then(() => {
+      returnAnim.commitStyles(); returnAnim.cancel();
+      originalTile.style.opacity = '';
+      scrim.remove();
+    });
+    scrimFade.finished.then(() => { scrimFade.commitStyles(); scrimFade.cancel(); });
+
+    if (cleanup) cleanup();
+    _state = null;
+  }
+
+  function isOpen() { return _state !== null; }
+
+  return { open, dismiss, isOpen };
+})();
 
 function _listeningTimeTile(hours, weekly, data) {
   const tile = h('div', { className: 'bento-tile bento-stat-tile' });
@@ -4350,6 +4644,8 @@ btnVol.addEventListener('click', (e) => {
 // Keyboard shortcuts (YouTube-style)
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  // Skip arrow/letter keys when card inspect overlay is open
+  if (_inspect.isOpen()) return;
 
   // Shift combos
   if (e.shiftKey) {
