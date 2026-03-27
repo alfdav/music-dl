@@ -861,12 +861,17 @@ function _genreTile(topGenre, breakdown, fromLibrary, onRepeatTrack) {
 
 function _onRepeatHalf(track) {
   const half = h('div', { className: 'bento-half bento-on-repeat' });
+  const row = h('div', { className: 'on-repeat-row' });
+  if (track.cover_url) {
+    row.appendChild(h('img', { className: 'on-repeat-art', src: track.cover_url, alt: track.album || '' }));
+  }
   const body = h('div', { className: 'bento-body' });
   body.appendChild(textEl('div', 'On repeat', 'bento-eyebrow'));
   body.appendChild(textEl('div', track.name || 'Unknown', 'bento-label'));
   body.appendChild(textEl('div', track.artist || '', 'bento-sub'));
   body.appendChild(textEl('div', track.play_count + ' plays this week', 'bento-stat'));
-  half.appendChild(body);
+  row.appendChild(body);
+  half.appendChild(row);
   half.addEventListener('click', (e) => {
     e.stopPropagation();
     const t = { ...track, local_path: track.path, is_local: true };

@@ -1881,23 +1881,26 @@ body {
   letter-spacing: 0;
 }
 
-/* ---- SPLIT TILE (two half-tiles stacked vertically) ---- */
+/* ---- SPLIT TILE (two cards in one compartment) ---- */
 .bento-split {
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  padding: 0;
 }
 .bento-split .bento-half {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  padding: 12px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-}
-.bento-split .bento-half:first-child {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  background: var(--surface);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
 }
 .bento-split .bento-half .bento-body {
   padding: 0;
@@ -1906,15 +1909,53 @@ body {
 .bento-split .bento-half .bento-insight {
   display: none;
 }
+
+/* On-repeat half — mirrors bento-replayed conventions */
+.bento-on-repeat {
+  cursor: pointer;
+  transition: background 0.2s ease-out;
+}
+.bento-on-repeat:hover {
+  background: var(--surface-hover);
+}
+.on-repeat-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+.on-repeat-art {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-xs);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.bento-on-repeat .bento-body {
+  min-width: 0;
+}
+.bento-on-repeat .bento-eyebrow {
+  letter-spacing: 0.08em;
+}
 .bento-on-repeat .bento-label {
+  font-family: var(--serif);
   font-size: 0.9rem;
+  display: -webkit-box;
   -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .bento-on-repeat .bento-sub {
   font-size: 0.7rem;
+  color: var(--accent);
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
 }
 .bento-on-repeat .bento-stat {
-  font-size: 0.6rem;
+  font-size: 0.65rem;
+  color: var(--accent);
+  margin-top: 4px;
 }
 
 /* ---- MINI BAR CHART ---- */
