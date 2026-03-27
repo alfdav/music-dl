@@ -79,7 +79,15 @@
 
 ### The Compartment Model
 
-Tiles are compartments. New features go into existing compartments by subdivision, not by adding rows or sections. A subdivided tile becomes a transparent container holding two cards.
+**Tiles are compartments. Cards are entities.**
+
+A tile (compartment) is a fixed grid slot. It never moves, never resizes, never changes. A card is what lives inside it — an independent entity with its own format, behavior, data, and interactions.
+
+- A compartment can hold one card, two half-cards, or any subdivision we decide.
+- A card does NOT know what compartment it lives in. It follows its own format (A or B), has its own click behavior, its own inspect deck.
+- When a card animates (e.g., inspect), only that card is affected. Sibling cards in the same compartment are untouched.
+- New features go into existing compartments by subdivision, not by adding rows or sections. A subdivided compartment becomes a transparent container holding independent cards.
+- Card sizes can change within a compartment. The compartment is the constraint; the card is the content.
 
 ---
 
