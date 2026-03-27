@@ -3500,19 +3500,19 @@ body {
 
 .card-corner {
   position: absolute;
-  font-size: 12px;
+  font-size: 14px;
   opacity: 0.3;
   pointer-events: none;
 }
-.card-corner.top-left { top: 8px; left: 10px; }
-.card-corner.bottom-right { bottom: 8px; right: 10px; transform: rotate(180deg); }
+.card-corner.top-left { top: 10px; left: 12px; }
+.card-corner.bottom-right { bottom: 10px; right: 12px; transform: rotate(180deg); }
 
 .card-rarity {
   position: absolute;
-  top: 8px;
-  right: 10px;
+  top: 12px;
+  right: 14px;
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: 1px;
   color: rgba(240,235,228,0.3);
 }
@@ -3521,31 +3521,31 @@ body {
   margin-top: auto;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 7px;
   border-top: 1px solid var(--glass-border);
-  padding-top: 10px;
+  padding-top: 12px;
 }
 .card-stats-row {
   display: flex;
   justify-content: space-between;
 }
 .card-stats-key {
-  font-size: 9px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 .card-stats-val {
-  font-size: 9px;
+  font-size: 12px;
   color: var(--text-secondary);
   font-family: var(--mono);
 }
 
 .card-flavor {
-  margin-top: 8px;
-  font-size: 7.5px;
-  color: rgba(240, 235, 228, 0.2);
+  margin-top: 10px;
+  font-size: 11px;
+  color: rgba(240, 235, 228, 0.25);
   font-style: italic;
   text-align: center;
-  line-height: 1.4;
+  line-height: 1.5;
 }
 
 .pip-dots {
@@ -3585,12 +3585,12 @@ body {
 /* Inspect card internal typography — matches Format B */
 .inspect-card .bento-label {
   font-family: var(--serif);
-  font-size: 1.5rem;
+  font-size: 2rem;
   color: var(--accent);
   line-height: 1;
 }
 .inspect-card .bento-stat-label {
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   color: var(--text-muted);
   margin-top: 4px;
 }
