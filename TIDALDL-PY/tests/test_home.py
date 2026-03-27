@@ -282,6 +282,17 @@ def test_api_home_includes_this_week():
         assert "cover_path" not in data["this_week"]["most_replayed"]
 
 
+def test_home_stats_empty_includes_this_week(db):
+    """home_stats returns this_week even with no data."""
+    stats = db.home_stats()
+    assert "this_week" in stats
+    assert stats["this_week"]["total_plays"] == 0
+    assert stats["this_week"]["top_artist"] is None
+    assert stats["this_week"]["most_replayed"] is None
+    assert isinstance(stats["this_week"]["genre_breakdown"], list)
+    assert isinstance(stats["this_week"]["top_artists"], list)
+
+
 def test_top_album_from_play_events(db):
     """top_album should be derived from play_events, not scanned.play_count."""
     now = int(time.time())
