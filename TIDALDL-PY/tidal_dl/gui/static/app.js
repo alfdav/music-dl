@@ -2228,8 +2228,10 @@ function renderTrackRow(track, num, allTracks) {
   row.appendChild(artCell);
 
   // Meta — user data via textContent only
+  // Skip artist link when already inside an album view (prevents accidental navigation)
   const artistEl = textEl('div', track.artist || '', 'track-artist');
-  if (track.artist) {
+  const inAlbumView = state.view.startsWith('album:') || state.view.startsWith('localalbum:');
+  if (track.artist && !inAlbumView) {
     artistEl.style.cursor = 'pointer';
     artistEl.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2242,14 +2244,15 @@ function renderTrackRow(track, num, allTracks) {
   ));
 
   // Album — clickable: Tidal albums by ID, local albums by artist+album name
+  // Skip if already viewing this album (prevents accidental re-navigation)
   const albumCell = textEl('div', track.album || '', 'track-album');
-  if (track.album_id) {
+  if (track.album_id && state.view !== 'album:' + track.album_id) {
     albumCell.style.cursor = 'pointer';
     albumCell.addEventListener('click', (e) => {
       e.stopPropagation();
       navigateAlbum(track.album_id);
     });
-  } else if (track.album && track.artist) {
+  } else if (track.album && track.artist && state.view !== 'localalbum:' + encodeURIComponent(track.artist) + ':' + encodeURIComponent(track.album)) {
     albumCell.style.cursor = 'pointer';
     albumCell.addEventListener('click', (e) => {
       e.stopPropagation();
