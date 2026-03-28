@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Dark rounded square background -->
+  <rect x="16" y="16" width="480" height="480" rx="96" ry="96" fill="#0a0a0a"/>
+
+  <!-- Cool teal accent: #d4a053 -->
+
+  <!-- Soundwave bars (center-aligned at y=256, varying heights) -->
+  <rect x="128" y="208" width="36" height="96" rx="18" ry="18" fill="#d4a053"/>
+  <rect x="188" y="168" width="36" height="176" rx="18" ry="18" fill="#d4a053"/>
+  <rect x="248" y="136" width="36" height="240" rx="18" ry="18" fill="#d4a053"/>
+
+  <!-- Download arrow: shaft + chevron -->
+  <!-- Shaft (like a 4th bar but extends lower) -->
+  <rect x="318" y="168" width="36" height="176" rx="6" ry="6" fill="#d4a053"/>
+  <!-- Chevron arrowhead -->
+  <path d="M336,370 L296,322 L306,310 L336,344 L366,310 L376,322 Z" fill="#d4a053"/>
+
+  <!-- Ground line -->
+  <rect x="300" y="380" width="72" height="6" rx="3" ry="3" fill="#d4a053" opacity="0.5"/>
+</svg>

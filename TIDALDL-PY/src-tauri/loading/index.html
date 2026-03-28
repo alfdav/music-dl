@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>music-dl</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0a;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      flex-direction: column;
+      gap: 24px;
+    }
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid #333;
+      border-top-color: #e0e0e0;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .text {
+      font-size: 15px;
+      letter-spacing: 0.5px;
+      opacity: 0.7;
+    }
+    .error {
+      color: #ff6b6b;
+      font-size: 13px;
+      max-width: 400px;
+      text-align: center;
+      line-height: 1.5;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="spinner" id="spinner"></div>
+  <div class="text">Loading music-dl...</div>
+  <div class="error" id="error"></div>
+</body>
+</html>
