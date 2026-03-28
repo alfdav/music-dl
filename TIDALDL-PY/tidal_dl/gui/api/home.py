@@ -124,6 +124,19 @@ def home_stats():
         if a.get("cover_path"):
             a["cover_url"] = "/api/library/art?path=" + quote(a["cover_path"], safe="")
 
+    # Inject cached artist image URLs so frontend doesn't need a second fetch
+    def _inject_artist_image(artist_dict):
+        if not artist_dict or not artist_dict.get("name"):
+            return
+        cached = db.get_artist_image(artist_dict["name"])
+        if cached:  # truthy = real URL (not empty-string miss)
+            artist_dict["artist_image_url"] = cached
+
+    if stats.get("top_artist"):
+        _inject_artist_image(stats["top_artist"])
+    for a in stats.get("top_artists", []):
+        _inject_artist_image(a)
+
     # Remove internal cover_path from response — only expose cover_url
     if stats.get("top_artist"):
         stats["top_artist"].pop("cover_path", None)
@@ -147,6 +160,12 @@ def home_stats():
         tw["most_replayed"]["cover_url"] = (
             "/api/library/art?path=" + quote(tw["most_replayed"]["cover_path"], safe="")
         )
+    # Inject cached artist images for this_week too
+    if tw.get("top_artist"):
+        _inject_artist_image(tw["top_artist"])
+    for a in tw.get("top_artists", []):
+        _inject_artist_image(a)
+
     # Strip internal cover_path from this_week
     if tw.get("top_artist"):
         tw["top_artist"].pop("cover_path", None)

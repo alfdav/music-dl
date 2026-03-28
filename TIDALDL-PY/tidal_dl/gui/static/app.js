@@ -684,17 +684,19 @@ function _artistTile(artist, hero) {
   tile.appendChild(textEl('span', 'View albums', 'bento-hint'));
   tile.addEventListener('click', () => navigate('artist:' + encodeURIComponent(artist.name)));
   a11yClick(tile);
-  // Load artist photo (cached on backend, ~30ms)
-  fetch('/api/home/artist-image?name=' + encodeURIComponent(artist.name))
-    .then(r => r.json())
-    .then(data => {
-      const url = data.image_url || (artist.cover_url);
-      if (url) { img.src = url; img.onload = () => { img.style.opacity = '1'; }; }
-    })
-    .catch(() => {
-      // Last resort: use album cover from local file
-      if (artist.cover_url) { img.src = artist.cover_url; img.onload = () => { img.style.opacity = '1'; }; }
-    });
+  // Show cached artist image immediately if available in home_stats payload
+  if (artist.artist_image_url) {
+    img.src = artist.artist_image_url;
+    img.onload = () => { img.style.opacity = '1'; };
+  } else {
+    // Fetch artist photo (no album art fallback — tile stays clean until real photo arrives)
+    fetch('/api/home/artist-image?name=' + encodeURIComponent(artist.name))
+      .then(r => r.json())
+      .then(data => {
+        if (data.image_url) { img.src = data.image_url; img.onload = () => { img.style.opacity = '1'; }; }
+      })
+      .catch(() => {});
+  }
   return tile;
 }
 
@@ -4864,11 +4866,12 @@ audio.addEventListener('ended', () => {
   if (current) _logPlayEvent(current);
 
   if (state.repeat === 'one') {
-    audio.currentTime = 0;
-    audio.play().catch(() => {});
+    // Re-trigger via playTrack for a clean source reload — currentTime=0 + play() is unreliable after 'ended'
+    playTrack(current || state.queue[state.queueIndex]);
     return;
   }
-  if (state.queueIndex < state.queue.length - 1 || state.shuffle) {
+  const hasNext = state.queueIndex < state.queue.length - 1;
+  if (hasNext || state.shuffle) {
     btnNext.click();
   } else if (state.repeat === 'all') {
     state.queueIndex = 0;
