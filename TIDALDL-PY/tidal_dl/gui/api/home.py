@@ -1,6 +1,7 @@
 """Home view API — play tracking and stats aggregation."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -39,8 +40,21 @@ class PlayEvent(BaseModel):
 
 @router.post("/home/play", status_code=204)
 def record_play(event: PlayEvent):
-    """Record a play event. Increments scanned.play_count if path matches."""
+    """Record a play event. Increments scanned.play_count if path matches.
+
+    Server-side dedup: rejects duplicate plays for the same path within 60s.
+    """
     db = _get_db()
+
+    # --- Dedup guard: same path within 60 seconds is rejected silently ---
+    if event.path:
+        last = db._conn.execute(
+            "SELECT MAX(played_at) FROM play_events WHERE path = ?",
+            (event.path,),
+        ).fetchone()
+        if last and last[0] and (time.time() - last[0]) < 60:
+            return Response(status_code=204)
+
     genre = event.genre
     # If genre missing but we have a file path, read it from the file
     if not genre and event.path:

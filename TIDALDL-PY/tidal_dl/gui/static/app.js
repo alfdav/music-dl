@@ -4596,9 +4596,11 @@ function updatePlayerHeart() {
   }
 }
 
-// ---- PLAY COUNT (30-second threshold) ----
-let _playCountTimer = null;
+// ---- PLAY COUNT (30-second actual-playback threshold) ----
 let _playCountLogged = false;
+let _playCountElapsed = 0;       // seconds of real playback accumulated
+let _playCountLastTime = null;   // last audio.currentTime seen in timeupdate
+let _playCountTrack = null;      // track being counted
 
 function _logPlayEvent(track) {
   if (_playCountLogged) return;
@@ -4615,13 +4617,28 @@ function _logPlayEvent(track) {
   }).catch(() => {});
 }
 
-function _schedulePlayCount(track) {
-  // Cancel any pending timer from previous track
-  if (_playCountTimer) { clearTimeout(_playCountTimer); _playCountTimer = null; }
+function _resetPlayCount(track) {
   _playCountLogged = false;
+  _playCountElapsed = 0;
+  _playCountLastTime = null;
+  _playCountTrack = track;
+}
 
-  // Schedule at 30s of playback — for short tracks, 'ended' event handles it
-  _playCountTimer = setTimeout(() => { _logPlayEvent(track); }, 30000);
+function _tickPlayCount() {
+  // Called on timeupdate — accumulate real playback delta
+  if (_playCountLogged || !_playCountTrack) return;
+  const ct = audio.currentTime;
+  if (_playCountLastTime !== null) {
+    const delta = ct - _playCountLastTime;
+    // Only count forward playback between 0–2s delta (filters seeks and stalls)
+    if (delta > 0 && delta < 2) {
+      _playCountElapsed += delta;
+    }
+  }
+  _playCountLastTime = ct;
+  if (_playCountElapsed >= 30) {
+    _logPlayEvent(_playCountTrack);
+  }
 }
 
 function playTrack(track) {
@@ -4641,8 +4658,8 @@ function playTrack(track) {
   if (recentlyPlayed.length > MAX_RECENT) recentlyPlayed.pop();
   _saveRecent();
 
-  // Play count: fires after 30s of playback (or on ended for short tracks)
-  _schedulePlayCount(track);
+  // Play count: fires after 30s of actual playback (or on ended for short tracks)
+  _resetPlayCount(track);
 
   // Stop current playback — mute to prevent bleed during source switch
   audio.pause();
@@ -4861,6 +4878,7 @@ audio.addEventListener('timeupdate', () => {
   progressFill.style.width = pct + '%';
   timeElapsed.textContent = formatTime(audio.currentTime);
   timeTotal.textContent = formatTime(audio.duration);
+  _tickPlayCount();
 });
 
 audio.addEventListener('ended', () => {
@@ -4892,8 +4910,8 @@ audio.addEventListener('pause', () => {
   updatePlayButton();
   setWaveformPlaying(false);
   document.querySelectorAll('.eq-bars').forEach(b => b.classList.add('paused'));
-  // Pause the play count timer — resumes on play
-  if (_playCountTimer) { clearTimeout(_playCountTimer); _playCountTimer = null; }
+  // Freeze play count accumulation — resumes on next timeupdate after play
+  _playCountLastTime = null;
 });
 
 audio.addEventListener('error', () => {
@@ -4914,16 +4932,8 @@ audio.addEventListener('play', () => {
   updatePlayButton();
   setWaveformPlaying(true);
   document.querySelectorAll('.eq-bars').forEach(b => b.classList.remove('paused'));
-  // Resume play count timer if not yet logged
-  if (!_playCountLogged && !_playCountTimer) {
-    const remaining = Math.max(0, 30 - (audio.currentTime || 0)) * 1000;
-    const current = state.queue[state.queueIndex];
-    if (current && remaining > 0) {
-      _playCountTimer = setTimeout(() => { _logPlayEvent(current); }, remaining);
-    } else if (current) {
-      _logPlayEvent(current);
-    }
-  }
+  // Resume play count accumulation — timeupdate will pick it up automatically
+  _playCountLastTime = audio.currentTime;
 });
 
 // Seek
