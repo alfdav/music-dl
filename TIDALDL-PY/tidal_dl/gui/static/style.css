@@ -1761,10 +1761,14 @@ body {
   margin-top: auto;
 }
 .bento-stat-tile .bento-label {
+  display: block;
+  -webkit-line-clamp: unset;
+  -webkit-box-orient: initial;
+  overflow: visible;
   font-family: var(--serif);
   font-size: 1.5rem;
   color: var(--accent);
-  line-height: 1;
+  line-height: 1.1;
 }
 .bento-stat-label {
   font-size: 0.75rem;
@@ -3458,6 +3462,36 @@ body {
 
 @keyframes wizardSpin {
   to { transform: rotate(360deg); }
+}
+
+/* Offline mode banner in wizard */
+.wizard-offline-banner {
+  background: linear-gradient(135deg, rgba(126, 201, 122, 0.15), rgba(126, 201, 122, 0.05));
+  border: 1px solid var(--green-dim);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  margin-bottom: 20px;
+  text-align: center;
+  color: var(--green);
+  font-size: 14px;
+}
+
+.wizard-offline-banner strong {
+  display: block;
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+/* Secondary wizard button (skip/back options) */
+.wizard-btn-secondary {
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  margin-top: 12px;
+}
+
+.wizard-btn-secondary:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--text-muted);
 }
 
 /* ---- CARD INSPECT OVERLAY ---- */

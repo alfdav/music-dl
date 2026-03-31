@@ -5,7 +5,30 @@
 'use strict';
 
 // ---- CSRF ----
-const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.content || '';
+let CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.content || '';
+let _csrfRefreshPromise = null;
+
+async function refreshCsrfToken() {
+  if (_csrfRefreshPromise) return _csrfRefreshPromise;
+
+  _csrfRefreshPromise = (async () => {
+    const resp = await fetch('/', { method: 'GET', cache: 'no-store' });
+    const html = await resp.text();
+    const match = html.match(/name="csrf-token" content="([^"]+)"/);
+    if (!match) throw new Error('Could not refresh CSRF token');
+
+    CSRF_TOKEN = match[1];
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta) meta.content = CSRF_TOKEN;
+    return CSRF_TOKEN;
+  })();
+
+  try {
+    return await _csrfRefreshPromise;
+  } finally {
+    _csrfRefreshPromise = null;
+  }
+}
 
 // ---- HELPERS ----
 function textEl(tag, text, className) {
@@ -248,6 +271,15 @@ async function api(path, options) {
 
   if (!resp.ok) {
     const detail = await resp.json().catch(() => ({}));
+    if (
+      resp.status === 403 &&
+      detail.detail === 'Forbidden: invalid or missing CSRF token' &&
+      method !== 'GET' &&
+      !opts._csrfRetried
+    ) {
+      await refreshCsrfToken();
+      return api(path, { ...opts, _csrfRetried: true });
+    }
     throw new Error(detail.detail || 'API error ' + resp.status);
   }
 
@@ -302,6 +334,7 @@ function inlineConfirm(message, onYes) {
 // ---- CONTEXT MENU ----
 const _ctxIcons = {
   folder: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5V12a1 1 0 001 1h10a1 1 0 001-1V6a1 1 0 00-1-1H8L6.5 3H3a1 1 0 00-1 1v.5z"/></svg>',
+  download: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 10.5V13a1 1 0 01-1 1H3a1 1 0 01-1-1v-2.5"/><polyline points="5 7.5 8 10.5 11 7.5"/><line x1="8" y1="10.5" x2="8" y2="2"/></svg>',
   trash: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.5 7v4M9.5 7v4M4 4.5l.5 8a1 1 0 001 1h5a1 1 0 001-1l.5-8M6 4.5V3a1 1 0 011-1h2a1 1 0 011 1v1.5"/></svg>',
   disc: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="1.5"/></svg>',
 };
@@ -1718,8 +1751,8 @@ function _renderRecentStrip(container) {
     });
     card.appendChild(artistEl);
     card.addEventListener('click', () => {
-      if (track.is_local && track.local_path) playTrack(track);
-      else if (track.id) playTrack(track);
+      if (track.is_local && track.local_path) startPlaybackFromList(track, recentlyPlayed);
+      else if (track.id) startPlaybackFromList(track, recentlyPlayed);
     });
     a11yClick(card);
     strip.appendChild(card);
@@ -2201,6 +2234,12 @@ function _extractFormat(track) {
   return '';
 }
 
+function startPlaybackFromList(track, tracks) {
+  state.queue = tracks.slice();
+  state.queueIndex = tracks.indexOf(track);
+  playTrack(track);
+}
+
 function renderTrackRow(track, num, allTracks) {
   const current = state.queue[state.queueIndex];
   const isPlaying = current && _trackKey(current) === _trackKey(track) && _trackKey(track) !== '' && state.playing;
@@ -2388,9 +2427,7 @@ function renderTrackRow(track, num, allTracks) {
 
   // Click to play
   row.addEventListener('click', () => {
-    state.queue = allTracks.slice();
-    state.queueIndex = allTracks.indexOf(track);
-    playTrack(track);
+    startPlaybackFromList(track, allTracks);
   });
   a11yClick(row);
 
@@ -5496,7 +5533,12 @@ async function _checkSetup() {
   try {
     const resp = await fetch('/api/setup/status');
     const data = await resp.json();
-    if (!data.setup_complete) {
+    // Allow app access if at least one source is configured:
+    // - Tidal login for streaming, OR
+    // - Local scan paths for offline playback
+    // Only block with wizard if NOTHING is configured.
+    const hasAnySource = data.logged_in || data.scan_paths_configured;
+    if (!hasAnySource) {
       _renderWizard(data);
       return true;
     }
@@ -5520,10 +5562,13 @@ function _renderWizard(setupData) {
   const wizard = h('div', { className: 'setup-wizard' });
   document.body.appendChild(wizard);
 
-  if (!setupData.logged_in) {
+  if (!setupData.logged_in && !setupData.scan_paths_configured) {
     _wizardStepLogin(wizard, setupData);
   } else if (!setupData.scan_paths_configured) {
     _wizardStepPaths(wizard);
+  } else if (!setupData.logged_in) {
+    // Has local paths but no Tidal - show login with skip option
+    _wizardStepLogin(wizard, setupData);
   }
 }
 
@@ -5539,10 +5584,20 @@ function _teardownWizard() {
 function _wizardStepLogin(wizard, setupData) {
   while (wizard.firstChild) wizard.removeChild(wizard.firstChild);
 
+  // Check if we can at least access local music (offline mode)
+  const canPlayOffline = setupData.scan_paths_configured;
+
   const card = h('div', { className: 'wizard-card' });
 
+  // Show offline-capable banner if applicable
+  if (canPlayOffline && !setupData.logged_in) {
+    const offlineBanner = h('div', { className: 'wizard-offline-banner' });
+    offlineBanner.innerHTML = '<strong>Offline mode available</strong><br>Your local music library is ready. Connect Tidal to stream online.';
+    card.appendChild(offlineBanner);
+  }
+
   // Step indicator
-  card.appendChild(textEl('div', 'Step 1 of 2', 'wizard-step-label'));
+  card.appendChild(textEl('div', 'Connect Tidal for streaming (optional if you have local music)', 'wizard-step-label'));
   card.appendChild(textEl('h2', 'Connect your Tidal account', 'wizard-title'));
   card.appendChild(textEl('p', 'Sign in to stream and download from Tidal. You\'ll be given a code to enter on Tidal\'s website.', 'wizard-desc'));
 
@@ -5643,6 +5698,17 @@ function _wizardStepLogin(wizard, setupData) {
 
   card.appendChild(connectBtn);
   card.appendChild(statusArea);
+
+  // Add skip button for offline users
+  if (canPlayOffline) {
+    const skipBtn = textEl('button', 'Skip and use local library only', 'wizard-btn wizard-btn-secondary');
+    skipBtn.addEventListener('click', () => {
+      _teardownWizard();
+      _initApp();
+    });
+    card.appendChild(skipBtn);
+  }
+
   wizard.appendChild(card);
 }
 

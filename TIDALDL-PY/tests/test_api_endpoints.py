@@ -144,6 +144,28 @@ class TestDownloadsHistory:
         assert resp.status_code == 200
 
 
+class TestDownloadTrigger:
+    def test_requires_tidal_login(self, client, monkeypatch, clear_singletons):
+        class FakeSession:
+            def check_login(self):
+                return False
+
+        class FakeTidal:
+            def __init__(self):
+                self.session = FakeSession()
+
+        monkeypatch.setattr("tidal_dl.config.Tidal", FakeTidal)
+
+        resp = client.post(
+            "/api/download",
+            json={"track_ids": [123]},
+            headers=client._headers,
+        )
+
+        assert resp.status_code == 401
+        assert "Not logged in to Tidal" in resp.json()["detail"]
+
+
 class TestDuplicatesPreview:
     def test_returns_200(self, client):
         resp = client.get("/api/duplicates/preview", headers=client._host_header)
