@@ -2184,6 +2184,7 @@ function renderTrackHeader() {
     textEl('div', 'Album', 'col-label'),
     textEl('div', 'Quality', 'col-label center'),
     textEl('div', 'Format', 'col-label center'),
+    textEl('div', 'Plays', 'col-label center'),
     textEl('div', 'Time', 'col-label right'),
     h('div'),
     h('div')
@@ -2268,6 +2269,10 @@ function renderTrackRow(track, num, allTracks) {
 
   // Format
   row.appendChild(textEl('div', _extractFormat(track), 'track-format'));
+
+  // Plays
+  const plays = track.play_count || 0;
+  row.appendChild(textEl('div', plays > 0 ? String(plays) : '\u2014', 'track-plays'));
 
   // Time
   row.appendChild(textEl('div', formatTime(track.duration), 'track-time'));
@@ -2929,7 +2934,7 @@ function renderLibrary(container) {
   searchArea.appendChild(searchRow);
 
   const pills = h('div', { className: 'filter-pills' });
-  for (const sort of ['artist', 'album', 'title']) {
+  for (const sort of ['artist', 'album', 'title', 'plays']) {
     const pill = textEl('div', sort.charAt(0).toUpperCase() + sort.slice(1),
       'pill' + (librarySort === sort ? ' active' : ''));
     pill.style.cursor = 'pointer';

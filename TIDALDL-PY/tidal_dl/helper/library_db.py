@@ -255,6 +255,7 @@ class LibraryDB:
             "album": "album COLLATE NOCASE ASC",
             "title": "title COLLATE NOCASE ASC",
             "recent": "scanned_at DESC",
+            "plays": "play_count DESC, last_played DESC",
             "random": "RANDOM()",
         }
         order = sort_map.get(sort, sort_map["artist"])

@@ -162,6 +162,7 @@ def _db_row_to_track(row: dict) -> dict:
         "quality": row.get("quality") or p.suffix[1:].upper(),
         "format": row.get("format") or p.suffix[1:].upper(),
         "cover_url": "/api/library/art?path=" + quote(row["path"], safe=""),
+        "play_count": row.get("play_count") or 0,
         "is_local": True,
     }
 
