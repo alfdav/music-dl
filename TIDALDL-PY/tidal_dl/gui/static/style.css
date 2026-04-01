@@ -7,6 +7,7 @@
 }
 
 :root {
+  --player-height: 96px;
   --bg: #0f0e0d;
   --bg-warm: #161413;
   --surface: rgba(255, 245, 235, 0.04);
@@ -999,7 +1000,7 @@ body {
 
 /* ---- PLAYER BAR ---- */
 .player {
-  height: 96px;
+  height: var(--player-height);
   background: linear-gradient(180deg, rgba(22, 20, 19, 0.85), rgba(15, 14, 13, 0.95));
   backdrop-filter: blur(60px) saturate(1.3);
   -webkit-backdrop-filter: blur(60px) saturate(1.3);
@@ -2318,12 +2319,102 @@ body {
   .album-detail-art-wrap { width: 160px; height: 160px; }
 }
 
+/* ---- LYRICS PANEL ---- */
+.lyrics-panel {
+  position: fixed;
+  left: 240px;
+  right: 0;
+  bottom: var(--player-height);
+  top: 0;
+  z-index: 40;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(12px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.lyrics-panel.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.lyrics-panel-inner {
+  position: relative;
+  height: 100%;
+  min-height: 220px;
+  overflow: hidden;
+  border-top: 1px solid var(--glass-border);
+  background: linear-gradient(180deg, rgba(15, 14, 13, 0.72), rgba(15, 14, 13, 0.88));
+}
+
+.lyrics-artwork-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.6;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(212, 160, 83, 0.18), transparent 45%),
+    radial-gradient(circle at 80% 30%, rgba(120, 88, 180, 0.16), transparent 42%),
+    linear-gradient(180deg, rgba(15, 14, 13, 0.2), rgba(15, 14, 13, 0.85));
+  filter: blur(28px) saturate(1.05);
+}
+
+.lyrics-close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  z-index: 1;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  background: rgba(15, 14, 13, 0.45);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.lyrics-body {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  min-height: 220px;
+  padding: 64px 40px 32px;
+  overflow: hidden;
+}
+
+.lyrics-shell {
+  width: 100%;
+  height: 100%;
+  min-height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-family: var(--serif);
+  font-size: 22px;
+  color: var(--text);
+}
+
+.lyrics-shell-loading,
+.lyrics-shell-empty,
+.lyrics-shell-error,
+.lyrics-shell-unsynced,
+.lyrics-shell-synced {
+  width: 100%;
+}
+
+.lyrics-open #now-heart,
+.lyrics-open #now-download {
+  display: none !important;
+}
+
 /* ---- QUEUE PANEL ---- */
 .queue-panel {
   position: fixed;
   right: -380px;
   top: 0;
-  bottom: 96px;
+  bottom: var(--player-height);
   width: 380px;
   background: rgba(22, 20, 19, 0.95);
   backdrop-filter: blur(40px);
