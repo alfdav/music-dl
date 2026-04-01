@@ -2404,6 +2404,51 @@ body {
   width: 100%;
 }
 
+.lyrics-unsynced-copy {
+  max-width: 720px;
+  margin: 0 auto;
+  text-align: left;
+  line-height: 1.65;
+  color: var(--text);
+}
+
+.lyrics-unsynced-line + .lyrics-unsynced-line {
+  margin-top: 14px;
+}
+
+.lyrics-synced-viewport {
+  width: 100%;
+  max-width: 780px;
+  height: 100%;
+  min-height: 220px;
+  margin: 0 auto;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lyrics-synced-list {
+  width: 100%;
+  will-change: transform;
+}
+
+.lyrics-synced-line {
+  font-family: var(--serif);
+  font-size: 30px;
+  line-height: 1.25;
+  text-align: center;
+  color: rgba(240, 235, 228, 0.45);
+  margin: 18px 0;
+  transition: color 0.22s ease, opacity 0.22s ease, transform 0.22s ease;
+}
+
+.lyrics-synced-line.active {
+  color: var(--text);
+  opacity: 1;
+  transform: scale(1.02);
+}
+
 .lyrics-open #now-heart,
 .lyrics-open #now-download {
   display: none !important;
@@ -3742,7 +3787,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .inspect-card, .inspect-scrim, .pip-dot {
+  .inspect-card, .inspect-scrim, .pip-dot, .lyrics-panel, .lyrics-synced-line, .lyrics-synced-list {
     transition-duration: 0.01ms !important;
   }
 }

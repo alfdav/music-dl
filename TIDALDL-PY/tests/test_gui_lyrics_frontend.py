@@ -28,6 +28,9 @@ def test_style_contains_lyrics_panel_shells_and_player_height_variable():
     assert '.lyrics-shell-unsynced' in css
     assert '.lyrics-shell-synced' in css
     assert '.lyrics-artwork-bg' in css
+    assert '.lyrics-synced-line' in css
+    assert '.lyrics-synced-line.active' in css
+    assert '.lyrics-unsynced-copy' in css
 
 
 def test_style_contains_reduced_motion_and_open_state_action_hiding_rules():
@@ -66,3 +69,14 @@ def test_app_wires_album_art_toggle_close_button_queue_and_escape():
     assert "e.code === 'Escape'" in source
     assert 'btn-queue' in source
     assert 'closeLyricsPanel(' in source
+
+
+def test_app_has_synced_rendering_and_artwork_motion_hooks():
+    source = APP_JS.read_text()
+
+    assert 'function renderSyncedLyrics(payload)' in source
+    assert 'function syncActiveLyricLine()' in source
+    assert 'function applyLyricsArtworkBackground(track)' in source
+    assert 'requestAnimationFrame(syncActiveLyricLine)' in source
+    assert "window.matchMedia('(prefers-reduced-motion: reduce)')" in source
+    assert "lyricsBody.addEventListener('wheel'" in source
