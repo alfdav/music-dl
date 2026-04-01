@@ -147,6 +147,95 @@ class TestFavorites:
         assert len(db.all_favorites()) == 1
 
 
+class TestRecentAlbums:
+    def test_download_timestamp_wins_over_scan_timestamp(self, db):
+        db.record(
+            "/music/discovery/01.flac",
+            status="tagged",
+            artist="Daft Punk",
+            album="Discovery",
+            title="One More Time",
+        )
+        db.record_download(
+            track_id=1,
+            name="One More Time",
+            artist="Daft Punk",
+            album="Discovery",
+            status="done",
+            finished_at=2000.0,
+        )
+        db.commit()
+
+        rows, total = db.recent_albums_page(limit=12, offset=0)
+
+        assert total == 1
+        assert rows[0]["album"] == "Discovery"
+        assert rows[0]["recent_source"] == "download"
+        assert rows[0]["recent_at"] == 2000
+
+    def test_scan_fallback_used_when_no_download_history_exists(self, db):
+        db.record(
+            "/music/parachutes/01.flac",
+            status="tagged",
+            artist="Coldplay",
+            album="Parachutes",
+            title="Yellow",
+        )
+        db.commit()
+
+        rows, total = db.recent_albums_page(limit=12, offset=0)
+
+        assert total == 1
+        assert rows[0]["album"] == "Parachutes"
+        assert rows[0]["recent_source"] == "scan"
+
+    def test_same_album_from_download_and_scan_is_deduped(self, db):
+        db.record(
+            "/music/discovery/01.flac",
+            status="tagged",
+            artist="Daft Punk",
+            album="Discovery",
+            title="One More Time",
+        )
+        db.record(
+            "/music/discovery/02.flac",
+            status="tagged",
+            artist="Daft Punk",
+            album="Discovery",
+            title="Aerodynamic",
+        )
+        db.record_download(
+            track_id=1,
+            name="One More Time",
+            artist="Daft Punk",
+            album="Discovery",
+            status="done",
+            finished_at=2000.0,
+        )
+        db.commit()
+
+        rows, total = db.recent_albums_page(limit=12, offset=0)
+
+        assert total == 1
+        assert rows[0]["track_count"] == 2
+
+    def test_download_only_album_not_in_scanned_is_excluded(self, db):
+        db.record_download(
+            track_id=1,
+            name="Ghost Track",
+            artist="Ghost Artist",
+            album="Ghost Album",
+            status="done",
+            finished_at=2000.0,
+        )
+        db.commit()
+
+        rows, total = db.recent_albums_page(limit=12, offset=0)
+
+        assert rows == []
+        assert total == 0
+
+
 class TestMigration:
     def test_fresh_db_has_all_tables(self, db):
         tables = {r["name"] for r in db._conn.execute(
