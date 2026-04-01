@@ -394,7 +394,10 @@ class LibraryDB:
         merged = dict(scanned)
         merged.update(downloaded)
 
-        rows = sorted(merged.values(), key=lambda row: row["recent_at"], reverse=True)
+        rows = sorted(
+            merged.values(),
+            key=lambda row: (-row["recent_at"], row["artist"].casefold(), row["album"].casefold()),
+        )
         total = len(rows)
         return rows[offset:offset + limit], total
 
