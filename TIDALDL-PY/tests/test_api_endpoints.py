@@ -79,6 +79,28 @@ class TestLibraryAlbums:
         assert resp.status_code == 200
 
 
+class TestRecentAlbums:
+    def test_returns_200(self, client):
+        resp = client.get("/api/library/recent-albums", headers=client._host_header)
+        assert resp.status_code == 200
+
+    def test_response_shape(self, client):
+        resp = client.get("/api/library/recent-albums", headers=client._host_header)
+        data = resp.json()
+        assert "albums" in data
+        assert "total" in data
+        assert "limit" in data
+        assert "offset" in data
+        assert isinstance(data["albums"], list)
+        assert isinstance(data["total"], int)
+        assert isinstance(data["limit"], int)
+        assert isinstance(data["offset"], int)
+
+    def test_pagination_params_accepted(self, client):
+        resp = client.get("/api/library/recent-albums?limit=10&offset=5", headers=client._host_header)
+        assert resp.status_code == 200
+
+
 class TestLibraryFavorites:
     def test_returns_200(self, client):
         resp = client.get("/api/library/favorites", headers=client._host_header)
