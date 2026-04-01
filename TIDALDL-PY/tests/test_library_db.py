@@ -105,6 +105,32 @@ class TestAlbumDedup:
         assert len(tracks) == 1
         assert tracks[0]["path"] == "/short/a.flac"
 
+    def test_album_tracks_dedup_ignores_title_casing_and_prefers_higher_quality(self, db):
+        db.record(
+            "/short/old.flac",
+            status="tagged",
+            artist="X",
+            title="Purpose For Pain",
+            album="Alb",
+            quality="44100Hz/16bit",
+            fmt="FLAC",
+        )
+        db.record(
+            "/very/long/path/new.flac",
+            status="tagged",
+            artist="X",
+            title="Purpose for Pain",
+            album="Alb",
+            quality="96000Hz/24bit",
+            fmt="FLAC",
+        )
+        db.commit()
+
+        tracks = db.album_tracks("X", "Alb")
+
+        assert len(tracks) == 1
+        assert tracks[0]["path"] == "/very/long/path/new.flac"
+
 
 class TestDownloadHistory:
     def test_record_and_retrieve(self, db):
