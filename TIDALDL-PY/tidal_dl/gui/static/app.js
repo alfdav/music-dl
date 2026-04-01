@@ -493,6 +493,7 @@ function navigate(view) {
     case 'home': renderHome(container); break;
     case 'search': renderSearch(container); break;
     case 'library': renderLibrary(container); break;
+    case 'recent-added': renderLibrary(container); break;
     case 'recent': renderRecentlyPlayed(container); break;
     case 'playlists': renderPlaylists(container); break;
     case 'favorites': renderFavorites(container); break;
@@ -2949,12 +2950,158 @@ let librarySort = 'artist';
 let libraryQuery = '';
 let libraryScanPoll = null;
 const LIBRARY_PAGE_SIZE = 50;
+const LIBRARY_RECENT_SHELF_LIMIT = 12;
 let libraryOffset = 0;
 let libraryTotal = 0;
 let _libSearchTimer = null;
 let _libRequestId = 0;
 
+async function loadLibraryRecentAlbumsPage(limit, offset) {
+  return api('/library/recent-albums?limit=' + limit + '&offset=' + offset);
+}
+
+function renderRecentAlbumCard(album) {
+  const card = h('div', { className: 'album-card' });
+  const artWrap = h('div', { className: 'album-card-art-wrap' });
+  if (album.cover_url) {
+    const img = h('img', { className: 'album-card-art', src: album.cover_url, alt: '', loading: 'lazy' });
+    img.onerror = function() {
+      this.style.display = 'none';
+      artWrap.style.background = artGradient(album.name || album.artist);
+    };
+    artWrap.appendChild(img);
+  } else {
+    artWrap.style.background = artGradient(album.name || album.artist);
+  }
+  card.appendChild(artWrap);
+
+  const meta = h('div', { className: 'album-card-meta' });
+  meta.appendChild(textEl('div', album.name || 'Unknown Album', 'album-card-title'));
+  const sub = [album.artist || 'Unknown Artist'];
+  sub.push((album.track_count || 0) + ' track' + ((album.track_count || 0) !== 1 ? 's' : ''));
+  meta.appendChild(textEl('div', sub.join(' · '), 'album-card-sub'));
+  card.appendChild(meta);
+
+  card.addEventListener('click', () => {
+    navigate('localalbum:' + encodeURIComponent(album.artist || 'Unknown Artist') + ':' + encodeURIComponent(album.name || 'Unknown Album'));
+  });
+  a11yClick(card);
+  return card;
+}
+
+function renderRecentAlbumCards(albums, existingGrid) {
+  const grid = existingGrid || h('div', { className: 'album-gallery' });
+  albums.forEach(album => grid.appendChild(renderRecentAlbumCard(album)));
+  return grid;
+}
+
+function renderLibraryRecentShelfState(title, subtitle) {
+  return h('div', { className: 'empty-state library-shelf-empty' },
+    textEl('div', title, 'empty-state-title'),
+    textEl('div', subtitle, 'empty-state-sub')
+  );
+}
+
+async function loadLibraryRecentShelf(shelfArea) {
+  while (shelfArea.firstChild) shelfArea.removeChild(shelfArea.firstChild);
+
+  const heading = h('div', { className: 'library-shelf-heading' },
+    textEl('div', 'Recently Added', 'results-title'),
+    textEl('div', 'Latest albums from your library', 'results-count')
+  );
+  const header = h('div', { className: 'results-header library-shelf-header' }, heading);
+  shelfArea.appendChild(header);
+
+  try {
+    const data = await loadLibraryRecentAlbumsPage(LIBRARY_RECENT_SHELF_LIMIT, 0);
+    const albums = data.albums || [];
+
+    if (albums.length === 0) {
+      shelfArea.appendChild(renderLibraryRecentShelfState(
+        'No recently added albums yet',
+        'Download music or sync your library to populate this shelf.'
+      ));
+      return;
+    }
+
+    const seeAll = h('button', { className: 'library-shelf-action' }, 'See all');
+    seeAll.addEventListener('click', () => navigate('recent-added'));
+    header.appendChild(seeAll);
+
+    const grid = renderRecentAlbumCards(albums);
+    grid.classList.add('library-shelf-grid');
+    shelfArea.appendChild(grid);
+  } catch (_) {
+    shelfArea.appendChild(renderLibraryRecentShelfState(
+      'Recently added unavailable',
+      'Check your library connection and try again.'
+    ));
+  }
+}
+
+async function loadLibraryRecentAlbumsExpanded(resultsArea, append) {
+  try {
+    const data = await loadLibraryRecentAlbumsPage(LIBRARY_PAGE_SIZE, libraryOffset);
+    const albums = data.albums || [];
+    libraryTotal = data.total || 0;
+
+    if (!append) {
+      while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
+      resultsArea.appendChild(h('div', { className: 'results-header' },
+        textEl('div', 'Recently Added', 'results-title'),
+        textEl('div', libraryTotal + ' albums', 'results-count')
+      ));
+
+      if (albums.length === 0) {
+        resultsArea.appendChild(h('div', { className: 'empty-state' },
+          textEl('div', 'No recently added albums yet', 'empty-state-title'),
+          textEl('div', 'Download music or sync your library to populate this view.', 'empty-state-sub')
+        ));
+        return 0;
+      }
+
+      const grid = renderRecentAlbumCards(albums);
+      grid.id = 'library-recent-albums';
+      resultsArea.appendChild(grid);
+    } else {
+      const grid = document.getElementById('library-recent-albums') ||
+        resultsArea.querySelector('.album-gallery');
+      renderRecentAlbumCards(albums, grid);
+    }
+
+    const oldBtn = resultsArea.querySelector('.load-more');
+    if (oldBtn) oldBtn.remove();
+
+    if (libraryOffset + albums.length < libraryTotal) {
+      const loadMore = h('button', {
+        className: 'load-more pill active',
+        onClick: () => {
+          libraryOffset += LIBRARY_PAGE_SIZE;
+          loadLibraryRecentAlbumsExpanded(resultsArea, true);
+        },
+      });
+      loadMore.textContent = 'Load more (' +
+        (libraryTotal - libraryOffset - albums.length) + ' remaining)';
+      resultsArea.appendChild(loadMore);
+    }
+
+    return albums.length;
+  } catch (err) {
+    if (!append) {
+      while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
+      resultsArea.appendChild(h('div', { className: 'empty-state' },
+        textEl('div', 'Could not load recently added albums', 'empty-state-title'),
+        textEl('div', err.message || 'Check that your music folder is mounted and try again.', 'empty-state-sub')
+      ));
+    } else {
+      toast('Could not load recently added albums', 'error');
+    }
+    return 0;
+  }
+}
+
 function renderLibrary(container) {
+  const recentAddedExpanded = state.view === 'recent-added';
   libraryOffset = 0;
   libraryQuery = '';
   const searchArea = h('div', { className: 'search-area' });
@@ -2964,20 +3111,34 @@ function renderLibrary(container) {
   searchField.appendChild(svgIcon(ICONS.search));
   const libInput = h('input', {
     type: 'text', className: 'search-input',
-    placeholder: 'Search your library...', value: libraryQuery,
+    placeholder: recentAddedExpanded ? 'Recently added albums' : 'Search your library...', value: libraryQuery,
   });
+  if (recentAddedExpanded) libInput.disabled = true;
   searchField.appendChild(libInput);
   searchRow.appendChild(searchField);
   searchArea.appendChild(searchRow);
 
+  const resultsArea = h('div', { className: 'results' });
   const pills = h('div', { className: 'filter-pills' });
+  const recentAddedPill = textEl('div', 'Recently Added', 'pill' + (recentAddedExpanded ? ' active' : ''));
+  recentAddedPill.style.cursor = 'pointer';
+  recentAddedPill.addEventListener('click', () => {
+    if (state.view !== 'recent-added') navigate('recent-added');
+  });
+  a11yClick(recentAddedPill);
+  pills.appendChild(recentAddedPill);
+
   for (const sort of ['artist', 'album', 'title', 'plays']) {
     const pill = textEl('div', sort.charAt(0).toUpperCase() + sort.slice(1),
-      'pill' + (librarySort === sort ? ' active' : ''));
+      'pill' + (!recentAddedExpanded && librarySort === sort ? ' active' : ''));
     pill.style.cursor = 'pointer';
     pill.addEventListener('click', () => {
       librarySort = sort;
       libraryOffset = 0;
+      if (recentAddedExpanded) {
+        navigate('library');
+        return;
+      }
       pills.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
       pill.classList.add('active');
       if (sort === 'album') {
@@ -3001,32 +3162,41 @@ function renderLibrary(container) {
   searchArea.appendChild(pills);
   container.appendChild(searchArea);
 
-  const resultsArea = h('div', { className: 'results' });
+  if (!recentAddedExpanded) {
+    const shelfArea = h('section', { className: 'library-shelf' });
+    container.appendChild(shelfArea);
+    loadLibraryRecentShelf(shelfArea);
+  }
+
   container.appendChild(resultsArea);
 
-  // Debounced search
-  libInput.addEventListener('input', () => {
-    clearTimeout(_libSearchTimer);
-    _libSearchTimer = setTimeout(() => {
-      libraryQuery = libInput.value.trim();
-      libraryOffset = 0;
-      if (librarySort === 'album') {
-        loadLibraryAlbums(resultsArea, libraryQuery);
-      } else if (librarySort === 'artist') {
-        loadLibraryArtistGrouped(resultsArea, libraryQuery);
-      } else {
-        loadLibrary(resultsArea);
-      }
-    }, 300);
-  });
+  if (!recentAddedExpanded) {
+    // Debounced search
+    libInput.addEventListener('input', () => {
+      clearTimeout(_libSearchTimer);
+      _libSearchTimer = setTimeout(() => {
+        libraryQuery = libInput.value.trim();
+        libraryOffset = 0;
+        if (librarySort === 'album') {
+          loadLibraryAlbums(resultsArea, libraryQuery);
+        } else if (librarySort === 'artist') {
+          loadLibraryArtistGrouped(resultsArea, libraryQuery);
+        } else {
+          loadLibrary(resultsArea);
+        }
+      }, 300);
+    });
 
-  // Load cached results — user clicks Sync Library to scan
-  if (librarySort === 'album') {
-    loadLibraryAlbums(resultsArea, '');
-  } else if (librarySort === 'artist') {
-    loadLibraryArtistGrouped(resultsArea, '');
+    // Load cached results — user clicks Sync Library to scan
+    if (librarySort === 'album') {
+      loadLibraryAlbums(resultsArea, '');
+    } else if (librarySort === 'artist') {
+      loadLibraryArtistGrouped(resultsArea, '');
+    } else {
+      loadLibrary(resultsArea, false);
+    }
   } else {
-    loadLibrary(resultsArea, false);
+    loadLibraryRecentAlbumsExpanded(resultsArea, false);
   }
 }
 
@@ -5856,8 +6026,8 @@ async function _checkErrorBanners() {
     }
   } catch (_) { /* silent */ }
 
-  // Library view: check scan_paths
-  if (state.view === 'library') {
+  // Library views: check scan_paths
+  if (state.view === 'library' || state.view === 'recent-added') {
     try {
       const settings = state.settings || await api('/settings');
       const scanPaths = (settings.scan_paths || '').trim();

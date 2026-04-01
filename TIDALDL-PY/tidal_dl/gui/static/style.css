@@ -2079,6 +2079,57 @@ body {
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 24px;
 }
+
+.library-shelf {
+  padding: 0 32px 8px;
+}
+
+.library-shelf-header {
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.library-shelf-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.library-shelf-grid {
+  margin-bottom: 8px;
+}
+
+.library-shelf-action {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.library-shelf-action:hover {
+  color: var(--text);
+}
+
+.library-shelf-empty {
+  align-items: flex-start;
+  text-align: left;
+  padding: 20px 24px;
+  gap: 8px;
+}
+
+.library-shelf-empty .empty-state-title {
+  font-size: 20px;
+}
+
+.library-shelf-empty .empty-state-sub {
+  max-width: none;
+}
 .album-card {
   cursor: pointer;
   border-radius: 8px;
