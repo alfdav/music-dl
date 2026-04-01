@@ -55,6 +55,7 @@ TIDALDL-PY/tidal-gui.spec
 .superpowers/
 .checkpoint/
 .playwright/
+.worktrees/
 test-results/
 *.pyc
 .venv/
