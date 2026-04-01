@@ -24,21 +24,12 @@ def get_download_paths() -> list[str]:
 @router.get("/local")
 def serve_local_file(path: str = Query(..., description="Absolute path to audio file")):
     """Serve a local audio file. Path must be within a configured download directory."""
-    from tidal_dl.gui.security import validate_audio_path
+    from tidal_dl.gui.security import resolve_local_audio_path
 
-    allowed = get_download_paths()
-    validated_path = validate_audio_path(path, allowed)
-    # Fallback: if path is in our library DB, we already trusted it during scan
-    if validated_path is None:
-        from tidal_dl.gui.api.library import _path_in_library
-
-        if _path_in_library(path):
-            try:
-                validated_path = Path(path).resolve(strict=True)
-            except (OSError, ValueError):
-                validated_path = None
-    if validated_path is None:
+    resolution = resolve_local_audio_path(path, get_download_paths())
+    if resolution.kind != "ok" or resolution.path is None:
         raise HTTPException(status_code=403, detail="Access denied")
+    validated_path = resolution.path
 
     media_types = {
         ".flac": "audio/flac",

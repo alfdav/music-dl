@@ -9,6 +9,7 @@ SSRF attacks.
 from __future__ import annotations
 
 import secrets
+from dataclasses import dataclass
 from pathlib import Path
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -48,6 +49,14 @@ TIDAL_CDN_HOSTS = frozenset(
         "listening-test.tidal.com",
     }
 )
+
+
+@dataclass(frozen=True)
+class LocalAudioPathResolution:
+    """Result of resolving a local audio path against GUI trust rules."""
+
+    kind: str
+    path: Path | None = None
 
 
 def generate_csrf_token() -> str:
@@ -129,6 +138,36 @@ def validate_audio_path(path_str: str, allowed_dirs: list[str]) -> Path | None:
             return file_path
 
     return None
+
+
+def _path_in_library(path: str) -> bool:
+    """Check library DB trust using the existing library helper."""
+    from tidal_dl.gui.api.library import _path_in_library as library_path_in_library
+
+    return library_path_in_library(path)
+
+
+def resolve_local_audio_path(raw_path: str | None, allowed_dirs: list[str]) -> LocalAudioPathResolution:
+    """Resolve a local audio path using the GUI's shared trust rules."""
+    if raw_path is None or not raw_path.strip():
+        return LocalAudioPathResolution("bad_request")
+
+    validated = validate_audio_path(raw_path, allowed_dirs)
+    if validated is not None:
+        return LocalAudioPathResolution("ok", validated)
+
+    if not _path_in_library(raw_path):
+        return LocalAudioPathResolution("forbidden")
+
+    try:
+        resolved = Path(raw_path).resolve(strict=True)
+    except (OSError, ValueError):
+        return LocalAudioPathResolution("not_found")
+
+    if resolved.suffix.lower() not in AUDIO_EXTENSIONS:
+        return LocalAudioPathResolution("not_audio")
+
+    return LocalAudioPathResolution("ok", resolved)
 
 
 def validate_download_path(path_str: str) -> bool:

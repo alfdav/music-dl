@@ -140,6 +140,57 @@ class TestPathValidation:
         assert validate_download_path("/nonexistent/path") is False
 
 
+class TestLocalAudioResolution:
+    def test_rejects_blank_input(self, tmp_path):
+        from tidal_dl.gui.security import resolve_local_audio_path
+
+        result = resolve_local_audio_path("   ", [str(tmp_path)])
+
+        assert result.kind == "bad_request"
+        assert result.path is None
+
+    def test_reports_forbidden_for_untrusted_path(self, tmp_path):
+        from tidal_dl.gui.security import resolve_local_audio_path
+
+        result = resolve_local_audio_path("/etc/passwd", [str(tmp_path)])
+
+        assert result.kind == "forbidden"
+        assert result.path is None
+
+    def test_reports_not_found_for_db_trusted_missing_path(self, monkeypatch, tmp_path):
+        from tidal_dl.gui.security import resolve_local_audio_path
+
+        monkeypatch.setattr("tidal_dl.gui.security._path_in_library", lambda path: True)
+
+        result = resolve_local_audio_path(str(tmp_path / "missing.flac"), [str(tmp_path)])
+
+        assert result.kind == "not_found"
+        assert result.path is None
+
+    def test_reports_not_audio_for_db_trusted_non_audio(self, monkeypatch, tmp_path):
+        from tidal_dl.gui.security import resolve_local_audio_path
+
+        bad = tmp_path / "notes.txt"
+        bad.write_text("x")
+        monkeypatch.setattr("tidal_dl.gui.security._path_in_library", lambda path: True)
+
+        result = resolve_local_audio_path(str(bad), [str(tmp_path)])
+
+        assert result.kind == "not_audio"
+        assert result.path is None
+
+    def test_returns_ok_for_allowed_audio(self, tmp_path):
+        from tidal_dl.gui.security import resolve_local_audio_path
+
+        audio = tmp_path / "track.flac"
+        audio.write_bytes(b"fake")
+
+        result = resolve_local_audio_path(str(audio), [str(tmp_path)])
+
+        assert result.kind == "ok"
+        assert result.path == audio.resolve()
+
+
 class TestStreamUrlValidation:
     def test_allows_tidal_cdn(self):
         from tidal_dl.gui.security import validate_stream_url

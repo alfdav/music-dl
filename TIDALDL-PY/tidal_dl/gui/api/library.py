@@ -529,7 +529,7 @@ def library_art(path: str = Query(..., description="Absolute path to audio file"
     from fastapi import HTTPException
     from fastapi.responses import FileResponse, Response
 
-    from tidal_dl.gui.security import validate_audio_path
+    from tidal_dl.gui.security import resolve_local_audio_path
 
     # Check disk cache first — instant response
     cache_dir = _art_cache_dir()
@@ -545,15 +545,10 @@ def library_art(path: str = Query(..., description="Absolute path to audio file"
     if settings.data.scan_paths:
         allowed.extend(str(Path(p.strip()).expanduser()) for p in settings.data.scan_paths.split(",") if p.strip())
 
-    validated = validate_audio_path(path, allowed)
-    # Fallback: if path is in our library DB, we already trusted it during scan
-    if validated is None and _path_in_library(path):
-        try:
-            validated = Path(path).resolve(strict=True)
-        except (OSError, ValueError):
-            validated = None
-    if validated is None:
+    resolution = resolve_local_audio_path(path, allowed)
+    if resolution.kind != "ok" or resolution.path is None:
         raise HTTPException(status_code=403, detail="Access denied")
+    validated = resolution.path
 
     art_data = None
     art_mime = "image/jpeg"
