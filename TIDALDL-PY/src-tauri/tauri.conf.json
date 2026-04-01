@@ -1,0 +1,57 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "music-dl",
+  "version": "3.0.0",
+  "identifier": "com.alfdav.music-dl",
+  "build": {
+    "frontendDist": "./loading",
+    "devUrl": "http://localhost:8765",
+    "beforeBuildCommand": "bash scripts/build-sidecar.sh"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "music-dl",
+        "label": "main",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1100,
+        "minHeight": 700,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "externalBin": ["binaries/music-dl-server"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "dmg": {
+        "background": "dmg-background.png",
+        "appPosition": {
+          "x": 170,
+          "y": 200
+        },
+        "applicationFolderPosition": {
+          "x": 530,
+          "y": 200
+        },
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        }
+      }
+    }
+  }
+}

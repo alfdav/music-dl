@@ -255,6 +255,7 @@ class LibraryDB:
             "album": "album COLLATE NOCASE ASC",
             "title": "title COLLATE NOCASE ASC",
             "recent": "scanned_at DESC",
+            "plays": "play_count DESC, last_played DESC",
             "random": "RANDOM()",
         }
         order = sort_map.get(sort, sort_map["artist"])
@@ -334,6 +335,71 @@ class LibraryDB:
             d["artist"] = d["first_artist"] if d["artist_count"] == 1 else "Various Artists"
             result.append(d)
         return result
+
+    def recent_albums_page(self, limit: int = 12, offset: int = 0) -> tuple[list[dict], int]:
+        """Return recent local albums, preferring download recency over scan recency."""
+        assert self._conn
+
+        downloaded = {
+            (row["album"], row["artist"]): {
+                "album": row["album"],
+                "artist": row["artist"],
+                "track_count": row["track_count"],
+                "cover_path": row["cover_path"],
+                "recent_at": int(row["recent_at"]),
+                "recent_source": "download",
+            }
+            for row in self._conn.execute(
+                """SELECT dh.album,
+                          dh.artist,
+                          COUNT(DISTINCT s.path) AS track_count,
+                          MIN(s.path) AS cover_path,
+                          MAX(dh.finished_at) AS recent_at
+                   FROM download_history dh
+                   JOIN scanned s
+                     ON s.album = dh.album
+                    AND s.artist = dh.artist
+                   WHERE dh.status = 'done'
+                     AND dh.finished_at IS NOT NULL
+                     AND s.status != 'unreadable'
+                     AND dh.album IS NOT NULL
+                     AND dh.artist IS NOT NULL
+                   GROUP BY dh.album, dh.artist"""
+            ).fetchall()
+        }
+
+        scanned = {
+            (row["album"], row["artist"]): {
+                "album": row["album"],
+                "artist": row["artist"],
+                "track_count": row["track_count"],
+                "cover_path": row["cover_path"],
+                "recent_at": int(row["recent_at"]),
+                "recent_source": "scan",
+            }
+            for row in self._conn.execute(
+                """SELECT album,
+                          artist,
+                          COUNT(*) AS track_count,
+                          MIN(path) AS cover_path,
+                          MAX(scanned_at) AS recent_at
+                   FROM scanned
+                   WHERE album IS NOT NULL
+                     AND artist IS NOT NULL
+                     AND status != 'unreadable'
+                   GROUP BY album, artist"""
+            ).fetchall()
+        }
+
+        merged = dict(scanned)
+        merged.update(downloaded)
+
+        rows = sorted(
+            merged.values(),
+            key=lambda row: (-row["recent_at"], row["artist"].casefold(), row["album"].casefold()),
+        )
+        total = len(rows)
+        return rows[offset:offset + limit], total
 
     def albums_by_artist(self, artist: str) -> list[dict]:
         """Return albums for an artist with track count and a representative path for art."""

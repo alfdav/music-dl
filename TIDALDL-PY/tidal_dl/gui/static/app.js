@@ -5,7 +5,30 @@
 'use strict';
 
 // ---- CSRF ----
-const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.content || '';
+let CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.content || '';
+let _csrfRefreshPromise = null;
+
+async function refreshCsrfToken() {
+  if (_csrfRefreshPromise) return _csrfRefreshPromise;
+
+  _csrfRefreshPromise = (async () => {
+    const resp = await fetch('/', { method: 'GET', cache: 'no-store' });
+    const html = await resp.text();
+    const match = html.match(/name="csrf-token" content="([^"]+)"/);
+    if (!match) throw new Error('Could not refresh CSRF token');
+
+    CSRF_TOKEN = match[1];
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta) meta.content = CSRF_TOKEN;
+    return CSRF_TOKEN;
+  })();
+
+  try {
+    return await _csrfRefreshPromise;
+  } finally {
+    _csrfRefreshPromise = null;
+  }
+}
 
 // ---- HELPERS ----
 function textEl(tag, text, className) {
@@ -248,6 +271,15 @@ async function api(path, options) {
 
   if (!resp.ok) {
     const detail = await resp.json().catch(() => ({}));
+    if (
+      resp.status === 403 &&
+      detail.detail === 'Forbidden: invalid or missing CSRF token' &&
+      method !== 'GET' &&
+      !opts._csrfRetried
+    ) {
+      await refreshCsrfToken();
+      return api(path, { ...opts, _csrfRetried: true });
+    }
     throw new Error(detail.detail || 'API error ' + resp.status);
   }
 
@@ -302,6 +334,7 @@ function inlineConfirm(message, onYes) {
 // ---- CONTEXT MENU ----
 const _ctxIcons = {
   folder: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5V12a1 1 0 001 1h10a1 1 0 001-1V6a1 1 0 00-1-1H8L6.5 3H3a1 1 0 00-1 1v.5z"/></svg>',
+  download: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 10.5V13a1 1 0 01-1 1H3a1 1 0 01-1-1v-2.5"/><polyline points="5 7.5 8 10.5 11 7.5"/><line x1="8" y1="10.5" x2="8" y2="2"/></svg>',
   trash: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.5 7v4M9.5 7v4M4 4.5l.5 8a1 1 0 001 1h5a1 1 0 001-1l.5-8M6 4.5V3a1 1 0 011-1h2a1 1 0 011 1v1.5"/></svg>',
   disc: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="1.5"/></svg>',
 };
@@ -460,6 +493,7 @@ function navigate(view) {
     case 'home': renderHome(container); break;
     case 'search': renderSearch(container); break;
     case 'library': renderLibrary(container); break;
+    case 'recent-added': renderLibrary(container); break;
     case 'recent': renderRecentlyPlayed(container); break;
     case 'playlists': renderPlaylists(container); break;
     case 'favorites': renderFavorites(container); break;
@@ -684,17 +718,19 @@ function _artistTile(artist, hero) {
   tile.appendChild(textEl('span', 'View albums', 'bento-hint'));
   tile.addEventListener('click', () => navigate('artist:' + encodeURIComponent(artist.name)));
   a11yClick(tile);
-  // Load artist photo (cached on backend, ~30ms)
-  fetch('/api/home/artist-image?name=' + encodeURIComponent(artist.name))
-    .then(r => r.json())
-    .then(data => {
-      const url = data.image_url || (artist.cover_url);
-      if (url) { img.src = url; img.onload = () => { img.style.opacity = '1'; }; }
-    })
-    .catch(() => {
-      // Last resort: use album cover from local file
-      if (artist.cover_url) { img.src = artist.cover_url; img.onload = () => { img.style.opacity = '1'; }; }
-    });
+  // Show cached artist image immediately if available in home_stats payload
+  if (artist.artist_image_url) {
+    img.src = artist.artist_image_url;
+    img.onload = () => { img.style.opacity = '1'; };
+  } else {
+    // Fetch artist photo (no album art fallback — tile stays clean until real photo arrives)
+    fetch('/api/home/artist-image?name=' + encodeURIComponent(artist.name))
+      .then(r => r.json())
+      .then(data => {
+        if (data.image_url) { img.src = data.image_url; img.onload = () => { img.style.opacity = '1'; }; }
+      })
+      .catch(() => {});
+  }
   return tile;
 }
 
@@ -1716,8 +1752,8 @@ function _renderRecentStrip(container) {
     });
     card.appendChild(artistEl);
     card.addEventListener('click', () => {
-      if (track.is_local && track.local_path) playTrack(track);
-      else if (track.id) playTrack(track);
+      if (track.is_local && track.local_path) startPlaybackFromList(track, recentlyPlayed);
+      else if (track.id) startPlaybackFromList(track, recentlyPlayed);
     });
     a11yClick(card);
     strip.appendChild(card);
@@ -2182,6 +2218,7 @@ function renderTrackHeader() {
     textEl('div', 'Album', 'col-label'),
     textEl('div', 'Quality', 'col-label center'),
     textEl('div', 'Format', 'col-label center'),
+    textEl('div', 'Plays', 'col-label center'),
     textEl('div', 'Time', 'col-label right'),
     h('div'),
     h('div')
@@ -2196,6 +2233,12 @@ function _extractFormat(track) {
   }
   if (track.format) return track.format.toUpperCase();
   return '';
+}
+
+function startPlaybackFromList(track, tracks) {
+  state.queue = tracks.slice();
+  state.queueIndex = tracks.indexOf(track);
+  playTrack(track);
 }
 
 function renderTrackRow(track, num, allTracks) {
@@ -2226,8 +2269,10 @@ function renderTrackRow(track, num, allTracks) {
   row.appendChild(artCell);
 
   // Meta — user data via textContent only
+  // Skip artist link when already inside an album view (prevents accidental navigation)
   const artistEl = textEl('div', track.artist || '', 'track-artist');
-  if (track.artist) {
+  const inAlbumView = state.view.startsWith('album:') || state.view.startsWith('localalbum:');
+  if (track.artist && !inAlbumView) {
     artistEl.style.cursor = 'pointer';
     artistEl.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2240,14 +2285,15 @@ function renderTrackRow(track, num, allTracks) {
   ));
 
   // Album — clickable: Tidal albums by ID, local albums by artist+album name
+  // Skip if already viewing this album (prevents accidental re-navigation)
   const albumCell = textEl('div', track.album || '', 'track-album');
-  if (track.album_id) {
+  if (track.album_id && state.view !== 'album:' + track.album_id) {
     albumCell.style.cursor = 'pointer';
     albumCell.addEventListener('click', (e) => {
       e.stopPropagation();
       navigateAlbum(track.album_id);
     });
-  } else if (track.album && track.artist) {
+  } else if (track.album && track.artist && state.view !== 'localalbum:' + encodeURIComponent(track.artist) + ':' + encodeURIComponent(track.album)) {
     albumCell.style.cursor = 'pointer';
     albumCell.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2263,6 +2309,10 @@ function renderTrackRow(track, num, allTracks) {
 
   // Format
   row.appendChild(textEl('div', _extractFormat(track), 'track-format'));
+
+  // Plays
+  const plays = track.play_count || 0;
+  row.appendChild(textEl('div', plays > 0 ? String(plays) : '\u2014', 'track-plays'));
 
   // Time
   row.appendChild(textEl('div', formatTime(track.duration), 'track-time'));
@@ -2378,9 +2428,7 @@ function renderTrackRow(track, num, allTracks) {
 
   // Click to play
   row.addEventListener('click', () => {
-    state.queue = allTracks.slice();
-    state.queueIndex = allTracks.indexOf(track);
-    playTrack(track);
+    startPlaybackFromList(track, allTracks);
   });
   a11yClick(row);
 
@@ -2902,12 +2950,158 @@ let librarySort = 'artist';
 let libraryQuery = '';
 let libraryScanPoll = null;
 const LIBRARY_PAGE_SIZE = 50;
+const LIBRARY_RECENT_SHELF_LIMIT = 12;
 let libraryOffset = 0;
 let libraryTotal = 0;
 let _libSearchTimer = null;
 let _libRequestId = 0;
 
+async function loadLibraryRecentAlbumsPage(limit, offset) {
+  return api('/library/recent-albums?limit=' + limit + '&offset=' + offset);
+}
+
+function renderRecentAlbumCard(album) {
+  const card = h('div', { className: 'album-card' });
+  const artWrap = h('div', { className: 'album-card-art-wrap' });
+  if (album.cover_url) {
+    const img = h('img', { className: 'album-card-art', src: album.cover_url, alt: '', loading: 'lazy' });
+    img.onerror = function() {
+      this.style.display = 'none';
+      artWrap.style.background = artGradient(album.name || album.artist);
+    };
+    artWrap.appendChild(img);
+  } else {
+    artWrap.style.background = artGradient(album.name || album.artist);
+  }
+  card.appendChild(artWrap);
+
+  const meta = h('div', { className: 'album-card-meta' });
+  meta.appendChild(textEl('div', album.name || 'Unknown Album', 'album-card-title'));
+  const sub = [album.artist || 'Unknown Artist'];
+  sub.push((album.track_count || 0) + ' track' + ((album.track_count || 0) !== 1 ? 's' : ''));
+  meta.appendChild(textEl('div', sub.join(' · '), 'album-card-sub'));
+  card.appendChild(meta);
+
+  card.addEventListener('click', () => {
+    navigate('localalbum:' + encodeURIComponent(album.artist || 'Unknown Artist') + ':' + encodeURIComponent(album.name || 'Unknown Album'));
+  });
+  a11yClick(card);
+  return card;
+}
+
+function renderRecentAlbumCards(albums, existingGrid) {
+  const grid = existingGrid || h('div', { className: 'album-gallery' });
+  albums.forEach(album => grid.appendChild(renderRecentAlbumCard(album)));
+  return grid;
+}
+
+function renderLibraryRecentShelfState(title, subtitle) {
+  return h('div', { className: 'empty-state library-shelf-empty' },
+    textEl('div', title, 'empty-state-title'),
+    textEl('div', subtitle, 'empty-state-sub')
+  );
+}
+
+async function loadLibraryRecentShelf(shelfArea) {
+  while (shelfArea.firstChild) shelfArea.removeChild(shelfArea.firstChild);
+
+  const heading = h('div', { className: 'library-shelf-heading' },
+    textEl('div', 'Recently Added', 'results-title'),
+    textEl('div', 'Latest albums from your library', 'results-count')
+  );
+  const header = h('div', { className: 'results-header library-shelf-header' }, heading);
+  shelfArea.appendChild(header);
+
+  try {
+    const data = await loadLibraryRecentAlbumsPage(LIBRARY_RECENT_SHELF_LIMIT, 0);
+    const albums = data.albums || [];
+
+    if (albums.length === 0) {
+      shelfArea.appendChild(renderLibraryRecentShelfState(
+        'No recently added albums yet',
+        'Download music or sync your library to populate this shelf.'
+      ));
+      return;
+    }
+
+    const seeAll = h('button', { className: 'library-shelf-action' }, 'See all');
+    seeAll.addEventListener('click', () => navigate('recent-added'));
+    header.appendChild(seeAll);
+
+    const grid = renderRecentAlbumCards(albums);
+    grid.classList.add('library-shelf-grid');
+    shelfArea.appendChild(grid);
+  } catch (_) {
+    shelfArea.appendChild(renderLibraryRecentShelfState(
+      'Recently added unavailable',
+      'Check your library connection and try again.'
+    ));
+  }
+}
+
+async function loadLibraryRecentAlbumsExpanded(resultsArea, append) {
+  try {
+    const data = await loadLibraryRecentAlbumsPage(LIBRARY_PAGE_SIZE, libraryOffset);
+    const albums = data.albums || [];
+    libraryTotal = data.total || 0;
+
+    if (!append) {
+      while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
+      resultsArea.appendChild(h('div', { className: 'results-header' },
+        textEl('div', 'Recently Added', 'results-title'),
+        textEl('div', libraryTotal + ' albums', 'results-count')
+      ));
+
+      if (albums.length === 0) {
+        resultsArea.appendChild(h('div', { className: 'empty-state' },
+          textEl('div', 'No recently added albums yet', 'empty-state-title'),
+          textEl('div', 'Download music or sync your library to populate this view.', 'empty-state-sub')
+        ));
+        return 0;
+      }
+
+      const grid = renderRecentAlbumCards(albums);
+      grid.id = 'library-recent-albums';
+      resultsArea.appendChild(grid);
+    } else {
+      const grid = document.getElementById('library-recent-albums') ||
+        resultsArea.querySelector('.album-gallery');
+      renderRecentAlbumCards(albums, grid);
+    }
+
+    const oldBtn = resultsArea.querySelector('.load-more');
+    if (oldBtn) oldBtn.remove();
+
+    if (libraryOffset + albums.length < libraryTotal) {
+      const loadMore = h('button', {
+        className: 'load-more pill active',
+        onClick: () => {
+          libraryOffset += LIBRARY_PAGE_SIZE;
+          loadLibraryRecentAlbumsExpanded(resultsArea, true);
+        },
+      });
+      loadMore.textContent = 'Load more (' +
+        (libraryTotal - libraryOffset - albums.length) + ' remaining)';
+      resultsArea.appendChild(loadMore);
+    }
+
+    return albums.length;
+  } catch (err) {
+    if (!append) {
+      while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
+      resultsArea.appendChild(h('div', { className: 'empty-state' },
+        textEl('div', 'Could not load recently added albums', 'empty-state-title'),
+        textEl('div', err.message || 'Check that your music folder is mounted and try again.', 'empty-state-sub')
+      ));
+    } else {
+      toast('Could not load recently added albums', 'error');
+    }
+    return 0;
+  }
+}
+
 function renderLibrary(container) {
+  const recentAddedExpanded = state.view === 'recent-added';
   libraryOffset = 0;
   libraryQuery = '';
   const searchArea = h('div', { className: 'search-area' });
@@ -2917,20 +3111,34 @@ function renderLibrary(container) {
   searchField.appendChild(svgIcon(ICONS.search));
   const libInput = h('input', {
     type: 'text', className: 'search-input',
-    placeholder: 'Search your library...', value: libraryQuery,
+    placeholder: recentAddedExpanded ? 'Recently added albums' : 'Search your library...', value: libraryQuery,
   });
+  if (recentAddedExpanded) libInput.disabled = true;
   searchField.appendChild(libInput);
   searchRow.appendChild(searchField);
   searchArea.appendChild(searchRow);
 
+  const resultsArea = h('div', { className: 'results' });
   const pills = h('div', { className: 'filter-pills' });
-  for (const sort of ['artist', 'album', 'title']) {
+  const recentAddedPill = textEl('div', 'Recently Added', 'pill' + (recentAddedExpanded ? ' active' : ''));
+  recentAddedPill.style.cursor = 'pointer';
+  recentAddedPill.addEventListener('click', () => {
+    if (state.view !== 'recent-added') navigate('recent-added');
+  });
+  a11yClick(recentAddedPill);
+  pills.appendChild(recentAddedPill);
+
+  for (const sort of ['artist', 'album', 'title', 'plays']) {
     const pill = textEl('div', sort.charAt(0).toUpperCase() + sort.slice(1),
-      'pill' + (librarySort === sort ? ' active' : ''));
+      'pill' + (!recentAddedExpanded && librarySort === sort ? ' active' : ''));
     pill.style.cursor = 'pointer';
     pill.addEventListener('click', () => {
       librarySort = sort;
       libraryOffset = 0;
+      if (recentAddedExpanded) {
+        navigate('library');
+        return;
+      }
       pills.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
       pill.classList.add('active');
       if (sort === 'album') {
@@ -2954,32 +3162,41 @@ function renderLibrary(container) {
   searchArea.appendChild(pills);
   container.appendChild(searchArea);
 
-  const resultsArea = h('div', { className: 'results' });
+  if (!recentAddedExpanded) {
+    const shelfArea = h('section', { className: 'library-shelf' });
+    container.appendChild(shelfArea);
+    loadLibraryRecentShelf(shelfArea);
+  }
+
   container.appendChild(resultsArea);
 
-  // Debounced search
-  libInput.addEventListener('input', () => {
-    clearTimeout(_libSearchTimer);
-    _libSearchTimer = setTimeout(() => {
-      libraryQuery = libInput.value.trim();
-      libraryOffset = 0;
-      if (librarySort === 'album') {
-        loadLibraryAlbums(resultsArea, libraryQuery);
-      } else if (librarySort === 'artist') {
-        loadLibraryArtistGrouped(resultsArea, libraryQuery);
-      } else {
-        loadLibrary(resultsArea);
-      }
-    }, 300);
-  });
+  if (!recentAddedExpanded) {
+    // Debounced search
+    libInput.addEventListener('input', () => {
+      clearTimeout(_libSearchTimer);
+      _libSearchTimer = setTimeout(() => {
+        libraryQuery = libInput.value.trim();
+        libraryOffset = 0;
+        if (librarySort === 'album') {
+          loadLibraryAlbums(resultsArea, libraryQuery);
+        } else if (librarySort === 'artist') {
+          loadLibraryArtistGrouped(resultsArea, libraryQuery);
+        } else {
+          loadLibrary(resultsArea);
+        }
+      }, 300);
+    });
 
-  // Load cached results — user clicks Sync Library to scan
-  if (librarySort === 'album') {
-    loadLibraryAlbums(resultsArea, '');
-  } else if (librarySort === 'artist') {
-    loadLibraryArtistGrouped(resultsArea, '');
+    // Load cached results — user clicks Sync Library to scan
+    if (librarySort === 'album') {
+      loadLibraryAlbums(resultsArea, '');
+    } else if (librarySort === 'artist') {
+      loadLibraryArtistGrouped(resultsArea, '');
+    } else {
+      loadLibrary(resultsArea, false);
+    }
   } else {
-    loadLibrary(resultsArea, false);
+    loadLibraryRecentAlbumsExpanded(resultsArea, false);
   }
 }
 
@@ -4591,9 +4808,11 @@ function updatePlayerHeart() {
   }
 }
 
-// ---- PLAY COUNT (30-second threshold) ----
-let _playCountTimer = null;
+// ---- PLAY COUNT (30-second actual-playback threshold) ----
 let _playCountLogged = false;
+let _playCountElapsed = 0;       // seconds of real playback accumulated
+let _playCountLastTime = null;   // last audio.currentTime seen in timeupdate
+let _playCountTrack = null;      // track being counted
 
 function _logPlayEvent(track) {
   if (_playCountLogged) return;
@@ -4610,13 +4829,28 @@ function _logPlayEvent(track) {
   }).catch(() => {});
 }
 
-function _schedulePlayCount(track) {
-  // Cancel any pending timer from previous track
-  if (_playCountTimer) { clearTimeout(_playCountTimer); _playCountTimer = null; }
+function _resetPlayCount(track) {
   _playCountLogged = false;
+  _playCountElapsed = 0;
+  _playCountLastTime = null;
+  _playCountTrack = track;
+}
 
-  // Schedule at 30s of playback — for short tracks, 'ended' event handles it
-  _playCountTimer = setTimeout(() => { _logPlayEvent(track); }, 30000);
+function _tickPlayCount() {
+  // Called on timeupdate — accumulate real playback delta
+  if (_playCountLogged || !_playCountTrack) return;
+  const ct = audio.currentTime;
+  if (_playCountLastTime !== null) {
+    const delta = ct - _playCountLastTime;
+    // Only count forward playback between 0–2s delta (filters seeks and stalls)
+    if (delta > 0 && delta < 2) {
+      _playCountElapsed += delta;
+    }
+  }
+  _playCountLastTime = ct;
+  if (_playCountElapsed >= 30) {
+    _logPlayEvent(_playCountTrack);
+  }
 }
 
 function playTrack(track) {
@@ -4636,8 +4870,8 @@ function playTrack(track) {
   if (recentlyPlayed.length > MAX_RECENT) recentlyPlayed.pop();
   _saveRecent();
 
-  // Play count: fires after 30s of playback (or on ended for short tracks)
-  _schedulePlayCount(track);
+  // Play count: fires after 30s of actual playback (or on ended for short tracks)
+  _resetPlayCount(track);
 
   // Stop current playback — mute to prevent bleed during source switch
   audio.pause();
@@ -4856,6 +5090,7 @@ audio.addEventListener('timeupdate', () => {
   progressFill.style.width = pct + '%';
   timeElapsed.textContent = formatTime(audio.currentTime);
   timeTotal.textContent = formatTime(audio.duration);
+  _tickPlayCount();
 });
 
 audio.addEventListener('ended', () => {
@@ -4864,11 +5099,12 @@ audio.addEventListener('ended', () => {
   if (current) _logPlayEvent(current);
 
   if (state.repeat === 'one') {
-    audio.currentTime = 0;
-    audio.play().catch(() => {});
+    // Re-trigger via playTrack for a clean source reload — currentTime=0 + play() is unreliable after 'ended'
+    playTrack(current || state.queue[state.queueIndex]);
     return;
   }
-  if (state.queueIndex < state.queue.length - 1 || state.shuffle) {
+  const hasNext = state.queueIndex < state.queue.length - 1;
+  if (hasNext || state.shuffle) {
     btnNext.click();
   } else if (state.repeat === 'all') {
     state.queueIndex = 0;
@@ -4886,8 +5122,8 @@ audio.addEventListener('pause', () => {
   updatePlayButton();
   setWaveformPlaying(false);
   document.querySelectorAll('.eq-bars').forEach(b => b.classList.add('paused'));
-  // Pause the play count timer — resumes on play
-  if (_playCountTimer) { clearTimeout(_playCountTimer); _playCountTimer = null; }
+  // Freeze play count accumulation — resumes on next timeupdate after play
+  _playCountLastTime = null;
 });
 
 audio.addEventListener('error', () => {
@@ -4908,16 +5144,8 @@ audio.addEventListener('play', () => {
   updatePlayButton();
   setWaveformPlaying(true);
   document.querySelectorAll('.eq-bars').forEach(b => b.classList.remove('paused'));
-  // Resume play count timer if not yet logged
-  if (!_playCountLogged && !_playCountTimer) {
-    const remaining = Math.max(0, 30 - (audio.currentTime || 0)) * 1000;
-    const current = state.queue[state.queueIndex];
-    if (current && remaining > 0) {
-      _playCountTimer = setTimeout(() => { _logPlayEvent(current); }, remaining);
-    } else if (current) {
-      _logPlayEvent(current);
-    }
-  }
+  // Resume play count accumulation — timeupdate will pick it up automatically
+  _playCountLastTime = audio.currentTime;
 });
 
 // Seek
@@ -5475,7 +5703,12 @@ async function _checkSetup() {
   try {
     const resp = await fetch('/api/setup/status');
     const data = await resp.json();
-    if (!data.setup_complete) {
+    // Allow app access if at least one source is configured:
+    // - Tidal login for streaming, OR
+    // - Local scan paths for offline playback
+    // Only block with wizard if NOTHING is configured.
+    const hasAnySource = data.logged_in || data.scan_paths_configured;
+    if (!hasAnySource) {
       _renderWizard(data);
       return true;
     }
@@ -5499,10 +5732,13 @@ function _renderWizard(setupData) {
   const wizard = h('div', { className: 'setup-wizard' });
   document.body.appendChild(wizard);
 
-  if (!setupData.logged_in) {
+  if (!setupData.logged_in && !setupData.scan_paths_configured) {
     _wizardStepLogin(wizard, setupData);
   } else if (!setupData.scan_paths_configured) {
     _wizardStepPaths(wizard);
+  } else if (!setupData.logged_in) {
+    // Has local paths but no Tidal - show login with skip option
+    _wizardStepLogin(wizard, setupData);
   }
 }
 
@@ -5518,10 +5754,20 @@ function _teardownWizard() {
 function _wizardStepLogin(wizard, setupData) {
   while (wizard.firstChild) wizard.removeChild(wizard.firstChild);
 
+  // Check if we can at least access local music (offline mode)
+  const canPlayOffline = setupData.scan_paths_configured;
+
   const card = h('div', { className: 'wizard-card' });
 
+  // Show offline-capable banner if applicable
+  if (canPlayOffline && !setupData.logged_in) {
+    const offlineBanner = h('div', { className: 'wizard-offline-banner' });
+    offlineBanner.innerHTML = '<strong>Offline mode available</strong><br>Your local music library is ready. Connect Tidal to stream online.';
+    card.appendChild(offlineBanner);
+  }
+
   // Step indicator
-  card.appendChild(textEl('div', 'Step 1 of 2', 'wizard-step-label'));
+  card.appendChild(textEl('div', 'Connect Tidal for streaming (optional if you have local music)', 'wizard-step-label'));
   card.appendChild(textEl('h2', 'Connect your Tidal account', 'wizard-title'));
   card.appendChild(textEl('p', 'Sign in to stream and download from Tidal. You\'ll be given a code to enter on Tidal\'s website.', 'wizard-desc'));
 
@@ -5622,6 +5868,17 @@ function _wizardStepLogin(wizard, setupData) {
 
   card.appendChild(connectBtn);
   card.appendChild(statusArea);
+
+  // Add skip button for offline users
+  if (canPlayOffline) {
+    const skipBtn = textEl('button', 'Skip and use local library only', 'wizard-btn wizard-btn-secondary');
+    skipBtn.addEventListener('click', () => {
+      _teardownWizard();
+      _initApp();
+    });
+    card.appendChild(skipBtn);
+  }
+
   wizard.appendChild(card);
 }
 
@@ -5769,8 +6026,8 @@ async function _checkErrorBanners() {
     }
   } catch (_) { /* silent */ }
 
-  // Library view: check scan_paths
-  if (state.view === 'library') {
+  // Library views: check scan_paths
+  if (state.view === 'library' || state.view === 'recent-added') {
     try {
       const settings = state.settings || await api('/settings');
       const scanPaths = (settings.scan_paths || '').trim();

@@ -79,6 +79,28 @@ class TestLibraryAlbums:
         assert resp.status_code == 200
 
 
+class TestRecentAlbums:
+    def test_returns_200(self, client):
+        resp = client.get("/api/library/recent-albums", headers=client._host_header)
+        assert resp.status_code == 200
+
+    def test_response_shape(self, client):
+        resp = client.get("/api/library/recent-albums", headers=client._host_header)
+        data = resp.json()
+        assert "albums" in data
+        assert "total" in data
+        assert "limit" in data
+        assert "offset" in data
+        assert isinstance(data["albums"], list)
+        assert isinstance(data["total"], int)
+        assert isinstance(data["limit"], int)
+        assert isinstance(data["offset"], int)
+
+    def test_pagination_params_accepted(self, client):
+        resp = client.get("/api/library/recent-albums?limit=10&offset=5", headers=client._host_header)
+        assert resp.status_code == 200
+
+
 class TestLibraryFavorites:
     def test_returns_200(self, client):
         resp = client.get("/api/library/favorites", headers=client._host_header)
@@ -142,6 +164,28 @@ class TestDownloadsHistory:
     def test_limit_param_accepted(self, client):
         resp = client.get("/api/downloads/history?limit=5", headers=client._host_header)
         assert resp.status_code == 200
+
+
+class TestDownloadTrigger:
+    def test_requires_tidal_login(self, client, monkeypatch, clear_singletons):
+        class FakeSession:
+            def check_login(self):
+                return False
+
+        class FakeTidal:
+            def __init__(self):
+                self.session = FakeSession()
+
+        monkeypatch.setattr("tidal_dl.config.Tidal", FakeTidal)
+
+        resp = client.post(
+            "/api/download",
+            json={"track_ids": [123]},
+            headers=client._headers,
+        )
+
+        assert resp.status_code == 401
+        assert "Not logged in to Tidal" in resp.json()["detail"]
 
 
 class TestDuplicatesPreview:

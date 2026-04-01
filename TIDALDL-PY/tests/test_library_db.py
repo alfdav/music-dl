@@ -147,6 +147,192 @@ class TestFavorites:
         assert len(db.all_favorites()) == 1
 
 
+class TestRecentAlbums:
+    def _record_recent_album(
+        self,
+        db,
+        *,
+        track_id,
+        artist,
+        album,
+        finished_at,
+        title="Track 01",
+    ):
+        slug = f"{artist}-{album}".replace(" ", "_")
+        db.record(
+            f"/music/{slug}/01.flac",
+            status="tagged",
+            artist=artist,
+            album=album,
+            title=title,
+        )
+        db.record_download(
+            track_id=track_id,
+            name=title,
+            artist=artist,
+            album=album,
+            status="done",
+            finished_at=finished_at,
+        )
+
+    def test_same_recent_timestamp_uses_case_insensitive_artist_album_tiebreakers(self, db):
+        self._record_recent_album(
+            db,
+            track_id=1,
+            artist="Same Artist",
+            album="apple",
+            finished_at=2000.0,
+        )
+        self._record_recent_album(
+            db,
+            track_id=2,
+            artist="Same Artist",
+            album="Banana",
+            finished_at=2000.0,
+        )
+        db.commit()
+
+        rows, total = db.recent_albums_page(limit=12, offset=0)
+
+        assert total == 2
+        assert [(row["artist"], row["album"]) for row in rows] == [
+            ("Same Artist", "apple"),
+            ("Same Artist", "Banana"),
+        ]
+
+    def test_limit_offset_pages_follow_stable_recent_album_order(self, db):
+        self._record_recent_album(
+            db,
+            track_id=1,
+            artist="charlie artist",
+            album="Gamma",
+            finished_at=2000.0,
+        )
+        self._record_recent_album(
+            db,
+            track_id=2,
+            artist="Bravo Artist",
+            album="Beta",
+            finished_at=2000.0,
+        )
+        self._record_recent_album(
+            db,
+            track_id=3,
+            artist="alpha artist",
+            album="Alpha",
+            finished_at=2000.0,
+        )
+        self._record_recent_album(
+            db,
+            track_id=4,
+            artist="Delta Artist",
+            album="Delta",
+            finished_at=2000.0,
+        )
+        db.commit()
+
+        page_one, total = db.recent_albums_page(limit=2, offset=0)
+        page_two, total_page_two = db.recent_albums_page(limit=2, offset=2)
+
+        assert total == 4
+        assert total_page_two == 4
+        assert [(row["artist"], row["album"]) for row in page_one] == [
+            ("alpha artist", "Alpha"),
+            ("Bravo Artist", "Beta"),
+        ]
+        assert [(row["artist"], row["album"]) for row in page_two] == [
+            ("charlie artist", "Gamma"),
+            ("Delta Artist", "Delta"),
+        ]
+
+    def test_download_timestamp_wins_over_scan_timestamp(self, db):
+        db.record(
+            "/music/discovery/01.flac",
+            status="tagged",
+            artist="Daft Punk",
+            album="Discovery",
+            title="One More Time",
+        )
+        db.record_download(
+            track_id=1,
+            name="One More Time",
+            artist="Daft Punk",
+            album="Discovery",
+            status="done",
+            finished_at=2000.0,
+        )
+        db.commit()
+
+        rows, total = db.recent_albums_page(limit=12, offset=0)
+
+        assert total == 1
+        assert rows[0]["album"] == "Discovery"
+        assert rows[0]["recent_source"] == "download"
+        assert rows[0]["recent_at"] == 2000
+
+    def test_scan_fallback_used_when_no_download_history_exists(self, db):
+        db.record(
+            "/music/parachutes/01.flac",
+            status="tagged",
+            artist="Coldplay",
+            album="Parachutes",
+            title="Yellow",
+        )
+        db.commit()
+
+        rows, total = db.recent_albums_page(limit=12, offset=0)
+
+        assert total == 1
+        assert rows[0]["album"] == "Parachutes"
+        assert rows[0]["recent_source"] == "scan"
+
+    def test_same_album_from_download_and_scan_is_deduped(self, db):
+        db.record(
+            "/music/discovery/01.flac",
+            status="tagged",
+            artist="Daft Punk",
+            album="Discovery",
+            title="One More Time",
+        )
+        db.record(
+            "/music/discovery/02.flac",
+            status="tagged",
+            artist="Daft Punk",
+            album="Discovery",
+            title="Aerodynamic",
+        )
+        db.record_download(
+            track_id=1,
+            name="One More Time",
+            artist="Daft Punk",
+            album="Discovery",
+            status="done",
+            finished_at=2000.0,
+        )
+        db.commit()
+
+        rows, total = db.recent_albums_page(limit=12, offset=0)
+
+        assert total == 1
+        assert rows[0]["track_count"] == 2
+
+    def test_download_only_album_not_in_scanned_is_excluded(self, db):
+        db.record_download(
+            track_id=1,
+            name="Ghost Track",
+            artist="Ghost Artist",
+            album="Ghost Album",
+            status="done",
+            finished_at=2000.0,
+        )
+        db.commit()
+
+        rows, total = db.recent_albums_page(limit=12, offset=0)
+
+        assert rows == []
+        assert total == 0
+
+
 class TestMigration:
     def test_fresh_db_has_all_tables(self, db):
         tables = {r["name"] for r in db._conn.execute(

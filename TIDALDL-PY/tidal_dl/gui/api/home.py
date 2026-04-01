@@ -1,6 +1,7 @@
 """Home view API — play tracking and stats aggregation."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -39,8 +40,21 @@ class PlayEvent(BaseModel):
 
 @router.post("/home/play", status_code=204)
 def record_play(event: PlayEvent):
-    """Record a play event. Increments scanned.play_count if path matches."""
+    """Record a play event. Increments scanned.play_count if path matches.
+
+    Server-side dedup: rejects duplicate plays for the same path within 60s.
+    """
     db = _get_db()
+
+    # --- Dedup guard: same path within 60 seconds is rejected silently ---
+    if event.path:
+        last = db._conn.execute(
+            "SELECT MAX(played_at) FROM play_events WHERE path = ?",
+            (event.path,),
+        ).fetchone()
+        if last and last[0] and (time.time() - last[0]) < 60:
+            return Response(status_code=204)
+
     genre = event.genre
     # If genre missing but we have a file path, read it from the file
     if not genre and event.path:
@@ -124,6 +138,19 @@ def home_stats():
         if a.get("cover_path"):
             a["cover_url"] = "/api/library/art?path=" + quote(a["cover_path"], safe="")
 
+    # Inject cached artist image URLs so frontend doesn't need a second fetch
+    def _inject_artist_image(artist_dict):
+        if not artist_dict or not artist_dict.get("name"):
+            return
+        cached = db.get_artist_image(artist_dict["name"])
+        if cached:  # truthy = real URL (not empty-string miss)
+            artist_dict["artist_image_url"] = cached
+
+    if stats.get("top_artist"):
+        _inject_artist_image(stats["top_artist"])
+    for a in stats.get("top_artists", []):
+        _inject_artist_image(a)
+
     # Remove internal cover_path from response — only expose cover_url
     if stats.get("top_artist"):
         stats["top_artist"].pop("cover_path", None)
@@ -147,6 +174,12 @@ def home_stats():
         tw["most_replayed"]["cover_url"] = (
             "/api/library/art?path=" + quote(tw["most_replayed"]["cover_path"], safe="")
         )
+    # Inject cached artist images for this_week too
+    if tw.get("top_artist"):
+        _inject_artist_image(tw["top_artist"])
+    for a in tw.get("top_artists", []):
+        _inject_artist_image(a)
+
     # Strip internal cover_path from this_week
     if tw.get("top_artist"):
         tw["top_artist"].pop("cover_path", None)

@@ -38,3 +38,31 @@ def test_static_js_does_not_force_single_tab_playback():
     assert resp.status_code == 200
     assert "BroadcastChannel('music-dl-player')" not in resp.text
     assert '_playerChannel.postMessage(\'pause\')' not in resp.text
+
+
+def test_index_contains_recently_added_sidebar_entry():
+    client = _make_client()
+    resp = client.get("/", headers=_HOST_HEADER)
+
+    assert resp.status_code == 200
+    assert "Recently Added" in resp.text
+
+
+def test_static_js_contains_recently_added_library_hooks():
+    client = _make_client()
+    resp = client.get("/app.js", headers=_HOST_HEADER)
+
+    assert resp.status_code == 200
+    assert "recent-added" in resp.text
+    assert "/library/recent-albums" in resp.text
+    assert "See all" in resp.text
+
+
+def test_static_js_contains_recently_added_expanded_states():
+    client = _make_client()
+    resp = client.get("/app.js", headers=_HOST_HEADER)
+
+    assert resp.status_code == 200
+    assert "No recently added albums yet" in resp.text
+    assert "Download music or sync your library to populate this view." in resp.text
+    assert "Could not load recently added albums" in resp.text

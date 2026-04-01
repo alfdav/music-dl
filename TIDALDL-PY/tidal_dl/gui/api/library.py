@@ -162,6 +162,7 @@ def _db_row_to_track(row: dict) -> dict:
         "quality": row.get("quality") or p.suffix[1:].upper(),
         "format": row.get("format") or p.suffix[1:].upper(),
         "cover_url": "/api/library/art?path=" + quote(row["path"], safe=""),
+        "play_count": row.get("play_count") or 0,
         "is_local": True,
     }
 
@@ -471,6 +472,29 @@ def all_albums(q: str = Query("", description="Search filter")):
         ],
         "total": len(albums),
     }
+
+
+@router.get("/library/recent-albums")
+def library_recent_albums(
+    limit: int = Query(12, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    from urllib.parse import quote
+
+    db = _get_db()
+    rows, total = db.recent_albums_page(limit=limit, offset=offset)
+    albums = [
+        {
+            "name": row["album"],
+            "artist": row["artist"],
+            "track_count": row["track_count"],
+            "cover_url": "/api/library/art?path=" + quote(row["cover_path"], safe="") if row.get("cover_path") else "",
+            "recent_at": row["recent_at"],
+            "recent_source": row["recent_source"],
+        }
+        for row in rows
+    ]
+    return {"albums": albums, "total": total, "limit": limit, "offset": offset}
 
 
 @router.get("/library/artist/{artist_name}/albums")

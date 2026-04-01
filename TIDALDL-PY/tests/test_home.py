@@ -181,6 +181,44 @@ def test_api_home_play_returns_204():
     assert resp.status_code == 204
 
 
+def test_api_home_play_dedup_within_60s():
+    """POST /api/home/play silently deduplicates the same path within 60 seconds."""
+    from fastapi.testclient import TestClient
+    from tidal_dl.gui import create_app
+
+    client = TestClient(create_app(port=8766))
+    host = {"host": "localhost:8766"}
+
+    # Get CSRF token
+    index = client.get("/", headers=host)
+    import re
+    csrf = re.search(r'name="csrf-token" content="([^"]+)"', index.text)
+    token = csrf.group(1) if csrf else ""
+    headers = {**host, "X-CSRF-Token": token}
+
+    payload = {"path": "/tmp/test_dedup.flac", "artist": "Test", "genre": "Rock", "duration": 180}
+
+    # First play — accepted
+    resp1 = client.post("/api/home/play", json=payload, headers=headers)
+    assert resp1.status_code == 204
+
+    # Immediate duplicate — still 204 but should NOT create a second event
+    resp2 = client.post("/api/home/play", json=payload, headers=headers)
+    assert resp2.status_code == 204
+
+    # Verify only one play_event was inserted
+    from pathlib import Path
+    from tidal_dl.helper.library_db import LibraryDB
+    from tidal_dl.helper.path import path_config_base
+    db = LibraryDB(Path(path_config_base()) / "library.db")
+    db.open()
+    count = db._conn.execute(
+        "SELECT COUNT(*) FROM play_events WHERE path = ?", ("/tmp/test_dedup.flac",)
+    ).fetchone()[0]
+    db.close()
+    assert count == 1, f"Expected 1 play_event but got {count} — dedup failed"
+
+
 def test_home_stats_this_week_with_recent_plays(db):
     """this_week reflects only plays in the last 7 days."""
     now = int(time.time())

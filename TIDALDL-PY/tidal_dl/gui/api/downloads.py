@@ -292,6 +292,16 @@ def download(req: DownloadRequest) -> dict:
     if not req.track_ids:
         raise HTTPException(status_code=400, detail="Provide track_ids")
 
+    from tidal_dl.config import Tidal
+
+    try:
+        logged_in = Tidal().session.check_login()
+    except Exception:
+        logged_in = False
+
+    if not logged_in:
+        raise HTTPException(status_code=401, detail="Not logged in to Tidal — run 'music-dl login' in terminal")
+
     return trigger_download(req.track_ids)
 
 

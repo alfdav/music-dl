@@ -116,15 +116,11 @@ body {
 }
 
 .logo-mark {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, var(--accent), #c07830);
+  width: 35px;
+  height: 35px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 15px;
-  box-shadow: 0 4px 16px rgba(212, 160, 83, 0.25);
 }
 
 .logo-text {
@@ -497,7 +493,7 @@ body {
 
 .track-header {
   display: grid;
-  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 52px 40px 32px;
+  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 44px 52px 40px 32px;
   gap: 12px;
   align-items: center;
   padding: 0 14px 10px;
@@ -519,7 +515,7 @@ body {
 
 .track {
   display: grid;
-  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 52px 40px 32px;
+  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 44px 52px 40px 32px;
   gap: 12px;
   align-items: center;
   padding: 10px 14px;
@@ -721,6 +717,14 @@ body {
   text-transform: uppercase;
   color: var(--text-muted);
   text-align: center;
+}
+
+.track-plays {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .track-time {
@@ -1757,10 +1761,14 @@ body {
   margin-top: auto;
 }
 .bento-stat-tile .bento-label {
+  display: block;
+  -webkit-line-clamp: unset;
+  -webkit-box-orient: initial;
+  overflow: visible;
   font-family: var(--serif);
   font-size: 1.5rem;
   color: var(--accent);
-  line-height: 1;
+  line-height: 1.1;
 }
 .bento-stat-label {
   font-size: 0.75rem;
@@ -2070,6 +2078,57 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 24px;
+}
+
+.library-shelf {
+  padding: 0 32px 8px;
+}
+
+.library-shelf-header {
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.library-shelf-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.library-shelf-grid {
+  margin-bottom: 8px;
+}
+
+.library-shelf-action {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.library-shelf-action:hover {
+  color: var(--text);
+}
+
+.library-shelf-empty {
+  align-items: flex-start;
+  text-align: left;
+  padding: 20px 24px;
+  gap: 8px;
+}
+
+.library-shelf-empty .empty-state-title {
+  font-size: 20px;
+}
+
+.library-shelf-empty .empty-state-sub {
+  max-width: none;
 }
 .album-card {
   cursor: pointer;
@@ -3454,6 +3513,36 @@ body {
 
 @keyframes wizardSpin {
   to { transform: rotate(360deg); }
+}
+
+/* Offline mode banner in wizard */
+.wizard-offline-banner {
+  background: linear-gradient(135deg, rgba(126, 201, 122, 0.15), rgba(126, 201, 122, 0.05));
+  border: 1px solid var(--green-dim);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  margin-bottom: 20px;
+  text-align: center;
+  color: var(--green);
+  font-size: 14px;
+}
+
+.wizard-offline-banner strong {
+  display: block;
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+/* Secondary wizard button (skip/back options) */
+.wizard-btn-secondary {
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  margin-top: 12px;
+}
+
+.wizard-btn-secondary:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--text-muted);
 }
 
 /* ---- CARD INSPECT OVERLAY ---- */
