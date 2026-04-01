@@ -18,8 +18,68 @@ from __future__ import annotations
 
 import datetime
 import pathlib
+import re
 import sqlite3
 import time
+
+
+def _normalize_track_text(value: str | None) -> str:
+    return (value or "").strip().casefold()
+
+
+def _local_quality_rank(quality: str | None, fmt: str | None) -> int:
+    if not quality:
+        return 0
+
+    if fmt and fmt.upper() in {"MP3", "AAC", "OGG", "M4A"}:
+        return 1
+
+    direct = {
+        "LOW": 0,
+        "HIGH": 1,
+        "LOSSLESS": 2,
+        "HI_RES": 3,
+        "HI_RES_LOSSLESS": 4,
+        "FLAC": 2,
+    }.get(quality.upper())
+    if direct is not None:
+        return direct
+
+    match = re.match(r"(\d+)Hz/(\d+)bit", quality, re.IGNORECASE)
+    if not match:
+        return 0
+
+    sample_rate = int(match.group(1))
+    bit_depth = int(match.group(2))
+    if bit_depth >= 24 and sample_rate > 48000:
+        return 4
+    if bit_depth >= 24:
+        return 3
+    if bit_depth >= 16:
+        return 2
+    return 0
+
+
+def _path_suffix_rank(path: str | None) -> int:
+    stem = pathlib.Path(path or "").stem
+    return 1 if re.search(r"_\d{2}$", stem) else 0
+
+
+def _album_track_key(row: dict) -> tuple[str, str]:
+    return (
+        _normalize_track_text(row.get("title")),
+        _normalize_track_text(row.get("artist")),
+    )
+
+
+def _album_track_preference(row: dict) -> tuple[int, int, int, str]:
+    path = row.get("path") or ""
+    return (
+        -_local_quality_rank(row.get("quality"), row.get("format")),
+        _path_suffix_rank(path),
+        len(path),
+        path,
+    )
 
 
 class LibraryDB:
@@ -233,6 +293,15 @@ class LibraryDB:
             return None
         return dict(row)
 
+    def tracks_by_isrc(self, isrc: str) -> list[dict]:
+        """Return all scanned rows for one ISRC."""
+        assert self._conn
+        rows = self._conn.execute(
+            "SELECT * FROM scanned WHERE isrc = ? AND status != 'unreadable' ORDER BY path ASC",
+            (isrc,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def all_tracks(self) -> list[dict]:
         """Return all cached tracks with status != 'unreadable'."""
         assert self._conn
@@ -351,37 +420,35 @@ class LibraryDB:
         return [dict(r) for r in rows]
 
     def album_tracks(self, artist: str, album: str) -> list[dict]:
-        """Return all tracks for an album, deduplicated by title+artist.
+        """Return album tracks deduplicated by normalized title+artist.
 
-        If artist is 'Various Artists', return all artists.
-        Dedup keeps the first occurrence per title (sorted by path length ascending,
-        which naturally prefers canonical paths over recycle-bin copies).
+        Prefers the best-quality row for each song, then a canonical path without
+        a uniquify suffix like ``_01``, then the shortest path.
         """
         assert self._conn
         if artist == "Various Artists":
             rows = self._conn.execute(
                 """SELECT * FROM scanned
-                   WHERE album = ? AND status != 'unreadable'
-                   ORDER BY LENGTH(path) ASC, path ASC""",
+                   WHERE album = ? AND status != 'unreadable'""",
                 (album,),
             ).fetchall()
         else:
             rows = self._conn.execute(
                 """SELECT * FROM scanned
-                   WHERE artist = ? AND album = ? AND status != 'unreadable'
-                   ORDER BY LENGTH(path) ASC, path ASC""",
+                   WHERE artist = ? AND album = ? AND status != 'unreadable'""",
                 (artist, album),
             ).fetchall()
-        # Deduplicate by (title, artist) — keep first (shortest path)
-        seen: set[tuple[str | None, str | None]] = set()
+
+        ordered = sorted((dict(r) for r in rows), key=_album_track_preference)
+        seen: set[tuple[str, str]] = set()
         result = []
-        for r in rows:
-            d = dict(r)
-            key = (d.get("title"), d.get("artist"))
-            if key not in seen:
-                seen.add(key)
-                result.append(d)
-        # Re-sort by path for display order
+        for row in ordered:
+            key = _album_track_key(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(row)
+
         result.sort(key=lambda t: t.get("path", ""))
         return result
 

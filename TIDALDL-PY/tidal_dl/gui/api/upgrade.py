@@ -238,6 +238,34 @@ def _trash_file(path: str) -> None:
         logger.warning("Failed to delete old file: %s", path)
 
 
+def _cleanup_replaced_track_files(db: LibraryDB, *, old_path: str, new_path: str) -> list[str]:
+    """Remove stale DB rows/files for the upgraded track, keyed by ISRC when possible."""
+    removed: list[str] = []
+    seen: set[str] = set()
+    new_path = str(new_path)
+
+    def _queue(path: str | None) -> None:
+        if not path or path == new_path or path in seen:
+            return
+        seen.add(path)
+        removed.append(path)
+
+    old_row = db.get(old_path) if old_path else None
+    _queue(old_path)
+
+    isrc = old_row.get("isrc") if old_row else None
+    if isrc:
+        for row in db.tracks_by_isrc(isrc):
+            _queue(row.get("path"))
+
+    for stale_path in removed:
+        _trash_file(stale_path)
+        if db.get(stale_path):
+            db.remove(stale_path)
+
+    return removed
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
@@ -587,11 +615,12 @@ def _trigger_upgrade_downloads(
                 )
 
                 if outcome in (DownloadOutcome.DOWNLOADED, DownloadOutcome.COPIED):
-                    # Trash old file if it exists and differs from new
-                    if old_path and str(new_path) != old_path and os.path.exists(old_path):
-                        _trash_file(old_path)
-                        db.remove(old_path)
-                        db.commit()  # ensure removal is persisted immediately
+                    removed_paths = _cleanup_replaced_track_files(
+                        db,
+                        old_path=old_path,
+                        new_path=str(new_path),
+                    )
+                    db.commit()
 
                     # Register new file in library
                     register_downloaded_track(new_path)
@@ -600,7 +629,8 @@ def _trigger_upgrade_downloads(
                     with _lock:
                         _active.pop(tid, None)
                     # Remove from cached scan results so scanner doesn't show stale entries
-                    _scan_state["results"] = [r for r in _scan_state["results"] if r.get("path") != old_path]
+                    stale_paths = set(removed_paths)
+                    _scan_state["results"] = [r for r in _scan_state["results"] if r.get("path") not in stale_paths]
                     if _scan_state["upgradeable"] > 0:
                         _scan_state["upgradeable"] = len(_scan_state["results"])
                     _broadcast({"type": "complete", "track_id": tid, "name": track_name, "artist": artist_name, "album": album_name, "cover_url": cover_url, "quality": quality_str, "status": "done"})
