@@ -2,13 +2,13 @@
 
 **Date:** 2026-03-31
 **Status:** Draft
-**Scope:** Local-file-first lyrics experience inside the existing now-playing panel
+**Scope:** Local-file-first lyrics experience anchored to the existing now-playing/player area
 
 ---
 
 ## 1. Overview
 
-Add a lyrics mode to the existing now-playing area in the GUI. Clicking the album art toggles an expanded now-playing panel that shows lyrics for the current **local** track.
+Add a lyrics mode to the existing now-playing/player area in the GUI. Clicking the album art toggles a lyrics overlay anchored above the player strip for the current **local** track.
 
 This first version is intentionally local-file-first:
 - local tracks only
@@ -26,15 +26,20 @@ The target feel is Apple-Music-like in one specific way: the lyrics view should 
 ### Interaction
 
 - Clicking album art in the now-playing area toggles lyrics mode.
-- Lyrics mode lives inside an **expanded now-playing panel in the same screen**.
+- Lyrics mode appears as a **same-screen overlay anchored to the player strip**.
 - It is **not** a separate route, fullscreen page, or modal sheet.
 
 ### Visual Style
 
 - Background uses a **subtle** artwork-driven treatment.
 - The artwork influence should be low-contrast and readability-first.
-- Playback controls become **mostly hidden** while lyrics are open.
 - The audio source and transport remain unchanged.
+- Control visibility while lyrics are open is explicit in this spec rather than "mostly hidden":
+  - play/pause, previous, next, seek/progress, volume, the **queue toggle button**, and close affordance remain visible and interactive
+  - title/artist/album metadata links remain visible in the player strip
+  - album art remains visible but visually subordinated to the lyrics treatment
+  - existing now-playing action buttons injected into `#now-playing` (`favorite` / `download`) are hidden while lyrics are open in v1; the lyrics overlay does not duplicate them
+  - library/list-row actions such as favorite/download/context menus remain where they already live in the main view; the lyrics overlay does not duplicate them
 
 ### Lyrics Behavior
 
@@ -91,7 +96,7 @@ For a local track, lyrics resolution should use this deterministic winner-select
 4. otherwise, if any supported embedded unsynced source yields text, it wins as `embedded-unsynced`
 5. otherwise, return `none`
 
-A sidecar with parse errors is never considered a top-priority synced winner over a valid embedded synced source.
+A sidecar qualifies as `lrc-synced` only when cleanup yields at least one valid timed line and no fatal whole-file synced-parse failure. Sidecars with a few malformed lines may still win as synced after those lines are skipped. Sidecars that fail whole-file synced parsing may continue only as cleaned unsynced text and therefore lose to any valid embedded synced source.
 
 ### Concrete Source Contract
 
@@ -100,9 +105,17 @@ Supported sources in v1:
 - sidecar `.lrc` text file next to the local track
 
 Sidecar discovery contract:
-- only files with the same basename as the audio file are candidates
-- `.lrc` extension match is case-insensitive in v1
-- if multiple same-basename sidecar candidates exist, prefer exact `.lrc`; if ambiguity remains, ignore sidecar lyrics entirely and continue to embedded fallback
+- only sibling files in the same directory as the audio file are candidates
+- candidate target name is `<audio-stem>.lrc`
+- lookup algorithm is deterministic:
+  1. if a sibling file exists whose filename exactly matches `<audio-stem>.lrc`, use that one candidate only
+  2. otherwise, enumerate sibling files whose lowercase filename equals lowercase(`<audio-stem>.lrc`)
+  3. if that case-insensitive set contains exactly one file, use it
+  4. if that set contains zero files, there is no sidecar candidate
+  5. if that set contains more than one file, sidecar resolution is ambiguous and sidecar lyrics are ignored entirely for this track
+- candidate enumeration for step 2 must sort by full filename bytes/Unicode codepoint order before counting/matching so tests behave consistently across platforms
+
+Supported embedded sources in v1:
 - MP3 embedded unsynced lyrics from `USLT`
 - M4A embedded synced lyrics from `©lyr` when it contains timed/LRC-style text
 - M4A embedded unsynced lyrics from `----:com.apple.iTunes:UNSYNCEDLYRICS`
@@ -130,10 +143,12 @@ Parsing rules:
   - FLAC/Vorbis: first non-empty string value in tag value order
   - M4A: first non-empty decoded value in atom value order
   - MP3 `USLT`: prefer frame with empty description and `eng` language, then any `eng`, then first non-empty frame in Mutagen iteration order
-- byte values must be decoded as UTF-8 with replacement fallback before timed/untimed classification
+- sidecar `.lrc` bytes must be decoded in this order before parsing: UTF-8 with BOM handling (`utf-8-sig`), plain UTF-8, UTF-16 with BOM handling, then final replacement-fallback decode if none succeed cleanly
+- embedded text/byte values must be decoded as UTF-8 with replacement fallback before timed/untimed classification unless the container reader already returns decoded text
 - malformed individual lines inside a sidecar `.lrc` are skipped during line-level cleanup; they do not by themselves disqualify synced mode
 - a fatal whole-file parse failure means the file cannot produce any valid timed lines after cleanup/offset handling; only then is it ineligible to win as `lrc-synced`
 - if a sidecar `.lrc` has no usable timed lines, treat its cleaned plain lyric text as an unsynced candidate only
+- usable unsynced text means non-empty text after cleanup and trimming; empty-string results are not valid unsynced candidates and must fall through to the next source or to `none`
 - if an embedded synced payload is malformed or yields zero valid timed lines, discard its synced interpretation and continue down the fallback chain
 - source precedence is quality-first, not location-first: any valid synced source beats any unsynced source
 - specifically: a valid embedded synced source beats an untimed/plain-text sidecar `.lrc`
@@ -171,30 +186,51 @@ Suggested shape:
 ```
 
 Rules:
-- `mode = synced` → `lines` populated, `text` optional/empty
-- `mode = unsynced` → `text` populated, `lines` empty
-- `mode = none` → both empty
+- `track_path` is required for every successful response mode, including `mode: none`
+- `lines` and `text` are always present; the unused field is returned as an empty array/string rather than omitted
+- `mode = synced` → `lines` populated, `text` empty string
+- if synced normalization would leave `lines` empty, backend must downgrade the response to `unsynced` or `none` rather than returning `mode = synced` with zero lines
+- `mode = unsynced` → `text` populated, `lines` empty array
+- `mode = none` → `text` empty string and `lines` empty array
+- `source = none` is required when `mode = none`
+- frontend payload validation treats the response as malformed unless:
+  - `mode` is one of `synced | unsynced | none`
+  - `track_path` is a non-empty string
+  - `source` is present and compatible with `mode`
+  - for `mode = synced`, every line has finite non-negative integer `start_ms` and `end_ms`, `end_ms > start_ms`, and non-empty `text`
+  - for `mode = unsynced`, `text` is a non-empty string after trim/cleanup
+  - for `mode = none`, `text == ''` and `lines.length == 0`
 - backend owns normalization of synced lines: the API must return lines already sorted, merged where timestamps collide, stripped of empty text entries, and with explicit `end_ms` values populated
 - `source` must explicitly distinguish sidecar-unsynced from embedded-unsynced so fallback outcomes are observable and testable
 - backend computes `end_ms` as follows:
   - for non-final lines, `end_ms` is the next line's `start_ms`
   - if duplicate timestamps occur, merge those rows into one rendered lyric item with newline-separated text in source order before computing `end_ms`
-  - for the final line, `end_ms` is the track duration in milliseconds when duration is known
-  - if track duration is unavailable, final-line `end_ms` falls back to `start_ms + 4000`
+  - for the final line, `end_ms` is the track duration in milliseconds only when duration is positive and strictly greater than that line's `start_ms`
+  - if track duration is missing, zero, negative, non-finite, or `<= start_ms`, final-line `end_ms` falls back to `start_ms + 4000`
   - normalization must guarantee `end_ms > start_ms` for every returned line; lines that cannot satisfy that after normalization are discarded
 
 ### Validation
 
-The endpoint must reuse the same validator helpers and trust semantics as `/api/playback/local` via a shared resolver contract used by both routes:
+Introduce a shared internal helper such as `resolve_local_audio_path(raw_path, allowed_dirs)` that both the lyrics route and `/api/playback/local` call. This helper owns the trust algorithm; v1 does **not** require the existing `validate_audio_path()` function to keep its current contract if refactoring it is the cleanest way to implement the richer result types.
 - resolver result kinds: `ok | bad_request | forbidden | not_found | not_audio`
-- first run the same local-path validator used by playback
-- if that fails, apply the same library-DB fallback check used by playback and resolve the file path strictly
-- malformed or missing query input maps to `bad_request` → `400`
-- a well-formed path rejected by the playback trust rules maps to `forbidden` → `403`
-- a trusted/resolved path that no longer exists maps to `not_found` → `404`
-- a trusted/resolved path that exists but cannot be parsed as audio maps to `not_audio` → `404`
+- resolver pseudocode in v1:
+  1. if query `path` is missing, empty, or all whitespace → `bad_request`
+  2. attempt strict resolution + allowed-dir containment + playback audio-extension allowlist using the same security properties playback relies on today
+  3. if that direct validation succeeds, return `ok(resolved_path)`
+  4. otherwise, run library-DB fallback against the **raw query path string exactly as provided** using the same `_path_in_library(raw_path)` check playback uses today
+  5. if the raw query path is not trusted by that DB check → `forbidden`
+  6. if it is trusted by DB fallback but `Path(raw_path).resolve(strict=True)` fails → `not_found`
+  7. if the DB-trusted resolved file exists but its suffix is outside the playback-supported local audio extension allowlist → `not_audio`
+  8. otherwise return `ok(resolved_path)`
 - `ok` returns the strict resolved path string used as canonical `track_path`
-- the route must not duplicate security logic outside that shared resolver
+- lyrics-route status mapping in v1:
+  - `bad_request` → `400`
+  - `forbidden` → `403`
+  - `not_found` → `404`
+  - `not_audio` → `404`
+- `/api/playback/local` does not need a user-visible API contract change in this spec; it may keep collapsing non-`ok` resolver outcomes to its current `403` behavior even after adopting the shared resolver internally
+- any path-based local-file endpoint touched by this feature that trusts the same audio path (notably `/api/library/art` for artwork-driven UI) should adopt the same shared resolver or the same shared helper family rather than duplicating trust fallback logic again
+- the lyrics route must not duplicate security logic outside that shared resolver
 
 The route must not invent a near-match validator; it must stay aligned with playback path security.
 
@@ -205,6 +241,8 @@ Backend lyric resolution should be isolated in a small focused helper that:
 - parses timestamps if present
 - reads embedded lyric tags when needed for fallback comparison, even when a sidecar exists but is only unsynced or malformed
 - chooses the winning source by the precedence rules above
+- treats lyrics-extraction/parser failure on an otherwise trusted playable file as "no usable lyrics from this source" and continues fallback rather than surfacing an HTTP error
+- if every candidate source fails or yields nothing on an otherwise trusted playable file, returns `mode: none`
 - normalizes output to the response shape above
 
 This keeps parsing logic out of the route and avoids mixing UI concerns into metadata access.
@@ -217,33 +255,49 @@ This keeps parsing logic out of the route and avoids mixing UI concerns into met
 
 Extend player/UI state with a small lyrics state object:
 
-- `lyricsOpen: boolean`
-- `lyricsLoading: boolean`
-- `lyricsMode: 'synced' | 'unsynced' | 'none'`
+- `lyricsPanelState: 'closed' | 'loading' | 'synced' | 'unsynced' | 'empty' | 'error'`
 - `lyricsData: null | payload`
-- `lyricsTrackKey: string | null`
+- `lyricsCanonicalTrackPath: string | null`
+- `lyricsRequestToken: number`
+- `lyricsCache: Record<string, payload>`
+- `lyricsError: null | string`
+
+State contract:
+- backend `mode: none` maps to frontend `lyricsPanelState: 'empty'`
+- transport failures, malformed payloads, and non-abort fetch failures map to `lyricsPanelState: 'error'`
+- `lyricsRequestToken` is a monotonically increasing request identity used only for stale-response rejection
+- `lyricsCache` is keyed only by backend-normalized canonical `track_path`, never by raw query input
+- `lyricsCache` is session-scoped in v1 (cleared on full page reload); no persistent cache or complex eviction policy is required
 
 ### Open/Close Behavior
 
 - Clicking album art toggles lyrics mode.
+- The album-art trigger must be keyboard-activatable in v1 (semantic `<button>` preferred; otherwise equivalent button role, focusability, Enter/Space activation, and accessible labeling are required).
 - This intentionally repurposes album-art click away from album navigation for local tracks while lyrics mode exists.
 - Album navigation remains available from the now-title/artist/album links already present in the now-playing metadata row.
-- If the track changes, lyrics state reloads for the new track.
+- If lyrics are opened from the keyboard, focus moves into the lyrics panel close affordance or panel root; closing lyrics restores focus to the album-art trigger.
+- If the track changes to another local track while lyrics are open, lyrics state reloads for the new local track.
+- If playback changes from a local track to a remote/Tidal track while lyrics are open, immediately invalidate the active request token, clear visible lyrics state, and close the lyrics panel.
 - If the current track is not local in v1, album-art click keeps its current album-navigation behavior and the lyrics panel stays closed.
-- The canonical local-track key for lyrics state and stale-response rejection is the backend-normalized `track_path` returned by the lyrics API response.
+- `track.local_path` is request input only. It may be used to issue the fetch, but it is never the cache key and never becomes the long-lived canonical identity.
+- The canonical local-track key is the backend-normalized `track_path` returned by the lyrics API response.
 - `track_path` must be the backend's strict resolved absolute path string for the trusted local audio file, matching playback-style resolution semantics rather than the raw query string.
-- Before the first response arrives for a local track, the request key is the current `track.local_path`; once the backend responds, `track_path` becomes the source of truth for cache and stale-response comparisons.
-- Lyrics fetch/update must be keyed to that canonical local-track key. If a response arrives for a stale track, or the panel was closed before the response resolves, discard it without mutating visible lyrics state.
-- On open or track change, immediately clear any previously rendered lyrics and show a lightweight loading shell until the new payload resolves.
-- Reopening lyrics for the same canonical local-track key may reuse the last successful payload for that track until playback changes, rather than forcing an immediate refetch.
+- Each open/track-change fetch captures the current `lyricsRequestToken`; if a response arrives for an older token, or the panel was closed before the response resolves, discard it without mutating visible lyrics state.
+- Successful responses populate `lyricsCanonicalTrackPath` and store the payload in `lyricsCache[track_path]`.
+- Track change clears `lyricsCanonicalTrackPath` before issuing the next fetch.
+- On reopen while the same track is still playing and `lyricsCanonicalTrackPath` is already known from a prior successful response, render `lyricsCache[lyricsCanonicalTrackPath]` immediately with no loading shell and no mandatory refetch.
+- Otherwise, clear any previously rendered lyrics and show a lightweight loading shell until the new payload resolves.
+- If a background refresh is added later, it must not replace visible cached lyrics with the loading shell.
 
 ### Layout
 
 When lyrics mode is open:
-- the fixed footer player stays fixed
-- the lyrics overlay is mounted as an absolutely positioned child of the existing footer player container and anchored to its top edge
-- the footer player keeps `position: relative`; the lyrics overlay uses `position: absolute` with bottom aligned to the top of the player strip so it grows upward without clipping the player controls
-- a lyrics panel grows **upward from the player area as an anchored overlay**, covering part of the main content rather than pushing page layout downward
+- the existing player strip remains the bottom anchor for the experience
+- the lyrics UI is a dedicated direct `body` child mounted as a sibling of the existing `#queue-panel` and `<footer class="player">`; it is not a child of the footer internals
+- the lyrics overlay is positioned `fixed` relative to the viewport with its bottom edge locked to the top of the current desktop player strip height (prefer a shared CSS variable rather than a duplicated magic number), so it grows upward over main content without causing page reflow
+- the overlay owns its own internal scrolling/overflow; body/main layout behavior remains unchanged
+- outside clicks on main content do not auto-close lyrics in v1
+- lyrics close only via explicit user intent: album-art toggle, visible close affordance, Escape, or opening the queue panel
 - desktop/tablet only in v1; mobile keeps its existing compact player behavior with no lyrics panel
 - album art remains present but visually subordinated to lyrics
 - controls compress into a minimal strip
@@ -262,12 +316,14 @@ For synced mode:
 - fade previous/next lines with lower opacity
 - animate transitions smoothly when active line changes
 - wrapped long lines remain a single logical lyric item even if visually multiple lines tall
+- synced mode is not user-scrollable in v1; the active-line viewport position is controlled by auto-centering only
+- wheel/touch scroll gestures inside the synced-lyrics viewport must not leave the view parked away from the active line
 
 Active-line algorithm:
 - frontend does **not** infer or repair missing timing metadata; it consumes normalized `start_ms`/`end_ms` from the backend
 - the active line is the last line whose `start_ms <= currentTimeMs < end_ms`
 - because backend `end_ms` for non-final lines is the next line's `start_ms`, the prior line remains highlighted through inter-line gaps until the next line starts
-- on seek, recompute active line immediately from the new `audio.currentTime`
+- on seek, recompute active line immediately from the new `audio.currentTime` and re-center it
 - on pause/resume, keep the current active line; no animation reset is required
 - if `currentTimeMs` is before the first line, no line is active yet
 - if the frontend receives a malformed lyrics API payload, it does not attempt source fallback itself; it clears lyrics content and shows the distinct error shell
@@ -306,7 +362,7 @@ For transport/error mode:
 ### Transition
 
 When toggling lyrics open:
-- expand the now-playing panel in place
+- reveal the anchored lyrics overlay above the player strip
 - gently fade/shift the artwork layer into the background treatment
 - reveal lyrics with a soft vertical motion
 - avoid a hard route change or modal pop
@@ -317,13 +373,14 @@ When toggling lyrics open:
 - when `prefers-reduced-motion: reduce` is active, lyric transitions and artwork-motion effects should degrade to minimal fade/no-motion behavior
 - seek/progress and play-pause remain visible in the player strip
 - previous/next remain available
-- queue panel and lyrics panel are mutually exclusive in v1: opening lyrics closes the queue, and opening the queue closes lyrics
+- the queue toggle control remains visible while lyrics are open, but queue panel and lyrics panel are mutually exclusive in v1: opening lyrics closes the queue, and opening the queue closes lyrics before showing the queue panel
 - closing lyrics must have an obvious affordance beyond re-clicking the album art (for example, a close button or collapse handle)
 - keyboard behavior in v1 may remain minimal, but Escape should close whichever of queue or lyrics is currently open
 - measurable acceptance criteria for v1 desktop/tablet:
   - the anchored lyrics overlay must expose at least 220px of lyrics viewport height above the player strip
   - the player strip must keep play/pause and seek/progress visible at all times while lyrics are open
-  - the overlay must stack above main content and above the footer player shell, but below transient global dialogs/menus
+  - the overlay must stack above main content but below transient global dialogs/menus
+  - the overlay's box must end at the top edge of the player strip so the player strip remains fully visible and clickable without overlay hit-target overlap
   - because queue and lyrics are mutually exclusive in v1, the lyrics overlay never coexists visibly with the queue panel sibling
 - the experience should feel lyrics-first, controls-second
 
@@ -355,6 +412,7 @@ The lyrics feature must never interrupt or degrade playback.
 
 - sidecar `.lrc` parsing returns normalized synced lines with explicit `end_ms`
 - partially malformed `.lrc` with at least one good timestamped line still returns synced mode
+- fatally invalid `.lrc` synced parsing falls back to unsynced text unless a valid embedded synced source exists
 - untimed or effectively invalid `.lrc` falls back to unsynced text unless a valid embedded synced source exists
 - timed `©lyr` / `LYRICS` text resolves correctly when no higher-precedence synced source exists
 - untimed/plain `.lrc` loses to valid embedded synced lyrics
@@ -364,6 +422,10 @@ The lyrics feature must never interrupt or degrade playback.
 - common LRC metadata tags are ignored and `[offset:]` is applied correctly
 - normalized synced output guarantees `end_ms > start_ms` for every returned line
 - no-lyrics case returns `mode: none`
+- ambiguous case-insensitive sidecar matches are ignored and fall back to embedded/none deterministically
+- resolver mapping covers `400` bad input, `403` forbidden path, and `404` not-found/not-audio outcomes
+- final-line normalization uses the fixed fallback window whenever duration is missing, zero, negative, non-finite, or `<= start_ms`
+- final-line normalization discards invalid rows that still cannot satisfy `end_ms > start_ms`
 - invalid local path is rejected
 
 ### Frontend/Source Tests
@@ -372,11 +434,17 @@ The lyrics feature must never interrupt or degrade playback.
 - album navigation remains available through metadata links after album-art click is repurposed
 - remote/non-local tracks do not open the lyrics panel in v1 and album-art click keeps current album navigation behavior
 - synced lyrics mode includes active-line rendering path using normalized backend timings
-- stale lyric responses are ignored when canonical backend `track_path` no longer matches or lyrics mode closes
-- opening lyrics clears prior content and shows a loading shell until new data arrives
+- stale lyric responses are ignored using request-token invalidation plus current open-state checks
+- first open for an uncached track clears prior content and shows a loading shell until new data arrives
+- reopening lyrics for the same still-playing track reuses cached canonical-track content immediately without flashing the loading shell
 - non-success fetch outcomes stop loading and show the distinct error shell without stale lyrics remaining visible
+- malformed payload schema is rejected into the distinct error shell
+- frontend state distinguishes empty lyrics from transport/payload error state
 - user-driven fetch aborts from close/track-change are ignored silently and do not show the error shell
 - opening lyrics closes queue, and opening queue closes lyrics
+- reduced-motion mode degrades synced-line transitions and artwork motion as specified
+- existing now-playing favorite/download buttons hide while lyrics are open
+- album-art trigger is keyboard-activatable and focus restores correctly on close
 - unsynced fallback rendering path exists
 - wrapped lyric container/layout exists
 - empty-state rendering path exists
@@ -390,6 +458,8 @@ Manual verification before claiming feature completion should include:
 - local MP3 file whose only synced lyrics source is `SYLT` correctly falls back in v1
 - local track with untimed/plain `.lrc` plus valid embedded synced lyrics
 - local track with only unsynced lyrics
+- local track where cleaned unsynced text would become empty returns `mode: none`
+- local track with lyrics open confirms existing now-playing favorite/download buttons are hidden while transport controls remain usable
 - local track with multiple embedded unsynced values/frames where first non-empty wins
 - local track with no lyrics
 - partially malformed `.lrc` file
@@ -401,6 +471,8 @@ Manual verification before claiming feature completion should include:
 - closing lyrics during a slow/fake delayed load
 - remote/Tidal track does not open lyrics mode
 - playback controls still usable when lyrics mode is visible
+- keyboard open/close flow on album art and close affordance behaves correctly
+- reduced-motion preference disables motion-heavy transitions while preserving readability and active-line correctness
 
 ---
 
