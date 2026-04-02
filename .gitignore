@@ -65,3 +65,6 @@ output/
 # Local-only helper scripts
 /scripts/
 /TIDALDL-PY/scripts/
+
+# Local MCP config
+.mcp.json
