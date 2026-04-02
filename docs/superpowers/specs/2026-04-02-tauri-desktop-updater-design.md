@@ -178,7 +178,7 @@ Preferred design:
 - keep updater plugin operations inside Rust
 - expose only a minimal app-owned command/event surface to the frontend
 - avoid granting broader updater/plugin permissions directly to the sidecar-served frontend unless implementation proves that direct plugin access is necessary
-- review the trust boundary for localhost-served frontend content before exposing any new invoke/event surface
+- treat the localhost-served frontend as a real privilege boundary, not implicitly trusted content
 - review all existing invoke/event commands reachable from the localhost-served frontend before adding updater commands, so updater hardening is not undermined by a weaker pre-existing command surface
 
 The v1 frontend command surface should be limited to:
@@ -194,6 +194,18 @@ Constraints:
 - updater commands are rejected unless the invoking window label is `main` and the app has already marked that window as navigated to the hardcoded sidecar URL `http://localhost:8765`
 - no remote capability URLs are configured for updater-related permissions
 - updater events are outbound status snapshots only, not command channels
+
+### Localhost Frontend Release Gate
+
+Updater commands must not ship until all of the following are true:
+- the existing invoke/event surface reachable from the localhost-served frontend has been inventoried
+- every reachable command is classified as safe, restricted, or removed
+- updater commands enforce both window-label checks and Rust-state preconditions before doing privileged work
+- `check_for_updates()` performs no filesystem, endpoint, or version selection based on frontend input
+- `install_staged_update()` only acts on Rust-owned updater state created by the current app session
+- the user-facing web UI that can reach updater commands has passed a focused XSS/command-surface review
+
+If this gate is not passed, updater support is not shippable even if the rest of the implementation works.
 
 If direct frontend plugin access is used anyway, the capability file must be expanded deliberately and documented as a security tradeoff.
 
@@ -497,7 +509,22 @@ Treat these contexts as unsupported for auto-update:
 - ad-hoc bundle locations such as Downloads/Desktop/custom folders
 - symlinked launch locations whose canonical target does not resolve into `/Applications` or `~/Applications`
 
-If the app is running from an unsupported install context, automatic update checks should resolve to `unsupported_install_context` and the Settings action should explain that updates require the installed app in Applications.
+### Install Context Truth Table
+
+| Observed launch context | Expected classification | Auto-check | Manual check result | Notes |
+| --- | --- | --- | --- | --- |
+| Canonical bundle under `/Applications` with bundle id `com.alfdav.music-dl` | supported | run | normal updater flow | primary supported path |
+| Canonical bundle under `~/Applications` with bundle id `com.alfdav.music-dl` | supported | run | normal updater flow | secondary supported path |
+| Bundle launched from mounted DMG under `/Volumes/...` | unsupported_install_context | no-op | explicit unsupported message | first-install only |
+| AppTranslocation/temp path | unsupported_install_context | no-op | explicit unsupported message | likely quarantine/translocation case |
+| Bundle in Downloads/Desktop/custom folder | unsupported_install_context | no-op | explicit unsupported message | outside v1 support policy |
+| Symlinked app whose canonical target resolves into `/Applications` or `~/Applications` and bundle id matches | supported | run | normal updater flow | canonical target decides |
+| Symlinked app whose canonical target resolves elsewhere | unsupported_install_context | no-op | explicit unsupported message | fail closed |
+| Bundle id mismatch or bundle root cannot be resolved confidently | unsupported_install_context | no-op | explicit unsupported message | fail closed |
+
+If the app is running from an unsupported install context, automatic update checks should resolve to `unsupported_install_context` and the Settings action should show this exact copy:
+
+> Auto-update only works after you move music-dl.app into Applications.
 
 ---
 
