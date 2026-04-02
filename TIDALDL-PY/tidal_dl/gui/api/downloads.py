@@ -300,7 +300,7 @@ def download(req: DownloadRequest) -> dict:
         logged_in = False
 
     if not logged_in:
-        raise HTTPException(status_code=401, detail="Not logged in to Tidal — run 'music-dl login' in terminal")
+        raise HTTPException(status_code=401, detail="Not logged in to Tidal")
 
     return trigger_download(req.track_ids)
 

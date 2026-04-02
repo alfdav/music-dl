@@ -83,7 +83,7 @@ def search(
 
     session = get_tidal_session()
     if not session.check_login():
-        raise HTTPException(status_code=401, detail="Not logged in to Tidal — run 'music-dl login' in terminal")
+        raise HTTPException(status_code=401, detail="Not logged in to Tidal")
 
     try:
         results = session.search(
