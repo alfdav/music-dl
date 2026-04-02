@@ -185,7 +185,30 @@ class TestDownloadTrigger:
         )
 
         assert resp.status_code == 401
-        assert "Not logged in to Tidal" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Not logged in to Tidal"
+        assert "terminal" not in resp.json()["detail"].lower()
+
+
+class TestSearchAuth:
+    def test_requires_tidal_login_without_terminal_hint(self, client, monkeypatch):
+        class FakeSession:
+            def check_login(self):
+                return False
+
+        class FakeTidal:
+            def __init__(self):
+                self.session = FakeSession()
+
+        monkeypatch.setattr("tidal_dl.gui.api.search.Tidal", FakeTidal)
+
+        resp = client.get(
+            "/api/search?q=test",
+            headers=client._host_header,
+        )
+
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "Not logged in to Tidal"
+        assert "terminal" not in resp.json()["detail"].lower()
 
 
 class TestDuplicatesPreview:

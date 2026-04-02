@@ -280,10 +280,35 @@ async function api(path, options) {
       await refreshCsrfToken();
       return api(path, { ...opts, _csrfRetried: true });
     }
-    throw new Error(detail.detail || 'API error ' + resp.status);
+    const message = detail.detail || 'API error ' + resp.status;
+    const error = new Error(message);
+    error.status = resp.status;
+    error.detail = message;
+    throw error;
   }
 
   return resp.json();
+}
+
+function _isTidalAuthError(error) {
+  return !!(
+    error &&
+    error.status === 401 &&
+    typeof error.detail === 'string' &&
+    error.detail.toLowerCase().includes('not logged in to tidal')
+  );
+}
+
+async function apiTidal(path, options) {
+  try {
+    return await api(path, options);
+  } catch (error) {
+    if (_isTidalAuthError(error) && !_loginPoll) {
+      toast('Tidal login required — opening sign-in…', 'error');
+      triggerLogin();
+    }
+    throw error;
+  }
 }
 
 // ---- TOAST ----
@@ -1990,7 +2015,7 @@ async function doSearch(resultsArea) {
   // Tidal results (async, may fail if not logged in)
   let tidalData = null;
   try {
-    tidalData = await api('/search?q=' + encodeURIComponent(q) + '&type=' + state.searchType + '&limit=50');
+    tidalData = await apiTidal('/search?q=' + encodeURIComponent(q) + '&type=' + state.searchType + '&limit=50');
   } catch (_) { /* Tidal unavailable is OK */ }
 
   state.searchResults = { local: localData, tidal: tidalData };
@@ -2769,7 +2794,7 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
           const dlAllBtn = wrapper.querySelector('.album-dl-btn');
           dlAllBtn.addEventListener('click', async () => {
             try {
-              await api('/download', {
+              await apiTidal('/download', {
                 method: 'POST',
                 body: { track_ids: missingTracks.map(t => t.id) },
               });
@@ -2900,7 +2925,7 @@ async function renderAlbumDetail(container, albumId) {
         return;
       }
       try {
-        await api('/download', {
+        await apiTidal('/download', {
           method: 'POST',
           body: { track_ids: nonLocal.map(t => t.id) },
         });
@@ -3911,7 +3936,7 @@ async function downloadTrack(track, btn) {
   btn.classList.add('downloading');
 
   try {
-    await api('/download', {
+    await apiTidal('/download', {
       method: 'POST',
       body: { track_ids: [track.id] },
     });
@@ -4380,7 +4405,7 @@ async function loadDownloadHistory(container) {
           retryBtn.disabled = true;
           retryBtn.textContent = 'Retrying\u2026';
           try {
-            await api('/download', { method: 'POST', body: { track_ids: [dl.track_id] } });
+            await apiTidal('/download', { method: 'POST', body: { track_ids: [dl.track_id] } });
           } catch (_) {
             retryBtn.disabled = false;
             retryBtn.textContent = 'Retry';
@@ -4412,7 +4437,7 @@ function renderSettings(container) {
   ));
 
   // Auth status
-  const authSection = h('div', { style: { marginBottom: '24px' } });
+  const authSection = h('div', { id: 'settings-auth-status', style: { marginBottom: '24px' } });
   resultsArea.appendChild(authSection);
   loadAuthStatus(authSection);
 
@@ -4434,10 +4459,14 @@ async function loadAuthStatus(container) {
       ));
     } else {
       const dot = h('span', { className: 'connection-dot disconnected' });
-      container.appendChild(h('div', { className: 'connection', style: { padding: '0 0 16px' } },
+      const row = h('div', { className: 'connection', style: { padding: '0 0 16px', gap: '12px' } },
         dot,
-        document.createTextNode('Not logged in \u2014 run music-dl login in terminal')
-      ));
+        document.createTextNode('Not logged in to Tidal')
+      );
+      const loginBtn = textEl('button', 'Log in to Tidal', 'banner-action');
+      loginBtn.addEventListener('click', () => { triggerLogin(); });
+      row.appendChild(loginBtn);
+      container.appendChild(row);
     }
   } catch (_) {
     container.appendChild(textEl('div', 'Could not check auth status', 'track-artist'));
@@ -4776,7 +4805,7 @@ function updatePlayerHeart() {
       if (trk.is_local) { toast('Already in your library', 'success'); return; }
       dlEl.classList.add('downloading');
       try {
-        await api('/download', { method: 'POST', body: { track_ids: [trk.id] } });
+        await apiTidal('/download', { method: 'POST', body: { track_ids: [trk.id] } });
         toast('Downloading ' + (trk.name || 'track'));
       } catch (_) {
         toast('Download failed', 'error');
@@ -5132,9 +5161,10 @@ audio.addEventListener('error', () => {
   setWaveformPlaying(false);
   const current = state.queue[state.queueIndex];
   const label = current ? (current.name || 'Track') : 'Track';
-  toast(label + ' unavailable — skipping', 'error');
-  // Auto-skip to next track after a brief pause
-  if (state.queueIndex < state.queue.length - 1) {
+  const canAutoSkip = current && current.is_local && state.queueIndex < state.queue.length - 1;
+  toast(label + ' unavailable', 'error');
+  // Auto-skip only for local-file queue playback; remote search/stream failures should stop.
+  if (canAutoSkip) {
     setTimeout(() => { state.queueIndex++; playTrack(state.queue[state.queueIndex]); }, 800);
   }
 });
@@ -5365,12 +5395,20 @@ async function refreshStatusLights() {
 
 let _loginPoll = null;
 
+async function _handleLoginSuccess() {
+  refreshStatusLights();
+  await _checkErrorBanners();
+  const authSection = document.getElementById('settings-auth-status');
+  if (authSection) await loadAuthStatus(authSection);
+  toast('Connected to Tidal', 'success');
+}
+
 async function triggerLogin() {
   const tidalEl = document.getElementById('connection-tidal');
   try {
     const data = await api('/auth/login', { method: 'POST' });
     if (data.status === 'already_logged_in') {
-      refreshStatusLights();
+      await _handleLoginSuccess();
       return;
     }
     if (data.verification_uri) {
@@ -5392,7 +5430,7 @@ async function triggerLogin() {
         if (status.status === 'success') {
           clearInterval(_loginPoll);
           _loginPoll = null;
-          refreshStatusLights();
+          await _handleLoginSuccess();
         } else if (status.status === 'failed') {
           clearInterval(_loginPoll);
           _loginPoll = null;
