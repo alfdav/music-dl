@@ -721,11 +721,25 @@ The feature is complete when all of the following are true:
 - updater failures do not block normal app usage
 - the sidecar is shut down cleanly before restart/install proceeds
 - desktop versioning is unified with an enforced single source of truth
+- the localhost frontend release gate is completed and documented before ship
 - the release process documents signing, frozen updater config/artifact contract, release selection policy, Apple signing/notarization continuity, and GitHub Releases requirements
 
 ---
 
-## 20. Recommended Implementation Phasing
+## 20. Design Freeze Blockers
+
+Do not start implementation until all of the following are verified and written down:
+
+- the pinned Rust updater API flow needed for `check -> download -> later install -> restart`
+- the exact generated updater asset filenames for the pinned Tauri/updater versions
+- the exact `latest.json` shape actually published by the dry-run release flow
+- the real progress callback behavior available on the pinned updater path
+- the process-tree shutdown approach for the Python sidecar on macOS
+- the reachable invoke/event command inventory for the localhost-served frontend
+
+---
+
+## 21. Recommended Implementation Phasing
 
 ### Phase 1
 
