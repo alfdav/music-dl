@@ -35,6 +35,7 @@ It is out of scope for `tauri dev`, local browser use against the sidecar, and a
 - Check automatically on **app launch**
 - Also provide a **manual Check for updates** action
 - v1 intentionally performs the launch check on every app start; no launch-cooldown cache is part of this design
+- automatic launch checks run at most once per process start and do not retry repeatedly inside the same session after a timeout/failure
 
 ### Download Policy
 
@@ -114,6 +115,7 @@ The updater cannot be considered reliable until desktop versioning has one enfor
 - Silent install without any user-facing prompt
 - In-app changelog rendering beyond a simple version/update message
 - Enabling updater behavior in dev mode or local browser-only use
+- Rollback or delta-update support in v1 unless separately verified and specified
 
 ---
 
@@ -161,6 +163,7 @@ This design is not complete unless the implementation includes the actual Tauri 
 Implementation must include all of the following:
 - pin the updater plugin to the same Tauri 2 generation as the app runtime already in this repo
 - scaffold the updater plugin wiring with `bun x tauri add updater` and treat the generated dependency/config/capability shape as the authoritative integration contract for this codebase
+- note that the current plugin scaffolder adds Rust/plugin dependencies, plugin registration, and a capability file granting `updater:default`; v1 must not ship that frontend permission unchanged because updater access stays Rust-owned
 - run one real packaged test build with updater artifacts enabled before implementation work starts, then copy the exact generated updater config shape and emitted artifact filenames into project docs as a frozen contract for this repo/version line
 - run one end-to-end dry-run against a throwaway release repo/channel before implementation work starts, proving how the pinned updater source discovers releases, interprets stable/prerelease behavior, and consumes the emitted metadata/assets
 - add the `tauri-plugin-updater` dependency to `src-tauri/Cargo.toml`
@@ -183,9 +186,12 @@ The v1 frontend command surface should be limited to:
 - `install_staged_update()`
 
 Constraints:
+- do not grant `updater:default` to the sidecar-served frontend in the shipped app
+- do not use the JavaScript updater guest bindings in the shipped frontend path
 - no updater command accepts arbitrary URL, repo, asset, version, or filesystem path parameters from the frontend
 - `install_staged_update()` is allowed only when Rust state is `ready_to_install`, install context is supported, and the invoking window is the trusted main window
-- updater commands are rejected for any window/origin outside the trusted main local app surface
+- updater commands are rejected unless the invoking window label is `main` and the current webview URL origin is exactly `http://localhost:8765`
+- no remote capability URLs are configured for updater-related permissions
 - updater events are outbound status snapshots only, not command channels
 
 If direct frontend plugin access is used anyway, the capability file must be expanded deliberately and documented as a security tradeoff.
@@ -194,6 +200,7 @@ If direct frontend plugin access is used anyway, the capability file must be exp
 
 Updater wiring must be disabled or no-op in dev/local browser contexts.
 The app should only perform update checks when running as a packaged desktop build in a supported install context.
+Unsigned or ad-hoc local desktop builds are not part of the supported updater path for v1.
 
 ---
 
@@ -205,16 +212,24 @@ The app should only perform update checks when running as a packaged desktop bui
 
 For v1:
 - use **public GitHub Releases** only
-- use one canonical repository for desktop releases
+- use one canonical **stable desktop release repository** for updater traffic
 - do not support private-release authentication in v1
 - do not support custom mirrors in v1
+- do not use the GitHub Releases API directly as the updater contract
+- use a **static JSON manifest** published as a GitHub Release asset as the updater contract
+
+The pinned v1 endpoint shape is:
+- `plugins.updater.endpoints = ["https://github.com/<owner>/<stable-release-repo>/releases/latest/download/latest.json"]`
+
+This follows the Tauri updater static-JSON endpoint model instead of an app-defined GitHub parsing layer.
 
 ### Release Selection Policy
 
 - only stable releases are eligible for auto-update
 - draft and pre-release GitHub entries are outside the auto-update channel for v1
-- do not rely on ad-hoc client-side filtering logic unless the pinned updater source explicitly supports it
-- release publishing must ensure the updater source exposed to clients represents stable releases only
+- do not rely on ad-hoc client-side filtering logic in the app
+- stable-channel correctness is enforced by publishing `latest.json` only on the dedicated stable desktop release repository/channel
+- prerelease/canary work, if added later, must use a different repo/channel and must not reuse the stable `latest.json` endpoint
 - do not allow downgrade installs through the updater flow
 - recommended tag format: `v<version>` where `<version>` exactly matches the desktop app version
 
@@ -228,20 +243,39 @@ Every desktop release must include:
 
 Publishing a DMG alone is not sufficient.
 
+For macOS specifically:
+- the DMG remains the human-download/install artifact for first install
+- the updater downloads the Tauri-generated `.app.tar.gz` updater bundle plus its `.sig`, not the DMG
+- `latest.json` must point at the `.app.tar.gz` URL and inline the matching signature contents for the target platform
+
 The release procedure must capture one real example release in docs with asset filenames copied verbatim from build output for the pinned Tauri/updater version. The project should treat those emitted filenames as the contract instead of inventing its own naming scheme.
 
 A release must not be published to the stable update channel until the checklist confirms that signatures, metadata, and platform-specific assets are all present and internally consistent.
+Stable release assets and `latest.json` must be treated as immutable once published.
 
 ### Updater Source Wiring
 
 The implementation must define one explicit place where release source configuration lives.
-Recommended choices:
-- static updater configuration in Tauri config, or
-- a small Rust config module that resolves a fixed repo/endpoint contract
+For v1, use static Tauri config with the updater plugin’s documented fields:
+- `bundle.createUpdaterArtifacts: true`
+- `plugins.updater.pubkey: <public key contents>`
+- `plugins.updater.endpoints: ["https://github.com/<owner>/<stable-release-repo>/releases/latest/download/latest.json"]`
 
 Do not scatter repo/URL parsing across frontend code or ad-hoc runtime string building.
 
 For v1, the updater repository/endpoint is immutable application configuration. Changing it is a release-channel migration and must be treated as explicit follow-up work, not an incidental per-release edit.
+
+### Static Manifest Contract
+
+The stable endpoint must return the Tauri updater static JSON shape, not a custom response.
+For the macOS target currently in scope, `latest.json` must contain:
+- `version`
+- `notes` (optional)
+- `pub_date` (optional RFC 3339)
+- `platforms.darwin-aarch64.url`
+- `platforms.darwin-aarch64.signature`
+
+The manifest must include only valid and complete platform entries for the stable channel because Tauri validates the whole file before version comparison.
 
 ---
 
@@ -251,19 +285,20 @@ The updater requires one enforced version source of truth.
 
 ### Source of Truth
 
-Use a dedicated project version file or release-version script output as the authoritative desktop release version.
-Both `src-tauri/tauri.conf.json.version` and `src-tauri/Cargo.toml` must be generated from that single source.
+Use a committed root file `TIDALDL-PY/VERSION` as the authoritative desktop release version.
+Both `src-tauri/tauri.conf.json.version` and `src-tauri/Cargo.toml` must be mechanically rewritten from that file.
 
 ### Sync Rule
 
-- desktop build entrypoints must materialize or verify both Tauri and Cargo version fields from the dedicated source before building
+- add a dedicated sync script such as `TIDALDL-PY/scripts/sync-desktop-version.sh` that reads `TIDALDL-PY/VERSION` and rewrites the Cargo and Tauri version fields
+- desktop build entrypoints must run that sync step before building
 - release work must not rely on two manual edits staying in sync
-- add a pre-build script or verification check wired into desktop build entrypoints that fails immediately if the generated/expected versions differ
+- CI or release verification must fail immediately if the repo is dirty after the sync step or if generated versions differ from `VERSION`
 - manual dual-editing of versions is forbidden
 
 ### Release Rule
 
-The dedicated version source, GitHub Release tag, and updater release metadata must match exactly.
+The `VERSION` file, GitHub Release tag, and updater release metadata must match exactly.
 
 ---
 
@@ -394,13 +429,13 @@ This avoids losing updater state if a launch-time check starts before the sideca
 Flow:
 1. app starts normally
 2. sidecar startup proceeds as it does today
-3. updater runs a non-blocking background check
+3. updater runs a non-blocking background check in parallel
 4. if no update exists, show nothing
 5. if an update exists, begin background download automatically
 6. when the frontend is available, show an in-app banner with download progress
 7. when the update is fully staged, show an install-ready prompt
 
-The launch experience must not be delayed by the update check.
+The launch experience must not be delayed by the update check, and updater UI must wait until the normal app chrome is available rather than interrupting the loading screen itself.
 
 ### Manual Check in Settings
 
@@ -421,8 +456,8 @@ Use a lightweight persistent banner rather than a blocking modal while the updat
 Banner content should include:
 - target version
 - current status text
-- progress when available
-- an indeterminate loading state when the updater path does not expose granular progress
+- byte/progress updates from the real updater `Started` / `Progress` / `Finished` callbacks when available
+- an indeterminate loading state when total content length is unknown
 
 ### Install-Ready UI
 
@@ -543,6 +578,7 @@ Before the feature can be called shippable, the project must document:
 This design does not require full CI automation yet, but it does require a documented manual or semi-manual release procedure that can produce valid signed updater artifacts repeatedly.
 
 Release/install docs must explicitly warn users to move the app into Applications before expecting auto-update to work.
+Release docs must also state that the macOS updater consumes the generated `.app.tar.gz` updater bundle, while the DMG is only for first-time installation.
 
 ---
 
