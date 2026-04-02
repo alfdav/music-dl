@@ -16,7 +16,7 @@ classifiers = [
 ]
 
 dependencies = [
-  "requests~=2.32.5",
+  "requests~=2.33.0",
   "mutagen>=1.47.0",
   "dataclasses-json>=0.6.7",
   "pathvalidate>=3.3.1",

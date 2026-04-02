@@ -474,6 +474,29 @@ def all_albums(q: str = Query("", description="Search filter")):
     }
 
 
+@router.get("/library/recent-albums")
+def library_recent_albums(
+    limit: int = Query(12, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    from urllib.parse import quote
+
+    db = _get_db()
+    rows, total = db.recent_albums_page(limit=limit, offset=offset)
+    albums = [
+        {
+            "name": row["album"],
+            "artist": row["artist"],
+            "track_count": row["track_count"],
+            "cover_url": "/api/library/art?path=" + quote(row["cover_path"], safe="") if row.get("cover_path") else "",
+            "recent_at": row["recent_at"],
+            "recent_source": row["recent_source"],
+        }
+        for row in rows
+    ]
+    return {"albums": albums, "total": total, "limit": limit, "offset": offset}
+
+
 @router.get("/library/artist/{artist_name}/albums")
 def artist_albums(artist_name: str):
     """Return all albums by an artist from the local library."""
