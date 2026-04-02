@@ -118,13 +118,21 @@ Run the test suite:
 pytest
 ```
 
-Run the release smoke gate from the repository root:
+Run the release smoke coverage from the repository root:
 
 ```shell
-./scripts/release-smoke.sh
+uv run --project TIDALDL-PY pytest \
+  TIDALDL-PY/tests/test_gui_command.py \
+  TIDALDL-PY/tests/test_gui_api.py \
+  TIDALDL-PY/tests/test_setup.py \
+  TIDALDL-PY/tests/test_token_refresh.py \
+  TIDALDL-PY/tests/test_public_branding.py \
+  TIDALDL-PY/tests/test_packaging.py
+uv build --project TIDALDL-PY
+docker build -f TIDALDL-PY/Dockerfile TIDALDL-PY
 ```
 
-That gate covers the GUI command path, app factory/static assets, setup flow, token refresh, package branding, package build, and the published Docker build context.
+That covers the GUI command path, app factory/static assets, setup flow, token refresh, package branding, package build, and the published Docker build context.
 
 ## Security
 
