@@ -162,6 +162,7 @@ Implementation must include all of the following:
 - pin the updater plugin to the same Tauri 2 generation as the app runtime already in this repo
 - scaffold the updater plugin wiring with `bun x tauri add updater` and treat the generated dependency/config/capability shape as the authoritative integration contract for this codebase
 - run one real packaged test build with updater artifacts enabled before implementation work starts, then copy the exact generated updater config shape and emitted artifact filenames into project docs as a frozen contract for this repo/version line
+- run one end-to-end dry-run against a throwaway release repo/channel before implementation work starts, proving how the pinned updater source discovers releases, interprets stable/prerelease behavior, and consumes the emitted metadata/assets
 - add the `tauri-plugin-updater` dependency to `src-tauri/Cargo.toml`
 - register the updater plugin in `src-tauri/src/lib.rs`
 - enable updater artifact generation in `src-tauri/tauri.conf.json` via `bundle.createUpdaterArtifacts`
@@ -183,7 +184,8 @@ The v1 frontend command surface should be limited to:
 
 Constraints:
 - no updater command accepts arbitrary URL, repo, asset, version, or filesystem path parameters from the frontend
-- `install_staged_update()` is allowed only when Rust state is `ready_to_install` and install context is supported
+- `install_staged_update()` is allowed only when Rust state is `ready_to_install`, install context is supported, and the invoking window is the trusted main window
+- updater commands are rejected for any window/origin outside the trusted main local app surface
 - updater events are outbound status snapshots only, not command channels
 
 If direct frontend plugin access is used anyway, the capability file must be expanded deliberately and documented as a security tradeoff.
@@ -249,18 +251,19 @@ The updater requires one enforced version source of truth.
 
 ### Source of Truth
 
-Use `src-tauri/tauri.conf.json.version` as the authoritative desktop release version.
+Use a dedicated project version file or release-version script output as the authoritative desktop release version.
+Both `src-tauri/tauri.conf.json.version` and `src-tauri/Cargo.toml` must be generated from that single source.
 
 ### Sync Rule
 
-- `Cargo.toml` must be generated from or mechanically rewritten from the authoritative Tauri app version before every desktop build command, not only during release prep
+- desktop build entrypoints must materialize or verify both Tauri and Cargo version fields from the dedicated source before building
 - release work must not rely on two manual edits staying in sync
-- add a pre-build script or verification check wired into desktop build entrypoints that fails immediately if Cargo and Tauri versions differ
+- add a pre-build script or verification check wired into desktop build entrypoints that fails immediately if the generated/expected versions differ
 - manual dual-editing of versions is forbidden
 
 ### Release Rule
 
-The GitHub Release tag and updater release metadata must match the authoritative desktop version exactly.
+The dedicated version source, GitHub Release tag, and updater release metadata must match exactly.
 
 ---
 
@@ -433,6 +436,9 @@ If the staged update is still present on the next app launch, the prompt should 
 
 ### Install Context Guardrails
 
+This is a deliberate **v1 support policy**, not a claim that every other macOS bundle location is technically impossible.
+The goal is to keep auto-update support narrow enough to test reliably.
+
 v1 intentionally supports only installed macOS app bundles whose canonicalized bundle parent is one of:
 - `/Applications`
 - `~/Applications`
@@ -474,6 +480,8 @@ If failure occurs before updater handoff:
 - return to a non-installing state
 - keep the app usable
 - leave or clear the staged payload according to the updater layer’s actual post-failure state, then re-derive UI from that state instead of guessing
+- if the updater layer exposes a supported way to discard a bad staged payload, use it after repeated pre-handoff install failures or known-invalid staged state
+- if staged-payload discard is not supported, suppress automatic re-prompting for the rest of the current session and show manual reinstall guidance instead of looping endlessly
 - show an install error prompt/toast
 
 If failure occurs after updater handoff, the current app process may not be able to recover the session in-place; in that phase, the updater runtime’s behavior is authoritative.
@@ -528,6 +536,7 @@ Before the feature can be called shippable, the project must document:
 - how local releases are tested without exposing production secrets
 - who owns release credentials
 - how keys are rotated if needed
+- how Apple code-signing and notarization continuity is preserved across the downloaded update artifacts and installed app bundle on macOS
 
 ### Scope for v1
 
@@ -635,7 +644,7 @@ The feature is complete when all of the following are true:
 - updater failures do not block normal app usage
 - the sidecar is shut down cleanly before restart/install proceeds
 - desktop versioning is unified with an enforced single source of truth
-- the release process documents signing, frozen updater config/artifact contract, release selection policy, and GitHub Releases requirements
+- the release process documents signing, frozen updater config/artifact contract, release selection policy, Apple signing/notarization continuity, and GitHub Releases requirements
 
 ---
 
