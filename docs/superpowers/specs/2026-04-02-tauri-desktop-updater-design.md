@@ -213,24 +213,25 @@ Unsigned or ad-hoc local desktop builds are not part of the supported updater pa
 
 For v1:
 - use **public GitHub Releases** only
-- use the canonical repository already declared by the desktop app: `alfdav/music-dl`
+- create and use one dedicated public **stable desktop release repository** for updater traffic
 - do not support private-release authentication in v1
 - do not support custom mirrors in v1
 - do not use the GitHub Releases API directly as the updater contract
 - use a **static JSON manifest** published as a GitHub Release asset as the updater contract
 
 The pinned v1 endpoint shape is:
-- `plugins.updater.endpoints = ["https://github.com/alfdav/music-dl/releases/latest/download/latest.json"]`
+- `plugins.updater.endpoints = ["https://github.com/alfdav/music-dl-desktop-releases/releases/latest/download/latest.json"]`
 
 This follows the Tauri updater static-JSON endpoint model instead of an app-defined GitHub parsing layer.
+The dedicated stable-release repository is a precondition for implementation.
 
 ### Release Selection Policy
 
 - only stable releases are eligible for auto-update
 - draft and pre-release GitHub entries are outside the auto-update channel for v1
 - do not rely on ad-hoc client-side filtering logic in the app
-- stable-channel correctness is enforced operationally: once updater support ships, the `alfdav/music-dl` release stream used by the app must publish stable desktop releases only
-- prerelease/canary work, if added later, must move to a different repo/channel and must not reuse the stable `latest.json` endpoint
+- stable-channel correctness is enforced by repository isolation: the dedicated stable desktop release repository publishes stable releases only
+- prerelease/canary work, if added later, must use a different repo/channel and must not reuse the stable `latest.json` endpoint
 - do not allow downgrade installs through the updater flow
 - recommended tag format: `v<version>` where `<version>` exactly matches the desktop app version
 
@@ -254,7 +255,7 @@ The release procedure must capture one real example release in docs with asset f
 
 A release must not be published to the stable update channel until the checklist confirms that signatures, metadata, and platform-specific assets are all present and internally consistent.
 Stable release assets and `latest.json` must be treated as immutable once published.
-Only designated release maintainers may publish or edit stable releases.
+Only designated release maintainers may publish stable releases, and stable releases must not be edited in place; fixes require publishing a newer stable release.
 
 ### Updater Source Wiring
 
@@ -380,21 +381,20 @@ Each snapshot should include enough metadata for UI policy:
 - status message
 - progress percentage or transferred bytes when available
 - whether progress is determinate or only an indeterminate download/install status is available
-- whether install is ready
-- whether a staged update already exists
+- whether install is ready in the current session
 - last error message
 
 ### Rules
 
 - only one check/download/install job may run at a time
 - repeated manual checks during an active job should return existing state, not start duplicates
-- if a staged update already exists, manual check should return `ready_to_install` and reopen the install prompt instead of starting a second download
+- if an update has already been downloaded in the current session, manual check should return `ready_to_install` and reopen the install prompt instead of starting a second download
 - repeated install clicks must be ignored once install has started
 - automatic checks should stay quiet unless an update is actually found
 - manual checks should always result in visible user feedback
 - Rust state is authoritative; the frontend must not infer updater truth from missed events
-- `Later` is session-local only; the app does not persist a custom dismissal flag across launches and instead re-derives prompt behavior from current staged-update state on startup
-- after `Later`, the install prompt stays suppressed for the rest of the current session unless the user explicitly runs manual check, navigates to an updater-specific action in Settings, or the staged-update state changes
+- `Later` is session-local only; v1 does not require persisted staged-update reuse across app relaunches
+- after `Later`, the install prompt stays suppressed for the rest of the current session unless the user explicitly runs manual check, navigates to an updater-specific action in Settings, or the current-session updater state changes
 - if install context is unsupported, both automatic and manual checks resolve to `unsupported_install_context`
 
 ### Required Transition Rules
@@ -403,9 +403,9 @@ Each snapshot should include enough metadata for UI policy:
 - `idle -> unsupported_install_context` on launch in an unsupported context
 - `unsupported_install_context -> unsupported_install_context` on manual check until install context changes
 - `checking -> up_to_date | update_available | error`
-- `update_available -> downloading | ready_to_install | error` depending on whether the updater path downloads immediately or reports a staged payload already present
+- `update_available -> downloading | ready_to_install | error` within the current app session
 - `downloading -> ready_to_install | error`
-- `ready_to_install -> installing | ready_to_install` (`Later` keeps the state ready)
+- `ready_to_install -> installing | ready_to_install` (`Later` keeps the state ready for the current session)
 - `installing -> error` only if failure occurs before control is handed to the updater runtime; after handoff, current-process recovery is not guaranteed
 - `error -> checking | ready_to_install | unsupported_install_context` based on the next explicit state re-query
 
@@ -448,8 +448,8 @@ The Settings view gets a **Check for updates** action.
 
 Behavior:
 - if install context is unsupported, the action returns the typed `unsupported_install_context` state and explanatory text instead of attempting network work
-- if already checking or downloading, reuse the current updater state
-- if an update is already downloaded and staged, return the existing `ready_to_install` state and re-open the install prompt
+- if already checking or downloading, reuse the current updater state and surface visible feedback in Settings
+- if an update is already downloaded in the current session, return the existing `ready_to_install` state and re-open the install prompt
 - if no update is available, show a success toast such as **You’re up to date**
 - if an update is available, reuse the same auto-download flow as launch checks
 - if the check fails, show a clear error toast
@@ -471,8 +471,8 @@ When the update is staged, show a stronger prompt inside the app with:
 - **Restart and install** action
 - **Later** action
 
-Choosing **Later** dismisses the current prompt but does not discard the staged update.
-If the staged update is still present on the next app launch, the prompt should appear again.
+Choosing **Later** dismisses the current prompt but does not discard the update downloaded in the current session.
+If the pinned updater/runtime later proves that staged updates survive relaunch and remain queryable, the prompt may reappear on next launch, but that is not a v1 requirement.
 
 ### Install Context Guardrails
 
@@ -489,6 +489,7 @@ Detection rules:
 - read the bundle identifier from the app bundle metadata and require `com.alfdav.music-dl`
 - detect translocation by canonical path patterns associated with AppTranslocation/temp launch paths and treat those as unsupported
 - treat bundle filename renames as acceptable if the canonical bundle location and bundle identifier still match the supported install contract
+- if any bundle-path or bundle-id check is ambiguous, fail closed to `unsupported_install_context`
 
 Treat these contexts as unsupported for auto-update:
 - app bundle path under `/Volumes/` (mounted DMG)
@@ -515,9 +516,10 @@ When the user chooses **Restart and install**:
 3. stop emitting `ready_to_install` prompts
 4. use the managed sidecar child handle to terminate the Python sidecar before install proceeds
 5. wait for the child to exit or for a bounded shutdown timeout to expire
-6. if the sidecar is still alive after that timeout, abort before updater handoff, return to an error state, and keep the current app session running rather than racing install against a live child process
-7. only after the sidecar is confirmed stopped, call the updater install step for the already-downloaded artifact
-8. after successful install handoff, restart the app when required by the updater/runtime path
+6. if the child spawned descendants, terminate the process tree or abort install before updater handoff
+7. if the sidecar is still alive after that timeout, abort before updater handoff, return to an error state, and keep the current app session running rather than racing install against a live child process
+8. only after the sidecar process tree is confirmed stopped, call the updater install step for the already-downloaded artifact
+9. after successful install handoff, restart the app when required by the updater/runtime path
 
 ### Failure Rule
 
@@ -541,7 +543,8 @@ The implementation plan must include a small spike to verify the exact Rust upda
 ### Network / GitHub Unavailable
 
 - launch checks remain asynchronous and use a bounded network timeout
-- v1 timeout budget: 30 seconds maximum for a single check/download request before surfacing failure
+- v1 timeout budget: 30 seconds maximum for metadata/check requests before surfacing failure
+- background artifact download uses a separate longer timeout appropriate for release-sized downloads
 - automatic checks: fail quietly unless a visible updater UI is already active
 - manual checks: show an explicit error toast/banner
 
@@ -657,8 +660,7 @@ Verify:
 - manual check shows success feedback when current version is latest
 - available updates show a progress banner
 - downloaded updates show a restart/install prompt
-- choosing **Later** dismisses the prompt without losing the staged update
-- prompt reappears on next launch if the staged update is still pending
+- choosing **Later** dismisses the prompt without losing the current-session downloaded update
 - updater errors do not break the rest of Settings or the app shell
 
 ### Release Verification
@@ -669,7 +671,7 @@ Before calling the feature complete, verify against a real GitHub Release-backed
 - the updater channel only exposes the intended stable release artifacts to clients
 - bad or missing signature is rejected
 - malformed/incomplete release metadata is rejected
-- interrupted download recovers or fails cleanly
+- interrupted download recovers or fails cleanly within the same session
 - background download completes even when progress is indeterminate
 - restart/install path works on macOS packaged app
 - behavior is validated from an installed app, not just from a mounted DMG
@@ -687,7 +689,7 @@ The feature is complete when all of the following are true:
 - when an update exists, the app downloads it automatically in the background
 - the user sees in-app progress/status while the update is downloading
 - when the update is ready, the app shows an in-app prompt to restart and install
-- the user can defer installation with **Later** and be prompted again on next launch if the update remains staged
+- the user can defer installation with **Later** for the current session without losing the downloaded update in that session
 - duplicate checks/downloads/installs are prevented
 - updater failures do not block normal app usage
 - the sidecar is shut down cleanly before restart/install proceeds
