@@ -4991,9 +4991,10 @@ audio.addEventListener('error', () => {
   setWaveformPlaying(false);
   const current = state.queue[state.queueIndex];
   const label = current ? (current.name || 'Track') : 'Track';
-  toast(label + ' unavailable — skipping', 'error');
-  // Auto-skip to next track after a brief pause
-  if (state.queueIndex < state.queue.length - 1) {
+  const canAutoSkip = current && current.is_local && state.queueIndex < state.queue.length - 1;
+  toast(label + ' unavailable', 'error');
+  // Auto-skip only for local-file queue playback; remote search/stream failures should stop.
+  if (canAutoSkip) {
     setTimeout(() => { state.queueIndex++; playTrack(state.queue[state.queueIndex]); }, 800);
   }
 });
