@@ -17,6 +17,8 @@ A local-first music manager that connects to your Tidal account. Search the cata
 
 A **setup wizard** walks you through Tidal login and library configuration on first launch — no config files to edit.
 
+The GUI can also start and recover the Tidal OAuth flow itself from the browser. Use `music-dl login` only if you want to authenticate from the terminal for CLI-first workflows.
+
 ## Get Started
 
 ### Option 1: Docker Compose (easiest)
@@ -84,7 +86,7 @@ music-dl gui                    # launch the web UI
 music-dl dl <URL>               # download a track, album, or playlist
 music-dl dl <URL> <URL> ...     # download multiple URLs
 music-dl cfg                    # view/edit settings
-music-dl login                  # authenticate with Tidal
+music-dl login                  # authenticate with Tidal from the terminal
 music-dl sync                   # sync library database
 ```
 

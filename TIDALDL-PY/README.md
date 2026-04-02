@@ -18,6 +18,8 @@ music-dl gui
 
 The web UI opens in your browser and serves the local music library, search, download, and playback flows.
 
+Tidal sign-in and reconnect can be started directly from the GUI; terminal `music-dl login` remains available for CLI-first use.
+
 ## Development
 
 From the repository root:
