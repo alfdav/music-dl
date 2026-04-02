@@ -179,6 +179,7 @@ Preferred design:
 - expose only a minimal app-owned command/event surface to the frontend
 - avoid granting broader updater/plugin permissions directly to the sidecar-served frontend unless implementation proves that direct plugin access is necessary
 - review the trust boundary for localhost-served frontend content before exposing any new invoke/event surface
+- review all existing invoke/event commands reachable from the localhost-served frontend before adding updater commands, so updater hardening is not undermined by a weaker pre-existing command surface
 
 The v1 frontend command surface should be limited to:
 - `get_updater_state()`
@@ -190,7 +191,7 @@ Constraints:
 - do not use the JavaScript updater guest bindings in the shipped frontend path
 - no updater command accepts arbitrary URL, repo, asset, version, or filesystem path parameters from the frontend
 - `install_staged_update()` is allowed only when Rust state is `ready_to_install`, install context is supported, and the invoking window is the trusted main window
-- updater commands are rejected unless the invoking window label is `main` and the current webview URL origin is exactly `http://localhost:8765`
+- updater commands are rejected unless the invoking window label is `main` and the app has already marked that window as navigated to the hardcoded sidecar URL `http://localhost:8765`
 - no remote capability URLs are configured for updater-related permissions
 - updater events are outbound status snapshots only, not command channels
 
@@ -212,14 +213,14 @@ Unsigned or ad-hoc local desktop builds are not part of the supported updater pa
 
 For v1:
 - use **public GitHub Releases** only
-- use one canonical **stable desktop release repository** for updater traffic
+- use the canonical repository already declared by the desktop app: `alfdav/music-dl`
 - do not support private-release authentication in v1
 - do not support custom mirrors in v1
 - do not use the GitHub Releases API directly as the updater contract
 - use a **static JSON manifest** published as a GitHub Release asset as the updater contract
 
 The pinned v1 endpoint shape is:
-- `plugins.updater.endpoints = ["https://github.com/<owner>/<stable-release-repo>/releases/latest/download/latest.json"]`
+- `plugins.updater.endpoints = ["https://github.com/alfdav/music-dl/releases/latest/download/latest.json"]`
 
 This follows the Tauri updater static-JSON endpoint model instead of an app-defined GitHub parsing layer.
 
@@ -228,8 +229,8 @@ This follows the Tauri updater static-JSON endpoint model instead of an app-defi
 - only stable releases are eligible for auto-update
 - draft and pre-release GitHub entries are outside the auto-update channel for v1
 - do not rely on ad-hoc client-side filtering logic in the app
-- stable-channel correctness is enforced by publishing `latest.json` only on the dedicated stable desktop release repository/channel
-- prerelease/canary work, if added later, must use a different repo/channel and must not reuse the stable `latest.json` endpoint
+- stable-channel correctness is enforced operationally: once updater support ships, the `alfdav/music-dl` release stream used by the app must publish stable desktop releases only
+- prerelease/canary work, if added later, must move to a different repo/channel and must not reuse the stable `latest.json` endpoint
 - do not allow downgrade installs through the updater flow
 - recommended tag format: `v<version>` where `<version>` exactly matches the desktop app version
 
@@ -247,11 +248,13 @@ For macOS specifically:
 - the DMG remains the human-download/install artifact for first install
 - the updater downloads the Tauri-generated `.app.tar.gz` updater bundle plus its `.sig`, not the DMG
 - `latest.json` must point at the `.app.tar.gz` URL and inline the matching signature contents for the target platform
+- v1 currently supports `darwin-aarch64` only; if x86_64 or universal macOS artifacts are added later, the manifest contract and release checklist must be expanded before those assets are published on the stable channel
 
 The release procedure must capture one real example release in docs with asset filenames copied verbatim from build output for the pinned Tauri/updater version. The project should treat those emitted filenames as the contract instead of inventing its own naming scheme.
 
 A release must not be published to the stable update channel until the checklist confirms that signatures, metadata, and platform-specific assets are all present and internally consistent.
 Stable release assets and `latest.json` must be treated as immutable once published.
+Only designated release maintainers may publish or edit stable releases.
 
 ### Updater Source Wiring
 
@@ -276,6 +279,7 @@ For the macOS target currently in scope, `latest.json` must contain:
 - `platforms.darwin-aarch64.signature`
 
 The manifest must include only valid and complete platform entries for the stable channel because Tauri validates the whole file before version comparison.
+The exact asset filenames and final published `latest.json` field names must be copied from the dry-run release and frozen in release docs before implementation starts.
 
 ---
 
@@ -390,6 +394,7 @@ Each snapshot should include enough metadata for UI policy:
 - manual checks should always result in visible user feedback
 - Rust state is authoritative; the frontend must not infer updater truth from missed events
 - `Later` is session-local only; the app does not persist a custom dismissal flag across launches and instead re-derives prompt behavior from current staged-update state on startup
+- after `Later`, the install prompt stays suppressed for the rest of the current session unless the user explicitly runs manual check, navigates to an updater-specific action in Settings, or the staged-update state changes
 - if install context is unsupported, both automatic and manual checks resolve to `unsupported_install_context`
 
 ### Required Transition Rules
@@ -479,9 +484,11 @@ v1 intentionally supports only installed macOS app bundles whose canonicalized b
 - `~/Applications`
 
 Detection rules:
-- resolve the current app bundle path to a canonical real path before classification
-- match install support on canonical parent directory plus the expected bundle identifier `com.alfdav.music-dl`
-- treat bundle filename renames as acceptable if the canonical bundle path and bundle identifier still match the supported install contract
+- resolve the current executable path in Rust and walk up to the containing `.app` bundle root before classification
+- canonicalize that bundle path before comparison
+- read the bundle identifier from the app bundle metadata and require `com.alfdav.music-dl`
+- detect translocation by canonical path patterns associated with AppTranslocation/temp launch paths and treat those as unsupported
+- treat bundle filename renames as acceptable if the canonical bundle location and bundle identifier still match the supported install contract
 
 Treat these contexts as unsupported for auto-update:
 - app bundle path under `/Volumes/` (mounted DMG)
@@ -500,6 +507,8 @@ Install/restart behavior must define shutdown ordering explicitly.
 
 ### Restart-and-Install Flow
 
+Use the Rust updater API’s split download/install flow, not a combined immediate install path.
+
 When the user chooses **Restart and install**:
 1. transition updater state to `installing`
 2. ignore duplicate install requests
@@ -507,7 +516,8 @@ When the user chooses **Restart and install**:
 4. use the managed sidecar child handle to terminate the Python sidecar before install proceeds
 5. wait for the child to exit or for a bounded shutdown timeout to expire
 6. if the sidecar is still alive after that timeout, abort before updater handoff, return to an error state, and keep the current app session running rather than racing install against a live child process
-7. only after the sidecar is confirmed stopped, hand control to the updater install/restart path
+7. only after the sidecar is confirmed stopped, call the updater install step for the already-downloaded artifact
+8. after successful install handoff, restart the app when required by the updater/runtime path
 
 ### Failure Rule
 
@@ -522,6 +532,7 @@ If failure occurs before updater handoff:
 If failure occurs after updater handoff, the current app process may not be able to recover the session in-place; in that phase, the updater runtime’s behavior is authoritative.
 
 Updater failure must not leave an orphaned sidecar process behind.
+The implementation plan must include a small spike to verify the exact Rust updater API sequence used for `check -> download -> later install -> restart` on the pinned plugin version.
 
 ---
 
@@ -530,6 +541,7 @@ Updater failure must not leave an orphaned sidecar process behind.
 ### Network / GitHub Unavailable
 
 - launch checks remain asynchronous and use a bounded network timeout
+- v1 timeout budget: 30 seconds maximum for a single check/download request before surfacing failure
 - automatic checks: fail quietly unless a visible updater UI is already active
 - manual checks: show an explicit error toast/banner
 
