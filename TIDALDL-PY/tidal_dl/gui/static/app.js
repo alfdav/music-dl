@@ -4678,24 +4678,21 @@ function generateWaveform(peaks, hires) {
 }
 generateWaveform();
 
-// Animation loop: yellow sweep + hires-driven bar pulsing.
+// Animation loop: yellow sweep + ALL bars modulated by hires amplitude data.
+// Each bar maps to a time slice. The hires array has ~10 peaks/sec, so each
+// bar's height is driven by the real amplitude at its corresponding moment
+// in the song. The whole waveform breathes — not just near the playhead.
 function _wfLoop() {
   const total = _wfBars.length;
   const pct = audio.duration ? (audio.currentTime / audio.duration) : 0;
   const activeIdx = Math.floor(pct * total);
-
-  // Look up current amplitude from hires data
-  let ampNow = 0.5;
-  if (_wfHires && _wfHires.length > 0) {
-    const hiIdx = Math.min(Math.floor(pct * _wfHires.length), _wfHires.length - 1);
-    ampNow = _wfHires[hiIdx];
-  }
+  const hiLen = _wfHires ? _wfHires.length : 0;
 
   for (let i = 0; i < total; i++) {
     const bar = _wfBars[i];
     const barPct = (i + 1) / total;
 
-    // Yellow sweep
+    // Yellow sweep — played bars get accent color
     if (barPct <= pct) {
       bar.classList.add('wf-played');
     } else {
@@ -4709,18 +4706,16 @@ function _wfLoop() {
       bar.classList.remove('wf-active');
     }
 
-    // Hires-driven height modulation near the playhead
-    if (_wfHires) {
-      const dist = Math.abs(i - activeIdx);
-      if (dist <= 3) {
-        // Bars within 3 positions of playhead pulse with the music
-        const influence = 1 - (dist / 4);  // 1.0 at playhead, 0.25 at edge
-        const pulse = 1 + (ampNow * 0.5 * influence);  // up to +50% height boost
-        bar.style.transform = 'scaleY(' + (bar._baseScale * pulse).toFixed(3) + ')';
-      } else {
-        // Reset to base height
-        bar.style.transform = 'scaleY(' + bar._baseScale.toFixed(3) + ')';
-      }
+    // Every bar gets its height from the hires data at its time position.
+    // This maps each display bar to the corresponding hires amplitude,
+    // making the entire waveform animate as the song plays.
+    if (hiLen > 0) {
+      const hiIdx = Math.min(Math.floor(barPct * hiLen), hiLen - 1);
+      const amp = _wfHires[hiIdx];
+      // Blend: base shape (60%) + live amplitude (40%) — keeps the waveform
+      // recognisable while still visibly reacting to the music.
+      const scale = (bar._baseScale * 0.6) + (amp * 0.4);
+      bar.style.transform = 'scaleY(' + Math.max(0.05, scale).toFixed(3) + ')';
     }
   }
 
