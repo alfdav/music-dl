@@ -47,6 +47,9 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["tidal_dl*"]
 
+[tool.setuptools.package-data]
+"tidal_dl.gui" = ["static/**/*"]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120

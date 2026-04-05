@@ -1,0 +1,131 @@
+name: build-desktop
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: linux-x86_64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            label: macos-arm64
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: TIDALDL-PY
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── System deps (Linux only) ─────────────────────────────────
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            patchelf libgtk-3-dev libayatana-appindicator3-dev \
+            ffmpeg
+
+      # ── Python + PyInstaller sidecar ─────────────────────────────
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Create venv and install deps
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python -e ".[test]"
+          uv pip install --python .venv/bin/python pyinstaller
+
+      - name: Build PyInstaller sidecar
+        run: |
+          TARGET_TRIPLE=$(rustc --print host-tuple)
+          .venv/bin/pyinstaller --clean \
+            --distpath src-tauri/binaries \
+            --workpath build/pyinstaller \
+            --noconfirm \
+            build/pyinstaller/music-dl-server.spec
+          mv src-tauri/binaries/music-dl-server \
+             src-tauri/binaries/music-dl-server-${TARGET_TRIPLE}
+
+      - name: Verify bundled assets
+        run: |
+          .venv/bin/python -c "
+          from pathlib import Path
+          js = Path('tidal_dl/gui/static/app.js').read_text()
+          assert 'mediaSession' in js, 'STALE JS: mediaSession missing'
+          assert '_wfHires' in js, 'STALE JS: waveform hires missing'
+          print('[verify] Static assets OK')
+          "
+
+      # ── Rust + Tauri ─────────────────────────────────────────────
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: TIDALDL-PY/src-tauri -> target
+
+      - name: Install Tauri CLI
+        run: bun install
+
+      - name: Build Tauri app
+        run: bun tauri build --target ${{ matrix.target }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+
+      # ── Upload artifacts ─────────────────────────────────────────
+      - name: Upload AppImage (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: music-dl-${{ matrix.label }}
+          path: |
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+          if-no-files-found: warn
+
+      - name: Upload macOS app (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: music-dl-${{ matrix.label }}
+          path: |
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+          if-no-files-found: warn
+
+      # ── Attach to release if tagged ──────────────────────────────
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
