@@ -265,7 +265,7 @@ xcode-select --install
 
 **Linux (Ubuntu/Debian):**
 ```shell
-sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev \
+sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
   librsvg2-dev patchelf libgtk-3-dev ffmpeg
 ```
 
