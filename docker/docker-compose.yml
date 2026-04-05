@@ -6,10 +6,12 @@ services:
       dockerfile: docker/Dockerfile
     image: music-dl
     ports:
-      - "${MUSIC_DL_PORT:-8765}:8765"
+      # Localhost only by default — safe on shared networks.
+      # To expose on LAN: MUSIC_DL_HOST=0.0.0.0 docker compose up
+      - "${MUSIC_DL_HOST:-127.0.0.1}:${MUSIC_DL_PORT:-8765}:8765"
     volumes:
-      - ${MUSIC_DL_CONFIG:-~/.config/music-dl}:/root/.config/music-dl
-      - ${MUSIC_DL_DOWNLOADS:-~/Music}:/root/download
+      - ${MUSIC_DL_CONFIG:-~/.config/music-dl}:/home/musicdl/.config/music-dl
+      - ${MUSIC_DL_DOWNLOADS:-~/Music}:/home/musicdl/download
     restart: unless-stopped
 
   # ── CLI mode: interactive commands (login, download, etc.) ──
@@ -23,8 +25,8 @@ services:
         condition: service_started
     entrypoint: ["music-dl"]
     volumes:
-      - ${MUSIC_DL_CONFIG:-~/.config/music-dl}:/root/.config/music-dl
-      - ${MUSIC_DL_DOWNLOADS:-~/Music}:/root/download
+      - ${MUSIC_DL_CONFIG:-~/.config/music-dl}:/home/musicdl/.config/music-dl
+      - ${MUSIC_DL_DOWNLOADS:-~/Music}:/home/musicdl/download
     stdin_open: true
     tty: true
     profiles: ["cli"]
