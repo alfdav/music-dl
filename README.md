@@ -183,6 +183,47 @@ Settings are managed from the in-app **Settings** page. The config file lives at
 | `skip_existing` | `true` | Skip tracks you already have |
 | `skip_duplicate_isrc` | `true` | Skip tracks with matching ISRC codes |
 
+## Architecture
+
+```
+┌─────────────┐     ┌──────────────┐     ┌───────────────┐
+│  CLI (Typer) │     │ GUI (FastAPI) │     │ Tidal API     │
+│  cli.py      │     │ gui/         │     │ (tidalapi)    │
+└──────┬───────┘     └──────┬───────┘     └───────┬───────┘
+       │                    │                     │
+       └────────┬───────────┘                     │
+                │                                 │
+        ┌───────▼────────┐               ┌────────▼────────┐
+        │  config.py     │               │  download.py    │
+        │  Settings()    │◄──────────────│  Download class │
+        │  Tidal()       │               └────────┬────────┘
+        └───────┬────────┘                        │
+                │                          ┌──────▼──────┐
+        ┌───────▼────────┐                 │  mutagen    │
+        │  library_db.py │                 │  (tagging)  │
+        │  SQLite + WAL  │                 └─────────────┘
+        └────────────────┘
+```
+
+Three entry points, one shared core. CLI and GUI use the same singletons (`Settings`, `Tidal`, `LibraryDB`). The download pipeline is identical regardless of entry point. The `<audio>` element plays files directly from source — no Web Audio API, no processing.
+
+For deep dives, see:
+
+- **[Backend Reference](TIDALDL-PY/docs/backend-guide.md)** — API routes, DB schema, download pipeline, middleware, security model
+- **[Design System](TIDALDL-PY/docs/design-system.md)** — UI tokens, components, layout, animation
+- **[Docker Guide](docker/README.md)** — detailed Docker usage, mounts, CLI commands, headless/cron
+
+## Environment Variables
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `MUSIC_DL_CONFIG_DIR` | `~/.config/music-dl` | Config/credentials directory |
+| `MUSIC_DL_BIND_ALL` | _(unset)_ | Set to `1` to bind server to `0.0.0.0` (Docker sets this automatically) |
+| `MUSIC_DL_HOST` | `127.0.0.1` | Docker compose host binding. Set to `0.0.0.0` for LAN access |
+| `MUSIC_DL_PORT` | `8765` | Docker compose port mapping |
+| `MUSIC_DL_CONFIG` | `~/.config/music-dl` | Docker compose config volume source |
+| `MUSIC_DL_DOWNLOADS` | `~/Music` | Docker compose downloads volume source |
+
 ## Development
 
 ```shell
@@ -212,7 +253,34 @@ uv build --project TIDALDL-PY
 docker build -f docker/Dockerfile -t music-dl .
 ```
 
-That covers the GUI command path, app factory/static assets, setup flow, token refresh, package branding, package build, and the published Docker build context.
+### Building the Desktop App
+
+Prerequisites: [Rust](https://rustup.rs/), [Bun](https://bun.sh/), Python 3.12+, and platform-specific dependencies.
+
+**macOS:**
+```shell
+# Xcode CLI tools (if not installed)
+xcode-select --install
+```
+
+**Linux (Ubuntu/Debian):**
+```shell
+sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev \
+  librsvg2-dev patchelf libgtk-3-dev ffmpeg
+```
+
+**Build:**
+```shell
+cd TIDALDL-PY
+uv sync && uv pip install pyinstaller
+bun install
+bun tauri build
+# Output: src-tauri/target/release/bundle/
+```
+
+The build process: PyInstaller compiles the Python backend into a standalone sidecar binary → Tauri wraps it with a native window → outputs `.app`/`.dmg` (macOS), `.AppImage`/`.deb` (Linux).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
 
 ## Security
 
