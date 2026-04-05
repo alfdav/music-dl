@@ -9,6 +9,72 @@
 
 <br>
 
+> **Using an AI assistant?** Copy the block below into Claude Code, Codex, Warp AI, Cursor, or any LLM-powered tool — it has everything needed to set up, run, and develop music-dl.
+
+<details>
+<summary><strong>🤖 LLM Quick Reference — click to expand</strong></summary>
+
+```text
+PROJECT: music-dl — local-first Tidal music manager with browser GUI.
+REPO LAYOUT: monorepo. Python package lives in TIDALDL-PY/.
+TECH: Python 3.12+, FastAPI, uvicorn, Tauri v2 (desktop app), PyInstaller (sidecar).
+AUDIO: <audio> element plays files direct from source. NO Web Audio API, NO AudioContext,
+       NO post-processing. Quality is non-negotiable.
+
+SETUP (local dev):
+  cd TIDALDL-PY
+  uv sync                          # creates .venv, installs deps
+  music-dl gui                     # launches GUI at http://localhost:8765
+  # OR: .venv/bin/python -m tidal_dl.cli gui --no-browser
+
+SETUP (Docker — for Linux users or headless/server):
+  docker compose -f docker/docker-compose.yml up gui -d
+  # GUI at http://localhost:8765
+  # Runs as non-root (musicdl, UID 1000). Localhost-only by default.
+  # To expose on LAN: MUSIC_DL_HOST=0.0.0.0 docker compose -f docker/docker-compose.yml up gui -d
+
+SETUP (Tauri desktop app — macOS/Linux):
+  cd TIDALDL-PY
+  uv sync && uv pip install pyinstaller
+  bun install && bun tauri build
+  # Output: src-tauri/target/release/bundle/
+
+TESTS:
+  cd TIDALDL-PY && uv run pytest   # full suite
+  uv run pytest tests/test_gui_api.py tests/test_gui_security.py  # quick smoke
+
+KEY PATHS:
+  TIDALDL-PY/tidal_dl/gui/static/app.js    — main frontend (vanilla JS, no framework)
+  TIDALDL-PY/tidal_dl/gui/static/style.css — all styles
+  TIDALDL-PY/tidal_dl/gui/static/index.html — shell HTML
+  TIDALDL-PY/tidal_dl/gui/__init__.py       — FastAPI app factory
+  TIDALDL-PY/tidal_dl/gui/api/              — API routes (playback, search, library, etc.)
+  TIDALDL-PY/tidal_dl/gui/security.py       — CSRF, path validation, host validation
+  TIDALDL-PY/tidal_dl/gui/server.py         — uvicorn launcher
+  TIDALDL-PY/src-tauri/                     — Tauri shell (Rust)
+  TIDALDL-PY/src-tauri/src/lib.rs           — sidecar spawn + health poll
+  TIDALDL-PY/src-tauri/loading/index.html   — loading screen with status phrases
+  docker/Dockerfile                          — production Docker image
+  docker/docker-compose.yml                  — gui + cli services
+
+SECURITY RULES:
+  - Server binds 127.0.0.1 by default. 0.0.0.0 only via MUSIC_DL_BIND_ALL=1 (Docker sets this).
+  - CSRF token required for all POST/PUT/DELETE. GET is exempt.
+  - /api/playback/local validates paths: resolve(strict=True) + is_relative_to() + audio extension whitelist.
+  - No authentication layer — localhost-only is the trust boundary.
+  - Never pipe audio through Web Audio API or any processing. Direct <audio src="..."> only.
+
+CONVENTIONS:
+  - uv over pip, bun over npm.
+  - No frontend framework — vanilla JS, single app.js file.
+  - pyproject.toml is the single source of truth for packaging.
+  - Static assets must be in [tool.setuptools.package-data] or Docker breaks.
+```
+
+</details>
+
+<br>
+
 ![Home](docs/screenshots/home.png)
 
 ## What is this?
@@ -21,23 +87,33 @@ The GUI can also start and recover the Tidal OAuth flow itself from the browser.
 
 ## Get Started
 
-### Option 1: Docker Compose (easiest)
+> **Using an AI coding agent?** Expand the LLM Quick Reference above and paste it into your agent. It covers setup, architecture, key paths, and security constraints — everything it needs to help you without guessing.
+
+### Option 1: Desktop App (macOS / Linux)
+
+Download the latest release from [GitHub Releases](https://github.com/alfdav/music-dl/releases).
+
+- **macOS**: `music-dl_x.x.x_aarch64.dmg`
+- **Linux**: `music-dl_x.x.x_amd64.AppImage` or `.deb`
+
+### Option 2: Docker Compose (Linux / headless / NAS)
 
 ```shell
 git clone https://github.com/alfdav/music-dl.git
 cd music-dl
-docker compose up -d
+docker compose -f docker/docker-compose.yml up gui -d
 ```
 
 Open [http://localhost:8765](http://localhost:8765). Done.
 
-Your config is stored in `~/.config/music-dl` and downloads go to `./music` by default. Override with environment variables:
+Config is stored in `~/.config/music-dl` and downloads go to `~/Music` by default. Override with environment variables:
 
 ```shell
-MUSIC_DL_CONFIG=~/.config/music-dl MUSIC_DIR=/path/to/music docker compose up -d
+MUSIC_DL_CONFIG=~/.my-config MUSIC_DL_DOWNLOADS=/mnt/nas/music \
+  docker compose -f docker/docker-compose.yml up gui -d
 ```
 
-### Option 2: pip / uv
+### Option 3: pip / uv
 
 Requires Python 3.12+ and [ffmpeg](https://ffmpeg.org/).
 
@@ -73,6 +149,7 @@ Your browser opens automatically. The wizard handles the rest.
 - **Quality upgrades** — re-download existing tracks at higher quality without duplicates
 - **Duplicate cleanup** — ISRC-based deduplication finds exact copies across your collection
 - **In-browser playback** — play anything in your library, bit-perfect to your DAC
+- **Waveform visualizer** — pre-computed amplitude data drives a ripple animation from the playhead, zero audio post-processing
 - **Playlist sync** — point it at a Tidal playlist and it downloads only the tracks you don't have
 - **Favorites** — mark tracks you love, access them from one place
 - **Setup wizard** — first-run experience that walks you through Tidal login and library paths
@@ -132,14 +209,16 @@ uv run --project TIDALDL-PY pytest \
   TIDALDL-PY/tests/test_public_branding.py \
   TIDALDL-PY/tests/test_packaging.py
 uv build --project TIDALDL-PY
-docker build -f TIDALDL-PY/Dockerfile TIDALDL-PY
+docker build -f docker/Dockerfile -t music-dl .
 ```
 
 That covers the GUI command path, app factory/static assets, setup flow, token refresh, package branding, package build, and the published Docker build context.
 
 ## Security
 
-The GUI binds to `localhost` only — it is not accessible from other machines. CSRF protection is enabled for all write operations. Do not expose port 8765 to untrusted networks.
+The GUI binds to `localhost` only — it is not accessible from other machines. CSRF protection is enabled for all write operations. The Docker image runs as a non-root user (UID 1000) and binds to localhost on the host side by default.
+
+Do not expose port 8765 to untrusted networks without adding your own authentication layer.
 
 ## License
 
