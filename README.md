@@ -87,7 +87,10 @@ music-dl dl <URL>               # download a track, album, or playlist
 music-dl dl <URL> <URL> ...     # download multiple URLs
 music-dl cfg                    # view/edit settings
 music-dl login                  # authenticate with Tidal from the terminal
+music-dl logout                 # clear stored Tidal credentials
 music-dl sync                   # sync library database
+music-dl import <file>          # import a playlist from CSV/JSON
+music-dl isrc-tag <path>        # write ISRC tags to local audio files
 ```
 
 Run `music-dl --help` for the full list.

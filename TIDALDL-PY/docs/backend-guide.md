@@ -36,6 +36,11 @@
 | `cli.py` | Typer CLI — subcommands: `gui`, `dl`, `cfg`, `login`, `logout`, `sync`, `import`, `isrc-tag` |
 | `config.py` | Singleton config: `Settings`, `Tidal`, `HandlingApp`. Token management, key rotation |
 | `download.py` | Download orchestrator: stream fetch → segment merge → decrypt → tag → register |
+| `api.py` | TIDAL API key management with remote gist fallback |
+| `dash.py` | DASH manifest parser for `dash+xml` stream manifests |
+| `hifi_api.py` | Hi-Fi API client for direct stream access (non-OAuth path) |
+| `metadata.py` | Mutagen-based metadata writer for FLAC, MP3, and MP4 |
+| `constants.py` | Enums (`DownloadSource`, `MediaType`), quality maps, API keys, chunk sizes |
 | `gui/__init__.py` | FastAPI app factory: middleware stack, static files, CSRF injection |
 | `gui/server.py` | Uvicorn launcher. Binds `127.0.0.1` only |
 | `gui/security.py` | CSRF, host validation, path validation, stream URL validation |
@@ -47,8 +52,16 @@
 | `helper/checkpoint.py` | `DownloadCheckpoint` — resume interrupted downloads |
 | `helper/decorator.py` | `SingletonMeta` metaclass |
 | `helper/tidal.py` | Tidal URL parsing, media instantiation, name formatting |
-| `constants.py` | Enums (`DownloadSource`, `MediaType`), quality maps, API keys, chunk sizes |
+| `helper/camelot.py` | Camelot wheel notation helpers for harmonic mixing |
+| `helper/cli.py` | Helper functions for CLI operations (formatting, dates) |
+| `helper/decryption.py` | AES decryption for encrypted TIDAL streams |
+| `helper/exceptions.py` | Custom exception classes (`LoginError`, etc.) |
+| `helper/isrc_index.py` | Persistent thread-safe ISRC-to-path index for deduplication |
+| `helper/playlist_import.py` | Cross-platform playlist import (CSV/JSON) |
+| `helper/wrapper.py` | Logger wrapper with optional debug traceback output |
 | `model/cfg.py` | `ModelSettings`, `ModelToken` dataclasses |
+| `model/downloader.py` | Download-related data models and state |
+| `model/meta.py` | Metadata dataclasses for tag writing |
 
 ---
 
