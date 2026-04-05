@@ -4706,16 +4706,42 @@ function _wfLoop() {
       bar.classList.remove('wf-active');
     }
 
-    // Every bar gets its height from the hires data at its time position.
-    // This maps each display bar to the corresponding hires amplitude,
-    // making the entire waveform animate as the song plays.
+    // Ripple propagation: amplitude at the playhead ripples outward.
+    // Bars further from the playhead show the amplitude from earlier
+    // in time, as if the energy is radiating out from the play position.
+    // Uses only pre-computed hires data — zero audio processing.
     if (hiLen > 0) {
-      const hiIdx = Math.min(Math.floor(barPct * hiLen), hiLen - 1);
-      const amp = _wfHires[hiIdx];
-      // Blend: base shape (60%) + live amplitude (40%) — keeps the waveform
-      // recognisable while still visibly reacting to the music.
-      const scale = (bar._baseScale * 0.6) + (amp * 0.4);
-      bar.style.transform = 'scaleY(' + Math.max(0.05, scale).toFixed(3) + ')';
+      const dist = Math.abs(i - activeIdx);
+      const RADIUS = 16;             // wider ripple reach
+      if (dist <= RADIUS) {
+        // Each bar-distance = ~0.12s of delay into the past
+        const delay = dist * 0.12;
+        const delayedTime = Math.max(0, audio.currentTime - delay);
+        const delayedPct = audio.duration ? (delayedTime / audio.duration) : 0;
+        const hiIdx = Math.min(Math.floor(delayedPct * hiLen), hiLen - 1);
+        const amp = _wfHires[hiIdx];
+        // Influence fades with distance from playhead
+        const influence = 1 - (dist / (RADIUS + 1));
+        const pulse = 1 + (amp * 0.5 * influence);
+        bar.style.transform = 'scaleY(' + (bar._baseScale * pulse).toFixed(3) + ')';
+      } else if (i < activeIdx) {
+        // Played bars (yellow, behind playhead): keep them alive.
+        // They breathe with the current amplitude, fading gently
+        // the further back they are from the ripple edge.
+        var tailDist = activeIdx - RADIUS - i;
+        var tailMax = activeIdx - RADIUS;
+        // Gentle influence: 20% at ripple edge, fading to 5% at bar 0
+        var tailInf = tailMax > 0 ? 0.05 + 0.15 * (1 - tailDist / tailMax) : 0.1;
+        var hiNow = Math.min(Math.floor(pct * hiLen), hiLen - 1);
+        var ampNow = _wfHires[hiNow];
+        var pulse = 1 + (ampNow * tailInf);
+        bar.style.transform = 'scaleY(' + (bar._baseScale * pulse).toFixed(3) + ')';
+      } else {
+        // Unplayed bars (ahead of playhead): settle to idle
+        var idle = bar._baseScale * 0.35;
+        if (idle < 0.05) idle = 0.05;
+        bar.style.transform = 'scaleY(' + idle.toFixed(3) + ')';
+      }
     }
   }
 
