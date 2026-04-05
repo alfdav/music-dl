@@ -137,7 +137,7 @@ def _read_metadata(file_path: Path) -> dict | None:
             "name": _tag("title", file_path.stem),
             "artist": _tag("artist", "Unknown Artist"),
             "album": _tag("album", "Unknown Album"),
-            "duration": int(audio.info.length) if audio.info else 0,
+            "duration": round(audio.info.length) if audio.info else 0,
             "isrc": isrc,
             "genre": _normalize_genre(_tag("genre")),
             "quality": quality,
@@ -330,12 +330,22 @@ def _background_scan(rescan: bool) -> None:
                     disk_paths.add(str(f))
                     _scan_progress["total"] = len(disk_paths)
 
-            # Phase 2: Read metadata only for NEW files (the diff)
+            # Phase 2: Read metadata + waveform only for NEW files (the diff)
+            from tidal_dl.helper.waveform import extract_both, peaks_to_json
+
             new_paths = disk_paths - known
             _scan_progress["scanned"] = 0
             for path_str in new_paths:
                 meta = _read_metadata(Path(path_str))
                 if meta:
+                    # Extract waveform peaks (single ffmpeg decode, ~30ms per file)
+                    waveform_json = None
+                    hires_json = None
+                    both = extract_both(path_str)
+                    if both:
+                        waveform_json = peaks_to_json(both[0])
+                        hires_json = peaks_to_json(both[1])
+
                     db.record(
                         path_str,
                         status="tagged" if meta["isrc"] else "needs_isrc",
@@ -347,6 +357,8 @@ def _background_scan(rescan: bool) -> None:
                         genre=meta.get("genre"),
                         quality=meta["quality"],
                         fmt=meta["format"],
+                        waveform=waveform_json,
+                        waveform_hires=hires_json,
                     )
                 else:
                     db.record(path_str, status="unreadable")

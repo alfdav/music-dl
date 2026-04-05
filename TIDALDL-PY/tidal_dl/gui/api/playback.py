@@ -104,3 +104,44 @@ def stream_tidal_track(track_id: int):
         pass
 
     raise HTTPException(status_code=503, detail="Unable to stream track")
+
+
+@router.get("/waveform")
+def get_waveform(path: str = Query(..., description="Absolute path to audio file")):
+    """Return pre-computed waveform peaks (display + hires) for a local track.
+
+    Display peaks (~100) define the static bar shape.
+    Hires peaks (~10/sec) drive per-frame animation during playback.
+    Both are extracted at scan time and cached in the library DB.
+    """
+    from tidal_dl.helper.library_db import LibraryDB
+    from tidal_dl.helper.path import path_config_base
+    from tidal_dl.helper.waveform import extract_both, peaks_from_json, peaks_to_json
+
+    db = LibraryDB(Path(path_config_base()) / "library.db")
+    db.open()
+
+    row = db._conn.execute(
+        "SELECT waveform, waveform_hires FROM scanned WHERE path = ?", (path,)
+    ).fetchone()
+
+    if row and row["waveform"] and row["waveform_hires"]:
+        display = peaks_from_json(row["waveform"])
+        hires = peaks_from_json(row["waveform_hires"])
+        if display and hires:
+            db.close()
+            return {"peaks": display, "hires": hires}
+
+    # Not cached — extract on demand (single ffmpeg decode) and store
+    both = extract_both(path)
+    if both:
+        db._conn.execute(
+            "UPDATE scanned SET waveform = ?, waveform_hires = ? WHERE path = ?",
+            (peaks_to_json(both[0]), peaks_to_json(both[1]), path),
+        )
+        db.commit()
+    db.close()
+
+    if not both:
+        raise HTTPException(status_code=404, detail="Could not extract waveform")
+    return {"peaks": both[0], "hires": both[1]}

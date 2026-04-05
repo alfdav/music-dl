@@ -9,7 +9,14 @@ from fastapi.staticfiles import StaticFiles
 from tidal_dl.gui.api import api_router
 from tidal_dl.gui.security import CSRFMiddleware, HostValidationMiddleware, generate_csrf_token
 
-_STATIC_DIR = Path(__file__).parent / "static"
+import sys as _sys
+
+# PyInstaller onefile extracts datas to sys._MEIPASS; modules live in PYZ.
+# Path(__file__).parent points into PYZ, not the extraction dir.
+if getattr(_sys, "frozen", False) and hasattr(_sys, "_MEIPASS"):
+    _STATIC_DIR = Path(_sys._MEIPASS) / "tidal_dl" / "gui" / "static"
+else:
+    _STATIC_DIR = Path(__file__).parent / "static"
 
 
 def create_app(port: int = 8765) -> FastAPI:

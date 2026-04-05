@@ -4647,44 +4647,113 @@ nowTitle.addEventListener('click', () => {
 });
 
 // ── Waveform visualization (no Web Audio API — audio path stays untouched) ──
-const WF_BARS = 80;
+// Display peaks (~100) define the static bar shape.
+// Hires peaks (~10/sec) drive per-frame animation — bars pulse to the music
+// using pre-computed amplitude data, like a DAW waveform display.
+// The <audio> element is NEVER wrapped in an AudioContext.
+const WF_BARS = 100;
 let _wfAnimId = null;
 let _wfBars = [];
+let _wfPeaks = null;    // display-resolution peaks (100 bars)
+let _wfHires = null;    // high-res peaks (~10/sec) for animation
+let _wfPrevActive = -1; // last active bar index for cleanup
 
-function generateWaveform() {
+function generateWaveform(peaks, hires) {
   while (waveform.firstChild) waveform.removeChild(waveform.firstChild);
   _wfBars = [];
-  for (let i = 0; i < WF_BARS; i++) {
+  _wfPeaks = peaks;
+  _wfHires = hires || null;
+  _wfPrevActive = -1;
+  const count = peaks ? peaks.length : WF_BARS;
+  for (let i = 0; i < count; i++) {
     const bar = h('div', { className: 'wf-bar' });
-    bar.style.transform = 'scaleY(' + (0.15 + Math.random() * 0.6).toFixed(2) + ')';
+    const scale = peaks ? Math.max(0.05, peaks[i]) : (0.15 + Math.random() * 0.6);
+    // Set base height — mirrored via transform-origin: center in CSS
+    bar.style.height = '100%';
+    bar.style.transform = 'scaleY(' + scale.toFixed(3) + ')';
+    bar._baseScale = scale;  // stash for animation
     waveform.appendChild(bar);
     _wfBars.push(bar);
   }
 }
 generateWaveform();
 
-// Decorative waveform: static random heights + yellow sweep following playhead.
-// No frequency analysis — we refuse to touch the audio signal path.
+// Animation loop: yellow sweep + hires-driven bar pulsing.
 function _wfLoop() {
+  const total = _wfBars.length;
   const pct = audio.duration ? (audio.currentTime / audio.duration) : 0;
-  for (let i = 0; i < WF_BARS; i++) {
-    const barPct = (i + 1) / WF_BARS;
+  const activeIdx = Math.floor(pct * total);
+
+  // Look up current amplitude from hires data
+  let ampNow = 0.5;
+  if (_wfHires && _wfHires.length > 0) {
+    const hiIdx = Math.min(Math.floor(pct * _wfHires.length), _wfHires.length - 1);
+    ampNow = _wfHires[hiIdx];
+  }
+
+  for (let i = 0; i < total; i++) {
+    const bar = _wfBars[i];
+    const barPct = (i + 1) / total;
+
+    // Yellow sweep
     if (barPct <= pct) {
-      _wfBars[i].classList.add('wf-played');
+      bar.classList.add('wf-played');
     } else {
-      _wfBars[i].classList.remove('wf-played');
+      bar.classList.remove('wf-played');
+    }
+
+    // Active glow on playhead bar
+    if (i === activeIdx) {
+      bar.classList.add('wf-active');
+    } else {
+      bar.classList.remove('wf-active');
+    }
+
+    // Hires-driven height modulation near the playhead
+    if (_wfHires) {
+      const dist = Math.abs(i - activeIdx);
+      if (dist <= 3) {
+        // Bars within 3 positions of playhead pulse with the music
+        const influence = 1 - (dist / 4);  // 1.0 at playhead, 0.25 at edge
+        const pulse = 1 + (ampNow * 0.5 * influence);  // up to +50% height boost
+        bar.style.transform = 'scaleY(' + (bar._baseScale * pulse).toFixed(3) + ')';
+      } else {
+        // Reset to base height
+        bar.style.transform = 'scaleY(' + bar._baseScale.toFixed(3) + ')';
+      }
     }
   }
+
   _wfAnimId = requestAnimationFrame(_wfLoop);
+}
+
+function _fetchWaveform(track) {
+  if (!track || !track.is_local || !track.local_path) {
+    generateWaveform();
+    return;
+  }
+  fetch('/api/playback/waveform?path=' + encodeURIComponent(track.local_path))
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (data && data.peaks && data.peaks.length > 0) {
+        generateWaveform(data.peaks, data.hires || null);
+      } else {
+        generateWaveform();
+      }
+    })
+    .catch(() => generateWaveform());
 }
 
 function setWaveformPlaying(playing) {
   waveform.classList.toggle('playing', playing);
   waveform.classList.toggle('paused', !playing);
   if (playing) {
-    // Regenerate random bar heights each track for visual variety
-    for (let i = 0; i < WF_BARS; i++) {
-      _wfBars[i].style.transform = 'scaleY(' + (0.15 + Math.random() * 0.6).toFixed(2) + ')';
+    if (!_wfPeaks) {
+      for (let i = 0; i < _wfBars.length; i++) {
+        const s = 0.15 + Math.random() * 0.6;
+        _wfBars[i].style.transform = 'scaleY(' + s.toFixed(2) + ')';
+        _wfBars[i]._baseScale = s;
+      }
     }
     if (!_wfAnimId) _wfAnimId = requestAnimationFrame(_wfLoop);
   } else {
@@ -4926,9 +4995,11 @@ function playTrack(track) {
   state.playing = true;
   updatePlayButton();
   updateNowPlaying(track);
-  generateWaveform();
+  _updateMediaSession(track);
+  _fetchWaveform(track);
   highlightPlayingTrack();
   updatePlayerHeart();
+  _saveQueue();
 }
 
 function updateNowPlaying(track) {
@@ -5095,6 +5166,15 @@ btnRepeat.addEventListener('click', () => {
   else state.repeat = 'off';
   btnRepeat.classList.toggle('active', state.repeat !== 'off');
   _updateRepeatIcon(btnRepeat);
+  // Repeat-one: collapse queue to just the current track
+  if (state.repeat === 'one' && state.queue.length > 0) {
+    const current = state.queue[state.queueIndex];
+    if (current) {
+      state.queue = [current];
+      state.queueIndex = 0;
+    }
+  }
+  _saveQueue();
 });
 
 function _updateRepeatIcon(btn) {
@@ -5115,11 +5195,14 @@ function _updateRepeatIcon(btn) {
 // Progress
 audio.addEventListener('timeupdate', () => {
   if (!audio.duration) return;
+  _tickPlayCount();
+  // Skip UI updates while user is dragging the progress bar — _seekFromEvent
+  // handles the display directly and the browser's currentTime lags behind.
+  if (_seeking) return;
   const pct = (audio.currentTime / audio.duration) * 100;
   progressFill.style.width = pct + '%';
   timeElapsed.textContent = formatTime(audio.currentTime);
   timeTotal.textContent = formatTime(audio.duration);
-  _tickPlayCount();
 });
 
 audio.addEventListener('ended', () => {
@@ -5179,20 +5262,25 @@ audio.addEventListener('play', () => {
 });
 
 // Seek
+let _seeking = false;
+
 function _seekFromEvent(e) {
   if (!audio.duration) return;
   const rect = progressBar.getBoundingClientRect();
   const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
   audio.currentTime = pct * audio.duration;
+  // Update UI immediately during seek so counter stays in sync
+  progressFill.style.width = (pct * 100) + '%';
+  timeElapsed.textContent = formatTime(pct * audio.duration);
 }
-
-progressBar.addEventListener('click', _seekFromEvent);
 
 progressBar.addEventListener('mousedown', (e) => {
   e.preventDefault();
+  _seeking = true;
   _seekFromEvent(e);
   const onMove = (ev) => _seekFromEvent(ev);
   const onUp = () => {
+    _seeking = false;
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
   };
@@ -6084,10 +6172,180 @@ async function _checkErrorBanners() {
 
 // ---- INIT ----
 
+// ── Media Session API — OS media controls (headphones, lock screen, menu bar) ──
+
+function _updateMediaSession(track) {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: track.name || 'Unknown',
+    artist: track.artist || '',
+    album: track.album || '',
+    artwork: track.cover_url ? [{ src: track.cover_url, sizes: '320x320', type: 'image/jpeg' }] : [],
+  });
+}
+
+if ('mediaSession' in navigator) {
+  navigator.mediaSession.setActionHandler('play', () => { if (!state.playing) btnPlay.click(); });
+  navigator.mediaSession.setActionHandler('pause', () => { if (state.playing) btnPlay.click(); });
+  navigator.mediaSession.setActionHandler('previoustrack', () => btnPrev.click());
+  navigator.mediaSession.setActionHandler('nexttrack', () => btnNext.click());
+  navigator.mediaSession.setActionHandler('seekto', (d) => { if (d.seekTime != null) audio.currentTime = d.seekTime; });
+  navigator.mediaSession.setActionHandler('seekbackward', (d) => { audio.currentTime = Math.max(0, audio.currentTime - (d.seekOffset || 10)); });
+  navigator.mediaSession.setActionHandler('seekforward', (d) => { if (audio.duration) audio.currentTime = Math.min(audio.duration, audio.currentTime + (d.seekOffset || 10)); });
+}
+
+// ── Gapless Playback — preload next track so no gap on transition ──
+
+const _preloadAudio = document.getElementById('audio-preload');
+let _preloadedSrc = '';
+
+function _preloadNext() {
+  if (state.queue.length === 0 || state.repeat === 'one') return;
+  const nextIdx = state.shuffle
+    ? Math.floor(Math.random() * state.queue.length)
+    : (state.queueIndex + 1) % state.queue.length;
+  const next = state.queue[nextIdx];
+  if (!next) return;
+  const src = (next.is_local && next.local_path)
+    ? '/api/playback/local?path=' + encodeURIComponent(next.local_path)
+    : '/api/playback/stream/' + next.id;
+  if (_preloadedSrc === src) return;  // already preloaded
+  _preloadedSrc = src;
+  _preloadAudio.src = src;
+  _preloadAudio.load();
+}
+
+// Trigger preload once we have enough of the current track
+audio.addEventListener('canplaythrough', () => _preloadNext());
+
+// ── Queue Persistence — survive page reloads ──
+
+function _saveQueue() {
+  try {
+    const data = { queue: state.queue, queueIndex: state.queueIndex, shuffle: state.shuffle, repeat: state.repeat };
+    localStorage.setItem('playerQueue', JSON.stringify(data));
+  } catch (_) { /* quota exceeded — ignore */ }
+}
+
+function _restoreQueue() {
+  try {
+    const raw = localStorage.getItem('playerQueue');
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data.queue && data.queue.length > 0) {
+      state.queue = data.queue;
+      state.queueIndex = typeof data.queueIndex === 'number' ? data.queueIndex : 0;
+      state.shuffle = !!data.shuffle;
+      state.repeat = data.repeat || 'off';
+      btnShuffle.classList.toggle('active', state.shuffle);
+      _updateRepeatIcon(btnRepeat);
+      // Show now-playing info without auto-playing
+      const current = state.queue[state.queueIndex];
+      if (current) updateNowPlaying(current);
+    }
+  } catch (_) {}
+}
+
+// ── Resume Playback Position — pick up where you left off ──
+
+function _savePosition() {
+  const current = state.queue[state.queueIndex];
+  if (!current || !audio.currentTime) return;
+  try {
+    localStorage.setItem('playerPosition', JSON.stringify({
+      time: audio.currentTime,
+      key: _trackKey(current),
+    }));
+  } catch (_) {}
+}
+
+function _restorePosition() {
+  try {
+    const raw = localStorage.getItem('playerPosition');
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    const current = state.queue[state.queueIndex];
+    if (current && data.key === _trackKey(current) && data.time > 0) {
+      // Set source and seek to saved position without auto-playing
+      const src = (current.is_local && current.local_path)
+        ? '/api/playback/local?path=' + encodeURIComponent(current.local_path)
+        : '/api/playback/stream/' + current.id;
+      audio.src = src;
+      audio.addEventListener('loadedmetadata', function _onMeta() {
+        audio.currentTime = data.time;
+        timeElapsed.textContent = formatTime(data.time);
+        if (audio.duration) {
+          timeTotal.textContent = formatTime(audio.duration);
+          progressFill.style.width = ((data.time / audio.duration) * 100) + '%';
+        }
+      }, { once: true });
+      _fetchWaveform(current);
+    }
+  } catch (_) {}
+}
+
+// Save on pause, on track change, and on page unload
+audio.addEventListener('pause', _savePosition);
+audio.addEventListener('pause', _saveQueue);
+window.addEventListener('beforeunload', () => { _savePosition(); _saveQueue(); });
+
+// ── Loading / Buffer Indicator ──
+
+audio.addEventListener('waiting', () => {
+  progressBar.classList.add('buffering');
+});
+audio.addEventListener('canplay', () => {
+  progressBar.classList.remove('buffering');
+});
+audio.addEventListener('playing', () => {
+  progressBar.classList.remove('buffering');
+});
+
+// ── Sleep Timer ──
+
+let _sleepTimerId = null;
+let _sleepEnd = null;
+const SLEEP_OPTIONS = [15, 30, 45, 60, 90];  // minutes
+let _sleepOptionIdx = -1;  // -1 = off
+
+const btnSleep = document.getElementById('btn-sleep');
+btnSleep.addEventListener('click', () => {
+  _sleepOptionIdx++;
+  if (_sleepOptionIdx >= SLEEP_OPTIONS.length) {
+    // Cancel
+    _sleepOptionIdx = -1;
+    if (_sleepTimerId) { clearTimeout(_sleepTimerId); _sleepTimerId = null; }
+    _sleepEnd = null;
+    btnSleep.classList.remove('active');
+    btnSleep.title = 'Sleep timer';
+    toast('Sleep timer off');
+    return;
+  }
+  const mins = SLEEP_OPTIONS[_sleepOptionIdx];
+  if (_sleepTimerId) clearTimeout(_sleepTimerId);
+  _sleepEnd = Date.now() + mins * 60000;
+  _sleepTimerId = setTimeout(() => {
+    audio.pause();
+    state.playing = false;
+    updatePlayButton();
+    toast('Sleep timer — goodnight');
+    btnSleep.classList.remove('active');
+    btnSleep.title = 'Sleep timer';
+    _sleepTimerId = null;
+    _sleepEnd = null;
+    _sleepOptionIdx = -1;
+  }, mins * 60000);
+  btnSleep.classList.add('active');
+  btnSleep.title = 'Sleep: ' + mins + 'min';
+  toast('Sleep in ' + mins + ' minutes');
+});
+
 function _initApp() {
   // Load settings into state for upgrade quality checks
   api('/settings').then(s => { state.settings = s; }).catch(() => {});
   refreshStatusLights();
+  _restoreQueue();
+  _restorePosition();
   navigate(location.hash.slice(1) || 'home');
 }
 

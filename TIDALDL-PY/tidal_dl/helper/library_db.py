@@ -126,6 +126,8 @@ class LibraryDB:
                     play_count INTEGER DEFAULT 0,
                     last_played INTEGER,
                     genre      TEXT,
+                    waveform   TEXT,
+                    waveform_hires TEXT,
                     scanned_at INTEGER NOT NULL
                 )"""
             )
@@ -154,6 +156,12 @@ class LibraryDB:
                         self._conn.execute(
                             f"ALTER TABLE scanned ADD COLUMN {col} {coltype}"
                         )
+
+            # v3 → v4: waveform peaks (JSON array of floats)
+            if "waveform" not in cols:
+                self._conn.execute("ALTER TABLE scanned ADD COLUMN waveform TEXT")
+            if "waveform_hires" not in cols:
+                self._conn.execute("ALTER TABLE scanned ADD COLUMN waveform_hires TEXT")
 
         # play_events table (time-series for activity charts)
         self._conn.execute(
@@ -551,14 +559,17 @@ class LibraryDB:
         quality: str | None = None,
         fmt: str | None = None,
         genre: str | None = None,
+        waveform: str | None = None,
+        waveform_hires: str | None = None,
     ) -> None:
         """Insert or update a scan result."""
         assert self._conn
         now = int(time.time())
         self._conn.execute(
             """INSERT INTO scanned (path, isrc, status, artist, title, album,
-                                    duration, quality, format, genre, scanned_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    duration, quality, format, genre, waveform,
+                                    waveform_hires, scanned_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(path) DO UPDATE SET
                    isrc = excluded.isrc,
                    status = excluded.status,
@@ -569,8 +580,10 @@ class LibraryDB:
                    quality = excluded.quality,
                    format = excluded.format,
                    genre = excluded.genre,
+                   waveform = COALESCE(excluded.waveform, scanned.waveform),
+                   waveform_hires = COALESCE(excluded.waveform_hires, scanned.waveform_hires),
                    scanned_at = excluded.scanned_at""",
-            (path, isrc, status, artist, title, album, duration, quality, fmt, genre, now),
+            (path, isrc, status, artist, title, album, duration, quality, fmt, genre, waveform, waveform_hires, now),
         )
 
     def remove(self, path: str) -> None:
