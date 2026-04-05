@@ -1,19 +1,30 @@
 services:
-  music-dl:
+  # ── GUI mode: browser-based player at http://localhost:8765 ──
+  gui:
     build:
       context: ..
       dockerfile: docker/Dockerfile
     image: music-dl
-    # Pass a command after the service name:
-    #   docker compose -f docker/docker-compose.yml run --rm music-dl <URL>
-    #   docker compose -f docker/docker-compose.yml run --rm music-dl login
+    ports:
+      - "${MUSIC_DL_PORT:-8765}:8765"
     volumes:
-      # Persists credentials, settings, and the ISRC duplicate index.
-      # Replace the left-hand path with a folder of your choice.
       - ${MUSIC_DL_CONFIG:-~/.config/music-dl}:/root/.config/music-dl
-      # Downloaded files land here. Override with MUSIC_DL_DOWNLOADS env var.
-      - ${MUSIC_DL_DOWNLOADS:-~/music-downloads}:/root/download
-    # stdin_open + tty are needed for interactive commands such as `music-dl login`
-    # (opens a browser link). Remove them for non-interactive / headless runs.
+      - ${MUSIC_DL_DOWNLOADS:-~/Music}:/root/download
+    restart: unless-stopped
+
+  # ── CLI mode: interactive commands (login, download, etc.) ──
+  # Usage:
+  #   docker compose -f docker/docker-compose.yml run --rm cli login
+  #   docker compose -f docker/docker-compose.yml run --rm cli dl <URL>
+  cli:
+    image: music-dl
+    depends_on:
+      gui:
+        condition: service_started
+    entrypoint: ["music-dl"]
+    volumes:
+      - ${MUSIC_DL_CONFIG:-~/.config/music-dl}:/root/.config/music-dl
+      - ${MUSIC_DL_DOWNLOADS:-~/Music}:/root/download
     stdin_open: true
     tty: true
+    profiles: ["cli"]
