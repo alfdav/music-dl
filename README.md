@@ -87,7 +87,10 @@ music-dl dl <URL>               # download a track, album, or playlist
 music-dl dl <URL> <URL> ...     # download multiple URLs
 music-dl cfg                    # view/edit settings
 music-dl login                  # authenticate with Tidal from the terminal
+music-dl logout                 # clear stored Tidal credentials
 music-dl sync                   # sync library database
+music-dl import <file>          # import a playlist from CSV/JSON
+music-dl isrc-tag <path>        # write ISRC tags to local audio files
 ```
 
 Run `music-dl --help` for the full list.
@@ -118,13 +121,21 @@ Run the test suite:
 pytest
 ```
 
-Run the release smoke gate from the repository root:
+Run the release smoke coverage from the repository root:
 
 ```shell
-./scripts/release-smoke.sh
+uv run --project TIDALDL-PY pytest \
+  TIDALDL-PY/tests/test_gui_command.py \
+  TIDALDL-PY/tests/test_gui_api.py \
+  TIDALDL-PY/tests/test_setup.py \
+  TIDALDL-PY/tests/test_token_refresh.py \
+  TIDALDL-PY/tests/test_public_branding.py \
+  TIDALDL-PY/tests/test_packaging.py
+uv build --project TIDALDL-PY
+docker build -f TIDALDL-PY/Dockerfile TIDALDL-PY
 ```
 
-That gate covers the GUI command path, app factory/static assets, setup flow, token refresh, package branding, package build, and the published Docker build context.
+That covers the GUI command path, app factory/static assets, setup flow, token refresh, package branding, package build, and the published Docker build context.
 
 ## Security
 

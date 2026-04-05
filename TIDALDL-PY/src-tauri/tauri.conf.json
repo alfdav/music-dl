@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "./loading",
     "devUrl": "http://localhost:8765",
-    "beforeBuildCommand": "bash scripts/build-sidecar.sh"
+    "beforeBuildCommand": "bash -lc 'set -euo pipefail; BINARIES_DIR=\"src-tauri/binaries\"; TARGET_TRIPLE=\"$(rustc --print host-tuple)\"; SIDECAR_NAME=\"music-dl-server-${TARGET_TRIPLE}\"; SPEC_FILE=\"build/pyinstaller/music-dl-server.spec\"; .venv/bin/pyinstaller --distpath \"$BINARIES_DIR\" --workpath build/pyinstaller --noconfirm \"$SPEC_FILE\"; mv \"$BINARIES_DIR/music-dl-server\" \"$BINARIES_DIR/${SIDECAR_NAME}\"'"
   },
   "app": {
     "windows": [
