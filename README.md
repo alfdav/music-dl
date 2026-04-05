@@ -36,7 +36,7 @@ SETUP (Docker — for Linux users or headless/server):
 SETUP (Tauri desktop app — macOS/Linux):
   cd TIDALDL-PY
   uv sync && uv pip install pyinstaller
-  bun install && bun tauri build
+  npm install && npx tauri build    # or: bun install && bun tauri build
   # Output: src-tauri/target/release/bundle/
 
 TESTS:
@@ -273,12 +273,14 @@ sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
 ```shell
 cd TIDALDL-PY
 uv sync && uv pip install pyinstaller
-bun install
-bun tauri build
+npm install              # or: bun install
+npx tauri build          # or: bun tauri build
 # Output: src-tauri/target/release/bundle/
 ```
 
 The build process: PyInstaller compiles the Python backend into a standalone sidecar binary → Tauri wraps it with a native window → outputs `.app`/`.dmg` (macOS), `.AppImage`/`.deb` (Linux).
+
+You can verify the build yourself — no need to trust pre-built binaries.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
 
