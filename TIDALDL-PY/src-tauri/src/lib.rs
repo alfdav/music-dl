@@ -9,7 +9,7 @@ use tauri_plugin_shell::process::CommandChild;
 
 const SIDECAR_URL: &str = "http://localhost:8765";
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
-const POLL_TIMEOUT: Duration = Duration::from_secs(10);
+const POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
 // Wrapper so we can manage CommandChild in Tauri state (needs Send + Sync)
 struct Sidecar(Mutex<Option<CommandChild>>);

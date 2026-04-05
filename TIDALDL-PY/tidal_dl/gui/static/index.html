@@ -156,6 +156,9 @@
     <div class="vol-slider" id="vol-slider" role="slider" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
       <div class="vol-fill" id="vol-fill" style="width:70%;"></div>
     </div>
+    <button class="ctrl sleep-btn" id="btn-sleep" title="Sleep timer" aria-label="Sleep timer">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
     <button class="queue-toggle" id="btn-queue" title="Queue" aria-label="Queue">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
     </button>
@@ -163,6 +166,7 @@
 </footer>
 
 <audio id="audio" preload="none"></audio>
+<audio id="audio-preload" preload="auto" style="display:none"></audio>
 <script src="/app.js"></script>
 </body>
 </html>

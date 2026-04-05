@@ -1248,6 +1248,15 @@ body {
   z-index: 3;
 }
 
+/* Buffering indicator — pulsing accent glow on progress bar */
+.progress-bar.buffering .progress-fill {
+  animation: buffer-pulse 1s ease-in-out infinite;
+}
+@keyframes buffer-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .progress-bar:hover .progress-fill { height: 5px; }
 
 .progress-bar:hover .progress-fill::after {
@@ -1259,6 +1268,7 @@ body {
 }
 
 /* Waveform / equalizer in progress bar */
+/* Waveform — bars grow from bottom, animated by pre-computed hires peaks */
 .waveform {
   position: absolute;
   left: 0; right: 0; bottom: 0;
@@ -1272,24 +1282,29 @@ body {
   z-index: 1;
 }
 
-.waveform.playing { opacity: 0.45; }
+.waveform.playing { opacity: 0.5; }
 .waveform.paused { opacity: 0.2; }
 .progress-bar:hover .waveform { opacity: 0.3; }
-.progress-bar:hover .waveform.playing { opacity: 0.45; }
+.progress-bar:hover .waveform.playing { opacity: 0.5; }
 
 .wf-bar {
   flex: 1;
+  min-width: 1.5px;
   background: rgba(255,255,255,0.06);
   border-radius: 1px 1px 0 0;
-  min-width: 1.5px;
   height: 100%;
   transform-origin: bottom;
-  transition: background 0.2s ease;
+  transition: background 0.15s ease;
+  will-change: transform;
 }
 
-/* Bars behind the playhead turn accent/yellow — revealed as song plays */
 .wf-bar.wf-played {
   background: var(--accent);
+}
+
+.wf-bar.wf-active {
+  background: var(--accent);
+  filter: brightness(1.3);
 }
 
 .waveform.paused .wf-bar {
@@ -1409,6 +1424,10 @@ body {
 
 .queue-toggle:hover { color: var(--text); }
 .queue-toggle svg { width: 16px; height: 16px; stroke-width: 1.5; }
+
+.sleep-btn { margin-right: 4px; }
+.sleep-btn svg { width: 16px; height: 16px; stroke-width: 1.5; }
+.sleep-btn.active { color: var(--accent); }
 
 /* ---- ENTRANCE ANIMATIONS ---- */
 .track {
