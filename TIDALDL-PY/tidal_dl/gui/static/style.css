@@ -3725,3 +3725,96 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── Updater ── */
+.updater-banner {
+  position: sticky;
+  top: 0;
+  z-index: 900;
+  padding: 10px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--glass-border);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--sans);
+  font-size: 0.9rem;
+  color: var(--text);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.updater-banner-text { flex: 1; }
+.updater-banner .updater-progress-wrap {
+  flex: 1;
+  height: 6px;
+  background: var(--surface-active);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.updater-banner .updater-progress-bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+.updater-banner button {
+  padding: 5px 14px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: var(--sans);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.updater-banner .updater-btn-install {
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+}
+.updater-banner .updater-btn-install:hover { opacity: 0.85; }
+.updater-banner .updater-btn-later {
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+}
+.updater-banner .updater-btn-later:hover { background: var(--surface-active); }
+
+.updater-settings {
+  margin-top: 32px;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+}
+.updater-settings-title {
+  font-family: var(--serif);
+  font-size: 1.15rem;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+.updater-version {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+.updater-status {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+  min-height: 1.2em;
+}
+.updater-status.updater-status--error { color: var(--red); }
+.updater-status.updater-status--success { color: var(--green); }
+.updater-btn-check {
+  padding: 8px 20px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.updater-btn-check:hover { background: var(--surface-active); }
+.updater-btn-check:disabled { opacity: 0.4; cursor: default; }
