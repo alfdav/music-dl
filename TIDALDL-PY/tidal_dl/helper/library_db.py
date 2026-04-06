@@ -414,60 +414,67 @@ class LibraryDB:
         return result
 
     def recent_albums_page(self, limit: int = 12, offset: int = 0) -> tuple[list[dict], int]:
-        """Return recent local albums, preferring download recency over scan recency."""
+        """Return recent local albums, preferring download recency over scan recency.
+
+        Albums are grouped by name only (not by artist) so compilations and
+        greatest-hits collections appear as a single entry with the artist
+        shown as "Various Artists" when multiple artists are present.
+        """
         assert self._conn
 
-        downloaded = {
-            (row["album"], row["artist"]): {
+        # Downloads: group by album name only — collapse multi-artist compilations
+        downloaded: dict[str, dict] = {}
+        for row in self._conn.execute(
+            """SELECT dh.album,
+                      COUNT(DISTINCT s.path) AS track_count,
+                      MIN(s.path) AS cover_path,
+                      MAX(dh.finished_at) AS recent_at,
+                      COUNT(DISTINCT dh.artist) AS artist_count,
+                      MIN(dh.artist) AS first_artist
+               FROM download_history dh
+               JOIN scanned s
+                 ON s.album = dh.album
+               WHERE dh.status = 'done'
+                 AND dh.finished_at IS NOT NULL
+                 AND s.status != 'unreadable'
+                 AND dh.album IS NOT NULL
+               GROUP BY dh.album"""
+        ).fetchall():
+            artist = row["first_artist"] if row["artist_count"] == 1 else "Various Artists"
+            downloaded[row["album"]] = {
                 "album": row["album"],
-                "artist": row["artist"],
+                "artist": artist,
                 "track_count": row["track_count"],
                 "cover_path": row["cover_path"],
                 "recent_at": int(row["recent_at"]),
                 "recent_source": "download",
             }
-            for row in self._conn.execute(
-                """SELECT dh.album,
-                          dh.artist,
-                          COUNT(DISTINCT s.path) AS track_count,
-                          MIN(s.path) AS cover_path,
-                          MAX(dh.finished_at) AS recent_at
-                   FROM download_history dh
-                   JOIN scanned s
-                     ON s.album = dh.album
-                    AND s.artist = dh.artist
-                   WHERE dh.status = 'done'
-                     AND dh.finished_at IS NOT NULL
-                     AND s.status != 'unreadable'
-                     AND dh.album IS NOT NULL
-                     AND dh.artist IS NOT NULL
-                   GROUP BY dh.album, dh.artist"""
-            ).fetchall()
-        }
 
-        scanned = {
-            (row["album"], row["artist"]): {
+        # Scanned: group by album name only
+        scanned: dict[str, dict] = {}
+        for row in self._conn.execute(
+            """SELECT album,
+                      COUNT(*) AS track_count,
+                      MIN(path) AS cover_path,
+                      MAX(scanned_at) AS recent_at,
+                      COUNT(DISTINCT artist) AS artist_count,
+                      MIN(artist) AS first_artist
+               FROM scanned
+               WHERE album IS NOT NULL
+                 AND status != 'unreadable'
+               GROUP BY album"""
+        ).fetchall():
+            artist = row["first_artist"] if row["artist_count"] == 1 else "Various Artists"
+            scanned[row["album"]] = {
                 "album": row["album"],
-                "artist": row["artist"],
+                "artist": artist,
                 "track_count": row["track_count"],
                 "cover_path": row["cover_path"],
                 "recent_at": int(row["recent_at"]),
                 "recent_source": "scan",
             }
-            for row in self._conn.execute(
-                """SELECT album,
-                          artist,
-                          COUNT(*) AS track_count,
-                          MIN(path) AS cover_path,
-                          MAX(scanned_at) AS recent_at
-                   FROM scanned
-                   WHERE album IS NOT NULL
-                     AND artist IS NOT NULL
-                     AND status != 'unreadable'
-                   GROUP BY album, artist"""
-            ).fetchall()
-        }
 
+        # Download recency wins over scan recency
         merged = dict(scanned)
         merged.update(downloaded)
 

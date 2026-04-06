@@ -2736,11 +2736,12 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
                 upgradeBtn.disabled = true;
                 upgradeBtn.textContent = 'Upgrading...';
                 try {
-                  await api('/upgrade/start', {
+                  const resp = await api('/upgrade/start', {
                     method: 'POST',
                     body: { tracks: allUpgradeable.map(u => ({ path: u.path, tidal_track_id: u.tidal_track_id })) }
                   });
-                  toast('Upgrade started for ' + allUpgradeable.length + ' tracks', 'success');
+                  if (resp.count > 0) { updateDlBadge(resp.count); _ensureGlobalSSE(); }
+                  toast('Upgrade started for ' + (resp.count || allUpgradeable.length) + ' tracks', 'success');
                 } catch (err) {
                   toast('Upgrade failed', 'error');
                   upgradeBtn.disabled = false;
