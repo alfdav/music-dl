@@ -1,3 +1,5 @@
+mod updater;
+
 use std::net::TcpStream;
 use std::sync::Mutex;
 use std::thread;
@@ -12,7 +14,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
 // Wrapper so we can manage CommandChild in Tauri state (needs Send + Sync)
-struct Sidecar(Mutex<Option<CommandChild>>);
+pub(crate) struct Sidecar(pub(crate) Mutex<Option<CommandChild>>);
 
 /// Check if the sidecar is accepting TCP connections on port 8765.
 fn sidecar_is_ready() -> bool {
@@ -27,6 +29,13 @@ fn sidecar_is_ready() -> bool {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .invoke_handler(tauri::generate_handler![
+            updater::get_updater_state,
+            updater::check_for_updates,
+            updater::install_update,
+        ])
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -35,6 +44,12 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            // Manage updater shared state
+            app.manage(updater::UpdaterSharedState(Mutex::new(
+                updater::UpdaterState::default(),
+            )));
+            app.manage(updater::StagedUpdate(Mutex::new(None)));
 
             // Spawn the Python FastAPI sidecar
             let sidecar_cmd = app.shell().sidecar("music-dl-server").unwrap();
@@ -51,7 +66,6 @@ pub fn run() {
                     if sidecar_is_ready() {
                         if let Some(window) = handle.get_webview_window("main") {
                             // Navigate the webview to the sidecar-served frontend.
-                            // This is a hardcoded URL, not user input — safe to eval.
                             let nav = format!("window.location.replace('{SIDECAR_URL}')");
                             let _ = window.eval(&nav);
                         }
@@ -70,6 +84,9 @@ pub fn run() {
                     ));
                 }
             });
+
+            // Spawn background update check (non-blocking, release only)
+            updater::spawn_update_check(app.handle());
 
             Ok(())
         })

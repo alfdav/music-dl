@@ -4446,6 +4446,20 @@ function renderSettings(container) {
   const formSection = h('div');
   resultsArea.appendChild(formSection);
   loadSettingsForm(formSection);
+
+  // Updater section (Tauri only)
+  if (_isTauri()) {
+    const updaterSection = h('div', { id: 'settings-updater' });
+    resultsArea.appendChild(updaterSection);
+    _updater.settingsEl = updaterSection;
+    if (_updater.state) {
+      renderUpdaterSettings(updaterSection, _updater.state);
+    } else {
+      _tauriInvoke('get_updater_state').then(us => {
+        _onUpdaterState(us);
+      }).catch(() => {});
+    }
+  }
 }
 
 async function loadAuthStatus(container) {
@@ -6362,12 +6376,133 @@ btnSleep.addEventListener('click', () => {
   toast('Sleep in ' + mins + ' minutes');
 });
 
+// ── Updater ──────────────────────────────────────────────────────────────────
+
+const _updater = { state: null, dismissed: false, settingsEl: null };
+
+function _isTauri() {
+  return !!(window.__TAURI__ || window.__TAURI_INTERNALS__);
+}
+
+function _tauriInvoke(cmd) {
+  return window.__TAURI__.core.invoke(cmd);
+}
+
+function _onUpdaterState(us) {
+  _updater.state = us;
+  renderUpdaterBanner(us);
+  if (_updater.settingsEl) renderUpdaterSettings(_updater.settingsEl, us);
+}
+
+function initUpdater() {
+  if (!_isTauri()) return;
+  window.__TAURI__.event.listen('updater-state-changed', ev => {
+    _onUpdaterState(ev.payload);
+  });
+  _tauriInvoke('get_updater_state').then(_onUpdaterState).catch(() => {});
+}
+
+function checkForUpdates() {
+  if (!_isTauri()) return;
+  _tauriInvoke('check_for_updates').then(_onUpdaterState).catch(e => {
+    toast('Update check failed: ' + e, 'error');
+  });
+}
+
+function installUpdate() {
+  if (!_isTauri()) return;
+  _tauriInvoke('install_update').then(_onUpdaterState).catch(e => {
+    toast('Install failed: ' + e, 'error');
+  });
+}
+
+function renderUpdaterBanner(us) {
+  const existing = document.getElementById('updater-banner');
+  if (existing) existing.remove();
+
+  if (!us) return;
+  if (_updater.dismissed && us.status !== 'downloading') return;
+
+  if (us.status === 'downloading') {
+    const pct = us.progress_pct || 0;
+    const ver = us.available_version || '';
+    const banner = h('div', { id: 'updater-banner', className: 'updater-banner' },
+      textEl('span', 'Downloading v' + ver + '… ' + pct + '%', 'updater-banner-text'),
+      h('div', { className: 'updater-progress-wrap' },
+        h('div', { className: 'updater-progress-bar', style: { width: pct + '%' } })
+      )
+    );
+    _insertBanner(banner);
+  } else if (us.status === 'ready_to_install') {
+    const ver = us.available_version || '';
+    const btnInstall = h('button', { className: 'updater-btn-install' }, document.createTextNode('Restart & Install'));
+    btnInstall.onclick = () => installUpdate();
+    const btnLater = h('button', { className: 'updater-btn-later' }, document.createTextNode('Later'));
+    btnLater.onclick = () => { _updater.dismissed = true; const b = document.getElementById('updater-banner'); if (b) b.remove(); };
+    const banner = h('div', { id: 'updater-banner', className: 'updater-banner' },
+      textEl('span', 'Update v' + ver + ' ready', 'updater-banner-text'),
+      btnInstall,
+      btnLater
+    );
+    _insertBanner(banner);
+  }
+}
+
+function _insertBanner(banner) {
+  const nav = document.querySelector('.bottom-nav') || document.querySelector('nav');
+  if (nav && nav.parentNode) {
+    nav.parentNode.insertBefore(banner, nav.nextSibling);
+  } else {
+    document.body.prepend(banner);
+  }
+}
+
+function renderUpdaterSettings(container, us) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+  if (!us) return;
+
+  const wrap = h('div', { className: 'updater-settings' });
+  wrap.appendChild(textEl('div', 'About / Updates', 'updater-settings-title'));
+  wrap.appendChild(textEl('div', 'Current version: ' + (us.current_version || '—'), 'updater-version'));
+
+  // Status text
+  let statusText = '';
+  let statusClass = 'updater-status';
+  switch (us.status) {
+    case 'idle': statusText = ''; break;
+    case 'checking': statusText = 'Checking for updates…'; break;
+    case 'up_to_date': statusText = 'You are on the latest version.'; statusClass += ' updater-status--success'; break;
+    case 'update_available': statusText = 'Update v' + (us.available_version || '') + ' is available.'; break;
+    case 'downloading': statusText = 'Downloading… ' + (us.progress_pct || 0) + '%'; break;
+    case 'ready_to_install': statusText = 'v' + (us.available_version || '') + ' is ready to install.'; statusClass += ' updater-status--success'; break;
+    case 'installing': statusText = 'Installing…'; break;
+    case 'error': statusText = us.error_message || 'An error occurred.'; statusClass += ' updater-status--error'; break;
+    case 'unsupported_install_context': statusText = 'Auto-update only works after you move music-dl.app into Applications.'; statusClass += ' updater-status--error'; break;
+  }
+  if (statusText) {
+    const sEl = textEl('div', statusText, '');
+    sEl.className = statusClass;
+    wrap.appendChild(sEl);
+  }
+
+  // Check button
+  const busy = us.status === 'checking' || us.status === 'downloading' || us.status === 'installing';
+  const btn = h('button', { className: 'updater-btn-check', disabled: busy },
+    document.createTextNode(busy ? 'Please wait…' : 'Check for Updates')
+  );
+  btn.onclick = () => { if (!busy) checkForUpdates(); };
+  wrap.appendChild(btn);
+
+  container.appendChild(wrap);
+}
+
 function _initApp() {
   // Load settings into state for upgrade quality checks
   api('/settings').then(s => { state.settings = s; }).catch(() => {});
   refreshStatusLights();
   _restoreQueue();
   _restorePosition();
+  initUpdater();
   navigate(location.hash.slice(1) || 'home');
 }
 

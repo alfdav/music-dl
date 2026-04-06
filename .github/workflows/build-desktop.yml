@@ -103,7 +103,8 @@ jobs:
       - name: Build Tauri app
         run: npx tauri build --target ${{ matrix.target }}
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       # ── Upload artifacts ─────────────────────────────────────────
       - name: Upload AppImage (Linux)
@@ -113,6 +114,7 @@ jobs:
           name: music-dl-${{ matrix.label }}
           path: |
             TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
             TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
           if-no-files-found: warn
 
@@ -124,6 +126,8 @@ jobs:
           path: |
             TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: warn
 
       # ── Attach to release if tagged ──────────────────────────────
@@ -133,5 +137,67 @@ jobs:
         with:
           files: |
             TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
             TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
             TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
+
+  publish-manifest:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate latest.json
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          REPO="alfdav/music-dl"
+          BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
+
+          # Read signature files
+          MACOS_SIG=$(cat artifacts/music-dl-macos-arm64/*.app.tar.gz.sig)
+          LINUX_SIG=$(cat artifacts/music-dl-linux-x86_64/*.AppImage.sig)
+
+          # Find actual filenames
+          MACOS_TAR=$(basename artifacts/music-dl-macos-arm64/*.app.tar.gz)
+          LINUX_APPIMAGE=$(basename artifacts/music-dl-linux-x86_64/*.AppImage)
+
+          # Build latest.json with jq
+          jq -n \
+            --arg version "$TAG" \
+            --arg notes "See release notes" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg macos_sig "$MACOS_SIG" \
+            --arg macos_url "${BASE_URL}/${MACOS_TAR}" \
+            --arg linux_sig "$LINUX_SIG" \
+            --arg linux_url "${BASE_URL}/${LINUX_APPIMAGE}" \
+            '{
+              version: $version,
+              notes: $notes,
+              pub_date: $pub_date,
+              platforms: {
+                "darwin-aarch64": {
+                  signature: $macos_sig,
+                  url: $macos_url
+                },
+                "linux-x86_64": {
+                  signature: $linux_sig,
+                  url: $linux_url
+                }
+              }
+            }' > latest.json
+
+          echo "Generated latest.json:"
+          cat latest.json
+
+      - name: Upload latest.json to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: latest.json

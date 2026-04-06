@@ -36,6 +36,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "createUpdaterArtifacts": true,
     "macOS": {
       "dmg": {
         "background": "dmg-background.png",
@@ -52,6 +53,14 @@
           "height": 400
         }
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "RWQf5X7rD2Zt321yhsx2QIAG0dxJB09kSp9094pJJYBEIe3rjYW5vshi",
+      "endpoints": [
+        "https://github.com/alfdav/music-dl/releases/latest/download/latest.json"
+      ]
     }
   }
 }
