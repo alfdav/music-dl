@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from tidal_dl.constants import QUALITY_STRING_TO_ENUM, TIER_RANK
 from tidal_dl.gui.api.downloads import DownloadEntry, _active, _broadcast, _lock
 from tidal_dl.helper.library_db import LibraryDB
-from tidal_dl.helper.path import path_config_base
+from tidal_dl.helper.path import format_path_media, path_config_base
 
 router = APIRouter()
 logger = logging.getLogger("music-dl.upgrade")
@@ -239,7 +239,12 @@ def _trash_file(path: str) -> None:
 
 
 def _cleanup_replaced_track_files(db: LibraryDB, *, old_path: str, new_path: str) -> list[str]:
-    """Remove stale DB rows/files for the upgraded track, keyed by ISRC when possible."""
+    """Remove stale DB rows/files for the upgraded track.
+
+    Only removes the old file and any same-ISRC duplicates that live in the
+    **same album directory**.  Copies of the same recording in other albums
+    (compilations, greatest-hits, original albums) are left untouched.
+    """
     removed: list[str] = []
     seen: set[str] = set()
     new_path = str(new_path)
@@ -253,10 +258,22 @@ def _cleanup_replaced_track_files(db: LibraryDB, *, old_path: str, new_path: str
     old_row = db.get(old_path) if old_path else None
     _queue(old_path)
 
+    # Scope ISRC sweep to the same album directory so we only catch stale
+    # copies from prior upgrade attempts (e.g. uniquify _01 suffixes), not
+    # legitimate copies of the same recording in different albums.
     isrc = old_row.get("isrc") if old_row else None
+    old_album = old_row.get("album") if old_row else None
+    old_dir = str(Path(old_path).parent) if old_path else None
     if isrc:
         for row in db.tracks_by_isrc(isrc):
-            _queue(row.get("path"))
+            candidate = row.get("path")
+            if not candidate:
+                continue
+            # Same album tag AND same parent directory — safe to remove
+            same_album = old_album and row.get("album") == old_album
+            same_dir = old_dir and str(Path(candidate).parent) == old_dir
+            if same_album and same_dir:
+                _queue(candidate)
 
     for stale_path in removed:
         _trash_file(stale_path)
@@ -264,6 +281,63 @@ def _cleanup_replaced_track_files(db: LibraryDB, *, old_path: str, new_path: str
             db.remove(stale_path)
 
     return removed
+
+
+def _resolve_tidal_album(
+    session: Any, album_name: str, artist_hint: str, isrcs: list[str]
+) -> tuple[Any, list] | tuple[None, list]:
+    """Search Tidal for an album and verify it contains tracks matching our ISRCs.
+
+    Returns (Album, album_tracks) or (None, []).
+    """
+    from tidalapi.album import Album
+
+    def _norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", s.lower())
+
+    norm_album = _norm(album_name)
+    isrc_set = {i.upper() for i in isrcs if i}
+    if not norm_album or not isrc_set:
+        return None, []
+
+    try:
+        query = f"{album_name} {artist_hint}".strip()
+        results = session.search(query, models=[Album], limit=10)
+        albums = results.get("albums", []) if isinstance(results, dict) else []
+        if not albums:
+            albums = getattr(results, "albums", []) or []
+    except Exception:
+        logger.exception("Album search failed for %r", album_name)
+        return None, []
+
+    for candidate in albums:
+        cand_name = _norm(getattr(candidate, "name", "") or "")
+        if cand_name != norm_album:
+            continue
+
+        try:
+            # Fetch album tracks — try .tracks() first, fall back to .items()
+            album_tracks = []
+            if hasattr(candidate, "tracks"):
+                album_tracks = candidate.tracks() or []
+            if not album_tracks and hasattr(candidate, "items"):
+                album_tracks = candidate.items() or []
+            if not album_tracks:
+                continue
+
+            # Check ISRC overlap
+            for t in album_tracks:
+                t_isrc = getattr(t, "isrc", None)
+                if t_isrc and t_isrc.upper() in isrc_set:
+                    return candidate, album_tracks
+
+        except Exception:
+            logger.debug("Failed to fetch tracks for album %s", getattr(candidate, "id", "?"))
+            continue
+
+        time.sleep(2)  # Rate limit between album track fetches
+
+    return None, []
 
 
 # ---------------------------------------------------------------------------
@@ -545,9 +619,103 @@ def _trigger_upgrade_downloads(
     db = _get_db()
 
     try:
+        # ---------------------------------------------------------------
+        # Phase 1: Group tracks by local album name from DB
+        # ---------------------------------------------------------------
+        album_groups: dict[str, list[tuple[int, str, dict | None]]] = {}
+        for tid in track_ids:
+            old_path = upgrade_map.get(tid, "")
+            row = db.get(old_path) if old_path else None
+            album_name = (row.get("album") or "") if row else ""
+            if album_name:
+                album_groups.setdefault(album_name, []).append((tid, old_path, row))
+            else:
+                album_groups.setdefault("", []).append((tid, old_path, row))
+
+        # ---------------------------------------------------------------
+        # Phase 2: Resolve Tidal albums and build pre-expanded templates
+        # ---------------------------------------------------------------
+        # album_name -> (pre_expanded_template, {isrc_upper: album_track})
+        album_templates: dict[str, tuple[str, dict[str, Any]]] = {}
+        resolved_album_count = 0
+
+        for album_name, group in album_groups.items():
+            if not album_name:
+                continue
+
+            # Collect ISRCs and an artist hint for this album group
+            group_isrcs: list[str] = []
+            artist_hint = ""
+            for _, _, row in group:
+                if row and row.get("isrc"):
+                    group_isrcs.append(row["isrc"])
+                if not artist_hint and row and row.get("artist"):
+                    artist_hint = row["artist"]
+
+            if not group_isrcs:
+                continue
+
+            # Rate limit between album searches
+            if resolved_album_count > 0:
+                time.sleep(2)
+
+            tidal_album, album_tracks = _resolve_tidal_album(
+                tidal.session, album_name, artist_hint, group_isrcs
+            )
+            resolved_album_count += 1
+
+            if tidal_album and album_tracks:
+                # Pre-expand the album template: {album_artist} and {album_title}
+                # get baked in from the compilation Album object while track-level
+                # tokens (e.g. {track_title}) remain as placeholders.
+                pre_expanded = format_path_media(
+                    settings.data.format_album,
+                    tidal_album,
+                    delimiter_artist=settings.data.filename_delimiter_artist,
+                    delimiter_album_artist=settings.data.filename_delimiter_album_artist,
+                    use_primary_album_artist=settings.data.use_primary_album_artist,
+                )
+
+                # Build ISRC -> album_track lookup
+                isrc_to_track: dict[str, Any] = {}
+                for t in album_tracks:
+                    t_isrc = getattr(t, "isrc", None)
+                    if t_isrc:
+                        isrc_to_track[t_isrc.upper()] = t
+
+                album_templates[album_name] = (pre_expanded, isrc_to_track)
+                logger.info(
+                    "Resolved Tidal album for %r: %d tracks, %d ISRC matches",
+                    album_name, len(album_tracks), len(isrc_to_track),
+                )
+            else:
+                logger.warning(
+                    "Could not resolve Tidal album for %r — falling back to individual track downloads",
+                    album_name,
+                )
+
+        # ---------------------------------------------------------------
+        # Phase 3: Download each track (album-aware when possible)
+        # ---------------------------------------------------------------
         for tid in track_ids:
             old_path = upgrade_map.get(tid, "")
             track_name = f"Track {tid}"
+
+            # Look up DB row and album info for this track
+            row = db.get(old_path) if old_path else None
+            local_album_name = (row.get("album") or "") if row else ""
+            isrc = (row.get("isrc") or "").upper() if row else ""
+
+            # Determine album-aware template and track object
+            template_info = album_templates.get(local_album_name)
+            album_track: Any = None
+            file_template = settings.data.format_track  # default fallback
+
+            if template_info and isrc:
+                pre_expanded, isrc_to_track = template_info
+                album_track = isrc_to_track.get(isrc)
+                if album_track:
+                    file_template = pre_expanded
 
             # Register in shared download queue so Downloads tab shows it
             with _lock:
@@ -557,7 +725,10 @@ def _trigger_upgrade_downloads(
             _broadcast({"type": "progress", "track_id": tid, "name": track_name, "artist": "", "album": "", "cover_url": "", "quality": "", "status": "queued", "progress": 0})
 
             try:
-                track = tidal.session.track(tid)
+                if album_track:
+                    track = album_track  # Album-context track (correct .album reference)
+                else:
+                    track = tidal.session.track(tid)  # Fallback: individual track
                 track_name = track.full_name or track.name or track_name
                 artist_name = ""
                 album_name = ""
@@ -593,9 +764,8 @@ def _trigger_upgrade_downloads(
                 continue
 
             # Get probe to determine quality enum for download
-            row = db.get(old_path) if old_path else None
-            isrc = row.get("isrc") if row else None
-            probe = db.get_probe(isrc) if isrc else None
+            probe_isrc = row.get("isrc") if row else None
+            probe = db.get_probe(probe_isrc) if probe_isrc else None
 
             quality_str = probe.get("max_quality", "HI_RES_LOSSLESS") if probe else "HI_RES_LOSSLESS"
             quality_enum = QUALITY_STRING_TO_ENUM.get(quality_str)
@@ -608,7 +778,7 @@ def _trigger_upgrade_downloads(
 
             try:
                 outcome, new_path = dl.item(
-                    file_template=settings.data.format_track,
+                    file_template=file_template,
                     media=track,
                     quality_audio=quality_enum,
                     duplicate_action_override="redownload",
