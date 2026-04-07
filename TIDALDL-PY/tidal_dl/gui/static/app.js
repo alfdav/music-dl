@@ -3078,6 +3078,49 @@ async function loadLibraryRecentShelf(shelfArea) {
   ));
 }
 
+function renderRecentAlbumRow(album) {
+  const row = h('div', { className: 'recent-album-row' });
+
+  // Small album art thumbnail
+  const artWrap = h('div', { className: 'recent-album-art' });
+  if (album.cover_url) {
+    const img = h('img', { src: album.cover_url, alt: '', loading: 'lazy' });
+    img.onerror = function() {
+      this.style.display = 'none';
+      artWrap.style.background = artGradient(album.name || album.artist);
+    };
+    artWrap.appendChild(img);
+  } else {
+    artWrap.style.background = artGradient(album.name || album.artist);
+  }
+  row.appendChild(artWrap);
+
+  // Album name + artist · track count
+  const meta = h('div', { className: 'recent-album-meta' });
+  meta.appendChild(textEl('div', album.name || 'Unknown Album', 'recent-album-name'));
+  const sub = [album.artist || 'Unknown Artist'];
+  sub.push((album.track_count || 0) + ' track' + ((album.track_count || 0) !== 1 ? 's' : ''));
+  meta.appendChild(textEl('div', sub.join(' \u00b7 '), 'recent-album-sub'));
+  row.appendChild(meta);
+
+  // Relative time (recent_at is epoch seconds)
+  if (album.recent_at) {
+    row.appendChild(textEl('div', _recentRelativeTime(album.recent_at * 1000), 'recent-album-time'));
+  }
+
+  // Source badge (download vs scan)
+  if (album.recent_source === 'download') {
+    row.appendChild(textEl('div', 'Downloaded', 'recent-album-source'));
+  }
+
+  row.addEventListener('click', () => {
+    navigate('localalbum:' + encodeURIComponent(album.artist || 'Unknown Artist') + ':' + encodeURIComponent(album.name || 'Unknown Album'));
+  });
+  row.style.cursor = 'pointer';
+  a11yClick(row);
+  return row;
+}
+
 async function loadLibraryRecentAlbumsExpanded(resultsArea, append) {
   try {
     const data = await loadLibraryRecentAlbumsPage(LIBRARY_PAGE_SIZE, libraryOffset);
@@ -3099,13 +3142,37 @@ async function loadLibraryRecentAlbumsExpanded(resultsArea, append) {
         return 0;
       }
 
-      const grid = renderRecentAlbumCards(albums);
-      grid.id = 'library-recent-albums';
-      resultsArea.appendChild(grid);
+      const list = h('div', { className: 'recent-album-list', id: 'library-recent-albums' });
+      // Time-group dividers like Recently Played
+      let currentGroup = null;
+      albums.forEach(album => {
+        if (album.recent_at) {
+          const group = _recentTimeGroup(album.recent_at * 1000);
+          if (group !== currentGroup) {
+            currentGroup = group;
+            list.appendChild(textEl('div', group, 'recent-page-divider'));
+          }
+        }
+        list.appendChild(renderRecentAlbumRow(album));
+      });
+      resultsArea.appendChild(list);
     } else {
-      const grid = document.getElementById('library-recent-albums') ||
-        resultsArea.querySelector('.album-gallery');
-      renderRecentAlbumCards(albums, grid);
+      const list = document.getElementById('library-recent-albums') ||
+        resultsArea.querySelector('.recent-album-list');
+      let currentGroup = list.lastElementChild
+        ? (list.lastElementChild.classList.contains('recent-page-divider')
+          ? list.lastElementChild.textContent : null)
+        : null;
+      albums.forEach(album => {
+        if (album.recent_at) {
+          const group = _recentTimeGroup(album.recent_at * 1000);
+          if (group !== currentGroup) {
+            currentGroup = group;
+            list.appendChild(textEl('div', group, 'recent-page-divider'));
+          }
+        }
+        list.appendChild(renderRecentAlbumRow(album));
+      });
     }
 
     const oldBtn = resultsArea.querySelector('.load-more');
