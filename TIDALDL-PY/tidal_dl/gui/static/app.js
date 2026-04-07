@@ -6287,6 +6287,7 @@ function _restoreQueue() {
       state.shuffle = !!data.shuffle;
       state.repeat = data.repeat || 'off';
       btnShuffle.classList.toggle('active', state.shuffle);
+      btnRepeat.classList.toggle('active', state.repeat !== 'off');
       _updateRepeatIcon(btnRepeat);
       // Show now-playing info without auto-playing
       const current = state.queue[state.queueIndex];
