@@ -3038,31 +3038,44 @@ async function loadLibraryRecentShelf(shelfArea) {
   const header = h('div', { className: 'results-header library-shelf-header' }, heading);
   shelfArea.appendChild(header);
 
-  try {
-    const data = await loadLibraryRecentAlbumsPage(LIBRARY_RECENT_SHELF_LIMIT, 0);
-    const albums = data.albums || [];
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY = 1500; // ms — gives sidecar DB time to initialize on cold start
+  let lastErr = null;
 
-    if (albums.length === 0) {
-      shelfArea.appendChild(renderLibraryRecentShelfState(
-        'No recently added albums yet',
-        'Download music or sync your library to populate this shelf.'
-      ));
-      return;
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const data = await loadLibraryRecentAlbumsPage(LIBRARY_RECENT_SHELF_LIMIT, 0);
+      const albums = data.albums || [];
+
+      if (albums.length === 0) {
+        shelfArea.appendChild(renderLibraryRecentShelfState(
+          'No recently added albums yet',
+          'Download music or sync your library to populate this shelf.'
+        ));
+        return;
+      }
+
+      const seeAll = h('button', { className: 'library-shelf-action' }, 'See all');
+      seeAll.addEventListener('click', () => navigate('recent-added'));
+      header.appendChild(seeAll);
+
+      const grid = renderRecentAlbumCards(albums);
+      grid.classList.add('library-shelf-grid');
+      shelfArea.appendChild(grid);
+      return; // success
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_RETRIES - 1) {
+        await new Promise(r => setTimeout(r, RETRY_DELAY));
+      }
     }
-
-    const seeAll = h('button', { className: 'library-shelf-action' }, 'See all');
-    seeAll.addEventListener('click', () => navigate('recent-added'));
-    header.appendChild(seeAll);
-
-    const grid = renderRecentAlbumCards(albums);
-    grid.classList.add('library-shelf-grid');
-    shelfArea.appendChild(grid);
-  } catch (_) {
-    shelfArea.appendChild(renderLibraryRecentShelfState(
-      'Recently added unavailable',
-      'Check your library connection and try again.'
-    ));
   }
+
+  console.error('[shelf] Recently added failed after retries:', lastErr);
+  shelfArea.appendChild(renderLibraryRecentShelfState(
+    'Recently added unavailable',
+    'Check your library connection and try again.'
+  ));
 }
 
 async function loadLibraryRecentAlbumsExpanded(resultsArea, append) {
