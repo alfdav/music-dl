@@ -103,7 +103,7 @@ jobs:
       - name: Write signing key
         run: |
           KEY_FILE=$(mktemp)
-          echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" > "$KEY_FILE"
+          printf 'untrusted comment: rsign encrypted secret key\n%s\n' "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" > "$KEY_FILE"
           echo "TAURI_SIGNING_PRIVATE_KEY=$KEY_FILE" >> "$GITHUB_ENV"
 
       - name: Build Tauri app
