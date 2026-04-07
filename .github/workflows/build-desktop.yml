@@ -103,8 +103,11 @@ jobs:
       - name: Write signing key
         run: |
           KEY_FILE=$(mktemp)
-          printf 'untrusted comment: rsign encrypted secret key\n%s\n' "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" > "$KEY_FILE"
+          printf 'untrusted comment: rsign encrypted secret key\n' > "$KEY_FILE"
+          printf '%s\n' "$SIGNING_KEY_B64" >> "$KEY_FILE"
           echo "TAURI_SIGNING_PRIVATE_KEY=$KEY_FILE" >> "$GITHUB_ENV"
+        env:
+          SIGNING_KEY_B64: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 
       - name: Build Tauri app
         run: npx tauri build --target ${{ matrix.target }}
