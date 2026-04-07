@@ -57,7 +57,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "RWQf5X7rD2Zt321yhsx2QIAG0dxJB09kSp9094pJJYBEIe3rjYW5vshi",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVGNEY3MzMxNkE0QUZCQ0MKUldUTSswcHFNWE5QN3dWSTFzaTNLeU1PcHlYQnVzTlVPcDVLbmJIMnF4cWh0TU5Uekl1OXgrcGoK",
       "endpoints": [
         "https://github.com/alfdav/music-dl/releases/latest/download/latest.json"
       ]
