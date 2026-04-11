@@ -95,9 +95,9 @@ Linux public releases are downloadable from [GitHub Releases](https://github.com
 
 - **Linux**: `music-dl_x.x.x_amd64.AppImage` or `.deb`
 
-### Option 1b: Desktop App on macOS (manual/local build)
+### Option 1b: Desktop App on macOS (manual/local build, Apple Silicon only)
 
-macOS uses the local installer one-liner, not a downloadable public release:
+macOS uses the local installer one-liner, not a downloadable public release. The installer currently hard-fails on Intel Macs and supports Apple Silicon (`arm64`) only:
 
 ```shell
 curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash
@@ -107,7 +107,7 @@ On success, it installs `music-dl.app` to `/Applications/music-dl.app`.
 
 If the installer stops because a dependency is missing, fix the reported dependency issue and rerun the same command.
 
-macOS updates are manual: rerun the installer for the latest local build, or rebuild locally if you want to manage the app bundle yourself.
+macOS updates are manual: rerunning the installer rebuilds from the repository's current default branch head at install time, not from a pinned release and not from the "latest release" artifact. Rebuild locally if you want to manage the app bundle yourself.
 
 ### Option 2: Docker Compose (Linux / headless / NAS)
 
