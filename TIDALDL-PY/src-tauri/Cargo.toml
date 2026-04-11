@@ -1,6 +1,6 @@
 [package]
 name = "music-dl"
-version = "1.4.0"
+version = "1.4.1"
 description = "music-dl desktop app"
 authors = ["alfdav"]
 license = "Apache-2.0"
