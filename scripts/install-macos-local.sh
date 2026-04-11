@@ -24,12 +24,41 @@ installer_cache_dir() {
   printf '%s\n' "${MUSIC_DL_INSTALLER_CACHE_DIR:-$HOME/Library/Caches/music-dl-installer}"
 }
 
+repo_dir() {
+  printf '%s/repo\n' "$(installer_cache_dir)"
+}
+
+repo_url() {
+  printf '%s\n' "${MUSIC_DL_INSTALLER_REPO_URL:-https://github.com/alfdav/music-dl.git}"
+}
+
+install_target() {
+  printf '%s\n' "${MUSIC_DL_TEST_INSTALL_TARGET:-/Applications/music-dl.app}"
+}
+
 is_macos() {
   [ "$(current_os)" = "Darwin" ]
 }
 
 is_arm64() {
   [ "$(current_arch)" = "arm64" ]
+}
+
+have_command() {
+  local name="$1"
+  if [ -n "${MUSIC_DL_TEST_PATH_BIN:-}" ]; then
+    PATH="$MUSIC_DL_TEST_PATH_BIN" command -v "$name" >/dev/null 2>&1
+  else
+    command -v "$name" >/dev/null 2>&1
+  fi
+}
+
+has_xcode_clt() {
+  if [ "${MUSIC_DL_TEST_XCODE_PATH+set}" = "set" ]; then
+    [ -n "${MUSIC_DL_TEST_XCODE_PATH:-}" ]
+  else
+    xcode-select -p >/dev/null 2>&1
+  fi
 }
 
 require_macos() {
@@ -40,9 +69,63 @@ require_arm64() {
   is_arm64 || die "This installer currently supports Apple Silicon (arm64) only. Use an Apple Silicon Mac, then rerun this installer."
 }
 
+require_xcode_clt() {
+  say "Checking Xcode Command Line Tools"
+  if ! has_xcode_clt; then
+    printf 'Xcode Command Line Tools are required.\n'
+    xcode-select --install >/dev/null 2>&1 || true
+    printf 'Finish the Apple installer, then rerun the same command.\n'
+    exit 1
+  fi
+}
+
+require_rust() {
+  say "Checking Rust"
+  have_command rustc || die "Rust is required. Install it from https://rustup.rs then rerun this installer."
+}
+
+require_uv() {
+  say "Checking uv"
+  have_command uv || die "uv is required. Install it from https://docs.astral.sh/uv/ then rerun this installer."
+}
+
+require_node_npm() {
+  say "Checking Node.js + npm"
+  have_command node || die "Node.js is required. Install it from https://nodejs.org/en/download, make sure npm is available, then rerun this installer."
+  have_command npm || die "npm is required. Install Node.js + npm from https://nodejs.org/en/download, then rerun this installer."
+}
+
+sync_repo() {
+  local cache repo default_ref
+  say "Syncing music-dl source"
+  cache="$(installer_cache_dir)"
+  repo="$(repo_dir)"
+  mkdir -p "$cache"
+
+  if [ -d "$repo" ] && [ ! -d "$repo/.git" ]; then
+    rm -rf "$repo" || die "Cached repo directory is corrupted. Delete $(installer_cache_dir) and rerun this installer."
+  fi
+
+  if [ ! -d "$repo/.git" ]; then
+    git clone "$(repo_url)" "$repo" || die "Could not clone music-dl. Check your network connection, then rerun this installer."
+  fi
+
+  git -C "$repo" fetch origin --prune || die "Could not update the cached music-dl repo. Check your network connection, then rerun this installer."
+  git -C "$repo" remote set-head origin -a >/dev/null 2>&1 || die "Could not refresh origin/HEAD. Delete $(installer_cache_dir) and rerun this installer."
+  default_ref="$(git -C "$repo" symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')" || die "Could not resolve the remote default branch. Delete $(installer_cache_dir) and rerun this installer."
+  git -C "$repo" checkout -B "$default_ref" "origin/$default_ref" || die "Could not normalize the cached repo to origin/$default_ref. Delete $(installer_cache_dir) and rerun this installer."
+  git -C "$repo" reset --hard "origin/$default_ref" || die "Could not reset the cached repo to origin/$default_ref. Delete $(installer_cache_dir) and rerun this installer."
+  git -C "$repo" clean -fdx || die "Could not clean the cached repo. Delete $(installer_cache_dir) and rerun this installer."
+}
+
 main() {
   require_macos
   require_arm64
+  require_xcode_clt
+  require_rust
+  require_uv
+  require_node_npm
+  sync_repo
   say "scaffold only"
 }
 

@@ -71,3 +71,74 @@ assert_eq "$(installer_cache_dir)" "$expected_cache" "default cache dir"
 export MUSIC_DL_INSTALLER_CACHE_DIR="/tmp/music-dl-test-cache"
 assert_eq "$(installer_cache_dir)" "/tmp/music-dl-test-cache" "cache dir override"
 unset MUSIC_DL_INSTALLER_CACHE_DIR
+
+export MUSIC_DL_TEST_XCODE_PATH=""
+if has_xcode_clt >/dev/null 2>&1; then
+  fail "has_xcode_clt detects missing CLT"
+else
+  pass "has_xcode_clt detects missing CLT"
+fi
+xcode_output="$( (require_xcode_clt) 2>&1 || true )"
+printf '%s' "$xcode_output" | grep -q "Finish the Apple installer, then rerun the same command\."
+pass "require_xcode_clt prints rerun guidance"
+unset MUSIC_DL_TEST_XCODE_PATH
+
+export MUSIC_DL_TEST_PATH_BIN="/tmp"
+if have_command rustc >/dev/null 2>&1; then
+  fail "have_command fails when binary missing"
+else
+  pass "have_command fails when binary missing"
+fi
+rust_output="$( (require_rust) 2>&1 || true )"
+printf '%s' "$rust_output" | grep -q "Install it from https://rustup.rs then rerun this installer."
+pass "require_rust prints rerun guidance"
+
+uv_output="$( (require_uv) 2>&1 || true )"
+printf '%s' "$uv_output" | grep -q "Install it from https://docs.astral.sh/uv/ then rerun this installer."
+pass "require_uv prints rerun guidance"
+
+TMP_BIN="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP_BIN/node"
+chmod +x "$TMP_BIN/node"
+export MUSIC_DL_TEST_PATH_BIN="$TMP_BIN"
+node_output="$( (require_node_npm) 2>&1 || true )"
+printf '%s' "$node_output" | grep -q "Install Node.js + npm from https://nodejs.org/en/download, then rerun this installer."
+pass "require_node_npm prints rerun guidance"
+rm -rf "$TMP_BIN"
+unset MUSIC_DL_TEST_PATH_BIN
+
+TMP_REMOTE="$(mktemp -d)"
+TMP_WORK="$(mktemp -d)"
+git init --bare "$TMP_REMOTE/origin.git" >/dev/null 2>&1
+
+git clone "$TMP_REMOTE/origin.git" "$TMP_WORK/repo" >/dev/null 2>&1
+(
+  cd "$TMP_WORK/repo"
+  git config user.name test
+  git config user.email test@example.com
+  printf 'hello\n' > README.md
+  git add README.md
+  git commit -m init >/dev/null 2>&1
+  git branch -M master
+  git push origin master >/dev/null 2>&1
+)
+git -C "$TMP_REMOTE/origin.git" symbolic-ref HEAD refs/heads/master >/dev/null 2>&1
+
+export MUSIC_DL_INSTALLER_CACHE_DIR="$TMP_WORK/cache"
+export MUSIC_DL_INSTALLER_REPO_URL="$TMP_REMOTE/origin.git"
+mkdir -p "$MUSIC_DL_INSTALLER_CACHE_DIR"
+git clone "$TMP_REMOTE/origin.git" "$(repo_dir)" >/dev/null 2>&1
+git -C "$(repo_dir)" checkout --detach >/dev/null 2>&1
+printf 'junk\n' > "$(repo_dir)/UNTRACKED.tmp"
+printf 'local edit\n' > "$(repo_dir)/README.md"
+git -C "$(repo_dir)" add README.md >/dev/null 2>&1
+git -C "$(repo_dir)" commit -m local-change >/dev/null 2>&1 || true
+sync_repo >/dev/null 2>&1 || fail "sync_repo refreshes cached repo"
+expected_branch="$(git -C "$(repo_dir)" symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')"
+assert_eq "$(git -C "$(repo_dir)" rev-parse --abbrev-ref HEAD)" "$expected_branch" "sync_repo resets to origin HEAD branch"
+assert_eq "$(cat "$(repo_dir)/README.md")" "hello" "sync_repo discards tracked local edits"
+[ ! -e "$(repo_dir)/UNTRACKED.tmp" ] || fail "sync_repo cleans untracked files"
+pass "sync_repo cleans untracked files"
+rm -rf "$TMP_REMOTE" "$TMP_WORK"
+unset MUSIC_DL_INSTALLER_CACHE_DIR
+unset MUSIC_DL_INSTALLER_REPO_URL
