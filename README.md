@@ -91,13 +91,23 @@ The GUI can also start and recover the Tidal OAuth flow itself from the browser.
 
 ### Option 1: Desktop App (Linux release)
 
-Download the latest Linux release from [GitHub Releases](https://github.com/alfdav/music-dl/releases).
+Linux public releases are downloadable from [GitHub Releases](https://github.com/alfdav/music-dl/releases).
 
 - **Linux**: `music-dl_x.x.x_amd64.AppImage` or `.deb`
 
 ### Option 1b: Desktop App on macOS (manual/local build)
 
-macOS is supported through the Tauri app, but public auto-update/release packaging is not the supported path. Build it locally and update it manually on your machine.
+macOS uses the local installer one-liner, not a downloadable public release:
+
+```shell
+curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash
+```
+
+On success, it installs `music-dl.app` to `/Applications/music-dl.app`.
+
+If the installer stops because a dependency is missing, fix the reported dependency issue and rerun the same command.
+
+macOS updates are manual: rerun the installer for the latest local build, or rebuild locally if you want to manage the app bundle yourself.
 
 ### Option 2: Docker Compose (Linux / headless / NAS)
 
