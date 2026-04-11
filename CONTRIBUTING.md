@@ -73,23 +73,20 @@ uv run --project TIDALDL-PY pytest \
 
 1. Land the release changes through a PR against `master`.
 2. Write a real PR title/body — the tag workflow turns merged PRs into GitHub release notes and updater notes.
-3. Before tagging, confirm GitHub secrets exist for both updater signing and macOS signing/notarization:
+3. Before tagging, confirm updater signing secrets exist:
    - `TAURI_SIGNING_PRIVATE_KEY`
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-   - `APPLE_CERTIFICATE`
-   - `APPLE_CERTIFICATE_PASSWORD`
-   - `APPLE_ID`
-   - `APPLE_PASSWORD`
-   - `APPLE_TEAM_ID`
 4. After the PR merges, push an annotated tag like `v1.4.2`.
-5. GitHub Actions runs `.github/workflows/build-desktop.yml`, signs/notarizes the macOS bundle, uploads binaries, updates `latest.json`, and writes release notes onto the GitHub release.
+5. GitHub Actions runs `.github/workflows/build-desktop.yml`, uploads Linux binaries, updates `latest.json`, and writes release notes onto the GitHub release.
 6. Sanity-check the release before announcing it:
    - release notes are present
-   - expected assets are uploaded
+   - expected Linux assets are uploaded
    - `latest.json` points at the new tag
-   - macOS CI passed the `codesign` + `spctl` verification step
+   - `latest.json` only contains `linux-x86_64`
 
-Blank release notes are a release bug. Unsigned macOS assets are a release blocker.
+Blank release notes are a release bug.
+
+macOS desktop usage is manual/local-build only. Build with Tauri locally and replace the app bundle yourself when you want to update.
 
 ## Security
 
