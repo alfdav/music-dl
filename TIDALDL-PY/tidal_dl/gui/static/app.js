@@ -161,6 +161,7 @@ const state = {
   settingsAccess: null,
 };
 let _settingsLoad = null;
+let _queueEntrySeq = 0;
 
 async function _ensureSettingsLoaded() {
   if (state.settings) return state.settings;
@@ -2428,10 +2429,78 @@ function _extractFormat(track) {
   return '';
 }
 
+function _sameTrack(a, b) {
+  if (!a || !b) return false;
+  if (a._queueEntryId != null && b._queueEntryId != null) {
+    return a._queueEntryId === b._queueEntryId;
+  }
+  return _trackKey(a) !== '' && _trackKey(a) === _trackKey(b);
+}
+
+function _findTrackIndex(list, track) {
+  if (!track || !list || !list.length) return -1;
+  const sameRef = list.indexOf(track);
+  if (sameRef !== -1) return sameRef;
+  return list.findIndex(t => _sameTrack(t, track));
+}
+
+function _cloneQueueTrack(track, entryId) {
+  return { ...track, _queueEntryId: entryId };
+}
+
+function _shuffleTracks(tracks) {
+  const shuffled = tracks.slice();
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
+function _setQueueOrder(tracks, currentTrack) {
+  const source = tracks.slice();
+  const currentSourceIdx = currentTrack ? _findTrackIndex(source, currentTrack) : 0;
+  const ordered = source.map(track => _cloneQueueTrack(track, ++_queueEntrySeq));
+  const current = ordered[Math.max(0, currentSourceIdx)] || ordered[0] || null;
+  state.queueOriginal = ordered.slice();
+
+  if (state.shuffle) {
+    const currentIdx = _findTrackIndex(ordered, current);
+    const remaining = ordered.filter((_, idx) => idx !== currentIdx);
+    state.queue = current ? [current, ..._shuffleTracks(remaining)] : _shuffleTracks(ordered);
+    state.queueIndex = current ? 0 : 0;
+  } else {
+    state.queue = ordered;
+    state.queueIndex = current ? _findTrackIndex(ordered, current) : 0;
+  }
+}
+
+function _reshuffleCurrentQueue() {
+  if (!state.queueOriginal.length) return;
+  const current = state.queue[state.queueIndex] || state.queueOriginal[0] || null;
+  const currentIdx = _findTrackIndex(state.queueOriginal, current);
+  const remaining = state.queueOriginal.filter((_, idx) => idx !== currentIdx);
+  state.queue = current ? [current, ..._shuffleTracks(remaining)] : _shuffleTracks(state.queueOriginal);
+  state.queueIndex = current ? 0 : 0;
+  state.shuffle = true;
+  btnShuffle.classList.add('active');
+  _saveQueue();
+}
+
+function _restoreOriginalQueueOrder() {
+  if (!state.queueOriginal.length) return;
+  const current = state.queue[state.queueIndex] || null;
+  state.queue = state.queueOriginal.slice();
+  const idx = current ? _findTrackIndex(state.queueOriginal, current) : 0;
+  state.queueIndex = idx >= 0 ? idx : 0;
+  state.shuffle = false;
+  btnShuffle.classList.remove('active');
+  _saveQueue();
+}
+
 function startPlaybackFromList(track, tracks) {
-  state.queue = tracks.slice();
-  state.queueIndex = tracks.indexOf(track);
-  playTrack(track);
+  _setQueueOrder(tracks, track);
+  playTrack(state.queue[state.queueIndex]);
 }
 
 function renderTrackRow(track, num, allTracks) {
@@ -2605,8 +2674,17 @@ function renderTrackRow(track, num, allTracks) {
                   setWaveformPlaying(false);
                 }
 
-                // Remove from queue if present
-                state.queue = state.queue.filter(t => _trackKey(t) !== _trackKey(track));
+                // Remove deleted file from queue snapshots
+                const removedKey = _trackKey(track);
+                const currentQueueTrack = state.queue[state.queueIndex] || null;
+                const removedBeforeCurrent = state.queue.slice(0, state.queueIndex).filter(t => _trackKey(t) === removedKey).length;
+                const removedCurrent = currentQueueTrack && _trackKey(currentQueueTrack) === removedKey;
+                state.queue = state.queue.filter(t => _trackKey(t) !== removedKey);
+                state.queueOriginal = state.queueOriginal.filter(t => _trackKey(t) !== removedKey);
+                if (removedBeforeCurrent) state.queueIndex -= removedBeforeCurrent;
+                if (removedCurrent && state.queue.length === 0) state.queueIndex = -1;
+                else if (state.queueIndex >= state.queue.length) state.queueIndex = state.queue.length - 1;
+                _saveQueue();
 
                 toast('Track deleted', 'success');
               } catch (err) {
@@ -2819,19 +2897,16 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
       albumMeta.insertBefore(subLine, albumActions);
 
       playBtn.addEventListener('click', () => {
-        state.queue = tracks.slice();
-        state.queueIndex = 0;
         state.shuffle = false;
         btnShuffle.classList.remove('active');
-        playTrack(tracks[0]);
+        _setQueueOrder(tracks, tracks[0]);
+        playTrack(state.queue[state.queueIndex]);
       });
       shuffleBtn.addEventListener('click', () => {
-        const shuffled = tracks.slice().sort(() => Math.random() - 0.5);
-        state.queue = shuffled;
-        state.queueIndex = 0;
         state.shuffle = true;
         btnShuffle.classList.add('active');
-        playTrack(shuffled[0]);
+        _setQueueOrder(tracks, tracks[0]);
+        playTrack(state.queue[state.queueIndex]);
       });
 
       // Upgrade check — show button if any tracks are below target quality
@@ -3067,9 +3142,10 @@ async function renderAlbumDetail(container, albumId) {
     playBtn.addEventListener('click', () => {
       const playable = tracks.filter(t => t.is_local);
       if (!playable.length) { toast('No local tracks to play', 'info'); return; }
-      state.queue = playable.slice();
-      state.queueIndex = 0;
-      playTrack(playable[0]);
+      state.shuffle = false;
+      btnShuffle.classList.remove('active');
+      _setQueueOrder(playable, playable[0]);
+      playTrack(state.queue[state.queueIndex]);
     });
 
     const shuffleBtn = h('button', { className: 'pill' });
@@ -3077,12 +3153,10 @@ async function renderAlbumDetail(container, albumId) {
     shuffleBtn.addEventListener('click', () => {
       const playable = tracks.filter(t => t.is_local);
       if (!playable.length) { toast('No local tracks to play', 'info'); return; }
-      const shuffled = playable.slice().sort(() => Math.random() - 0.5);
-      state.queue = shuffled;
-      state.queueIndex = 0;
       state.shuffle = true;
       btnShuffle.classList.add('active');
-      playTrack(shuffled[0]);
+      _setQueueOrder(playable, playable[0]);
+      playTrack(state.queue[state.queueIndex]);
     });
 
     const dlBtn = h('button', { className: 'pill' });
@@ -4135,19 +4209,16 @@ async function loadPlaylistTracks(resultsArea, pl) {
       playBtn.disabled = false;
       shuffleBtn.disabled = false;
       playBtn.addEventListener('click', () => {
-        state.queue = tracks.slice();
-        state.queueIndex = 0;
         state.shuffle = false;
         btnShuffle.classList.remove('active');
-        playTrack(tracks[0]);
+        _setQueueOrder(tracks, tracks[0]);
+        playTrack(state.queue[state.queueIndex]);
       });
       shuffleBtn.addEventListener('click', () => {
-        const shuffled = tracks.slice().sort(() => Math.random() - 0.5);
-        state.queue = shuffled;
-        state.queueIndex = 0;
         state.shuffle = true;
         btnShuffle.classList.add('active');
-        playTrack(shuffled[0]);
+        _setQueueOrder(tracks, tracks[0]);
+        playTrack(state.queue[state.queueIndex]);
       });
     }
 
@@ -4586,7 +4657,9 @@ async function loadDownloadHistory(container) {
             quality: dl.quality,
             format: dl.quality,
           };
-          state.queue = [track];
+          const queuedTrack = _cloneQueueTrack(track, ++_queueEntrySeq);
+          state.queueOriginal = [queuedTrack];
+          state.queue = [queuedTrack];
           state.queueIndex = 0;
           playTrack(track);
         });
@@ -5533,11 +5606,7 @@ btnPlay.addEventListener('click', () => {
 
 btnNext.addEventListener('click', () => {
   if (state.queue.length === 0) return;
-  if (state.shuffle) {
-    state.queueIndex = Math.floor(Math.random() * state.queue.length);
-  } else {
-    state.queueIndex = (state.queueIndex + 1) % state.queue.length;
-  }
+  state.queueIndex = (state.queueIndex + 1) % state.queue.length;
   playTrack(state.queue[state.queueIndex]);
 });
 
@@ -5552,8 +5621,13 @@ btnPrev.addEventListener('click', () => {
 });
 
 btnShuffle.addEventListener('click', () => {
-  state.shuffle = !state.shuffle;
-  btnShuffle.classList.toggle('active', state.shuffle);
+  if (!state.queue.length) {
+    state.shuffle = !state.shuffle;
+    btnShuffle.classList.toggle('active', state.shuffle);
+    return;
+  }
+  if (state.shuffle) _restoreOriginalQueueOrder();
+  else _reshuffleCurrentQueue();
 });
 
 btnRepeat.addEventListener('click', () => {
@@ -5612,7 +5686,7 @@ audio.addEventListener('ended', () => {
     return;
   }
   const hasNext = state.queueIndex < state.queue.length - 1;
-  if (hasNext || state.shuffle) {
+  if (hasNext) {
     btnNext.click();
   } else if (state.repeat === 'all') {
     state.queueIndex = 0;
@@ -5640,9 +5714,8 @@ audio.addEventListener('error', () => {
   setWaveformPlaying(false);
   const current = state.queue[state.queueIndex];
   const label = current ? (current.name || 'Track') : 'Track';
-  const canAutoSkip = current && current.is_local && state.queueIndex < state.queue.length - 1;
+  const canAutoSkip = current && state.queueIndex < state.queue.length - 1;
   toast(label + ' unavailable', 'error');
-  // Auto-skip only for local-file queue playback; remote search/stream failures should stop.
   if (canAutoSkip) {
     setTimeout(() => { state.queueIndex++; playTrack(state.queue[state.queueIndex]); }, 800);
   }
@@ -5972,7 +6045,10 @@ function renderQueue() {
     remove.textContent = '\u00d7';
     remove.addEventListener('click', (e) => {
       e.stopPropagation();
+      const removedTrack = state.queue[i];
       state.queue.splice(i, 1);
+      const originalIdx = _findTrackIndex(state.queueOriginal, removedTrack);
+      if (originalIdx !== -1) state.queueOriginal.splice(originalIdx, 1);
       if (i < state.queueIndex) state.queueIndex--;
       else if (i === state.queueIndex && state.queue.length === 0) {
         state.queueIndex = -1;
@@ -5980,6 +6056,7 @@ function renderQueue() {
         state.queueIndex = state.queue.length - 1;
       }
       renderQueue();
+      _saveQueue();
     });
 
     item.addEventListener('click', () => {
@@ -6597,9 +6674,7 @@ let _preloadedSrc = '';
 
 function _preloadNext() {
   if (state.queue.length === 0 || state.repeat === 'one') return;
-  const nextIdx = state.shuffle
-    ? Math.floor(Math.random() * state.queue.length)
-    : (state.queueIndex + 1) % state.queue.length;
+  const nextIdx = (state.queueIndex + 1) % state.queue.length;
   const next = state.queue[nextIdx];
   if (!next) return;
   const src = (next.is_local && next.local_path)
@@ -6630,6 +6705,7 @@ function _restoreQueue() {
     const data = JSON.parse(raw);
     if (data.queue && data.queue.length > 0) {
       state.queue = data.queue;
+      state.queueOriginal = (data.queueOriginal && data.queueOriginal.length > 0) ? data.queueOriginal : data.queue.slice();
       state.queueIndex = typeof data.queueIndex === 'number' ? data.queueIndex : 0;
       state.shuffle = !!data.shuffle;
       state.repeat = data.repeat || 'off';
