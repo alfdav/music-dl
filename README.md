@@ -105,9 +105,9 @@ curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/inst
 
 On success, it installs `music-dl.app` to `/Applications/music-dl.app`.
 
-If the installer stops because a dependency is missing, fix the reported dependency issue and rerun the same command.
+If the installer stops because a dependency is missing, fix the reported dependency issue and rerun the installer using the same command.
 
-macOS updates are manual: rerunning the installer rebuilds from the repository's current default branch head at install time, not from a pinned release and not from the "latest release" artifact. Rebuild locally if you want to manage the app bundle yourself.
+macOS updates are manual: rerun the installer to rebuild from the repository's current default branch head at install time, not from a pinned release and not from the "latest release" artifact. You can also rebuild locally if you want to manage the app bundle yourself.
 
 ### Option 2: Docker Compose (Linux / headless / NAS)
 
