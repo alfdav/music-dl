@@ -29,6 +29,14 @@ assert_nonzero() {
   pass "$label"
 }
 
+assert_contains() {
+  local haystack="$1" needle="$2" label="$3"
+  case "$haystack" in
+    *"$needle"*) pass "$label" ;;
+    *) fail "$label (missing=$needle output=$haystack)" ;;
+  esac
+}
+
 run_and_capture() {
   local __output_var="$1" __status_var="$2"
   shift 2
@@ -36,6 +44,19 @@ run_and_capture() {
   local output status
   set +e
   output="$("$@" 2>&1)"
+  status=$?
+  set -e
+
+  printf -v "$__output_var" '%s' "$output"
+  printf -v "$__status_var" '%s' "$status"
+}
+
+run_in_subshell() {
+  local __output_var="$1" __status_var="$2" snippet="$3"
+
+  local output status
+  set +e
+  output="$(bash -c "$snippet" 2>&1)"
   status=$?
   set -e
 
@@ -78,9 +99,24 @@ if has_xcode_clt >/dev/null 2>&1; then
 else
   pass "has_xcode_clt detects missing CLT"
 fi
-xcode_output="$( (require_xcode_clt) 2>&1 || true )"
-printf '%s' "$xcode_output" | grep -q "Finish the Apple installer, then rerun the same command\."
-pass "require_xcode_clt prints rerun guidance"
+run_and_capture xcode_output xcode_status require_xcode_clt
+assert_nonzero "$xcode_status" "require_xcode_clt exits non-zero"
+assert_contains "$xcode_output" "Finish the Apple installer, then rerun the same command." "require_xcode_clt prints rerun guidance"
+run_in_subshell xcode_composable_output xcode_composable_status "
+  set -euo pipefail
+  export MUSIC_DL_INSTALLER_SOURCE_ONLY=1
+  source \"$SCRIPT\"
+  unset MUSIC_DL_INSTALLER_SOURCE_ONLY
+  export MUSIC_DL_TEST_XCODE_PATH=''
+  set +e
+  require_xcode_clt
+  status=\$?
+  set -e
+  printf 'status=%s\\nafter-call\\n' \"\$status\"
+"
+assert_eq "$xcode_composable_status" "0" "require_xcode_clt stays composable when sourced"
+assert_contains "$xcode_composable_output" "status=1" "require_xcode_clt returns status 1 when CLT missing"
+assert_contains "$xcode_composable_output" "after-call" "require_xcode_clt returns control to caller"
 unset MUSIC_DL_TEST_XCODE_PATH
 
 export MUSIC_DL_TEST_PATH_BIN="/tmp"
@@ -89,21 +125,21 @@ if have_command rustc >/dev/null 2>&1; then
 else
   pass "have_command fails when binary missing"
 fi
-rust_output="$( (require_rust) 2>&1 || true )"
-printf '%s' "$rust_output" | grep -q "Install it from https://rustup.rs then rerun this installer."
-pass "require_rust prints rerun guidance"
+run_and_capture rust_output rust_status require_rust
+assert_nonzero "$rust_status" "require_rust exits non-zero"
+assert_contains "$rust_output" "Install it from https://rustup.rs then rerun this installer." "require_rust prints rerun guidance"
 
-uv_output="$( (require_uv) 2>&1 || true )"
-printf '%s' "$uv_output" | grep -q "Install it from https://docs.astral.sh/uv/ then rerun this installer."
-pass "require_uv prints rerun guidance"
+run_and_capture uv_output uv_status require_uv
+assert_nonzero "$uv_status" "require_uv exits non-zero"
+assert_contains "$uv_output" "Install it from https://docs.astral.sh/uv/ then rerun this installer." "require_uv prints rerun guidance"
 
 TMP_BIN="$(mktemp -d)"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP_BIN/node"
 chmod +x "$TMP_BIN/node"
 export MUSIC_DL_TEST_PATH_BIN="$TMP_BIN"
-node_output="$( (require_node_npm) 2>&1 || true )"
-printf '%s' "$node_output" | grep -q "Install Node.js + npm from https://nodejs.org/en/download, then rerun this installer."
-pass "require_node_npm prints rerun guidance"
+run_and_capture node_output node_status require_node_npm
+assert_nonzero "$node_status" "require_node_npm exits non-zero when npm missing"
+assert_contains "$node_output" "Install Node.js + npm from https://nodejs.org/en/download, then rerun this installer." "require_node_npm prints rerun guidance"
 rm -rf "$TMP_BIN"
 unset MUSIC_DL_TEST_PATH_BIN
 
@@ -128,11 +164,14 @@ export MUSIC_DL_INSTALLER_CACHE_DIR="$TMP_WORK/cache"
 export MUSIC_DL_INSTALLER_REPO_URL="$TMP_REMOTE/origin.git"
 mkdir -p "$MUSIC_DL_INSTALLER_CACHE_DIR"
 git clone "$TMP_REMOTE/origin.git" "$(repo_dir)" >/dev/null 2>&1
+git -C "$(repo_dir)" config user.name test
+git -C "$(repo_dir)" config user.email test@example.com
 git -C "$(repo_dir)" checkout --detach >/dev/null 2>&1
 printf 'junk\n' > "$(repo_dir)/UNTRACKED.tmp"
 printf 'local edit\n' > "$(repo_dir)/README.md"
 git -C "$(repo_dir)" add README.md >/dev/null 2>&1
-git -C "$(repo_dir)" commit -m local-change >/dev/null 2>&1 || true
+git -C "$(repo_dir)" commit -m local-change >/dev/null 2>&1 || fail "cached repo local commit succeeds"
+pass "cached repo local commit succeeds"
 sync_repo >/dev/null 2>&1 || fail "sync_repo refreshes cached repo"
 expected_branch="$(git -C "$(repo_dir)" symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')"
 assert_eq "$(git -C "$(repo_dir)" rev-parse --abbrev-ref HEAD)" "$expected_branch" "sync_repo resets to origin HEAD branch"

@@ -75,7 +75,7 @@ require_xcode_clt() {
     printf 'Xcode Command Line Tools are required.\n'
     xcode-select --install >/dev/null 2>&1 || true
     printf 'Finish the Apple installer, then rerun the same command.\n'
-    exit 1
+    return 1
   fi
 }
 
