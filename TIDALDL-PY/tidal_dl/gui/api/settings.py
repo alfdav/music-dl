@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from tidal_dl import __version__
 from tidal_dl.config import Settings, Tidal
 
 router = APIRouter()
@@ -38,6 +40,101 @@ def get_settings() -> dict:
         "upgrade_target_quality": d.upgrade_target_quality,
         "extract_flac": d.extract_flac,
         "download_delay": d.download_delay,
+    }
+
+
+def _safe_expand_path(path_str: str) -> str:
+    try:
+        return str(Path(path_str).expanduser())
+    except (OSError, RuntimeError, ValueError):
+        return path_str
+
+
+
+def _configured_paths(s: Settings) -> list[str]:
+    raw_scan_paths = [p.strip() for p in (s.data.scan_paths or "").split(",") if p.strip()]
+    combined = [s.data.download_base_path, *raw_scan_paths]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in combined:
+        if not item:
+            continue
+        expanded = _safe_expand_path(item)
+        if expanded not in seen:
+            seen.add(expanded)
+            normalized.append(expanded)
+    return normalized
+
+
+
+def _path_access_info(path_str: str) -> dict:
+    info = {
+        "path": path_str,
+        "exists": False,
+        "is_dir": False,
+        "readable": False,
+        "writable": False,
+        "ok": False,
+        "reason": "unavailable",
+    }
+
+    try:
+        path = Path(path_str).expanduser()
+        info["path"] = str(path)
+        exists = path.exists()
+        is_dir = path.is_dir() if exists else False
+        readable = bool(os.access(path, os.R_OK)) if exists and is_dir else False
+        writable = bool(os.access(path, os.W_OK)) if exists and is_dir else False
+    except (OSError, PermissionError, ValueError):
+        info["reason"] = "access_denied"
+        return info
+
+    info.update({
+        "exists": exists,
+        "is_dir": is_dir,
+        "readable": readable,
+        "writable": writable,
+        "ok": bool(exists and is_dir and readable),
+    })
+
+    if info["ok"] and writable:
+        info["reason"] = None
+    elif exists and not is_dir:
+        info["reason"] = "not_a_directory"
+    elif exists and is_dir and not readable:
+        info["reason"] = "access_denied"
+    elif exists and is_dir and readable and not writable:
+        info["reason"] = "read_only"
+
+    return info
+
+
+
+def settings_status() -> dict:
+    s = Settings()
+    paths = [_path_access_info(path) for path in _configured_paths(s)]
+    primary_path = _safe_expand_path(s.data.download_base_path) if s.data.download_base_path else ""
+    blocked = next(
+        (
+            path
+            for path in paths
+            if path["path"] == primary_path and (not path["ok"] or not path["writable"])
+        ),
+        None,
+    )
+    read_only = blocked is not None
+    banner_message = None
+    if blocked:
+        banner_message = (
+            f"Music folder unavailable: {blocked['path']}. "
+            "Settings are read-only until access is restored or you choose a new folder."
+        )
+
+    return {
+        "version": __version__,
+        "read_only": read_only,
+        "banner_message": banner_message,
+        "paths": paths,
     }
 
 
@@ -130,6 +227,12 @@ def read_settings() -> dict:
     return get_settings()
 
 
+@router.get("/settings/status")
+def read_settings_status() -> dict:
+    """Return access status for configured music paths plus app version."""
+    return settings_status()
+
+
 class SettingsUpdate(BaseModel):
     download_base_path: str | None = None
     quality_audio: str | None = None
@@ -200,6 +303,14 @@ def update_settings(update: SettingsUpdate) -> dict:
             raise HTTPException(status_code=400, detail="Invalid download path")
         if path and not os.access(path, os.W_OK):
             raise HTTPException(status_code=400, detail="Download path is not writable")
+
+    if settings_status().get("read_only"):
+        recovery_fields = {"download_base_path", "scan_paths"}
+        if any(field not in recovery_fields for field in updates):
+            raise HTTPException(
+                status_code=423,
+                detail="Settings are read-only until access is restored or you choose a new folder",
+            )
 
     s = Settings()
     for field, value in updates.items():

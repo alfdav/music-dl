@@ -21,22 +21,12 @@ def api_home_client(tmp_path, monkeypatch, clear_singletons):
     import tidal_dl.gui.api.home as home_api
 
     monkeypatch.setenv("MUSIC_DL_CONFIG_DIR", str(tmp_path))
-    if home_api._db is not None:
-        try:
-            home_api._db.close()
-        except Exception:
-            pass
-    home_api._db = None
+    home_api._invalidate_db_cache()
 
     client = TestClient(create_app(port=8765))
     yield client
 
-    if home_api._db is not None:
-        try:
-            home_api._db.close()
-        except Exception:
-            pass
-    home_api._db = None
+    home_api._invalidate_db_cache()
 
 
 def test_schema_v3_columns_exist(db):

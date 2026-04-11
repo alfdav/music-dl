@@ -1,6 +1,7 @@
 """Home view API — play tracking and stats aggregation."""
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -14,21 +15,58 @@ from tidal_dl.helper.path import path_config_base
 
 router = APIRouter()
 
-_db: LibraryDB | None = None
+_db: LibraryDB | None = None  # Compatibility alias for tests/debugging.
+_db_local = threading.local()
+_db_generation = 0
+_db_generation_lock = threading.Lock()
+
+
+def _close_thread_db() -> None:
+    db = getattr(_db_local, "db", None)
+    if db is not None:
+        try:
+            db.close()
+        except Exception:
+            pass
+    _db_local.db = None
+    _db_local.generation = -1
+
+
+def _invalidate_db_cache() -> None:
+    global _db, _db_generation
+    _close_thread_db()
+    _db = None
+    with _db_generation_lock:
+        _db_generation += 1
 
 
 def _get_db() -> LibraryDB:
     global _db
-    if _db is None:
-        _db = LibraryDB(Path(path_config_base()) / "library.db")
-        _db.open()
+    db_path = Path(path_config_base()) / "library.db"
+    db = getattr(_db_local, "db", None)
+    generation = getattr(_db_local, "generation", -1)
+
+    if db is not None and (generation != _db_generation or db._path != db_path):
+        _close_thread_db()
+        db = None
+
+    if db is None:
+        db = LibraryDB(db_path)
+        db.open()
+        _db_local.db = db
+        _db_local.generation = _db_generation
     else:
         try:
-            _db._conn.execute("SELECT 1")
+            db._conn.execute("SELECT 1")
         except Exception:
-            _db = LibraryDB(Path(path_config_base()) / "library.db")
-            _db.open()
-    return _db
+            _close_thread_db()
+            db = LibraryDB(db_path)
+            db.open()
+            _db_local.db = db
+            _db_local.generation = _db_generation
+
+    _db = db
+    return db
 
 
 class PlayEvent(BaseModel):

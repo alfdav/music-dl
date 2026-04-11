@@ -882,7 +882,7 @@ class TestCLI:
             text=True,
         )
         assert result.returncode == 0
-        assert "3.0.0" in result.stdout
+        assert "1.4.0" in result.stdout
 
     def test_help_command(self):
         result = subprocess.run(

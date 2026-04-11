@@ -151,12 +151,33 @@ const state = {
   searchType: 'tracks',
   searchResults: null,
   queue: [],
+  queueOriginal: [],
   queueIndex: -1,
   playing: false,
   shuffle: false,
   repeat: 'off',  // 'off' | 'all' | 'one'
   volume: 0.7,
+  settingsReadOnly: false,
+  settingsAccess: null,
 };
+let _settingsLoad = null;
+let _queueEntrySeq = 0;
+
+async function _ensureSettingsLoaded() {
+  if (state.settings) return state.settings;
+  if (!_settingsLoad) {
+    _settingsLoad = api('/settings')
+      .then(settings => {
+        state.settings = settings;
+        return settings;
+      })
+      .catch(err => {
+        _settingsLoad = null;
+        throw err;
+      });
+  }
+  return _settingsLoad;
+}
 
 // ---- FAVORITES CACHE ----
 // Keyed by path for local tracks or "tidal:{id}" for Tidal tracks
@@ -237,6 +258,154 @@ async function upgradeTrack(track) {
   } catch (err) {
     toast('Upgrade failed: ' + (err.message || err), 'error');
   }
+}
+
+function _playlistUpgradeTargetRank() {
+  return { 'HI_RES': 3, 'HI_RES_LOSSLESS': 4 }[state.settings?.upgrade_target_quality] || 4;
+}
+
+function _playlistUpgradeCandidates(tracks) {
+  const tierRanks = { 'Common': 0, 'Uncommon': 1, 'Rare': 2, 'Epic': 3, 'Legendary': 4, 'Mythic': 5 };
+  const targetRank = _playlistUpgradeTargetRank();
+  return (tracks || []).filter(t => {
+    if (!t || !t.is_local || !t.isrc) return false;
+    const localRank = tierRanks[_qualityTier(t.quality, t.format).tier] || 0;
+    return localRank < targetRank;
+  });
+}
+
+function _setPlaylistUpgradeBadge(trackList, track, maxQuality) {
+  const row = trackList.querySelector('[data-track-id="' + _trackKey(track) + '"]');
+  if (!row) return false;
+  const ex = row.querySelector('.upgrade-badge');
+  if (ex) ex.remove();
+
+  const tierRanks = { 'LOW': 0, 'HIGH': 1, 'LOSSLESS': 2, 'HI_RES': 3, 'HI_RES_LOSSLESS': 4 };
+  const localRank = { 'Common': 0, 'Uncommon': 1, 'Rare': 2, 'Epic': 3, 'Legendary': 4, 'Mythic': 5 }[_qualityTier(track.quality, track.format).tier] || 0;
+  const probeRank = tierRanks[maxQuality] || 0;
+  const targetRank = _playlistUpgradeTargetRank();
+  if (probeRank <= localRank || probeRank < targetRank) return false;
+
+  const badge = h('span', { className: 'upgrade-badge' });
+  badge.textContent = '⬆ ' + qualityLabel(maxQuality);
+  const metaCell = row.querySelector('.track-artist');
+  if (metaCell && metaCell.parentElement) metaCell.parentElement.appendChild(badge);
+  return true;
+}
+
+async function _scanPlaylistUpgrades(tracks, trackList, upgradeBtn, refreshBtn, options) {
+  const opts = options || {};
+  const force = !!opts.force;
+
+  try {
+    await _ensureSettingsLoaded();
+  } catch (_) {
+    upgradeBtn.style.display = 'none';
+    if (refreshBtn) refreshBtn.style.display = 'none';
+    return;
+  }
+
+  const candidates = _playlistUpgradeCandidates(tracks);
+  if (candidates.length === 0) {
+    upgradeBtn.style.display = 'none';
+    if (refreshBtn) refreshBtn.style.display = 'none';
+    return;
+  }
+
+  const byIsrc = new Map();
+  candidates.forEach(track => {
+    const list = byIsrc.get(track.isrc) || [];
+    list.push(track);
+    byIsrc.set(track.isrc, list);
+  });
+
+  const applyResults = (results, upgradeableMap, unresolved, resolveMisses) => {
+    (results || []).forEach(result => {
+      const isrc = result.isrc;
+      const matches = byIsrc.get(isrc) || [];
+      if (resolveMisses || (result.tidal_track_id && result.max_quality)) {
+        unresolved.delete(isrc);
+      }
+      matches.forEach(track => {
+        if (!result.tidal_track_id || !result.max_quality) return;
+        if (!_setPlaylistUpgradeBadge(trackList, track, result.max_quality)) return;
+        const key = (track.local_path || track.path || '') + '::' + result.tidal_track_id;
+        upgradeableMap.set(key, { path: track.local_path || track.path, tidal_track_id: result.tidal_track_id });
+      });
+    });
+  };
+
+  const unresolved = new Set([...byIsrc.keys()]);
+  const upgradeableMap = new Map();
+  const isrcs = [...byIsrc.keys()];
+
+  if (force) {
+    trackList.querySelectorAll('.upgrade-badge').forEach(badge => badge.remove());
+  }
+
+  upgradeBtn.style.display = '';
+  upgradeBtn.disabled = true;
+  upgradeBtn.textContent = 'Checking upgrades...';
+  upgradeBtn.title = 'Checking Tidal for higher quality versions';
+  if (refreshBtn) {
+    refreshBtn.style.display = '';
+    refreshBtn.disabled = true;
+    refreshBtn.title = 'Refresh upgrade availability';
+  }
+
+  try {
+    if (!force) {
+      for (let i = 0; i < isrcs.length; i += 100) {
+        const batch = isrcs.slice(i, i + 100);
+        const statusData = await api('/upgrade/status?isrcs=' + encodeURIComponent(batch.join(',')));
+        applyResults(statusData.results, upgradeableMap, unresolved, false);
+      }
+    }
+
+    const misses = force ? isrcs : [...unresolved];
+    for (let i = 0; i < misses.length; i += 50) {
+      const batch = misses.slice(i, i + 50);
+      const probeData = await api('/upgrade/probe', { method: 'POST', body: { isrcs: batch, force: force } });
+      applyResults(probeData.results, upgradeableMap, unresolved, true);
+    }
+  } catch (_) {
+    upgradeBtn.style.display = 'none';
+    if (refreshBtn) refreshBtn.style.display = 'none';
+    return;
+  }
+
+  if (refreshBtn) {
+    refreshBtn.disabled = false;
+    refreshBtn.onclick = () => { _scanPlaylistUpgrades(tracks, trackList, upgradeBtn, refreshBtn, { force: true }); };
+  }
+
+  const allUpgradeable = [...upgradeableMap.values()].filter(item => item.path && item.tidal_track_id);
+  if (allUpgradeable.length === 0) {
+    upgradeBtn.textContent = 'No Upgrades Available';
+    upgradeBtn.disabled = true;
+    upgradeBtn.title = 'No higher quality playlist tracks found';
+    return;
+  }
+
+  upgradeBtn.textContent = 'Upgrade ' + allUpgradeable.length + ' Tracks';
+  upgradeBtn.disabled = false;
+  upgradeBtn.title = 'Upgrade playlist tracks with higher quality available on Tidal';
+  upgradeBtn.onclick = async () => {
+    upgradeBtn.disabled = true;
+    upgradeBtn.textContent = 'Upgrading...';
+    try {
+      const resp = await api('/upgrade/start', {
+        method: 'POST',
+        body: { tracks: allUpgradeable.map(u => ({ path: u.path, tidal_track_id: u.tidal_track_id })) }
+      });
+      if (resp.count > 0) { updateDlBadge(resp.count); _ensureGlobalSSE(); }
+      toast('Upgrade started for ' + (resp.count || allUpgradeable.length) + ' tracks', 'success');
+    } catch (err) {
+      toast('Upgrade failed', 'error');
+      upgradeBtn.disabled = false;
+      upgradeBtn.textContent = 'Upgrade ' + allUpgradeable.length + ' Tracks';
+    }
+  };
 }
 
 // ---- GLOBAL 409 HANDLER ----
@@ -2260,10 +2429,78 @@ function _extractFormat(track) {
   return '';
 }
 
+function _sameTrack(a, b) {
+  if (!a || !b) return false;
+  if (a._queueEntryId != null && b._queueEntryId != null) {
+    return a._queueEntryId === b._queueEntryId;
+  }
+  return _trackKey(a) !== '' && _trackKey(a) === _trackKey(b);
+}
+
+function _findTrackIndex(list, track) {
+  if (!track || !list || !list.length) return -1;
+  const sameRef = list.indexOf(track);
+  if (sameRef !== -1) return sameRef;
+  return list.findIndex(t => _sameTrack(t, track));
+}
+
+function _cloneQueueTrack(track, entryId) {
+  return { ...track, _queueEntryId: entryId };
+}
+
+function _shuffleTracks(tracks) {
+  const shuffled = tracks.slice();
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
+function _setQueueOrder(tracks, currentTrack) {
+  const source = tracks.slice();
+  const currentSourceIdx = currentTrack ? _findTrackIndex(source, currentTrack) : 0;
+  const ordered = source.map(track => _cloneQueueTrack(track, ++_queueEntrySeq));
+  const current = ordered[Math.max(0, currentSourceIdx)] || ordered[0] || null;
+  state.queueOriginal = ordered.slice();
+
+  if (state.shuffle) {
+    const currentIdx = _findTrackIndex(ordered, current);
+    const remaining = ordered.filter((_, idx) => idx !== currentIdx);
+    state.queue = current ? [current, ..._shuffleTracks(remaining)] : _shuffleTracks(ordered);
+    state.queueIndex = current ? 0 : 0;
+  } else {
+    state.queue = ordered;
+    state.queueIndex = current ? _findTrackIndex(ordered, current) : 0;
+  }
+}
+
+function _reshuffleCurrentQueue() {
+  if (!state.queueOriginal.length) return;
+  const current = state.queue[state.queueIndex] || state.queueOriginal[0] || null;
+  const currentIdx = _findTrackIndex(state.queueOriginal, current);
+  const remaining = state.queueOriginal.filter((_, idx) => idx !== currentIdx);
+  state.queue = current ? [current, ..._shuffleTracks(remaining)] : _shuffleTracks(state.queueOriginal);
+  state.queueIndex = current ? 0 : 0;
+  state.shuffle = true;
+  btnShuffle.classList.add('active');
+  _saveQueue();
+}
+
+function _restoreOriginalQueueOrder() {
+  if (!state.queueOriginal.length) return;
+  const current = state.queue[state.queueIndex] || null;
+  state.queue = state.queueOriginal.slice();
+  const idx = current ? _findTrackIndex(state.queueOriginal, current) : 0;
+  state.queueIndex = idx >= 0 ? idx : 0;
+  state.shuffle = false;
+  btnShuffle.classList.remove('active');
+  _saveQueue();
+}
+
 function startPlaybackFromList(track, tracks) {
-  state.queue = tracks.slice();
-  state.queueIndex = tracks.indexOf(track);
-  playTrack(track);
+  _setQueueOrder(tracks, track);
+  playTrack(state.queue[state.queueIndex]);
 }
 
 function renderTrackRow(track, num, allTracks) {
@@ -2437,8 +2674,17 @@ function renderTrackRow(track, num, allTracks) {
                   setWaveformPlaying(false);
                 }
 
-                // Remove from queue if present
-                state.queue = state.queue.filter(t => _trackKey(t) !== _trackKey(track));
+                // Remove deleted file from queue snapshots
+                const removedKey = _trackKey(track);
+                const currentQueueTrack = state.queue[state.queueIndex] || null;
+                const removedBeforeCurrent = state.queue.slice(0, state.queueIndex).filter(t => _trackKey(t) === removedKey).length;
+                const removedCurrent = currentQueueTrack && _trackKey(currentQueueTrack) === removedKey;
+                state.queue = state.queue.filter(t => _trackKey(t) !== removedKey);
+                state.queueOriginal = state.queueOriginal.filter(t => _trackKey(t) !== removedKey);
+                if (removedBeforeCurrent) state.queueIndex -= removedBeforeCurrent;
+                if (removedCurrent && state.queue.length === 0) state.queueIndex = -1;
+                else if (state.queueIndex >= state.queue.length) state.queueIndex = state.queue.length - 1;
+                _saveQueue();
 
                 toast('Track deleted', 'success');
               } catch (err) {
@@ -2651,19 +2897,16 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
       albumMeta.insertBefore(subLine, albumActions);
 
       playBtn.addEventListener('click', () => {
-        state.queue = tracks.slice();
-        state.queueIndex = 0;
         state.shuffle = false;
         btnShuffle.classList.remove('active');
-        playTrack(tracks[0]);
+        _setQueueOrder(tracks, tracks[0]);
+        playTrack(state.queue[state.queueIndex]);
       });
       shuffleBtn.addEventListener('click', () => {
-        const shuffled = tracks.slice().sort(() => Math.random() - 0.5);
-        state.queue = shuffled;
-        state.queueIndex = 0;
         state.shuffle = true;
         btnShuffle.classList.add('active');
-        playTrack(shuffled[0]);
+        _setQueueOrder(tracks, tracks[0]);
+        playTrack(state.queue[state.queueIndex]);
       });
 
       // Upgrade check — show button if any tracks are below target quality
@@ -2899,9 +3142,10 @@ async function renderAlbumDetail(container, albumId) {
     playBtn.addEventListener('click', () => {
       const playable = tracks.filter(t => t.is_local);
       if (!playable.length) { toast('No local tracks to play', 'info'); return; }
-      state.queue = playable.slice();
-      state.queueIndex = 0;
-      playTrack(playable[0]);
+      state.shuffle = false;
+      btnShuffle.classList.remove('active');
+      _setQueueOrder(playable, playable[0]);
+      playTrack(state.queue[state.queueIndex]);
     });
 
     const shuffleBtn = h('button', { className: 'pill' });
@@ -2909,12 +3153,10 @@ async function renderAlbumDetail(container, albumId) {
     shuffleBtn.addEventListener('click', () => {
       const playable = tracks.filter(t => t.is_local);
       if (!playable.length) { toast('No local tracks to play', 'info'); return; }
-      const shuffled = playable.slice().sort(() => Math.random() - 0.5);
-      state.queue = shuffled;
-      state.queueIndex = 0;
       state.shuffle = true;
       btnShuffle.classList.add('active');
-      playTrack(shuffled[0]);
+      _setQueueOrder(playable, playable[0]);
+      playTrack(state.queue[state.queueIndex]);
     });
 
     const dlBtn = h('button', { className: 'pill' });
@@ -3038,31 +3280,87 @@ async function loadLibraryRecentShelf(shelfArea) {
   const header = h('div', { className: 'results-header library-shelf-header' }, heading);
   shelfArea.appendChild(header);
 
-  try {
-    const data = await loadLibraryRecentAlbumsPage(LIBRARY_RECENT_SHELF_LIMIT, 0);
-    const albums = data.albums || [];
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY = 1500; // ms — gives sidecar DB time to initialize on cold start
+  let lastErr = null;
 
-    if (albums.length === 0) {
-      shelfArea.appendChild(renderLibraryRecentShelfState(
-        'No recently added albums yet',
-        'Download music or sync your library to populate this shelf.'
-      ));
-      return;
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const data = await loadLibraryRecentAlbumsPage(LIBRARY_RECENT_SHELF_LIMIT, 0);
+      const albums = data.albums || [];
+
+      if (albums.length === 0) {
+        shelfArea.appendChild(renderLibraryRecentShelfState(
+          'No recently added albums yet',
+          'Download music or sync your library to populate this shelf.'
+        ));
+        return;
+      }
+
+      const seeAll = h('button', { className: 'library-shelf-action' }, 'See all');
+      seeAll.addEventListener('click', () => navigate('recent-added'));
+      header.appendChild(seeAll);
+
+      const grid = renderRecentAlbumCards(albums);
+      grid.classList.add('library-shelf-grid');
+      shelfArea.appendChild(grid);
+      return; // success
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_RETRIES - 1) {
+        await new Promise(r => setTimeout(r, RETRY_DELAY));
+      }
     }
-
-    const seeAll = h('button', { className: 'library-shelf-action' }, 'See all');
-    seeAll.addEventListener('click', () => navigate('recent-added'));
-    header.appendChild(seeAll);
-
-    const grid = renderRecentAlbumCards(albums);
-    grid.classList.add('library-shelf-grid');
-    shelfArea.appendChild(grid);
-  } catch (_) {
-    shelfArea.appendChild(renderLibraryRecentShelfState(
-      'Recently added unavailable',
-      'Check your library connection and try again.'
-    ));
   }
+
+  console.error('[shelf] Recently added failed after retries:', lastErr);
+  shelfArea.appendChild(renderLibraryRecentShelfState(
+    'Recently added unavailable',
+    'Check your library connection and try again.'
+  ));
+}
+
+function renderRecentAlbumRow(album) {
+  const row = h('div', { className: 'recent-album-row' });
+
+  // Small album art thumbnail
+  const artWrap = h('div', { className: 'recent-album-art' });
+  if (album.cover_url) {
+    const img = h('img', { src: album.cover_url, alt: '', loading: 'lazy' });
+    img.onerror = function() {
+      this.style.display = 'none';
+      artWrap.style.background = artGradient(album.name || album.artist);
+    };
+    artWrap.appendChild(img);
+  } else {
+    artWrap.style.background = artGradient(album.name || album.artist);
+  }
+  row.appendChild(artWrap);
+
+  // Album name + artist · track count
+  const meta = h('div', { className: 'recent-album-meta' });
+  meta.appendChild(textEl('div', album.name || 'Unknown Album', 'recent-album-name'));
+  const sub = [album.artist || 'Unknown Artist'];
+  sub.push((album.track_count || 0) + ' track' + ((album.track_count || 0) !== 1 ? 's' : ''));
+  meta.appendChild(textEl('div', sub.join(' \u00b7 '), 'recent-album-sub'));
+  row.appendChild(meta);
+
+  // Relative time (recent_at is epoch seconds)
+  if (album.recent_at) {
+    row.appendChild(textEl('div', _recentRelativeTime(album.recent_at * 1000), 'recent-album-time'));
+  }
+
+  // Source badge (download vs scan)
+  if (album.recent_source === 'download') {
+    row.appendChild(textEl('div', 'Downloaded', 'recent-album-source'));
+  }
+
+  row.addEventListener('click', () => {
+    navigate('localalbum:' + encodeURIComponent(album.artist || 'Unknown Artist') + ':' + encodeURIComponent(album.name || 'Unknown Album'));
+  });
+  row.style.cursor = 'pointer';
+  a11yClick(row);
+  return row;
 }
 
 async function loadLibraryRecentAlbumsExpanded(resultsArea, append) {
@@ -3086,13 +3384,37 @@ async function loadLibraryRecentAlbumsExpanded(resultsArea, append) {
         return 0;
       }
 
-      const grid = renderRecentAlbumCards(albums);
-      grid.id = 'library-recent-albums';
-      resultsArea.appendChild(grid);
+      const list = h('div', { className: 'recent-album-list', id: 'library-recent-albums' });
+      // Time-group dividers like Recently Played
+      let currentGroup = null;
+      albums.forEach(album => {
+        if (album.recent_at) {
+          const group = _recentTimeGroup(album.recent_at * 1000);
+          if (group !== currentGroup) {
+            currentGroup = group;
+            list.appendChild(textEl('div', group, 'recent-page-divider'));
+          }
+        }
+        list.appendChild(renderRecentAlbumRow(album));
+      });
+      resultsArea.appendChild(list);
     } else {
-      const grid = document.getElementById('library-recent-albums') ||
-        resultsArea.querySelector('.album-gallery');
-      renderRecentAlbumCards(albums, grid);
+      const list = document.getElementById('library-recent-albums') ||
+        resultsArea.querySelector('.recent-album-list');
+      let currentGroup = list.lastElementChild
+        ? (list.lastElementChild.classList.contains('recent-page-divider')
+          ? list.lastElementChild.textContent : null)
+        : null;
+      albums.forEach(album => {
+        if (album.recent_at) {
+          const group = _recentTimeGroup(album.recent_at * 1000);
+          if (group !== currentGroup) {
+            currentGroup = group;
+            list.appendChild(textEl('div', group, 'recent-page-divider'));
+          }
+        }
+        list.appendChild(renderRecentAlbumRow(album));
+      });
     }
 
     const oldBtn = resultsArea.querySelector('.load-more');
@@ -3843,9 +4165,25 @@ async function loadPlaylistTracks(resultsArea, pl) {
   const dlBtn = h('button', { className: 'pill album-dl-btn' });
   dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download Missing';
 
+  const upgradeBtn = h('button', { className: 'pill album-upgrade-btn' });
+  upgradeBtn.textContent = 'Checking upgrades...';
+  upgradeBtn.style.display = 'none';
+  upgradeBtn.disabled = true;
+
+  const refreshUpgradeBtn = h('button', {
+    className: 'pill pill-sm album-upgrade-refresh-btn',
+    title: 'Refresh upgrade availability',
+    'aria-label': 'Refresh upgrade availability'
+  });
+  refreshUpgradeBtn.textContent = '↻';
+  refreshUpgradeBtn.style.display = 'none';
+  refreshUpgradeBtn.disabled = true;
+
   actions.appendChild(playBtn);
   actions.appendChild(shuffleBtn);
   actions.appendChild(dlBtn);
+  actions.appendChild(upgradeBtn);
+  actions.appendChild(refreshUpgradeBtn);
   plMeta.appendChild(actions);
   plHeader.appendChild(plMeta);
   resultsArea.appendChild(plHeader);
@@ -3871,19 +4209,16 @@ async function loadPlaylistTracks(resultsArea, pl) {
       playBtn.disabled = false;
       shuffleBtn.disabled = false;
       playBtn.addEventListener('click', () => {
-        state.queue = tracks.slice();
-        state.queueIndex = 0;
         state.shuffle = false;
         btnShuffle.classList.remove('active');
-        playTrack(tracks[0]);
+        _setQueueOrder(tracks, tracks[0]);
+        playTrack(state.queue[state.queueIndex]);
       });
       shuffleBtn.addEventListener('click', () => {
-        const shuffled = tracks.slice().sort(() => Math.random() - 0.5);
-        state.queue = shuffled;
-        state.queueIndex = 0;
         state.shuffle = true;
         btnShuffle.classList.add('active');
-        playTrack(shuffled[0]);
+        _setQueueOrder(tracks, tracks[0]);
+        playTrack(state.queue[state.queueIndex]);
       });
     }
 
@@ -3903,6 +4238,8 @@ async function loadPlaylistTracks(resultsArea, pl) {
             dlBtn.style.display = 'none';
           } else {
             toast('Downloading ' + result.missing + ' missing tracks', 'success');
+            updateDlBadge(result.missing);
+            _ensureGlobalSSE();
             dlBtn.textContent = 'Queued';
             dlBtn.disabled = true;
           }
@@ -3913,6 +4250,8 @@ async function loadPlaylistTracks(resultsArea, pl) {
         }
       });
     }
+
+    _scanPlaylistUpgrades(tracks, trackList, upgradeBtn, refreshUpgradeBtn);
 
     // Update track count
     plMeta.querySelector('.album-detail-sub').textContent = tracks.length + ' tracks';
@@ -4318,7 +4657,9 @@ async function loadDownloadHistory(container) {
             quality: dl.quality,
             format: dl.quality,
           };
-          state.queue = [track];
+          const queuedTrack = _cloneQueueTrack(track, ++_queueEntrySeq);
+          state.queueOriginal = [queuedTrack];
+          state.queue = [queuedTrack];
           state.queueIndex = 0;
           playTrack(track);
         });
@@ -4442,10 +4783,13 @@ function renderSettings(container) {
   resultsArea.appendChild(authSection);
   loadAuthStatus(authSection);
 
+  const accessSection = h('div', { id: 'settings-access-status' });
+  resultsArea.appendChild(accessSection);
+
   // Settings form
   const formSection = h('div');
   resultsArea.appendChild(formSection);
-  loadSettingsForm(formSection);
+  loadSettingsForm(formSection, accessSection);
 
   // Updater section (Tauri only)
   if (_isTauri()) {
@@ -4488,10 +4832,88 @@ async function loadAuthStatus(container) {
   }
 }
 
-async function loadSettingsForm(container) {
+function _setVersionChip(version) {
+  if (!version) return;
+  const chip = document.getElementById('app-version-chip');
+  if (!chip) return;
+  chip.textContent = 'v' + String(version).replace(/^v/i, '');
+}
+
+function setSettingsReadOnly(container, readOnly) {
+  state.settingsReadOnly = !!readOnly;
+  container.dataset.readOnly = readOnly ? 'true' : 'false';
+  container.classList.toggle('settings-read-only', !!readOnly);
+
+  container.querySelectorAll('.settings-input, .settings-browse-btn').forEach(el => {
+    el.disabled = !!readOnly;
+  });
+
+  container.querySelectorAll('.settings-toggle').forEach(toggle => {
+    toggle.dataset.disabled = readOnly ? 'true' : 'false';
+    toggle.classList.toggle('disabled', !!readOnly);
+    toggle.setAttribute('aria-disabled', readOnly ? 'true' : 'false');
+    toggle.tabIndex = readOnly ? -1 : 0;
+  });
+}
+
+async function chooseSettingsFolder(formContainer, accessContainer, currentSettings) {
   try {
-    const data = await api('/settings');
+    const result = await api('/browse-directory', { method: 'POST' });
+    if (!result.path) return;
+
+    const body = { download_base_path: result.path };
+    const currentScan = (currentSettings.scan_paths || '').trim();
+    const currentDownload = (currentSettings.download_base_path || '').trim();
+    if (!currentScan || currentScan === currentDownload) {
+      body.scan_paths = result.path;
+    }
+
+    await api('/settings', { method: 'PATCH', body });
+    toast('Music folder updated', 'success');
+    await loadSettingsForm(formContainer, accessContainer);
+  } catch (err) {
+    if (!String(err.message || '').includes('No directory selected')) {
+      toast('Browse failed: ' + err.message, 'error');
+    }
+  }
+}
+
+function renderSettingsAccessBanner(container, access, formContainer, currentSettings) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+  if (!access || !access.read_only) return;
+
+  const banner = h('div', { className: 'error-banner settings-status-banner' });
+  banner.appendChild(textEl('span', access.banner_message || 'Settings are read-only until access is restored.', ''));
+
+  const retryBtn = textEl('button', 'Retry Access', 'banner-action');
+  retryBtn.addEventListener('click', () => { loadSettingsForm(formContainer, container); });
+  banner.appendChild(retryBtn);
+
+  const chooseBtn = textEl('button', 'Choose Folder', 'banner-action');
+  chooseBtn.style.marginLeft = '0';
+  chooseBtn.addEventListener('click', () => { chooseSettingsFolder(formContainer, container, currentSettings); });
+  banner.appendChild(chooseBtn);
+
+  container.appendChild(banner);
+}
+
+async function loadSettingsForm(container, accessContainer) {
+  try {
+    const [data, access] = await Promise.all([
+      api('/settings'),
+      api('/settings/status').catch(() => ({ read_only: false, banner_message: null, paths: [], version: null })),
+    ]);
+    state.settings = data;
+    _settingsLoad = Promise.resolve(data);
+    state.settingsAccess = access;
+    _setVersionChip(access.version);
+
     while (container.firstChild) container.removeChild(container.firstChild);
+    renderSettingsAccessBanner(accessContainer, access, container, data);
+
+    if (access && access.read_only) {
+      container.appendChild(textEl('div', 'Settings are read-only until access is restored.', 'settings-read-only-note'));
+    }
 
     const sections = [
       { title: 'Storage', fields: [
@@ -4537,18 +4959,19 @@ async function loadSettingsForm(container) {
           const input = h('input', { className: 'settings-input', type: 'text' });
           input.style.width = '260px';
           input.value = data[field.key] || '';
-          input.addEventListener('blur', () => saveSetting(field.key, input.value));
+          input.addEventListener('blur', () => { if (!state.settingsReadOnly) saveSetting(field.key, input.value); });
           wrapper.appendChild(input);
-          const browseBtn = textEl('button', 'Browse', 'pill active');
+          const browseBtn = textEl('button', 'Browse', 'pill active settings-browse-btn');
           browseBtn.style.cursor = 'pointer';
           browseBtn.style.whiteSpace = 'nowrap';
           browseBtn.addEventListener('click', async () => {
+            if (state.settingsReadOnly) return;
             browseBtn.textContent = '...';
             try {
               const result = await api('/browse-directory', { method: 'POST' });
               if (result.path) {
                 input.value = result.path;
-                saveSetting(field.key, result.path);
+                await saveSetting(field.key, result.path);
               }
             } catch (err) {
               if (!err.message.includes('No directory selected')) {
@@ -4563,7 +4986,7 @@ async function loadSettingsForm(container) {
           const input = h('input', { className: 'settings-input', type: 'text' });
           input.style.width = '300px';
           input.value = data[field.key] || '';
-          input.addEventListener('blur', () => saveSetting(field.key, input.value));
+          input.addEventListener('blur', () => { if (!state.settingsReadOnly) saveSetting(field.key, input.value); });
           row.appendChild(input);
         } else if (field.type === 'number') {
           const input = h('input', { className: 'settings-input', type: 'number' });
@@ -4572,6 +4995,7 @@ async function loadSettingsForm(container) {
           input.max = '10';
           input.value = data[field.key] || 3;
           input.addEventListener('blur', () => {
+            if (state.settingsReadOnly) return;
             let v = parseInt(input.value, 10);
             if (isNaN(v) || v < 1) v = 1;
             if (v > 10) v = 10;
@@ -4600,6 +5024,7 @@ async function loadSettingsForm(container) {
           });
           let val = !!data[field.key];
           const flipToggle = () => {
+            if (toggle.dataset.disabled === 'true') return;
             val = !val;
             toggle.className = 'settings-toggle' + (val ? ' on' : '');
             toggle.setAttribute('aria-checked', val ? 'true' : 'false');
@@ -4615,16 +5040,24 @@ async function loadSettingsForm(container) {
 
       container.appendChild(sectionEl);
     });
+
+    setSettingsReadOnly(container, !!(access && access.read_only));
   } catch (err) {
     container.appendChild(textEl('div', 'Failed to load settings: ' + err.message, 'track-artist'));
   }
 }
 
 async function saveSetting(key, value) {
+  if (state.settingsReadOnly) {
+    toast('Settings are read-only until access is restored.', 'error', 5000);
+    return;
+  }
   try {
     const body = {};
     body[key] = value;
-    await api('/settings', { method: 'PATCH', body });
+    const updated = await api('/settings', { method: 'PATCH', body });
+    state.settings = updated;
+    _settingsLoad = Promise.resolve(updated);
     toast('Setting saved', 'success');
   } catch (err) {
     toast('Failed to save: ' + err.message, 'error');
@@ -5173,11 +5606,7 @@ btnPlay.addEventListener('click', () => {
 
 btnNext.addEventListener('click', () => {
   if (state.queue.length === 0) return;
-  if (state.shuffle) {
-    state.queueIndex = Math.floor(Math.random() * state.queue.length);
-  } else {
-    state.queueIndex = (state.queueIndex + 1) % state.queue.length;
-  }
+  state.queueIndex = (state.queueIndex + 1) % state.queue.length;
   playTrack(state.queue[state.queueIndex]);
 });
 
@@ -5192,8 +5621,13 @@ btnPrev.addEventListener('click', () => {
 });
 
 btnShuffle.addEventListener('click', () => {
-  state.shuffle = !state.shuffle;
-  btnShuffle.classList.toggle('active', state.shuffle);
+  if (!state.queue.length) {
+    state.shuffle = !state.shuffle;
+    btnShuffle.classList.toggle('active', state.shuffle);
+    return;
+  }
+  if (state.shuffle) _restoreOriginalQueueOrder();
+  else _reshuffleCurrentQueue();
 });
 
 btnRepeat.addEventListener('click', () => {
@@ -5252,7 +5686,7 @@ audio.addEventListener('ended', () => {
     return;
   }
   const hasNext = state.queueIndex < state.queue.length - 1;
-  if (hasNext || state.shuffle) {
+  if (hasNext) {
     btnNext.click();
   } else if (state.repeat === 'all') {
     state.queueIndex = 0;
@@ -5280,9 +5714,8 @@ audio.addEventListener('error', () => {
   setWaveformPlaying(false);
   const current = state.queue[state.queueIndex];
   const label = current ? (current.name || 'Track') : 'Track';
-  const canAutoSkip = current && current.is_local && state.queueIndex < state.queue.length - 1;
+  const canAutoSkip = current && state.queueIndex < state.queue.length - 1;
   toast(label + ' unavailable', 'error');
-  // Auto-skip only for local-file queue playback; remote search/stream failures should stop.
   if (canAutoSkip) {
     setTimeout(() => { state.queueIndex++; playTrack(state.queue[state.queueIndex]); }, 800);
   }
@@ -5612,7 +6045,10 @@ function renderQueue() {
     remove.textContent = '\u00d7';
     remove.addEventListener('click', (e) => {
       e.stopPropagation();
+      const removedTrack = state.queue[i];
       state.queue.splice(i, 1);
+      const originalIdx = _findTrackIndex(state.queueOriginal, removedTrack);
+      if (originalIdx !== -1) state.queueOriginal.splice(originalIdx, 1);
       if (i < state.queueIndex) state.queueIndex--;
       else if (i === state.queueIndex && state.queue.length === 0) {
         state.queueIndex = -1;
@@ -5620,6 +6056,7 @@ function renderQueue() {
         state.queueIndex = state.queue.length - 1;
       }
       renderQueue();
+      _saveQueue();
     });
 
     item.addEventListener('click', () => {
@@ -6237,9 +6674,7 @@ let _preloadedSrc = '';
 
 function _preloadNext() {
   if (state.queue.length === 0 || state.repeat === 'one') return;
-  const nextIdx = state.shuffle
-    ? Math.floor(Math.random() * state.queue.length)
-    : (state.queueIndex + 1) % state.queue.length;
+  const nextIdx = (state.queueIndex + 1) % state.queue.length;
   const next = state.queue[nextIdx];
   if (!next) return;
   const src = (next.is_local && next.local_path)
@@ -6258,7 +6693,7 @@ audio.addEventListener('canplaythrough', () => _preloadNext());
 
 function _saveQueue() {
   try {
-    const data = { queue: state.queue, queueIndex: state.queueIndex, shuffle: state.shuffle, repeat: state.repeat };
+    const data = { queue: state.queue, queueOriginal: state.queueOriginal, queueIndex: state.queueIndex, shuffle: state.shuffle, repeat: state.repeat };
     localStorage.setItem('playerQueue', JSON.stringify(data));
   } catch (_) { /* quota exceeded — ignore */ }
 }
@@ -6270,10 +6705,12 @@ function _restoreQueue() {
     const data = JSON.parse(raw);
     if (data.queue && data.queue.length > 0) {
       state.queue = data.queue;
+      state.queueOriginal = (data.queueOriginal && data.queueOriginal.length > 0) ? data.queueOriginal : data.queue.slice();
       state.queueIndex = typeof data.queueIndex === 'number' ? data.queueIndex : 0;
       state.shuffle = !!data.shuffle;
       state.repeat = data.repeat || 'off';
       btnShuffle.classList.toggle('active', state.shuffle);
+      btnRepeat.classList.toggle('active', state.repeat !== 'off');
       _updateRepeatIcon(btnRepeat);
       // Show now-playing info without auto-playing
       const current = state.queue[state.queueIndex];

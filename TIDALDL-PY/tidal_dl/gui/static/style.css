@@ -246,6 +246,34 @@ body {
   min-width: 0;
 }
 
+.main-topbar {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--glass-border);
+  background: rgba(15, 14, 13, 0.35);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  flex-shrink: 0;
+}
+
+.main-topbar-spacer {
+  flex: 1;
+}
+
+.app-version-chip {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: var(--surface);
+}
+
 #view {
   flex: 1;
   overflow-y: auto;
@@ -2985,6 +3013,20 @@ body {
 
 /* ---- SETTINGS PAGE ---- */
 
+.settings-status-banner {
+  margin-bottom: 16px;
+}
+
+.settings-read-only {
+  opacity: 0.92;
+}
+
+.settings-read-only-note {
+  font-size: 12px;
+  color: var(--red);
+  margin-bottom: 16px;
+}
+
 .settings-section {
   margin-bottom: 20px;
 }
@@ -3043,6 +3085,12 @@ body {
   color: var(--text-muted);
 }
 
+.settings-input:disabled,
+.settings-browse-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 /* Toggle switch */
 .settings-toggle {
   position: relative;
@@ -3076,6 +3124,11 @@ body {
 .settings-toggle.on::after {
   transform: translateX(10px);
   background: var(--accent);
+}
+
+.settings-toggle.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* ---- Recently Played page ---- */
@@ -3144,6 +3197,82 @@ body {
 }
 @media (hover: none) {
   .recent-page-remove-btn { opacity: 1; }
+}
+
+/* ── Recently Added album list (compact rows, matches Recently Played) ── */
+
+.recent-album-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.recent-album-row {
+  display: grid;
+  grid-template-columns: 40px 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  transition: background 0.12s ease;
+}
+
+.recent-album-row:hover {
+  background: var(--surface-hover);
+}
+
+.recent-album-art {
+  width: 40px;
+  height: 40px;
+  border-radius: 4px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--surface-elevated);
+}
+
+.recent-album-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.recent-album-meta {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.recent-album-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-album-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-album-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.recent-album-source {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--accent);
+  background: rgba(212, 160, 83, 0.1);
+  padding: 2px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
 }
 
 .recent-page-clear-btn {

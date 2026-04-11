@@ -46,36 +46,75 @@ def _normalize_genre(raw: str | None) -> str | None:
     return _GENRE_MAP.get(g.lower(), g)
 
 
-_db: LibraryDB | None = None
-_db_opened_at: float = 0
+_db: LibraryDB | None = None  # Compatibility alias for tests/debugging.
+_db_opened_at: float = 0  # Compatibility alias for tests/debugging.
 _DB_MAX_AGE = 300  # Force reconnect every 5 min to catch stale NAS handles
 _scan_lock = threading.Lock()
 _scan_running = False
 _scan_progress = {"scanned": 0, "total": 0, "done": True}
+_db_local = threading.local()
+_db_generation = 0
+_db_generation_lock = threading.Lock()
+
+
+def _close_thread_db() -> None:
+    db = getattr(_db_local, "db", None)
+    if db is not None:
+        try:
+            db.close()
+        except Exception:
+            pass
+    _db_local.db = None
+    _db_local.opened_at = 0.0
+    _db_local.generation = -1
+
+
+def _invalidate_db_cache() -> None:
+    global _db, _db_opened_at, _db_generation
+    _close_thread_db()
+    _db = None
+    _db_opened_at = 0
+    with _db_generation_lock:
+        _db_generation += 1
 
 
 def _get_db() -> LibraryDB:
     global _db, _db_opened_at
     now = time.time()
-    if _db is not None and (now - _db_opened_at) > _DB_MAX_AGE:
-        try:
-            _db.close()
-        except Exception:
-            pass
-        _db = None
-    if _db is None:
-        _db = LibraryDB(Path(path_config_base()) / "library.db")
-        _db.open()
-        _db_opened_at = now
+    db_path = Path(path_config_base()) / "library.db"
+    db = getattr(_db_local, "db", None)
+    opened_at = getattr(_db_local, "opened_at", 0.0)
+    generation = getattr(_db_local, "generation", -1)
+
+    if db is not None:
+        expired = (now - opened_at) > _DB_MAX_AGE
+        stale_generation = generation != _db_generation
+        stale_path = db._path != db_path
+        if expired or stale_generation or stale_path:
+            _close_thread_db()
+            db = None
+
+    if db is None:
+        db = LibraryDB(db_path)
+        db.open()
+        _db_local.db = db
+        _db_local.opened_at = now
+        _db_local.generation = _db_generation
     else:
         # Validate the connection is still alive (NAS mounts can drop)
         try:
-            _db._conn.execute("SELECT 1")
+            db._conn.execute("SELECT 1")
         except Exception:
-            _db = LibraryDB(Path(path_config_base()) / "library.db")
-            _db.open()
-            _db_opened_at = now
-    return _db
+            _close_thread_db()
+            db = LibraryDB(db_path)
+            db.open()
+            _db_local.db = db
+            _db_local.opened_at = now
+            _db_local.generation = _db_generation
+
+    _db = db
+    _db_opened_at = getattr(_db_local, "opened_at", now)
+    return db
 
 
 def get_download_path() -> str:
@@ -433,9 +472,8 @@ def _background_scan(rescan: bool) -> None:
                 db.commit()
         db.close()
 
-        # Flag invalidation — main thread reopens on next request
-        global _db
-        _db = None
+        # Flag invalidation — request threads reopen on next access
+        _invalidate_db_cache()
     finally:
         with _scan_lock:
             _scan_running = False

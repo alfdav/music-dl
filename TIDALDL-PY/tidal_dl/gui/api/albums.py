@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
@@ -22,8 +24,91 @@ def _get_library_db() -> LibraryDB:
 
 
 def _normalize(s: str) -> str:
-    """Lowercase, strip whitespace for fuzzy comparison."""
-    return s.strip().lower()
+    """Accent-insensitive, token-friendly normalization for fuzzy comparison."""
+    if not s:
+        return ""
+    folded = unicodedata.normalize("NFKD", s)
+    stripped = "".join(ch for ch in folded if not unicodedata.combining(ch))
+    cleaned = re.sub(r"[^\w]+", " ", stripped.casefold())
+    return " ".join(cleaned.split())
+
+
+
+def _token_set(s: str) -> set[str]:
+    return set(_normalize(s).split())
+
+
+
+def _token_overlap(a: str, b: str) -> float:
+    left = _token_set(a)
+    right = _token_set(b)
+    if not left or not right:
+        return 0.0
+    return len(left & right) / max(len(left), len(right))
+
+
+
+def _album_metadata_score(candidate_album: str, candidate_artist: str, target_album: str, target_artist: str) -> float:
+    score = 0.0
+
+    cand_album = _normalize(candidate_album)
+    cand_artist = _normalize(candidate_artist)
+    want_album = _normalize(target_album)
+    want_artist = _normalize(target_artist)
+
+    if cand_album and want_album:
+        if cand_album == want_album:
+            score += 6.0
+        elif want_album in cand_album or cand_album in want_album:
+            score += 3.0
+        else:
+            score += 3.0 * _token_overlap(cand_album, want_album)
+
+    if cand_artist and want_artist:
+        if cand_artist == want_artist:
+            score += 4.0
+        elif want_artist in cand_artist or cand_artist in want_artist:
+            score += 2.0
+        else:
+            score += 2.0 * _token_overlap(cand_artist, want_artist)
+
+    return score
+
+
+
+def _local_album_rows(artist: str, album: str) -> list[dict]:
+    try:
+        db = _get_library_db()
+        try:
+            return db.album_tracks(artist, album)
+        finally:
+            db.close()
+    except Exception:
+        return []
+
+
+
+def _track_title_variants(track: object) -> set[str]:
+    variants = {
+        _normalize(getattr(track, "name", "")),
+        _normalize(getattr(track, "full_name", "")),
+    }
+    return {value for value in variants if value}
+
+
+
+def _track_artist(track: object) -> str:
+    artists = getattr(track, "artists", None) or []
+    names = [getattr(artist, "name", "") for artist in artists if getattr(artist, "name", "")]
+    return _normalize(", ".join(names))
+
+
+
+def _track_match_keys(track: object) -> set[tuple[str, str]]:
+    artist = _track_artist(track)
+    if not artist:
+        return set()
+    return {(title, artist) for title in _track_title_variants(track) if title}
 
 
 @router.get("/albums/{album_id}/tracks")
@@ -89,63 +174,87 @@ def album_lookup(
     if not albums:
         raise HTTPException(status_code=404, detail="No matching album found on Tidal")
 
-    # --- 2. Fuzzy-match best album ---
-    target_album = _normalize(album)
-    target_artist = _normalize(artist)
-
-    def _score(a) -> float:
-        """Lower is better. Exact match = 0."""
-        a_name = _normalize(getattr(a, "name", ""))
-        a_artist = _normalize(
-            getattr(a.artist, "name", "") if getattr(a, "artist", None) else ""
+    # --- 2. Rank candidates by metadata, then verify with local track overlap ---
+    local_rows = _local_album_rows(artist, album)
+    local_track_keys = {
+        (
+            title,
+            artist_name,
         )
-        # Simple containment / equality scoring
-        score = 0.0
-        if a_name == target_album:
-            score += 0.0
-        elif target_album in a_name or a_name in target_album:
-            score += 0.3
-        else:
-            score += 1.0
-        if a_artist == target_artist:
-            score += 0.0
-        elif target_artist in a_artist or a_artist in target_artist:
-            score += 0.3
-        else:
-            score += 1.0
-        return score
+        for row in local_rows
+        for title in [_normalize(row.get("title") or "")]
+        for artist_name in [_normalize(row.get("artist") or "")]
+        if title and artist_name
+    }
+    local_titles = {
+        (
+            _normalize(row.get("title") or ""),
+            _normalize(row.get("artist") or ""),
+            _normalize(row.get("album") or ""),
+        )
+        for row in local_rows
+        if _normalize(row.get("title") or "")
+    }
 
-    albums.sort(key=_score)
-    best = albums[0]
+    ranked = sorted(
+        albums,
+        key=lambda a: _album_metadata_score(
+            getattr(a, "name", ""),
+            getattr(getattr(a, "artist", None), "name", ""),
+            album,
+            artist,
+        ),
+        reverse=True,
+    )
 
-    # --- 3. Fetch full track list ---
-    try:
-        tidal_tracks = best.tracks() or []
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Failed to fetch album tracks: {exc}"
-        ) from exc
+    best = None
+    best_tracks = None
+    best_score = float("-inf")
+    best_overlap = 0
 
-    # --- 4. Build local-match sets (ISRC + title/artist) ---
+    for candidate in ranked[:5]:
+        try:
+            candidate_tracks = candidate.tracks() or []
+        except Exception:
+            continue
+
+        metadata_score = _album_metadata_score(
+            getattr(candidate, "name", ""),
+            getattr(getattr(candidate, "artist", None), "name", ""),
+            album,
+            artist,
+        )
+        candidate_keys = {
+            key
+            for track in candidate_tracks
+            for key in _track_match_keys(track)
+        }
+        overlap = len(candidate_keys & local_track_keys) if local_track_keys else 0
+        overlap_score = (overlap / max(len(local_track_keys), 1)) * 8.0 if local_track_keys else 0.0
+        total_score = metadata_score + overlap_score
+
+        if local_track_keys and overlap == 0:
+            total_score -= 100.0
+
+        if total_score > best_score:
+            best = candidate
+            best_tracks = candidate_tracks
+            best_score = total_score
+            best_overlap = overlap
+
+    if best is None or best_tracks is None:
+        raise HTTPException(status_code=404, detail="No matching album found on Tidal")
+
+    if local_track_keys and best_overlap == 0:
+        raise HTTPException(status_code=404, detail="No confident album match found on Tidal")
+
+    if not local_track_keys and best_score < 4.5:
+        raise HTTPException(status_code=404, detail="No confident album match found on Tidal")
+
+    tidal_tracks = best_tracks
+
+    # --- 3. Build local-match sets (ISRC + title/artist) ---
     isrc_index = _get_isrc_index()
-
-    # Also query the scanned table for title+artist+album matches (album-scoped)
-    local_titles: set[tuple[str, str, str]] = set()
-    try:
-        db = _get_library_db()
-        conn = db._conn
-        rows = conn.execute(
-            "SELECT title, artist, album FROM scanned WHERE status != 'unreadable'"
-        ).fetchall()
-        for r in rows:
-            t = _normalize(r["title"] or "")
-            a = _normalize(r["artist"] or "")
-            alb = _normalize(r["album"] or "")
-            if t:
-                local_titles.add((t, a, alb))
-        db.close()
-    except Exception:
-        pass  # If DB is unavailable, fall back to ISRC-only matching
 
     # --- 5. Serialize with is_local annotation (album-scoped only) ---
     serialized = []

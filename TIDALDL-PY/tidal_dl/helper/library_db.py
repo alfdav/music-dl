@@ -571,7 +571,7 @@ class LibraryDB:
     ) -> None:
         """Insert or update a scan result."""
         assert self._conn
-        now = int(time.time())
+        now = time.time()
         self._conn.execute(
             """INSERT INTO scanned (path, isrc, status, artist, title, album,
                                     duration, quality, format, genre, waveform,
@@ -646,16 +646,34 @@ class LibraryDB:
     # Quality probe cache
     # ------------------------------------------------------------------
 
-    def get_probe(self, isrc: str) -> dict | None:
-        """Return cached Tidal quality probe for an ISRC, or None."""
+    def _latest_scanned_at_by_isrc(self, isrcs: list[str]) -> dict[str, int]:
         assert self._conn
-        row = self._conn.execute(
-            "SELECT * FROM quality_probes WHERE isrc = ?", (isrc,)
-        ).fetchone()
-        return dict(row) if row else None
+        if not isrcs:
+            return {}
+        placeholders = ",".join("?" for _ in isrcs)
+        rows = self._conn.execute(
+            f"SELECT isrc, MAX(scanned_at) AS scanned_at FROM scanned WHERE isrc IN ({placeholders}) GROUP BY isrc",
+            isrcs,
+        ).fetchall()
+        return {r["isrc"]: float(r["scanned_at"] or 0) for r in rows if r["isrc"]}
+
+    def get_probe(self, isrc: str) -> dict | None:
+        """Return cached Tidal quality probe for an ISRC, or None.
+
+        Probes older than the latest scanned metadata for the same ISRC are
+        treated as stale and ignored.
+        """
+        if not isrc:
+            return None
+        batch = self.get_probes_batch([isrc])
+        return batch.get(isrc)
 
     def get_probes_batch(self, isrcs: list[str]) -> dict[str, dict]:
-        """Return cached probes for a list of ISRCs. Returns {isrc: row_dict}."""
+        """Return fresh cached probes for a list of ISRCs.
+
+        Stale probes whose `probed_at` predates the latest `scanned_at` for the
+        same ISRC are excluded so callers can re-probe them.
+        """
         assert self._conn
         if not isrcs:
             return {}
@@ -663,7 +681,15 @@ class LibraryDB:
         rows = self._conn.execute(
             f"SELECT * FROM quality_probes WHERE isrc IN ({placeholders})", isrcs
         ).fetchall()
-        return {r["isrc"]: dict(r) for r in rows}
+        latest_scanned = self._latest_scanned_at_by_isrc(isrcs)
+        fresh: dict[str, dict] = {}
+        for row in rows:
+            data = dict(row)
+            latest = latest_scanned.get(data["isrc"], 0)
+            if latest and float(data.get("probed_at") or 0) < latest:
+                continue
+            fresh[data["isrc"]] = data
+        return fresh
 
     def set_probe(
         self,
@@ -675,7 +701,7 @@ class LibraryDB:
         assert self._conn
         self._conn.execute(
             "INSERT OR REPLACE INTO quality_probes (isrc, tidal_track_id, max_quality, probed_at) VALUES (?, ?, ?, ?)",
-            (isrc, tidal_track_id, max_quality, int(time.time())),
+            (isrc, tidal_track_id, max_quality, time.time()),
         )
 
     def upgradeable_tracks(self) -> list[dict]:
