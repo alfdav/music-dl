@@ -3,9 +3,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/scripts/install-macos-local.sh"
+README_FILE="$ROOT/README.md"
 
 [ -f "$SCRIPT" ] || {
   echo "missing installer script: $SCRIPT"
+  exit 1
+}
+
+[ -f "$README_FILE" ] || {
+  echo "missing README: $README_FILE"
   exit 1
 }
 
@@ -34,6 +40,14 @@ assert_contains() {
   case "$haystack" in
     *"$needle"*) pass "$label" ;;
     *) fail "$label (missing=$needle output=$haystack)" ;;
+  esac
+}
+
+assert_not_contains() {
+  local haystack="$1" needle="$2" label="$3"
+  case "$haystack" in
+    *"$needle"*) fail "$label (unexpected=$needle output=$haystack)" ;;
+    *) pass "$label" ;;
   esac
 }
 
@@ -334,4 +348,11 @@ install_app() { record_call install_app; }
 say() { record_call "say:$1"; }
 
 main >/dev/null 2>&1 || fail "main runs dependency checks"
-assert_eq "$call_order" "require_macos -> require_xcode_clt -> require_rust -> require_uv -> require_node_npm -> require_arm64 -> sync_repo -> build_app -> install_app -> say:Done. Open /Applications/music-dl.app" "main runs Task 3 flow in spec order"
+assert_eq "$call_order" "require_macos -> require_arm64 -> require_xcode_clt -> require_rust -> require_uv -> require_node_npm -> sync_repo -> build_app -> install_app -> say:Done. Open /Applications/music-dl.app" "main runs Task 3 flow in spec order"
+
+readme_contents="$(<"$README_FILE")"
+assert_contains "$readme_contents" "curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash" "README documents the macOS local installer"
+assert_contains "$readme_contents" "npx tauri build --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'" "README documents the no-updater local macOS Tauri build override"
+assert_not_contains "$readme_contents" "You can also rebuild locally if you want to manage the app bundle yourself." "README removes misleading plain macOS manual-build guidance"
+assert_contains "$readme_contents" "SETUP (Tauri desktop app — Linux builds only):" "README keeps the plain Tauri build block Linux-only"
+assert_contains "$readme_contents" "# macOS local installs / unsigned local app bundles:" "README labels the local no-updater build command as macOS-specific"

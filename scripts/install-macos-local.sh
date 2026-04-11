@@ -171,11 +171,11 @@ install_app() {
 
 main() {
   require_macos
+  require_arm64
   require_xcode_clt
   require_rust
   require_uv
   require_node_npm
-  require_arm64
   sync_repo
   build_app
   install_app
