@@ -1,4 +1,5 @@
 """music-dl GUI — FastAPI application factory."""
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -8,6 +9,11 @@ from fastapi.staticfiles import StaticFiles
 
 from tidal_dl.gui.api import api_router
 from tidal_dl.gui.security import CSRFMiddleware, HostValidationMiddleware, generate_csrf_token
+
+try:
+    from tidal_dl import __version__ as _APP_VERSION
+except Exception:
+    _APP_VERSION = "0.0.0"
 
 import sys as _sys
 
@@ -20,7 +26,19 @@ else:
 
 
 def create_app(port: int = 8765) -> FastAPI:
-    app = FastAPI(title="music-dl", docs_url="/api/docs", redoc_url=None)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Restore Tidal OAuth session from saved token on server start."""
+        try:
+            from tidal_dl.config import Tidal
+
+            tidal = Tidal()
+            tidal.login_token(quiet=True)
+        except Exception:
+            pass
+        yield
+
+    app = FastAPI(title="music-dl", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
     csrf_token = generate_csrf_token()
     app.state.csrf_token = csrf_token
 
@@ -51,17 +69,6 @@ def create_app(port: int = 8765) -> FastAPI:
     app.add_middleware(TokenRefreshMiddleware)
     app.include_router(api_router, prefix="/api")
 
-    @app.on_event("startup")
-    def _restore_tidal_session():
-        """Restore Tidal OAuth session from saved token on server start."""
-        try:
-            from tidal_dl.config import Tidal
-
-            tidal = Tidal()
-            tidal.login_token(quiet=True)
-        except Exception:
-            pass
-
     @app.get("/", response_class=HTMLResponse)
     async def index():
         import time
@@ -70,6 +77,7 @@ def create_app(port: int = 8765) -> FastAPI:
         v = str(int(time.time()))
         html = html.replace('/style.css', f'/style.css?v={v}')
         html = html.replace('/app.js', f'/app.js?v={v}')
+        html = html.replace("__APP_VERSION__", _APP_VERSION)
         return HTMLResponse(html.replace("__CSRF_TOKEN__", csrf_token))
 
     app.mount("/", StaticFiles(directory=str(_STATIC_DIR)), name="static")

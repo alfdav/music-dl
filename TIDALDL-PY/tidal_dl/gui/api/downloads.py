@@ -91,9 +91,9 @@ def _scan_new_downloads(db, settings) -> None:
     if batch > 0:
         db.commit()
 
-    # Invalidate main thread's DB connection so it picks up new data
+    # Invalidate cached request-thread DB handles so next request reopens.
     import tidal_dl.gui.api.library as lib_mod
-    lib_mod._db = None
+    lib_mod._invalidate_db_cache()
 
 
 def trigger_download(track_ids: list[int]) -> dict:
