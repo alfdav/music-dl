@@ -142,3 +142,24 @@ pass "sync_repo cleans untracked files"
 rm -rf "$TMP_REMOTE" "$TMP_WORK"
 unset MUSIC_DL_INSTALLER_CACHE_DIR
 unset MUSIC_DL_INSTALLER_REPO_URL
+
+call_order=""
+record_call() {
+  if [ -n "$call_order" ]; then
+    call_order="$call_order -> $1"
+  else
+    call_order="$1"
+  fi
+}
+
+say() { :; }
+require_macos() { record_call require_macos; }
+require_xcode_clt() { record_call require_xcode_clt; }
+require_rust() { record_call require_rust; }
+require_uv() { record_call require_uv; }
+require_node_npm() { record_call require_node_npm; }
+require_arm64() { record_call require_arm64; }
+sync_repo() { record_call sync_repo; }
+
+main >/dev/null 2>&1 || fail "main runs dependency checks"
+assert_eq "$call_order" "require_macos -> require_xcode_clt -> require_rust -> require_uv -> require_node_npm -> require_arm64 -> sync_repo" "main runs Task 2 checks in spec order"
