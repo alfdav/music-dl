@@ -29,13 +29,28 @@ assert_nonzero() {
   pass "$label"
 }
 
+run_and_capture() {
+  local __output_var="$1" __status_var="$2"
+  shift 2
+
+  local output status
+  set +e
+  output="$("$@" 2>&1)"
+  status=$?
+  set -e
+
+  printf -v "$__output_var" '%s' "$output"
+  printf -v "$__status_var" '%s' "$status"
+}
+
 export MUSIC_DL_TEST_OS="Linux"
 if is_macos; then
   fail "is_macos rejects non-macOS"
 else
   pass "is_macos rejects non-macOS"
 fi
-mac_output="$( (require_macos) 2>&1 || true )"
+run_and_capture mac_output mac_status require_macos
+assert_nonzero "$mac_status" "require_macos exits non-zero"
 assert_eq "$mac_output" "This installer only supports macOS. Run it on a Mac, then rerun this installer." "require_macos prints exact rerun guidance"
 unset MUSIC_DL_TEST_OS
 
@@ -45,7 +60,8 @@ if is_arm64; then
 else
   pass "is_arm64 rejects Intel"
 fi
-arm_output="$( (require_arm64) 2>&1 || true )"
+run_and_capture arm_output arm_status require_arm64
+assert_nonzero "$arm_status" "require_arm64 exits non-zero"
 assert_eq "$arm_output" "This installer currently supports Apple Silicon (arm64) only. Use an Apple Silicon Mac, then rerun this installer." "require_arm64 prints exact rerun guidance"
 unset MUSIC_DL_TEST_ARCH
 
