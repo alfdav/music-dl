@@ -119,9 +119,10 @@ sync_repo() {
 }
 
 build_app() {
-  local app_dir
+  local app_dir tauri_local_config
   say "Building music-dl.app"
   app_dir="$(repo_dir)/TIDALDL-PY"
+  tauri_local_config='{"bundle":{"createUpdaterArtifacts":false}}'
   [ -d "$app_dir" ] || die "Could not enter $app_dir. Delete $(installer_cache_dir) and rerun this installer."
 
   (
@@ -129,7 +130,7 @@ build_app() {
     uv sync || die "Python dependency sync failed. Fix the reported problem, then rerun this installer."
     uv pip install pyinstaller || die "PyInstaller install failed. Fix the reported problem, then rerun this installer."
     npm install || die "Node dependency install failed. Fix the reported problem, then rerun this installer."
-    npx tauri build || die "Local Tauri build failed. Fix the reported problem, then rerun this installer."
+    npx tauri build --config "$tauri_local_config" || die "Local Tauri build failed. Fix the reported problem, then rerun this installer."
   )
 }
 

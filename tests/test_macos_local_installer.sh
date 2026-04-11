@@ -221,7 +221,8 @@ ORIGINAL_PATH="$PATH"
 PATH="$TMP_BUILD_BIN:$PATH"
 repo_dir() { printf '%s\n' "$TMP_BUILD_ROOT"; }
 build_app >/dev/null 2>&1 || fail "build_app succeeds with available toolchain"
-assert_eq "$(cat "$BUILD_LOG")" $'uv sync\nuv pip install pyinstaller\nnpm install\nnpx tauri build' "build_app runs Task 3 build commands in order"
+assert_eq "$(cat "$BUILD_LOG")" $'uv sync\nuv pip install pyinstaller\nnpm install\nnpx tauri build --config {"bundle":{"createUpdaterArtifacts":false}}' "build_app runs Task 3 build commands in order"
+assert_contains "$(cat "$BUILD_LOG")" 'createUpdaterArtifacts":false' "build_app disables updater artifacts for local installer builds"
 PATH="$ORIGINAL_PATH"
 rm -rf "$TMP_BUILD_ROOT" "$TMP_BUILD_BIN"
 
