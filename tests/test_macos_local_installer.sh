@@ -36,8 +36,7 @@ else
   pass "is_macos rejects non-macOS"
 fi
 mac_output="$( (require_macos) 2>&1 || true )"
-printf '%s' "$mac_output" | grep -q "Run it on a Mac, then rerun this installer."
-pass "require_macos prints rerun guidance"
+assert_eq "$mac_output" "This installer only supports macOS. Run it on a Mac, then rerun this installer." "require_macos prints exact rerun guidance"
 unset MUSIC_DL_TEST_OS
 
 export MUSIC_DL_TEST_ARCH="x86_64"
@@ -47,8 +46,7 @@ else
   pass "is_arm64 rejects Intel"
 fi
 arm_output="$( (require_arm64) 2>&1 || true )"
-printf '%s' "$arm_output" | grep -q "Use an Apple Silicon Mac, then rerun this installer."
-pass "require_arm64 prints rerun guidance"
+assert_eq "$arm_output" "This installer currently supports Apple Silicon (arm64) only. Use an Apple Silicon Mac, then rerun this installer." "require_arm64 prints exact rerun guidance"
 unset MUSIC_DL_TEST_ARCH
 
 expected_cache="$HOME/Library/Caches/music-dl-installer"

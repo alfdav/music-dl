@@ -3,6 +3,7 @@ set -euo pipefail
 
 say() { printf '\n==> %s\n' "$1"; }
 die() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
+die_exact() { printf '%s\n' "$1" >&2; exit 1; }
 
 current_os() {
   if [ -n "${MUSIC_DL_TEST_OS:-}" ]; then
@@ -33,11 +34,11 @@ is_arm64() {
 }
 
 require_macos() {
-  is_macos || die "This installer only supports macOS. Run it on a Mac, then rerun this installer."
+  is_macos || die_exact "This installer only supports macOS. Run it on a Mac, then rerun this installer."
 }
 
 require_arm64() {
-  is_arm64 || die "This installer currently supports Apple Silicon (arm64) only. Use an Apple Silicon Mac, then rerun this installer."
+  is_arm64 || die_exact "This installer currently supports Apple Silicon (arm64) only. Use an Apple Silicon Mac, then rerun this installer."
 }
 
 main() {
