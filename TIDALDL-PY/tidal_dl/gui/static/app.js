@@ -151,12 +151,32 @@ const state = {
   searchType: 'tracks',
   searchResults: null,
   queue: [],
+  queueOriginal: [],
   queueIndex: -1,
   playing: false,
   shuffle: false,
   repeat: 'off',  // 'off' | 'all' | 'one'
   volume: 0.7,
+  settingsReadOnly: false,
+  settingsAccess: null,
 };
+let _settingsLoad = null;
+
+async function _ensureSettingsLoaded() {
+  if (state.settings) return state.settings;
+  if (!_settingsLoad) {
+    _settingsLoad = api('/settings')
+      .then(settings => {
+        state.settings = settings;
+        return settings;
+      })
+      .catch(err => {
+        _settingsLoad = null;
+        throw err;
+      });
+  }
+  return _settingsLoad;
+}
 
 // ---- FAVORITES CACHE ----
 // Keyed by path for local tracks or "tidal:{id}" for Tidal tracks
@@ -4522,10 +4542,13 @@ function renderSettings(container) {
   resultsArea.appendChild(authSection);
   loadAuthStatus(authSection);
 
+  const accessSection = h('div', { id: 'settings-access-status' });
+  resultsArea.appendChild(accessSection);
+
   // Settings form
   const formSection = h('div');
   resultsArea.appendChild(formSection);
-  loadSettingsForm(formSection);
+  loadSettingsForm(formSection, accessSection);
 
   // Updater section (Tauri only)
   if (_isTauri()) {
@@ -4568,10 +4591,88 @@ async function loadAuthStatus(container) {
   }
 }
 
-async function loadSettingsForm(container) {
+function _setVersionChip(version) {
+  if (!version) return;
+  const chip = document.getElementById('app-version-chip');
+  if (!chip) return;
+  chip.textContent = 'v' + String(version).replace(/^v/i, '');
+}
+
+function setSettingsReadOnly(container, readOnly) {
+  state.settingsReadOnly = !!readOnly;
+  container.dataset.readOnly = readOnly ? 'true' : 'false';
+  container.classList.toggle('settings-read-only', !!readOnly);
+
+  container.querySelectorAll('.settings-input, .settings-browse-btn').forEach(el => {
+    el.disabled = !!readOnly;
+  });
+
+  container.querySelectorAll('.settings-toggle').forEach(toggle => {
+    toggle.dataset.disabled = readOnly ? 'true' : 'false';
+    toggle.classList.toggle('disabled', !!readOnly);
+    toggle.setAttribute('aria-disabled', readOnly ? 'true' : 'false');
+    toggle.tabIndex = readOnly ? -1 : 0;
+  });
+}
+
+async function chooseSettingsFolder(formContainer, accessContainer, currentSettings) {
   try {
-    const data = await api('/settings');
+    const result = await api('/browse-directory', { method: 'POST' });
+    if (!result.path) return;
+
+    const body = { download_base_path: result.path };
+    const currentScan = (currentSettings.scan_paths || '').trim();
+    const currentDownload = (currentSettings.download_base_path || '').trim();
+    if (!currentScan || currentScan === currentDownload) {
+      body.scan_paths = result.path;
+    }
+
+    await api('/settings', { method: 'PATCH', body });
+    toast('Music folder updated', 'success');
+    await loadSettingsForm(formContainer, accessContainer);
+  } catch (err) {
+    if (!String(err.message || '').includes('No directory selected')) {
+      toast('Browse failed: ' + err.message, 'error');
+    }
+  }
+}
+
+function renderSettingsAccessBanner(container, access, formContainer, currentSettings) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+  if (!access || !access.read_only) return;
+
+  const banner = h('div', { className: 'error-banner settings-status-banner' });
+  banner.appendChild(textEl('span', access.banner_message || 'Settings are read-only until access is restored.', ''));
+
+  const retryBtn = textEl('button', 'Retry Access', 'banner-action');
+  retryBtn.addEventListener('click', () => { loadSettingsForm(formContainer, container); });
+  banner.appendChild(retryBtn);
+
+  const chooseBtn = textEl('button', 'Choose Folder', 'banner-action');
+  chooseBtn.style.marginLeft = '0';
+  chooseBtn.addEventListener('click', () => { chooseSettingsFolder(formContainer, container, currentSettings); });
+  banner.appendChild(chooseBtn);
+
+  container.appendChild(banner);
+}
+
+async function loadSettingsForm(container, accessContainer) {
+  try {
+    const [data, access] = await Promise.all([
+      api('/settings'),
+      api('/settings/status').catch(() => ({ read_only: false, banner_message: null, paths: [], version: null })),
+    ]);
+    state.settings = data;
+    _settingsLoad = Promise.resolve(data);
+    state.settingsAccess = access;
+    _setVersionChip(access.version);
+
     while (container.firstChild) container.removeChild(container.firstChild);
+    renderSettingsAccessBanner(accessContainer, access, container, data);
+
+    if (access && access.read_only) {
+      container.appendChild(textEl('div', 'Settings are read-only until access is restored.', 'settings-read-only-note'));
+    }
 
     const sections = [
       { title: 'Storage', fields: [
@@ -4617,18 +4718,19 @@ async function loadSettingsForm(container) {
           const input = h('input', { className: 'settings-input', type: 'text' });
           input.style.width = '260px';
           input.value = data[field.key] || '';
-          input.addEventListener('blur', () => saveSetting(field.key, input.value));
+          input.addEventListener('blur', () => { if (!state.settingsReadOnly) saveSetting(field.key, input.value); });
           wrapper.appendChild(input);
-          const browseBtn = textEl('button', 'Browse', 'pill active');
+          const browseBtn = textEl('button', 'Browse', 'pill active settings-browse-btn');
           browseBtn.style.cursor = 'pointer';
           browseBtn.style.whiteSpace = 'nowrap';
           browseBtn.addEventListener('click', async () => {
+            if (state.settingsReadOnly) return;
             browseBtn.textContent = '...';
             try {
               const result = await api('/browse-directory', { method: 'POST' });
               if (result.path) {
                 input.value = result.path;
-                saveSetting(field.key, result.path);
+                await saveSetting(field.key, result.path);
               }
             } catch (err) {
               if (!err.message.includes('No directory selected')) {
@@ -4643,7 +4745,7 @@ async function loadSettingsForm(container) {
           const input = h('input', { className: 'settings-input', type: 'text' });
           input.style.width = '300px';
           input.value = data[field.key] || '';
-          input.addEventListener('blur', () => saveSetting(field.key, input.value));
+          input.addEventListener('blur', () => { if (!state.settingsReadOnly) saveSetting(field.key, input.value); });
           row.appendChild(input);
         } else if (field.type === 'number') {
           const input = h('input', { className: 'settings-input', type: 'number' });
@@ -4652,6 +4754,7 @@ async function loadSettingsForm(container) {
           input.max = '10';
           input.value = data[field.key] || 3;
           input.addEventListener('blur', () => {
+            if (state.settingsReadOnly) return;
             let v = parseInt(input.value, 10);
             if (isNaN(v) || v < 1) v = 1;
             if (v > 10) v = 10;
@@ -4680,6 +4783,7 @@ async function loadSettingsForm(container) {
           });
           let val = !!data[field.key];
           const flipToggle = () => {
+            if (toggle.dataset.disabled === 'true') return;
             val = !val;
             toggle.className = 'settings-toggle' + (val ? ' on' : '');
             toggle.setAttribute('aria-checked', val ? 'true' : 'false');
@@ -4695,16 +4799,24 @@ async function loadSettingsForm(container) {
 
       container.appendChild(sectionEl);
     });
+
+    setSettingsReadOnly(container, !!(access && access.read_only));
   } catch (err) {
     container.appendChild(textEl('div', 'Failed to load settings: ' + err.message, 'track-artist'));
   }
 }
 
 async function saveSetting(key, value) {
+  if (state.settingsReadOnly) {
+    toast('Settings are read-only until access is restored.', 'error', 5000);
+    return;
+  }
   try {
     const body = {};
     body[key] = value;
-    await api('/settings', { method: 'PATCH', body });
+    const updated = await api('/settings', { method: 'PATCH', body });
+    state.settings = updated;
+    _settingsLoad = Promise.resolve(updated);
     toast('Setting saved', 'success');
   } catch (err) {
     toast('Failed to save: ' + err.message, 'error');
@@ -6338,7 +6450,7 @@ audio.addEventListener('canplaythrough', () => _preloadNext());
 
 function _saveQueue() {
   try {
-    const data = { queue: state.queue, queueIndex: state.queueIndex, shuffle: state.shuffle, repeat: state.repeat };
+    const data = { queue: state.queue, queueOriginal: state.queueOriginal, queueIndex: state.queueIndex, shuffle: state.shuffle, repeat: state.repeat };
     localStorage.setItem('playerQueue', JSON.stringify(data));
   } catch (_) { /* quota exceeded — ignore */ }
 }
