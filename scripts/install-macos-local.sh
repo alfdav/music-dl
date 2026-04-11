@@ -2,7 +2,7 @@
 set -euo pipefail
 
 say() { printf '\n==> %s\n' "$1"; }
-die() { printf '%s\n' "$1" >&2; exit 1; }
+die() { printf '%b\n' "$1" >&2; exit 1; }
 
 current_os() {
   if [ -n "${MUSIC_DL_TEST_OS:-}" ]; then
@@ -118,6 +118,56 @@ sync_repo() {
   git -C "$repo" clean -fdx || die "Could not clean the cached repo. Delete $(installer_cache_dir) and rerun this installer."
 }
 
+build_app() {
+  local app_dir
+  say "Building music-dl.app"
+  app_dir="$(repo_dir)/TIDALDL-PY"
+  [ -d "$app_dir" ] || die "Could not enter $app_dir. Delete $(installer_cache_dir) and rerun this installer."
+
+  (
+    cd "$app_dir" || die "Could not enter $app_dir. Delete $(installer_cache_dir) and rerun this installer."
+    uv sync || die "Python dependency sync failed. Fix the reported problem, then rerun this installer."
+    uv pip install pyinstaller || die "PyInstaller install failed. Fix the reported problem, then rerun this installer."
+    npm install || die "Node dependency install failed. Fix the reported problem, then rerun this installer."
+    npx tauri build || die "Local Tauri build failed. Fix the reported problem, then rerun this installer."
+  )
+}
+
+built_app_path() {
+  local bundle_dir
+  if [ "${MUSIC_DL_TEST_BUILT_APP_PATH+set}" = "set" ]; then
+    printf '%s\n' "$MUSIC_DL_TEST_BUILT_APP_PATH"
+  else
+    bundle_dir="$(repo_dir)/TIDALDL-PY/src-tauri/target/release/bundle/macos"
+    find "$bundle_dir" -maxdepth 1 -name 'music-dl.app' 2>/dev/null | head -1 || true
+  fi
+}
+
+manual_install_command() {
+  local built_app="$1" target="$2"
+  printf 'sudo rm -rf "%s" && sudo cp -R "%s" "%s"' "$target" "$built_app" "$target"
+}
+
+install_app() {
+  local built_app target target_parent manual_command
+  say "Installing music-dl.app"
+  built_app="$(built_app_path)"
+  target="$(install_target)"
+  target_parent="$(dirname "$target")"
+  manual_command="$(manual_install_command "$built_app" "$target")"
+
+  [ -d "$built_app" ] || die "Built app not found at $built_app. Fix the reported problem, then rerun this installer."
+
+  mkdir -p "$target_parent" || die "Could not write to $target.\nTry this manually:\n  $manual_command\nThen rerun or launch the app from /Applications."
+  rm -rf "$target" || die "Could not write to $target.\nTry this manually:\n  $manual_command\nThen rerun or launch the app from /Applications."
+
+  if [ -n "${MUSIC_DL_TEST_FAIL_COPY:-}" ]; then
+    false
+  else
+    cp -R "$built_app" "$target"
+  fi || die "Could not write to $target.\nTry this manually:\n  $manual_command\nThen rerun or launch the app from /Applications."
+}
+
 main() {
   require_macos
   require_xcode_clt
@@ -126,7 +176,9 @@ main() {
   require_node_npm
   require_arm64
   sync_repo
-  say "scaffold only"
+  build_app
+  install_app
+  say "Done. Open /Applications/music-dl.app"
 }
 
 if [ -z "${MUSIC_DL_INSTALLER_SOURCE_ONLY:-}" ]; then

@@ -182,6 +182,135 @@ rm -rf "$TMP_REMOTE" "$TMP_WORK"
 unset MUSIC_DL_INSTALLER_CACHE_DIR
 unset MUSIC_DL_INSTALLER_REPO_URL
 
+export MUSIC_DL_TEST_BUILT_APP_PATH="/tmp/music-dl-custom.app"
+assert_eq "$(built_app_path)" "/tmp/music-dl-custom.app" "built_app_path uses test override"
+unset MUSIC_DL_TEST_BUILT_APP_PATH
+
+export MUSIC_DL_TEST_BUILT_APP_PATH=""
+assert_eq "$(built_app_path)" "" "built_app_path honors empty override when explicitly set"
+unset MUSIC_DL_TEST_BUILT_APP_PATH
+
+TMP_BUILD_ROOT="$(mktemp -d)"
+export MUSIC_DL_INSTALLER_CACHE_DIR="$TMP_BUILD_ROOT/cache"
+mkdir -p "$TMP_BUILD_ROOT/cache/repo/TIDALDL-PY/src-tauri/target/release/bundle/macos/music-dl.app"
+assert_eq "$(built_app_path)" "$TMP_BUILD_ROOT/cache/repo/TIDALDL-PY/src-tauri/target/release/bundle/macos/music-dl.app" "built_app_path locates bundled app under bundle/macos"
+unset MUSIC_DL_INSTALLER_CACHE_DIR
+rm -rf "$TMP_BUILD_ROOT"
+
+TMP_BUILD_ROOT="$(mktemp -d)"
+TMP_BUILD_BIN="$(mktemp -d)"
+mkdir -p "$TMP_BUILD_ROOT/TIDALDL-PY"
+BUILD_LOG="$TMP_BUILD_ROOT/build.log"
+cat > "$TMP_BUILD_BIN/uv" <<EOF
+#!/usr/bin/env bash
+printf 'uv %s\n' "\$*" >> "$BUILD_LOG"
+exit 0
+EOF
+cat > "$TMP_BUILD_BIN/npm" <<EOF
+#!/usr/bin/env bash
+printf 'npm %s\n' "\$*" >> "$BUILD_LOG"
+exit 0
+EOF
+cat > "$TMP_BUILD_BIN/npx" <<EOF
+#!/usr/bin/env bash
+printf 'npx %s\n' "\$*" >> "$BUILD_LOG"
+exit 0
+EOF
+chmod +x "$TMP_BUILD_BIN/uv" "$TMP_BUILD_BIN/npm" "$TMP_BUILD_BIN/npx"
+ORIGINAL_PATH="$PATH"
+PATH="$TMP_BUILD_BIN:$PATH"
+repo_dir() { printf '%s\n' "$TMP_BUILD_ROOT"; }
+build_app >/dev/null 2>&1 || fail "build_app succeeds with available toolchain"
+assert_eq "$(cat "$BUILD_LOG")" $'uv sync\nuv pip install pyinstaller\nnpm install\nnpx tauri build' "build_app runs Task 3 build commands in order"
+PATH="$ORIGINAL_PATH"
+rm -rf "$TMP_BUILD_ROOT" "$TMP_BUILD_BIN"
+
+TMP_BUILD_ROOT="$(mktemp -d)"
+TMP_BUILD_BIN="$(mktemp -d)"
+mkdir -p "$TMP_BUILD_ROOT/TIDALDL-PY"
+cat > "$TMP_BUILD_BIN/uv" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$TMP_BUILD_BIN/npm" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$TMP_BUILD_BIN/npx" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$TMP_BUILD_BIN/uv" "$TMP_BUILD_BIN/npm" "$TMP_BUILD_BIN/npx"
+ORIGINAL_PATH="$PATH"
+PATH="$TMP_BUILD_BIN:$PATH"
+repo_dir() { printf '%s\n' "$TMP_BUILD_ROOT"; }
+run_and_capture build_output build_status build_app
+assert_nonzero "$build_status" "build_app exits non-zero when tauri build fails"
+assert_contains "$build_output" "Local Tauri build failed. Fix the reported problem, then rerun this installer." "build_app prints exact tauri failure guidance"
+PATH="$ORIGINAL_PATH"
+rm -rf "$TMP_BUILD_ROOT" "$TMP_BUILD_BIN"
+
+TMP_BUILD_ROOT="$(mktemp -d)"
+repo_dir() { printf '%s\n' "$TMP_BUILD_ROOT"; }
+run_and_capture build_cd_output build_cd_status build_app
+assert_nonzero "$build_cd_status" "build_app exits non-zero when app source dir missing"
+assert_contains "$build_cd_output" "Could not enter $TMP_BUILD_ROOT/TIDALDL-PY" "build_app prints cache reset guidance when app dir missing"
+rm -rf "$TMP_BUILD_ROOT"
+
+TMP_INSTALL_ROOT="$(mktemp -d)"
+export MUSIC_DL_TEST_INSTALL_TARGET="$TMP_INSTALL_ROOT/Applications/music-dl.app"
+export MUSIC_DL_TEST_BUILT_APP_PATH="$TMP_INSTALL_ROOT/missing/music-dl.app"
+run_and_capture install_missing_output install_missing_status install_app
+assert_nonzero "$install_missing_status" "install_app exits non-zero when built app missing"
+assert_contains "$install_missing_output" "Built app not found at $TMP_INSTALL_ROOT/missing/music-dl.app" "install_app reports missing built app path"
+unset MUSIC_DL_TEST_INSTALL_TARGET
+unset MUSIC_DL_TEST_BUILT_APP_PATH
+rm -rf "$TMP_INSTALL_ROOT"
+
+TMP_INSTALL_ROOT="$(mktemp -d)"
+export MUSIC_DL_TEST_INSTALL_TARGET="$TMP_INSTALL_ROOT/Applications/music-dl.app"
+export MUSIC_DL_TEST_BUILT_APP_PATH=""
+run_and_capture install_empty_output install_empty_status install_app
+assert_nonzero "$install_empty_status" "install_app exits non-zero when built app override is explicitly empty"
+assert_contains "$install_empty_output" "Built app not found at " "install_app keeps empty built app override on failure"
+unset MUSIC_DL_TEST_INSTALL_TARGET
+unset MUSIC_DL_TEST_BUILT_APP_PATH
+rm -rf "$TMP_INSTALL_ROOT"
+
+TMP_INSTALL_ROOT="$(mktemp -d)"
+TMP_SOURCE_APP="$TMP_INSTALL_ROOT/build/music-dl.app"
+TMP_TARGET_APP="$TMP_INSTALL_ROOT/Applications/music-dl.app"
+mkdir -p "$TMP_SOURCE_APP/Contents/MacOS" "$TMP_TARGET_APP"
+printf 'new-build\n' > "$TMP_SOURCE_APP/Contents/MacOS/music-dl"
+printf 'old-build\n' > "$TMP_TARGET_APP/old.txt"
+export MUSIC_DL_TEST_BUILT_APP_PATH="$TMP_SOURCE_APP"
+export MUSIC_DL_TEST_INSTALL_TARGET="$TMP_TARGET_APP"
+install_app >/dev/null 2>&1 || fail "install_app copies built app into install target"
+assert_eq "$(cat "$TMP_TARGET_APP/Contents/MacOS/music-dl")" "new-build" "install_app copies the built app contents"
+[ ! -e "$TMP_TARGET_APP/old.txt" ] || fail "install_app removes existing target before copy"
+pass "install_app removes existing target before copy"
+unset MUSIC_DL_TEST_BUILT_APP_PATH
+unset MUSIC_DL_TEST_INSTALL_TARGET
+rm -rf "$TMP_INSTALL_ROOT"
+
+TMP_INSTALL_ROOT="$(mktemp -d)"
+TMP_SOURCE_APP="$TMP_INSTALL_ROOT/build/music-dl.app"
+TMP_TARGET_APP="$TMP_INSTALL_ROOT/Applications/music-dl.app"
+mkdir -p "$TMP_SOURCE_APP/Contents/MacOS"
+printf 'new-build\n' > "$TMP_SOURCE_APP/Contents/MacOS/music-dl"
+export MUSIC_DL_TEST_BUILT_APP_PATH="$TMP_SOURCE_APP"
+export MUSIC_DL_TEST_INSTALL_TARGET="$TMP_TARGET_APP"
+export MUSIC_DL_TEST_FAIL_COPY="1"
+run_and_capture install_copy_output install_copy_status install_app
+assert_nonzero "$install_copy_status" "install_app exits non-zero when app copy fails"
+assert_contains "$install_copy_output" "Could not write to $TMP_TARGET_APP" "install_app prints writable target guidance"
+expected_manual_fallback="$(printf 'Try this manually:\n  sudo rm -rf "%s" && sudo cp -R "%s" "%s"\nThen rerun or launch the app from /Applications.' "$TMP_TARGET_APP" "$TMP_SOURCE_APP" "$TMP_TARGET_APP")"
+assert_contains "$install_copy_output" "$expected_manual_fallback" "install_app prints exact manual copy fallback"
+unset MUSIC_DL_TEST_FAIL_COPY
+unset MUSIC_DL_TEST_BUILT_APP_PATH
+unset MUSIC_DL_TEST_INSTALL_TARGET
+rm -rf "$TMP_INSTALL_ROOT"
+
 call_order=""
 record_call() {
   if [ -n "$call_order" ]; then
@@ -199,6 +328,9 @@ require_uv() { record_call require_uv; }
 require_node_npm() { record_call require_node_npm; }
 require_arm64() { record_call require_arm64; }
 sync_repo() { record_call sync_repo; }
+build_app() { record_call build_app; }
+install_app() { record_call install_app; }
+say() { record_call "say:$1"; }
 
 main >/dev/null 2>&1 || fail "main runs dependency checks"
-assert_eq "$call_order" "require_macos -> require_xcode_clt -> require_rust -> require_uv -> require_node_npm -> require_arm64 -> sync_repo" "main runs Task 2 checks in spec order"
+assert_eq "$call_order" "require_macos -> require_xcode_clt -> require_rust -> require_uv -> require_node_npm -> require_arm64 -> sync_repo -> build_app -> install_app -> say:Done. Open /Applications/music-dl.app" "main runs Task 3 flow in spec order"
