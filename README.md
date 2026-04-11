@@ -33,11 +33,18 @@ SETUP (Docker — for Linux users or headless/server):
   # Runs as non-root (musicdl, UID 1000). Localhost-only by default.
   # To expose on LAN: MUSIC_DL_HOST=0.0.0.0 docker compose -f docker/docker-compose.yml up gui -d
 
-SETUP (Tauri desktop app — macOS/Linux):
+SETUP (Tauri desktop app — Linux builds only):
   cd TIDALDL-PY
   uv sync && uv pip install pyinstaller
   npm install && npx tauri build    # or: bun install && bun tauri build
   # Output: src-tauri/target/release/bundle/
+
+SETUP (macOS desktop app — Apple Silicon local install):
+  curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash
+  # Installs /Applications/music-dl.app
+  # If you manually build instead of using the installer:
+  # cd TIDALDL-PY && uv sync && uv pip install pyinstaller && npm install
+  # npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
 TESTS:
   cd TIDALDL-PY && uv run pytest   # full suite
@@ -91,13 +98,32 @@ The GUI can also start and recover the Tidal OAuth flow itself from the browser.
 
 ### Option 1: Desktop App (Linux release)
 
-Download the latest Linux release from [GitHub Releases](https://github.com/alfdav/music-dl/releases).
+Linux public releases are downloadable from [GitHub Releases](https://github.com/alfdav/music-dl/releases).
 
 - **Linux**: `music-dl_x.x.x_amd64.AppImage` or `.deb`
 
-### Option 1b: Desktop App on macOS (manual/local build)
+### Option 1b: Desktop App on macOS (Apple Silicon installer)
 
-macOS is supported through the Tauri app, but public auto-update/release packaging is not the supported path. Build it locally and update it manually on your machine.
+macOS uses the local installer one-liner, not a downloadable public release. The installer currently hard-fails on Intel Macs and supports Apple Silicon (`arm64`) only:
+
+```shell
+curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash
+```
+
+On success, it installs `music-dl.app` to `/Applications/music-dl.app`.
+
+If the installer stops because a dependency is missing, fix the reported dependency issue and rerun the installer using the same command.
+
+macOS updates are manual: rerun the installer to rebuild from the repository's current default branch head at install time, not from a pinned release and not from the "latest release" artifact.
+
+If you explicitly want to manage the app bundle yourself instead of using the installer, use the local no-updater override so a local build does not require `TAURI_SIGNING_PRIVATE_KEY`:
+
+```shell
+cd TIDALDL-PY
+uv sync && uv pip install pyinstaller
+npm install
+npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+```
 
 ### Option 2: Docker Compose (Linux / headless / NAS)
 
@@ -277,7 +303,10 @@ sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
 cd TIDALDL-PY
 uv sync && uv pip install pyinstaller
 npm install              # or: bun install
+# Linux / signed release-oriented local builds:
 npx tauri build          # or: bun tauri build
+# macOS local installs / unsigned local app bundles:
+npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
 # Output: src-tauri/target/release/bundle/
 ```
 
