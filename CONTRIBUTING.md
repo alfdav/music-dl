@@ -69,6 +69,28 @@ uv run --project TIDALDL-PY pytest \
   TIDALDL-PY/tests/test_packaging.py
 ```
 
+## Releasing Desktop Binaries
+
+1. Land the release changes through a PR against `master`.
+2. Write a real PR title/body — the tag workflow turns merged PRs into GitHub release notes and updater notes.
+3. Before tagging, confirm GitHub secrets exist for both updater signing and macOS signing/notarization:
+   - `TAURI_SIGNING_PRIVATE_KEY`
+   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+   - `APPLE_CERTIFICATE`
+   - `APPLE_CERTIFICATE_PASSWORD`
+   - `APPLE_ID`
+   - `APPLE_PASSWORD`
+   - `APPLE_TEAM_ID`
+4. After the PR merges, push an annotated tag like `v1.4.2`.
+5. GitHub Actions runs `.github/workflows/build-desktop.yml`, signs/notarizes the macOS bundle, uploads binaries, updates `latest.json`, and writes release notes onto the GitHub release.
+6. Sanity-check the release before announcing it:
+   - release notes are present
+   - expected assets are uploaded
+   - `latest.json` points at the new tag
+   - macOS CI passed the `codesign` + `spctl` verification step
+
+Blank release notes are a release bug. Unsigned macOS assets are a release blocker.
+
 ## Security
 
 - Server binds `127.0.0.1` by default. `0.0.0.0` only via `MUSIC_DL_BIND_ALL=1`.
