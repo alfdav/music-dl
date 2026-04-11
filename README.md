@@ -89,12 +89,15 @@ The GUI can also start and recover the Tidal OAuth flow itself from the browser.
 
 > **Using an AI coding agent?** Expand the LLM Quick Reference above and paste it into your agent. It covers setup, architecture, key paths, and security constraints — everything it needs to help you without guessing.
 
-### Option 1: Desktop App (macOS / Linux)
+### Option 1: Desktop App (Linux release)
 
-Download the latest release from [GitHub Releases](https://github.com/alfdav/music-dl/releases).
+Download the latest Linux release from [GitHub Releases](https://github.com/alfdav/music-dl/releases).
 
-- **macOS**: `music-dl_x.x.x_aarch64.dmg`
 - **Linux**: `music-dl_x.x.x_amd64.AppImage` or `.deb`
+
+### Option 1b: Desktop App on macOS (manual/local build)
+
+macOS is supported through the Tauri app, but public auto-update/release packaging is not the supported path. Build it locally and update it manually on your machine.
 
 ### Option 2: Docker Compose (Linux / headless / NAS)
 
@@ -279,6 +282,8 @@ npx tauri build          # or: bun tauri build
 ```
 
 The build process: PyInstaller compiles the Python backend into a standalone sidecar binary → Tauri wraps it with a native window → outputs `.app`/`.dmg` (macOS), `.AppImage`/`.deb` (Linux).
+
+Tagged desktop releases published from GitHub Actions are Linux-only. GitHub release notes are generated automatically from merged PRs, and `latest.json` only advertises Linux auto-update targets. macOS Tauri usage is a manual/local-build workflow.
 
 You can verify the build yourself — no need to trust pre-built binaries.
 

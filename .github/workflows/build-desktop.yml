@@ -21,9 +21,6 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: linux-x86_64
-          - os: macos-14
-            target: aarch64-apple-darwin
-            label: macos-arm64
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -107,8 +104,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       # ── Upload artifacts ─────────────────────────────────────────
-      - name: Upload AppImage (Linux)
-        if: runner.os == 'Linux'
+      - name: Upload Linux desktop artifacts
         uses: actions/upload-artifact@v4
         with:
           name: music-dl-${{ matrix.label }}
@@ -116,18 +112,6 @@ jobs:
             TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
             TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
             TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
-          if-no-files-found: warn
-
-      - name: Upload macOS app (macOS)
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: music-dl-${{ matrix.label }}
-          path: |
-            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
-            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
-            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: warn
 
       # ── Attach to release if tagged ──────────────────────────────
@@ -139,9 +123,6 @@ jobs:
             TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
             TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
             TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
-            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
-            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
 
   publish-manifest:
     if: startsWith(github.ref, 'refs/tags/')
@@ -153,32 +134,58 @@ jobs:
         with:
           path: artifacts
 
+      - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          REPO="${GITHUB_REPOSITORY}"
+
+          PREV_TAG=$(gh release list \
+            --repo "$REPO" \
+            --exclude-drafts \
+            --exclude-pre-releases \
+            --limit 20 \
+            --json tagName \
+            --jq "map(select(.tagName != \"$TAG\"))[0].tagName")
+
+          if [ -n "${PREV_TAG}" ] && [ "${PREV_TAG}" != "null" ]; then
+            gh api "repos/${REPO}/releases/generate-notes" \
+              -f tag_name="$TAG" \
+              -f previous_tag_name="$PREV_TAG" > release-notes.json
+          else
+            gh api "repos/${REPO}/releases/generate-notes" \
+              -f tag_name="$TAG" > release-notes.json
+          fi
+
+          jq -r '.body' release-notes.json > RELEASE_NOTES.md
+
+          TRIMMED_NOTES=$(tr -d '[:space:]' < RELEASE_NOTES.md)
+          if [ -z "$TRIMMED_NOTES" ] || [ "$TRIMMED_NOTES" = "null" ]; then
+            echo "::error::Generated release notes were empty"
+            exit 1
+          fi
+
+          echo "Generated release notes:"
+          cat RELEASE_NOTES.md
+
       - name: Generate latest.json
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#v}"
-          REPO="alfdav/music-dl"
+          REPO="${GITHUB_REPOSITORY}"
           BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
 
-          # Debug: show artifact structure
           find artifacts/ -type f | sort
 
-          # Read signature files (find recursively since artifact paths vary)
-          MACOS_SIG=$(cat "$(find artifacts/music-dl-macos-arm64 -name '*.app.tar.gz.sig' | head -1)")
           LINUX_SIG=$(cat "$(find artifacts/music-dl-linux-x86_64 -name '*.AppImage.sig' | head -1)")
-
-          # Find actual filenames
-          MACOS_TAR=$(basename "$(find artifacts/music-dl-macos-arm64 -name '*.app.tar.gz' ! -name '*.sig' | head -1)")
           LINUX_APPIMAGE=$(basename "$(find artifacts/music-dl-linux-x86_64 -name '*.AppImage' ! -name '*.sig' | head -1)")
 
-          # Build latest.json with jq
           jq -n \
             --arg version "$TAG" \
-            --arg notes "See release notes" \
+            --arg notes "$(cat RELEASE_NOTES.md)" \
             --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg macos_sig "$MACOS_SIG" \
-            --arg macos_url "${BASE_URL}/${MACOS_TAR}" \
             --arg linux_sig "$LINUX_SIG" \
             --arg linux_url "${BASE_URL}/${LINUX_APPIMAGE}" \
             '{
@@ -186,10 +193,6 @@ jobs:
               notes: $notes,
               pub_date: $pub_date,
               platforms: {
-                "darwin-aarch64": {
-                  signature: $macos_sig,
-                  url: $macos_url
-                },
                 "linux-x86_64": {
                   signature: $linux_sig,
                   url: $linux_url
@@ -204,3 +207,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: latest.json
+
+      - name: Apply release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --notes-file RELEASE_NOTES.md
