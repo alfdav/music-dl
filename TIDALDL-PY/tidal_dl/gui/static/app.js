@@ -259,6 +259,154 @@ async function upgradeTrack(track) {
   }
 }
 
+function _playlistUpgradeTargetRank() {
+  return { 'HI_RES': 3, 'HI_RES_LOSSLESS': 4 }[state.settings?.upgrade_target_quality] || 4;
+}
+
+function _playlistUpgradeCandidates(tracks) {
+  const tierRanks = { 'Common': 0, 'Uncommon': 1, 'Rare': 2, 'Epic': 3, 'Legendary': 4, 'Mythic': 5 };
+  const targetRank = _playlistUpgradeTargetRank();
+  return (tracks || []).filter(t => {
+    if (!t || !t.is_local || !t.isrc) return false;
+    const localRank = tierRanks[_qualityTier(t.quality, t.format).tier] || 0;
+    return localRank < targetRank;
+  });
+}
+
+function _setPlaylistUpgradeBadge(trackList, track, maxQuality) {
+  const row = trackList.querySelector('[data-track-id="' + _trackKey(track) + '"]');
+  if (!row) return false;
+  const ex = row.querySelector('.upgrade-badge');
+  if (ex) ex.remove();
+
+  const tierRanks = { 'LOW': 0, 'HIGH': 1, 'LOSSLESS': 2, 'HI_RES': 3, 'HI_RES_LOSSLESS': 4 };
+  const localRank = { 'Common': 0, 'Uncommon': 1, 'Rare': 2, 'Epic': 3, 'Legendary': 4, 'Mythic': 5 }[_qualityTier(track.quality, track.format).tier] || 0;
+  const probeRank = tierRanks[maxQuality] || 0;
+  const targetRank = _playlistUpgradeTargetRank();
+  if (probeRank <= localRank || probeRank < targetRank) return false;
+
+  const badge = h('span', { className: 'upgrade-badge' });
+  badge.textContent = '⬆ ' + qualityLabel(maxQuality);
+  const metaCell = row.querySelector('.track-artist');
+  if (metaCell && metaCell.parentElement) metaCell.parentElement.appendChild(badge);
+  return true;
+}
+
+async function _scanPlaylistUpgrades(tracks, trackList, upgradeBtn, refreshBtn, options) {
+  const opts = options || {};
+  const force = !!opts.force;
+
+  try {
+    await _ensureSettingsLoaded();
+  } catch (_) {
+    upgradeBtn.style.display = 'none';
+    if (refreshBtn) refreshBtn.style.display = 'none';
+    return;
+  }
+
+  const candidates = _playlistUpgradeCandidates(tracks);
+  if (candidates.length === 0) {
+    upgradeBtn.style.display = 'none';
+    if (refreshBtn) refreshBtn.style.display = 'none';
+    return;
+  }
+
+  const byIsrc = new Map();
+  candidates.forEach(track => {
+    const list = byIsrc.get(track.isrc) || [];
+    list.push(track);
+    byIsrc.set(track.isrc, list);
+  });
+
+  const applyResults = (results, upgradeableMap, unresolved, resolveMisses) => {
+    (results || []).forEach(result => {
+      const isrc = result.isrc;
+      const matches = byIsrc.get(isrc) || [];
+      if (resolveMisses || (result.tidal_track_id && result.max_quality)) {
+        unresolved.delete(isrc);
+      }
+      matches.forEach(track => {
+        if (!result.tidal_track_id || !result.max_quality) return;
+        if (!_setPlaylistUpgradeBadge(trackList, track, result.max_quality)) return;
+        const key = (track.local_path || track.path || '') + '::' + result.tidal_track_id;
+        upgradeableMap.set(key, { path: track.local_path || track.path, tidal_track_id: result.tidal_track_id });
+      });
+    });
+  };
+
+  const unresolved = new Set([...byIsrc.keys()]);
+  const upgradeableMap = new Map();
+  const isrcs = [...byIsrc.keys()];
+
+  if (force) {
+    trackList.querySelectorAll('.upgrade-badge').forEach(badge => badge.remove());
+  }
+
+  upgradeBtn.style.display = '';
+  upgradeBtn.disabled = true;
+  upgradeBtn.textContent = 'Checking upgrades...';
+  upgradeBtn.title = 'Checking Tidal for higher quality versions';
+  if (refreshBtn) {
+    refreshBtn.style.display = '';
+    refreshBtn.disabled = true;
+    refreshBtn.title = 'Refresh upgrade availability';
+  }
+
+  try {
+    if (!force) {
+      for (let i = 0; i < isrcs.length; i += 100) {
+        const batch = isrcs.slice(i, i + 100);
+        const statusData = await api('/upgrade/status?isrcs=' + encodeURIComponent(batch.join(',')));
+        applyResults(statusData.results, upgradeableMap, unresolved, false);
+      }
+    }
+
+    const misses = force ? isrcs : [...unresolved];
+    for (let i = 0; i < misses.length; i += 50) {
+      const batch = misses.slice(i, i + 50);
+      const probeData = await api('/upgrade/probe', { method: 'POST', body: { isrcs: batch, force: force } });
+      applyResults(probeData.results, upgradeableMap, unresolved, true);
+    }
+  } catch (_) {
+    upgradeBtn.style.display = 'none';
+    if (refreshBtn) refreshBtn.style.display = 'none';
+    return;
+  }
+
+  if (refreshBtn) {
+    refreshBtn.disabled = false;
+    refreshBtn.onclick = () => { _scanPlaylistUpgrades(tracks, trackList, upgradeBtn, refreshBtn, { force: true }); };
+  }
+
+  const allUpgradeable = [...upgradeableMap.values()].filter(item => item.path && item.tidal_track_id);
+  if (allUpgradeable.length === 0) {
+    upgradeBtn.textContent = 'No Upgrades Available';
+    upgradeBtn.disabled = true;
+    upgradeBtn.title = 'No higher quality playlist tracks found';
+    return;
+  }
+
+  upgradeBtn.textContent = 'Upgrade ' + allUpgradeable.length + ' Tracks';
+  upgradeBtn.disabled = false;
+  upgradeBtn.title = 'Upgrade playlist tracks with higher quality available on Tidal';
+  upgradeBtn.onclick = async () => {
+    upgradeBtn.disabled = true;
+    upgradeBtn.textContent = 'Upgrading...';
+    try {
+      const resp = await api('/upgrade/start', {
+        method: 'POST',
+        body: { tracks: allUpgradeable.map(u => ({ path: u.path, tidal_track_id: u.tidal_track_id })) }
+      });
+      if (resp.count > 0) { updateDlBadge(resp.count); _ensureGlobalSSE(); }
+      toast('Upgrade started for ' + (resp.count || allUpgradeable.length) + ' tracks', 'success');
+    } catch (err) {
+      toast('Upgrade failed', 'error');
+      upgradeBtn.disabled = false;
+      upgradeBtn.textContent = 'Upgrade ' + allUpgradeable.length + ' Tracks';
+    }
+  };
+}
+
 // ---- GLOBAL 409 HANDLER ----
 const _origFetch = window.fetch;
 window.fetch = async (...args) => {
@@ -3943,9 +4091,25 @@ async function loadPlaylistTracks(resultsArea, pl) {
   const dlBtn = h('button', { className: 'pill album-dl-btn' });
   dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download Missing';
 
+  const upgradeBtn = h('button', { className: 'pill album-upgrade-btn' });
+  upgradeBtn.textContent = 'Checking upgrades...';
+  upgradeBtn.style.display = 'none';
+  upgradeBtn.disabled = true;
+
+  const refreshUpgradeBtn = h('button', {
+    className: 'pill pill-sm album-upgrade-refresh-btn',
+    title: 'Refresh upgrade availability',
+    'aria-label': 'Refresh upgrade availability'
+  });
+  refreshUpgradeBtn.textContent = '↻';
+  refreshUpgradeBtn.style.display = 'none';
+  refreshUpgradeBtn.disabled = true;
+
   actions.appendChild(playBtn);
   actions.appendChild(shuffleBtn);
   actions.appendChild(dlBtn);
+  actions.appendChild(upgradeBtn);
+  actions.appendChild(refreshUpgradeBtn);
   plMeta.appendChild(actions);
   plHeader.appendChild(plMeta);
   resultsArea.appendChild(plHeader);
@@ -4003,6 +4167,8 @@ async function loadPlaylistTracks(resultsArea, pl) {
             dlBtn.style.display = 'none';
           } else {
             toast('Downloading ' + result.missing + ' missing tracks', 'success');
+            updateDlBadge(result.missing);
+            _ensureGlobalSSE();
             dlBtn.textContent = 'Queued';
             dlBtn.disabled = true;
           }
@@ -4013,6 +4179,8 @@ async function loadPlaylistTracks(resultsArea, pl) {
         }
       });
     }
+
+    _scanPlaylistUpgrades(tracks, trackList, upgradeBtn, refreshUpgradeBtn);
 
     // Update track count
     plMeta.querySelector('.album-detail-sub').textContent = tracks.length + ' tracks';

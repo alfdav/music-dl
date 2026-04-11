@@ -359,6 +359,33 @@ class TestRecentAlbums:
         assert total == 0
 
 
+class TestQualityProbeCache:
+    def test_get_probe_ignores_stale_probe_when_track_was_rescanned(self, db):
+        db.record("/music/track.flac", status="tagged", isrc="US123", artist="A", title="Song")
+        db.commit()
+        db.set_probe("US123", 123, "HI_RES_LOSSLESS")
+        db.commit()
+
+        db._conn.execute("UPDATE scanned SET scanned_at = scanned_at + 60 WHERE isrc = ?", ("US123",))
+        db.commit()
+
+        assert db.get_probe("US123") is None
+        assert db.get_probes_batch(["US123"]) == {}
+
+    def test_get_probes_batch_keeps_fresh_probe_rows(self, db):
+        db.record("/music/track.flac", status="tagged", isrc="US123", artist="A", title="Song")
+        db.commit()
+        db.set_probe("US123", 123, "HI_RES_LOSSLESS")
+        db.commit()
+
+        probe = db.get_probe("US123")
+        batch = db.get_probes_batch(["US123"])
+
+        assert probe is not None
+        assert probe["tidal_track_id"] == 123
+        assert batch["US123"]["max_quality"] == "HI_RES_LOSSLESS"
+
+
 class TestMigration:
     def test_fresh_db_has_all_tables(self, db):
         tables = {r["name"] for r in db._conn.execute(

@@ -347,6 +347,7 @@ def _resolve_tidal_album(
 
 class ProbeRequest(BaseModel):
     isrcs: list[str]
+    force: bool = False
 
 
 class ProbeByMetaItem(BaseModel):
@@ -393,9 +394,9 @@ def probe_isrcs(req: ProbeRequest) -> dict:
 
     db = _get_db()
     try:
-        # Check cache for all ISRCs
-        cached = db.get_probes_batch(req.isrcs)
-        misses = [isrc for isrc in req.isrcs if isrc not in cached]
+        # Check cache for all ISRCs unless caller explicitly forces a refresh
+        cached = {} if req.force else db.get_probes_batch(req.isrcs)
+        misses = list(req.isrcs) if req.force else [isrc for isrc in req.isrcs if isrc not in cached]
 
         # Look up title/artist for cache misses from scanned table
         isrc_meta: dict[str, tuple[str, str]] = {}
@@ -805,6 +806,10 @@ def _trigger_upgrade_downloads(
                         _scan_state["upgradeable"] = len(_scan_state["results"])
                     _broadcast({"type": "complete", "track_id": tid, "name": track_name, "artist": artist_name, "album": album_name, "cover_url": cover_url, "quality": quality_str, "status": "done"})
                     _broadcast({"type": "upgrade_complete", "track_id": tid, "name": track_name, "artist": artist_name, "status": "done", "old_path": old_path, "new_path": str(new_path)})
+
+                    if probe_isrc:
+                        db.delete_probe(probe_isrc)
+                        db.commit()
 
                     # Record in download history
                     started = entry.started_at if entry else None

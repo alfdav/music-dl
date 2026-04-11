@@ -33,6 +33,122 @@ def _get_playlist_db() -> LibraryDB:
     return db
 
 
+def _normalize(value: str | None) -> str:
+    return (value or "").strip().casefold()
+
+
+def _title_artist_key(title: str | None, artist: str | None) -> tuple[str, str] | None:
+    left = _normalize(title)
+    right = _normalize(artist)
+    if not left or not right:
+        return None
+    return left, right
+
+
+def _build_title_artist_index(all_tracks: list[dict]) -> dict[tuple[str, str], list[dict]]:
+    index: dict[tuple[str, str], list[dict]] = {}
+    for row in all_tracks:
+        key = _title_artist_key(row.get("title"), row.get("artist"))
+        if key is None:
+            continue
+        index.setdefault(key, []).append(row)
+    return index
+
+
+def _best_local_row(
+    track_data: dict,
+    db: LibraryDB,
+    all_tracks: list[dict],
+    fallback_index: dict[tuple[str, str], list[dict]] | None = None,
+) -> dict | None:
+    isrc = track_data.get("isrc") or ""
+    candidates: list[dict] = []
+
+    if isrc:
+        candidates = db.tracks_by_isrc(isrc)
+
+    target_album = _normalize(track_data.get("album"))
+
+    if not candidates:
+        key = _title_artist_key(track_data.get("name"), track_data.get("artist"))
+        if key is not None:
+            if fallback_index is not None:
+                candidates = list(fallback_index.get(key, []))
+            else:
+                candidates = [
+                    row for row in all_tracks
+                    if _title_artist_key(row.get("title"), row.get("artist")) == key
+                ]
+
+            if len(candidates) > 1 and target_album:
+                album_matches = [
+                    row for row in candidates
+                    if _normalize(row.get("album")) == target_album
+                ]
+                if album_matches:
+                    candidates = album_matches
+                else:
+                    return None
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda row: (
+        0 if _normalize(row.get("album")) == target_album else 1,
+        len(row.get("path") or ""),
+        row.get("path") or "",
+    ))
+    return candidates[0]
+
+
+
+def _serialize_playlist_tracks(session, playlist_id: str) -> list[dict]:
+    try:
+        playlist = session.playlist(playlist_id)
+        tracks = playlist.tracks() or []
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"Playlist not found: {exc}") from exc
+
+    isrc_index = _get_isrc_index()
+    db = _get_playlist_db()
+    try:
+        all_tracks = db.all_tracks()
+        fallback_index = _build_title_artist_index(all_tracks)
+        serialized = []
+        for track in tracks:
+            data = _serialize_track(track, isrc_index)
+            local_row = _best_local_row(data, db, all_tracks, fallback_index=fallback_index)
+            data["is_local"] = bool(local_row)
+            if local_row:
+                data["local_path"] = local_row.get("path") or ""
+                data["path"] = local_row.get("path") or ""
+                if local_row.get("quality"):
+                    data["quality"] = local_row["quality"]
+                if local_row.get("format"):
+                    data["format"] = local_row["format"]
+            serialized.append(data)
+    finally:
+        db.close()
+
+    return serialized
+
+
+
+def _playlist_tracks_data(session, playlist_id: str) -> dict:
+    now = time.time()
+    cached = _playlist_tracks_cache.get(playlist_id)
+    if cached is not None and (now - cached["ts"]) < _CACHE_TTL:
+        return cached["data"]
+
+    tracks = _serialize_playlist_tracks(session, playlist_id)
+    result = {
+        "tracks": tracks,
+        "total": len(tracks),
+    }
+    _playlist_tracks_cache[playlist_id] = {"data": result, "ts": now}
+    return result
+
+
 @router.get("/playlists")
 def list_playlists() -> dict:
     """List user's Tidal playlists."""
@@ -76,73 +192,29 @@ def list_playlists() -> dict:
 @router.get("/playlists/{playlist_id}/tracks")
 def playlist_tracks(playlist_id: str) -> dict:
     """Get tracks for a specific playlist with local-match flags."""
-    now = time.time()
-    cached = _playlist_tracks_cache.get(playlist_id)
-    if cached is not None and (now - cached["ts"]) < _CACHE_TTL:
-        return cached["data"]
-
     session = get_tidal_session()
     if not session.check_login():
         raise HTTPException(status_code=401, detail="Not logged in to Tidal")
 
-    try:
-        playlist = session.playlist(playlist_id)
-        tracks = playlist.tracks() or []
-    except Exception as exc:
-        raise HTTPException(status_code=404, detail=f"Playlist not found: {exc}") from exc
-
-    isrc_index = _get_isrc_index()
-    result = {
-        "tracks": [_serialize_track(t, isrc_index) for t in tracks],
-        "total": len(tracks),
-    }
-    _playlist_tracks_cache[playlist_id] = {"data": result, "ts": now}
-    return result
+    return _playlist_tracks_data(session, playlist_id)
 
 
 @router.post("/playlists/{playlist_id}/sync")
 def sync_playlist(playlist_id: str) -> dict:
-    """Trigger sync for a playlist — download missing tracks.
-
-    Invalidates the tracks cache for this playlist so the next load
-    reflects any newly downloaded tracks.
-    """
+    """Trigger sync for a playlist — download tracks missing from the local library."""
     session = get_tidal_session()
     if not session.check_login():
         raise HTTPException(status_code=401, detail="Not logged in to Tidal")
 
-    # Use cached tracks if fresh — avoids a redundant Tidal round-trip on sync.
-    now = time.time()
-    cached = _playlist_tracks_cache.get(playlist_id)
-    if cached is not None and (now - cached["ts"]) < _CACHE_TTL:
-        tracks_data = cached["data"]["tracks"]
-        # Reconstruct minimal track objects needed for isrc check + trigger_download.
-        # The cache stores serialized dicts, so work from those directly.
-        isrc_index = _get_isrc_index()
-        missing_ids = [
-            t["id"] for t in tracks_data
-            if not isrc_index.contains(t.get("isrc", "") or "")
-        ]
-        total = len(tracks_data)
-    else:
-        try:
-            playlist = session.playlist(playlist_id)
-            raw_tracks = playlist.tracks() or []
-        except Exception as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-        isrc_index = _get_isrc_index()
-        missing_ids = [
-            t.id for t in raw_tracks
-            if not isrc_index.contains(getattr(t, "isrc", "") or "")
-        ]
-        total = len(raw_tracks)
+    tracks_data = _playlist_tracks_data(session, playlist_id)["tracks"]
+    missing_ids = [t["id"] for t in tracks_data if not t.get("is_local") and t.get("id")]
+    total = len(tracks_data)
 
     # Invalidate tracks cache — after sync, local state changes so next load re-fetches.
     _playlist_tracks_cache.pop(playlist_id, None)
 
     if not missing_ids:
-        return {"status": "up_to_date", "missing": 0}
+        return {"status": "up_to_date", "missing": 0, "total": total}
 
     from tidal_dl.gui.api.downloads import trigger_download
 
