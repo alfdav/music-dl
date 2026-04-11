@@ -1,6 +1,6 @@
 [project]
 name = "music-dl"
-version = "1.4.0"
+version = "1.4.1"
 description = "music-dl — CLI Tidal downloader with next-generation features."
 readme = "README.md"
 license = "Apache-2.0"
