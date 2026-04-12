@@ -39,12 +39,14 @@ SETUP (Tauri desktop app — Linux builds only):
   npm install && npx tauri build    # or: bun install && bun tauri build
   # Output: src-tauri/target/release/bundle/
 
-SETUP (macOS desktop app — Apple Silicon local install):
+SETUP (macOS desktop app — Apple Silicon):
+  # Option A: Download DMG from GitHub Releases, drag to /Applications.
+  #   First launch: right-click → Open → Open (one-time Gatekeeper bypass).
+  # Option B: Build from source:
   curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash
-  # Installs /Applications/music-dl.app
-  # If you manually build instead of using the installer:
-  # cd TIDALDL-PY && uv sync && uv pip install pyinstaller && npm install
-  # npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+  # Installs /Applications/music-dl.app — no Gatekeeper prompt (built locally).
+  # Manual build: cd TIDALDL-PY && uv sync && uv pip install pyinstaller
+  # npm install && npx tauri build --bundles dmg
 
 TESTS:
   cd TIDALDL-PY && uv run pytest   # full suite
@@ -102,27 +104,45 @@ Linux public releases are downloadable from [GitHub Releases](https://github.com
 
 - **Linux**: `music-dl_x.x.x_amd64.AppImage` or `.deb`
 
-### Option 1b: Desktop App on macOS (Apple Silicon installer)
+### Option 1b: Desktop App on macOS (Apple Silicon)
 
-macOS uses the local installer one-liner, not a downloadable public release. The installer currently hard-fails on Intel Macs and supports Apple Silicon (`arm64`) only:
+Two ways to get the macOS app — pick whichever fits:
+
+#### Download the DMG (no dev tools needed)
+
+Download `music-dl_x.x.x_aarch64.dmg` from [GitHub Releases](https://github.com/alfdav/music-dl/releases), open it, and drag `music-dl.app` to Applications.
+
+**First launch:** macOS blocks unsigned apps by default. Right-click the app, click **Open**, then click **Open** again in the dialog. This is a one-time step — the app opens normally after that.
+
+> If you double-clicked instead: go to **System Settings > Privacy & Security**, scroll down, and click **Open Anyway**.
+
+#### Build from source (one-liner)
+
+If you prefer to build locally (or want the latest code), the installer handles everything:
 
 ```shell
 curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash
 ```
 
-On success, it installs `music-dl.app` to `/Applications/music-dl.app`.
+On success, it installs `music-dl.app` to `/Applications/music-dl.app`. No Gatekeeper prompts since the app is built on your machine.
 
-If the installer stops because a dependency is missing, fix the reported dependency issue and rerun the installer using the same command.
+If the installer stops because a dependency is missing, fix the reported issue and rerun the same command.
 
-macOS updates are manual: rerun the installer to rebuild from the repository's current default branch head at install time, not from a pinned release and not from the "latest release" artifact.
+#### Updating
 
-If you explicitly want to manage the app bundle yourself instead of using the installer, use the local no-updater override so a local build does not require `TAURI_SIGNING_PRIVATE_KEY`:
+- **DMG users:** download the latest DMG from Releases and replace the app.
+- **Installer users:** rerun the installer to rebuild from the latest code.
+
+#### Manual build
+
+If you want full control over the build:
 
 ```shell
 cd TIDALDL-PY
 uv sync && uv pip install pyinstaller
 npm install
-npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+npx tauri build --bundles dmg
+# Output: src-tauri/target/release/bundle/dmg/
 ```
 
 ### Option 2: Docker Compose (Linux / headless / NAS)
@@ -303,18 +323,16 @@ sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
 cd TIDALDL-PY
 uv sync && uv pip install pyinstaller
 npm install              # or: bun install
-# Linux / signed release-oriented local builds:
-npx tauri build          # or: bun tauri build
-# macOS local installs / unsigned local app bundles:
-npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+# Linux:
+npx tauri build          # outputs .AppImage + .deb
+# macOS (produces .app + .dmg):
+npx tauri build --bundles dmg
 # Output: src-tauri/target/release/bundle/
 ```
 
 The build process: PyInstaller compiles the Python backend into a standalone sidecar binary → Tauri wraps it with a native window → outputs `.app`/`.dmg` (macOS), `.AppImage`/`.deb` (Linux).
 
-Tagged desktop releases published from GitHub Actions are Linux-only. GitHub release notes are generated automatically from merged PRs, and `latest.json` only advertises Linux auto-update targets. macOS Tauri usage is a manual/local-build workflow.
-
-You can verify the build yourself — no need to trust pre-built binaries.
+Linux releases are published via GitHub Actions. macOS DMGs can be built locally and attached to releases manually. The app is not notarized (no Apple Developer ID), so macOS users need a one-time right-click → Open bypass on first launch.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
 
