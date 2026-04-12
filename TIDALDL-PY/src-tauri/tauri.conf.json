@@ -36,8 +36,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "macOS": {
+      "signingIdentity": "-",
+      "entitlements": "./Entitlements.plist",
       "dmg": {
         "background": "dmg-background.png",
         "appPosition": {

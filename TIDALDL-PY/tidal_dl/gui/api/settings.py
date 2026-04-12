@@ -153,58 +153,65 @@ def auth_status() -> dict:
     return {"logged_in": logged_in, "username": username}
 
 
+import threading
+
+_login_lock = threading.Lock()
 _login_state = {"status": "idle"}  # idle | pending | success | failed
 
 
 @router.post("/auth/login")
 def auth_login() -> dict:
     """Start OAuth login. Opens a Tidal link, polls in background until confirmed."""
-    import threading
-
     tidal = get_tidal_instance()
-    if tidal.session.check_login():
-        _login_state["status"] = "success"
-        return {"status": "already_logged_in"}
+    with _login_lock:
+        if tidal.session.check_login():
+            _login_state["status"] = "success"
+            return {"status": "already_logged_in"}
 
-    if _login_state["status"] == "pending":
-        return _login_state.copy()
+        if _login_state["status"] == "pending":
+            return _login_state.copy()
 
-    try:
-        link_login, future = tidal.session.login_oauth()
-        uri = link_login.verification_uri_complete or ""
-        if uri and not uri.startswith("http"):
-            uri = "https://" + uri
+        try:
+            link_login, future = tidal.session.login_oauth()
+            uri = link_login.verification_uri_complete or ""
+            if uri and not uri.startswith("http"):
+                uri = "https://" + uri
 
-        _login_state.update({
-            "status": "pending",
-            "verification_uri": uri,
-            "user_code": link_login.user_code,
-            "expires_in": link_login.expires_in,
-        })
+            _login_state.update({
+                "status": "pending",
+                "verification_uri": uri,
+                "user_code": link_login.user_code,
+                "expires_in": link_login.expires_in,
+            })
+        except Exception as exc:
+            _login_state["status"] = "failed"
+            raise HTTPException(status_code=500, detail=f"Login failed: {exc}") from exc
 
-        def _wait_for_login():
-            try:
-                future.result(timeout=300)  # 5 min timeout
+    def _wait_for_login():
+        try:
+            future.result(timeout=300)  # 5 min timeout
+            with _login_lock:
                 if tidal.login_finalize():
                     _login_state["status"] = "success"
                 else:
                     _login_state["status"] = "failed"
-            except TimeoutError:
+        except TimeoutError:
+            with _login_lock:
                 _login_state["status"] = "timeout"
-            except Exception:
+        except Exception:
+            with _login_lock:
                 _login_state["status"] = "failed"
 
-        threading.Thread(target=_wait_for_login, daemon=True).start()
+    threading.Thread(target=_wait_for_login, daemon=True).start()
+    with _login_lock:
         return _login_state.copy()
-    except Exception as exc:
-        _login_state["status"] = "failed"
-        raise HTTPException(status_code=500, detail=f"Login failed: {exc}") from exc
 
 
 @router.get("/auth/login/status")
 def auth_login_status() -> dict:
     """Poll login progress."""
-    return _login_state.copy()
+    with _login_lock:
+        return _login_state.copy()
 
 
 @router.get("/hifi/status")

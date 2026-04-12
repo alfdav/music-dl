@@ -16,6 +16,7 @@ from tidal_dl.helper.path import path_config_base
 router = APIRouter()
 
 _CACHE_TTL = 300  # 5 minutes
+_CACHE_MAX_PLAYLISTS = 50
 
 _playlist_list_cache: dict = {"data": None, "ts": 0.0}
 # playlist_id → {"data": dict, "ts": float}
@@ -146,6 +147,10 @@ def _playlist_tracks_data(session, playlist_id: str) -> dict:
         "total": len(tracks),
     }
     _playlist_tracks_cache[playlist_id] = {"data": result, "ts": now}
+    # Evict oldest entries when cache exceeds max size
+    if len(_playlist_tracks_cache) > _CACHE_MAX_PLAYLISTS:
+        oldest_id = min(_playlist_tracks_cache, key=lambda k: _playlist_tracks_cache[k]["ts"])
+        del _playlist_tracks_cache[oldest_id]
     return result
 
 
