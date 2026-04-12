@@ -8,7 +8,7 @@ import threading
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -38,13 +38,21 @@ _lock = threading.Lock()
 _active: dict[int, DownloadEntry] = {}
 _sse_clients: list[asyncio.Queue] = []
 _MAX_SSE_CLIENTS = 5
+_event_loop: asyncio.AbstractEventLoop | None = None
+
+
+def set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
+    global _event_loop
+    _event_loop = loop
 
 
 def _broadcast(event: dict) -> None:
-    """Send event to all connected SSE clients."""
+    """Send event to all connected SSE clients (thread-safe)."""
+    if _event_loop is None or _event_loop.is_closed():
+        return
     for q in _sse_clients[:]:
         try:
-            q.put_nowait(event)
+            _event_loop.call_soon_threadsafe(q.put_nowait, event)
         except Exception:
             pass
 
@@ -139,27 +147,27 @@ def trigger_download(track_ids: list[int]) -> dict:
 
             with _lock:
                 entry = _active.get(tid)
-            if entry:
-                if track:
-                    entry.name = track.full_name or track.name or entry.name
-                    if track.artists:
-                        entry.artist = ", ".join(a.name for a in track.artists if a.name)
-                    if track.album:
-                        entry.album = track.album.name or ""
-                        # Try 320px, fall back to 160px
-                        for size in (320, 160):
-                            try:
-                                url = track.album.image(size)
-                                if url:
-                                    entry.cover_url = url
-                                    break
-                            except Exception:
-                                continue
-                # Set quality early so it's available in SSE and history
-                _q = settings.data.quality_audio
-                entry.quality = _q.value if hasattr(_q, "value") else str(_q or "LOSSLESS")
-                entry.status = "downloading"
-                _broadcast({"type": "progress", "track_id": tid, "name": entry.name, "artist": entry.artist, "album": entry.album, "cover_url": entry.cover_url, "quality": entry.quality, "status": "downloading", "progress": 0})
+                if entry:
+                    if track:
+                        entry.name = track.full_name or track.name or entry.name
+                        if track.artists:
+                            entry.artist = ", ".join(a.name for a in track.artists if a.name)
+                        if track.album:
+                            entry.album = track.album.name or ""
+                            # Try 320px, fall back to 160px
+                            for size in (320, 160):
+                                try:
+                                    url = track.album.image(size)
+                                    if url:
+                                        entry.cover_url = url
+                                        break
+                                except Exception:
+                                    continue
+                    # Set quality early so it's available in SSE and history
+                    _q = settings.data.quality_audio
+                    entry.quality = _q.value if hasattr(_q, "value") else str(_q or "LOSSLESS")
+                    entry.status = "downloading"
+                    _broadcast({"type": "progress", "track_id": tid, "name": entry.name, "artist": entry.artist, "album": entry.album, "cover_url": entry.cover_url, "quality": entry.quality, "status": "downloading", "progress": 0})
 
             try:
                 if not track:
@@ -187,18 +195,8 @@ def trigger_download(track_ids: list[int]) -> dict:
                         )
                         _last_exc = None
                         break  # success
-                    except _RETRYABLE as retry_exc:
-                        _last_exc = retry_exc
-                        if _attempt < _MAX_RETRIES:
-                            backoff = 2 ** (_attempt + 1)  # 2s, 4s, 8s
-                            with _lock:
-                                entry = _active.get(tid)
-                            if entry:
-                                entry.status = "retrying"
-                                _broadcast({"type": "progress", "track_id": tid, "name": entry.name, "artist": entry.artist, "album": entry.album, "cover_url": entry.cover_url, "quality": entry.quality, "status": "retrying", "progress": 0, "retry": _attempt + 1, "max_retries": _MAX_RETRIES})
-                            time.sleep(backoff)
                     except requests.exceptions.HTTPError as http_exc:
-                        # Retry on 429 Too Many Requests
+                        # Retry on 429 Too Many Requests (must be before OSError catch)
                         if hasattr(http_exc, "response") and http_exc.response is not None and http_exc.response.status_code == 429:
                             _last_exc = http_exc
                             if _attempt < _MAX_RETRIES:
@@ -211,6 +209,16 @@ def trigger_download(track_ids: list[int]) -> dict:
                                 time.sleep(backoff)
                         else:
                             raise  # permanent HTTP error
+                    except _RETRYABLE as retry_exc:
+                        _last_exc = retry_exc
+                        if _attempt < _MAX_RETRIES:
+                            backoff = 2 ** (_attempt + 1)  # 2s, 4s, 8s
+                            with _lock:
+                                entry = _active.get(tid)
+                            if entry:
+                                entry.status = "retrying"
+                                _broadcast({"type": "progress", "track_id": tid, "name": entry.name, "artist": entry.artist, "album": entry.album, "cover_url": entry.cover_url, "quality": entry.quality, "status": "retrying", "progress": 0, "retry": _attempt + 1, "max_retries": _MAX_RETRIES})
+                            time.sleep(backoff)
 
                 if _last_exc is not None:
                     raise _last_exc
@@ -348,7 +356,7 @@ async def downloads_sse() -> StreamingResponse:
 
 
 @router.get("/downloads/history")
-def downloads_history(limit: int = 50) -> dict:
+def downloads_history(limit: int = Query(50, ge=1, le=500)) -> dict:
     """Recent download history from DB, enriched with local file paths."""
     from pathlib import Path
 
@@ -357,34 +365,35 @@ def downloads_history(limit: int = 50) -> dict:
 
     db = LibraryDB(Path(path_config_base()) / "library.db")
     db.open()
-    history = db.download_history(limit)
+    try:
+        history = db.download_history(limit)
 
-    # Enrich with local file path from scanned table for reveal-in-finder
-    for entry in history:
-        name = entry.get("name")
-        artist = entry.get("artist")
-        album = entry.get("album")
-        if name and artist:
-            assert db._conn
-            # Include album in match to avoid wrong-album hits for same-name tracks
-            if album:
-                row = db._conn.execute(
-                    "SELECT path FROM scanned WHERE title = ? AND artist = ? AND album = ? LIMIT 1",
-                    (name, artist, album),
-                ).fetchone()
+        # Enrich with local file path from scanned table for reveal-in-finder
+        for entry in history:
+            name = entry.get("name")
+            artist = entry.get("artist")
+            album = entry.get("album")
+            if name and artist:
+                assert db._conn
+                # Include album in match to avoid wrong-album hits for same-name tracks
+                if album:
+                    row = db._conn.execute(
+                        "SELECT path FROM scanned WHERE title = ? AND artist = ? AND album = ? LIMIT 1",
+                        (name, artist, album),
+                    ).fetchone()
+                else:
+                    row = None
+                # Fallback without album if no match (e.g. album metadata differs)
+                if not row:
+                    row = db._conn.execute(
+                        "SELECT path FROM scanned WHERE title = ? AND artist = ? LIMIT 1",
+                        (name, artist),
+                    ).fetchone()
+                entry["file_path"] = row["path"] if row else None
             else:
-                row = None
-            # Fallback without album if no match (e.g. album metadata differs)
-            if not row:
-                row = db._conn.execute(
-                    "SELECT path FROM scanned WHERE title = ? AND artist = ? LIMIT 1",
-                    (name, artist),
-                ).fetchone()
-            entry["file_path"] = row["path"] if row else None
-        else:
-            entry["file_path"] = None
-
-    db.close()
+                entry["file_path"] = None
+    finally:
+        db.close()
     return {"downloads": history}
 
 
@@ -400,10 +409,19 @@ def delete_track(req: DeleteTrackRequest) -> dict:
     import subprocess
     from pathlib import Path
 
+    from tidal_dl.gui.security import validate_audio_path
     from tidal_dl.helper.library_db import LibraryDB
     from tidal_dl.helper.path import path_config_base
 
-    file_path = Path(req.path)
+    # Validate path is within configured library directories
+    from tidal_dl.config import Settings
+    s = Settings()
+    bp = s.data.download_base_path if hasattr(s.data, "download_base_path") else ""
+    allowed = [str(Path(bp).expanduser())] if bp else []
+    validated = validate_audio_path(req.path, allowed)
+    if validated is None:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    file_path = validated
 
     # Delete from disk
     if file_path.exists():
@@ -438,9 +456,19 @@ def reveal_in_finder(req: RevealRequest) -> dict:
     """Reveal a file in Finder (macOS) or file manager."""
     import platform
     import subprocess
+
+    from tidal_dl.gui.security import validate_audio_path
+
     from pathlib import Path
 
-    file_path = Path(req.path)
+    from tidal_dl.config import Settings
+    s = Settings()
+    bp = s.data.download_base_path if hasattr(s.data, "download_base_path") else ""
+    allowed = [str(Path(bp).expanduser())] if bp else []
+    validated = validate_audio_path(req.path, allowed)
+    if validated is None:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    file_path = validated
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -459,6 +487,9 @@ def reveal_in_finder(req: RevealRequest) -> dict:
 @router.delete("/downloads/history")
 def clear_history(status: str | None = None) -> dict:
     """Clear download history. Optional ?status=done or ?status=error filter."""
+    if status is not None and status not in ("done", "error"):
+        raise HTTPException(status_code=400, detail="status must be 'done' or 'error'")
+
     from pathlib import Path
 
     from tidal_dl.helper.library_db import LibraryDB

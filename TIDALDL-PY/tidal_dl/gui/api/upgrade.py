@@ -42,6 +42,13 @@ _scan_state: dict[str, Any] = {
 }
 _scan_clients: list[asyncio.Queue] = []
 _MAX_SSE_CLIENTS = 5
+_scan_lock = threading.Lock()
+_scan_event_loop: asyncio.AbstractEventLoop | None = None
+
+
+def set_scan_event_loop(loop: asyncio.AbstractEventLoop) -> None:
+    global _scan_event_loop
+    _scan_event_loop = loop
 
 
 def _json(obj: Any) -> str:
@@ -49,10 +56,12 @@ def _json(obj: Any) -> str:
 
 
 def _scan_broadcast(event: dict) -> None:
-    """Send event to all connected scan SSE clients."""
+    """Send event to all connected scan SSE clients (thread-safe)."""
+    if _scan_event_loop is None or _scan_event_loop.is_closed():
+        return
     for q in _scan_clients[:]:
         try:
-            q.put_nowait(event)
+            _scan_event_loop.call_soon_threadsafe(q.put_nowait, event)
         except Exception:
             pass
 
@@ -410,9 +419,11 @@ def probe_isrcs(req: ProbeRequest) -> dict:
                 isrc_meta[r["isrc"]] = (r["title"] or "", r["artist"] or "")
 
         # Probe Tidal for cache misses (0.5 req/sec)
+        # NOTE: This blocks the worker thread for up to 2s × len(misses).
+        # Acceptable because sync handlers run in uvicorn's threadpool, not event loop.
         for i, isrc in enumerate(misses):
             if i > 0:
-                time.sleep(2)
+                time.sleep(1)
             title, artist = isrc_meta.get(isrc, ("", ""))
             result = _probe_tidal_isrc(session, isrc, title=title, artist=artist)
             if result:
@@ -851,31 +862,32 @@ async def scan_sse() -> StreamingResponse:
         raise HTTPException(status_code=429, detail="Too many SSE connections")
 
     # If scan already finished (complete/error/cancelled), return cached terminal event
-    if not _scan_state["running"] and _scan_state["status"] in ("complete", "error", "cancelled"):
-        terminal = _scan_state.copy()
-        terminal.pop("cancel", None)
-        terminal.pop("running", None)
+    with _scan_lock:
+        if not _scan_state["running"] and _scan_state["status"] in ("complete", "error", "cancelled"):
+            terminal = _scan_state.copy()
+            terminal.pop("cancel", None)
+            terminal.pop("running", None)
 
-        async def cached_stream():
-            if terminal["status"] == "complete":
-                yield f"data: {_json({'type': 'scan_complete', 'checked': terminal['checked'], 'total': terminal['total'], 'upgradeable': terminal['upgradeable'], 'skipped_no_isrc': terminal['skipped_no_isrc'], 'results': terminal['results']})}\n\n"
-            elif terminal["status"] == "error":
-                yield f"data: {_json({'type': 'scan_error', 'error': terminal.get('error', 'Unknown error')})}\n\n"
-            else:
-                yield f"data: {_json({'type': 'scan_cancelled', 'checked': terminal['checked'], 'total': terminal['total']})}\n\n"
+            async def cached_stream():
+                if terminal["status"] == "complete":
+                    yield f"data: {_json({'type': 'scan_complete', 'checked': terminal['checked'], 'total': terminal['total'], 'upgradeable': terminal['upgradeable'], 'skipped_no_isrc': terminal['skipped_no_isrc'], 'results': terminal['results']})}\n\n"
+                elif terminal["status"] == "error":
+                    yield f"data: {_json({'type': 'scan_error', 'error': terminal.get('error', 'Unknown error')})}\n\n"
+                else:
+                    yield f"data: {_json({'type': 'scan_cancelled', 'checked': terminal['checked'], 'total': terminal['total']})}\n\n"
 
-        return StreamingResponse(cached_stream(), media_type="text/event-stream")
+            return StreamingResponse(cached_stream(), media_type="text/event-stream")
 
-    # Start scan if not already running
-    if not _scan_state["running"]:
-        cancel_event = threading.Event()
-        _scan_state.update(
-            running=True, cancel=cancel_event, status="running",
-            checked=0, total=0, upgradeable=0, skipped_no_isrc=0,
-            results=[], error=None,
-        )
-        thread = threading.Thread(target=_start_bulk_scan, args=(cancel_event,), daemon=True)
-        thread.start()
+        # Start scan if not already running
+        if not _scan_state["running"]:
+            cancel_event = threading.Event()
+            _scan_state.update(
+                running=True, cancel=cancel_event, status="running",
+                checked=0, total=0, upgradeable=0, skipped_no_isrc=0,
+                results=[], error=None,
+            )
+            thread = threading.Thread(target=_start_bulk_scan, args=(cancel_event,), daemon=True)
+            thread.start()
 
     queue: asyncio.Queue = asyncio.Queue()
     _scan_clients.append(queue)
@@ -904,8 +916,9 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
     """Background thread: scan all local tracks for upgrade candidates."""
     from tidal_dl.config import Settings, Tidal
 
-    db = _get_db()
+    db = None
     try:
+        db = _get_db()
         settings = Settings()
         target_quality = getattr(settings.data, "upgrade_target_quality", "HI_RES_LOSSLESS")
         target_rank = TIER_RANK.get(target_quality, 4)
@@ -1053,12 +1066,15 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
 
     except Exception as exc:
         logger.exception("Bulk scan failed")
-        _scan_state.update(status="error", error=str(exc))
+        with _scan_lock:
+            _scan_state.update(status="error", error=str(exc))
         _scan_broadcast({"type": "scan_error", "error": str(exc)})
     finally:
-        _scan_state["running"] = False
-        _scan_state["cancel"] = None
-        db.close()
+        with _scan_lock:
+            _scan_state["running"] = False
+            _scan_state["cancel"] = None
+        if db:
+            db.close()
 
 
 def _rebuild_results_from_db() -> list[dict]:

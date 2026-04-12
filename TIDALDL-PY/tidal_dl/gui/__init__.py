@@ -28,7 +28,16 @@ else:
 def create_app(port: int = 8765) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        """Restore Tidal OAuth session from saved token on server start."""
+        """Restore Tidal OAuth session and capture event loop on server start."""
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        from tidal_dl.gui.api.downloads import set_event_loop
+        from tidal_dl.gui.api.upgrade import set_scan_event_loop
+
+        set_event_loop(loop)
+        set_scan_event_loop(loop)
+
         try:
             from tidal_dl.config import Tidal
 

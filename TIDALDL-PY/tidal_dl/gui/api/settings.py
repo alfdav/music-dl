@@ -304,6 +304,10 @@ def update_settings(update: SettingsUpdate) -> dict:
 
     updates = update.model_dump(exclude_none=True)
 
+    _VALID_QUALITIES = {"NORMAL", "HIGH", "LOSSLESS", "HI_RES", "HI_RES_LOSSLESS"}
+    if "quality_audio" in updates and updates["quality_audio"] not in _VALID_QUALITIES:
+        raise HTTPException(status_code=400, detail=f"Invalid quality_audio value")
+
     if "download_base_path" in updates:
         path = updates["download_base_path"]
         if not validate_download_path(path):

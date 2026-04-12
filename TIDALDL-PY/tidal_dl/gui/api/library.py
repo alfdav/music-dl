@@ -330,7 +330,8 @@ def _background_scan(rescan: bool) -> None:
         # delete every row because disk_paths would be empty.
         if not scan_dirs:
             print("[library] No scan directories reachable — skipping scan to preserve cache")
-            _scan_progress = {"scanned": 0, "total": 0, "done": True}
+            with _scan_lock:
+                _scan_progress = {"scanned": 0, "total": 0, "done": True}
             db.close()
             return
 
@@ -352,11 +353,13 @@ def _background_scan(rescan: bool) -> None:
             stored = db.get_meta("scan_fingerprint")
             if stored == finger:
                 print("[library] Scan directories unchanged — skipping")
-                _scan_progress = {"scanned": 0, "total": 0, "done": True}
+                with _scan_lock:
+                    _scan_progress = {"scanned": 0, "total": 0, "done": True}
                 db.close()
                 return
 
-        _scan_progress = {"scanned": 0, "total": 0, "done": False}
+        with _scan_lock:
+            _scan_progress = {"scanned": 0, "total": 0, "done": False}
         disk_paths: set[str] = set()
         batch = 0
 
@@ -421,7 +424,8 @@ def _background_scan(rescan: bool) -> None:
             if batch > 0 or stale:
                 db.commit()
 
-        _scan_progress["done"] = True
+        with _scan_lock:
+            _scan_progress["done"] = True
 
         # Save scan fingerprint so next scan can skip if nothing changed
         if finger:
@@ -782,7 +786,8 @@ def scan_library(
 @router.get("/library/scan/status")
 def scan_status() -> dict:
     """Check background scan progress."""
-    return {"scanning": _scan_running, **_scan_progress}
+    with _scan_lock:
+        return {"scanning": _scan_running, **_scan_progress}
 
 
 from pydantic import BaseModel

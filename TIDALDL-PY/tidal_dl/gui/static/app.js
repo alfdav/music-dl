@@ -6158,6 +6158,7 @@ async function renderUpgradeScanner(container) {
   }
 
   function _connectSSE() {
+    if (eventSource) { eventSource.close(); }
     eventSource = new EventSource('/api/upgrade/scan');
     eventSource.onmessage = (e) => _handleScanEvent(JSON.parse(e.data));
     eventSource.onerror = () => {
