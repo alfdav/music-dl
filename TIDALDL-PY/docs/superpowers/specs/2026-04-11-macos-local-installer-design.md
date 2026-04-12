@@ -19,8 +19,11 @@ macOS support is a **manual/local-build workflow**:
 - installer builds the Tauri app locally
 - installer copies the result to `/Applications/music-dl.app`
 
-### Explicitly unsupported path
-The project does **not** treat GitHub-hosted macOS binaries as the supported install/update path. Linux remains the public release/update target.
+### DMG download path
+Pre-built `.dmg` files can be attached to GitHub Releases for users who don't want to build from source. The app is unsigned (no Apple Developer ID), so first launch requires right-click → Open. Updates via DMG are manual: download and replace.
+
+### What's not supported
+Notarization (requires $99/yr Apple Developer account) and macOS auto-update (every update re-triggers Gatekeeper for unsigned apps). Linux remains the auto-update target.
 
 ---
 
