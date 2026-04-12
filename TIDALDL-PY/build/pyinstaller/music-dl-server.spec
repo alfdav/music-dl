@@ -14,7 +14,11 @@ PROJECT_DIR = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 # ── Python modules are pulled in via hiddenimports below.               ──
 # ── We only need to add non-Python data files (static assets) as datas. ──
 static_dir = os.path.join(PROJECT_DIR, "tidal_dl", "gui", "static")
-tidal_datas = [(static_dir, os.path.join("tidal_dl", "gui", "static"))]
+pyproject_toml = os.path.join(PROJECT_DIR, "pyproject.toml")
+tidal_datas = [
+    (static_dir, os.path.join("tidal_dl", "gui", "static")),
+    (pyproject_toml, "."),
+]
 
 # All tidal_dl submodules as hidden imports (PyInstaller can't trace
 # the uvicorn.run("tidal_dl.gui:create_app") dynamic import)
