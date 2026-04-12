@@ -16,68 +16,24 @@
 
 ```text
 PROJECT: music-dl — local-first Tidal music manager with browser GUI.
-REPO LAYOUT: monorepo. Python package lives in TIDALDL-PY/.
-TECH: Python 3.12+, FastAPI, uvicorn, Tauri v2 (desktop app), PyInstaller (sidecar).
-AUDIO: <audio> element plays files direct from source. NO Web Audio API, NO AudioContext,
-       NO post-processing. Quality is non-negotiable.
+REPO: monorepo. All code under TIDALDL-PY/.
+STACK: Python 3.12+, FastAPI, uvicorn, vanilla JS frontend, Tauri v2 desktop shell.
 
-SETUP (local dev):
-  cd TIDALDL-PY
-  uv sync                          # creates .venv, installs deps
-  music-dl gui                     # launches GUI at http://localhost:8765
-  # OR: .venv/bin/python -m tidal_dl.cli gui --no-browser
-
-SETUP (Docker — for Linux users or headless/server):
-  docker compose -f docker/docker-compose.yml up gui -d
-  # GUI at http://localhost:8765
-  # Runs as non-root (musicdl, UID 1000). Localhost-only by default.
-  # To expose on LAN: MUSIC_DL_HOST=0.0.0.0 docker compose -f docker/docker-compose.yml up gui -d
-
-SETUP (Tauri desktop app — Linux builds only):
-  cd TIDALDL-PY
-  uv sync && uv pip install pyinstaller
-  npm install && npx tauri build    # or: bun install && bun tauri build
-  # Output: src-tauri/target/release/bundle/
-
-SETUP (macOS desktop app — Apple Silicon):
-  # Option A: Download DMG from GitHub Releases, drag to /Applications.
-  #   First launch: right-click → Open → Open (one-time Gatekeeper bypass).
-  # Option B: Build from source:
-  curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash
-  # Installs /Applications/music-dl.app — no Gatekeeper prompt (built locally).
-  # Manual build: cd TIDALDL-PY && uv sync && uv pip install pyinstaller
-  # npm install && npx tauri build --bundles dmg
-
-TESTS:
-  cd TIDALDL-PY && uv run pytest   # full suite
-  uv run pytest tests/test_gui_api.py tests/test_gui_security.py  # quick smoke
+RUN:   cd TIDALDL-PY && uv sync && music-dl gui     # http://localhost:8765
+TEST:  cd TIDALDL-PY && uv run pytest
+BUILD: cd TIDALDL-PY && uv sync && uv pip install pyinstaller && npm install && npx tauri build --bundles dmg
 
 KEY PATHS:
-  TIDALDL-PY/tidal_dl/gui/static/app.js    — main frontend (vanilla JS, no framework)
-  TIDALDL-PY/tidal_dl/gui/static/style.css — all styles
-  TIDALDL-PY/tidal_dl/gui/static/index.html — shell HTML
-  TIDALDL-PY/tidal_dl/gui/__init__.py       — FastAPI app factory
-  TIDALDL-PY/tidal_dl/gui/api/              — API routes (playback, search, library, etc.)
-  TIDALDL-PY/tidal_dl/gui/security.py       — CSRF, path validation, host validation
-  TIDALDL-PY/tidal_dl/gui/server.py         — uvicorn launcher
-  TIDALDL-PY/src-tauri/                     — Tauri shell (Rust)
-  TIDALDL-PY/src-tauri/src/lib.rs           — sidecar spawn + health poll
-  TIDALDL-PY/src-tauri/loading/index.html   — loading screen with status phrases
-  docker/Dockerfile                          — production Docker image
-  docker/docker-compose.yml                  — gui + cli services
+  tidal_dl/gui/static/{app.js,style.css,index.html} — frontend (no framework)
+  tidal_dl/gui/__init__.py    — FastAPI app factory
+  tidal_dl/gui/api/           — all API routes
+  tidal_dl/gui/security.py    — CSRF, path validation, host validation
+  src-tauri/src/lib.rs        — Tauri sidecar spawn + health poll
 
-SECURITY RULES:
-  - Server binds 127.0.0.1 by default. 0.0.0.0 only via MUSIC_DL_BIND_ALL=1 (Docker sets this).
-  - CSRF token required for all POST/PUT/DELETE. GET is exempt.
-  - /api/playback/local validates paths: resolve(strict=True) + is_relative_to() + audio extension whitelist.
-  - No authentication layer — localhost-only is the trust boundary.
-  - Never pipe audio through Web Audio API or any processing. Direct <audio src="..."> only.
-
-CONVENTIONS:
-  - uv over pip, bun over npm.
-  - No frontend framework — vanilla JS, single app.js file.
-  - pyproject.toml is the single source of truth for packaging.
-  - Static assets must be in [tool.setuptools.package-data] or Docker breaks.
+RULES:
+  - Audio: direct <audio src="..."> only. NO Web Audio API. Non-negotiable.
+  - Security: localhost-only, CSRF on writes, path validation on file ops.
+  - Tooling: uv over pip, bun over npm.
 ```
 
 </details>
