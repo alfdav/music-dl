@@ -240,6 +240,21 @@ def read_settings_status() -> dict:
     return settings_status()
 
 
+@router.get("/settings/update-check")
+def check_for_update() -> dict:
+    """Check GitHub releases for a newer version."""
+    from tidal_dl import update_available
+
+    available, info = update_available()
+    return {
+        "current_version": __version__,
+        "update_available": available,
+        "latest_version": info.version.lstrip("v"),
+        "release_url": info.url,
+        "release_notes": info.release_info,
+    }
+
+
 class SettingsUpdate(BaseModel):
     download_base_path: str | None = None
     quality_audio: str | None = None
