@@ -149,8 +149,11 @@ def _playlist_tracks_data(session, playlist_id: str) -> dict:
     _playlist_tracks_cache[playlist_id] = {"data": result, "ts": now}
     # Evict oldest entries when cache exceeds max size
     if len(_playlist_tracks_cache) > _CACHE_MAX_PLAYLISTS:
-        oldest_id = min(_playlist_tracks_cache, key=lambda k: _playlist_tracks_cache[k]["ts"])
-        del _playlist_tracks_cache[oldest_id]
+        try:
+            oldest_id = min(_playlist_tracks_cache, key=lambda k: _playlist_tracks_cache[k]["ts"])
+            del _playlist_tracks_cache[oldest_id]
+        except KeyError:
+            pass
     return result
 
 

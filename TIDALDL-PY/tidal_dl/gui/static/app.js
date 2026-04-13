@@ -493,6 +493,15 @@ function toast(message, type, durationMs) {
   setTimeout(() => { t.remove(); }, durationMs || (type === 'error' ? 5000 : 3000));
 }
 
+function toastSticky(contentEl) {
+  if (!toastContainer) {
+    toastContainer = h('div', { className: 'toast-container', role: 'status', 'aria-live': 'polite' });
+    document.body.appendChild(toastContainer);
+  }
+  toastContainer.appendChild(contentEl);
+  return contentEl;
+}
+
 // ---- INLINE CONFIRM ----
 function inlineConfirm(message, onYes) {
   const overlay = h('div', { className: 'confirm-overlay', role: 'dialog', 'aria-modal': 'true' });
@@ -828,6 +837,18 @@ function _renderHomeGrid(container, data, totalPlays) {
       const cols = Math.max(2, Math.min(6, Math.floor(w / 280)));
       e.target.style.setProperty('--cols', cols);
       e.target.classList.toggle('density-compact', cols <= 2);
+      // Balance last row: stretch last tile to fill any gap
+      const prev = e.target.querySelector('.bento-row-fill');
+      if (prev) { prev.classList.remove('bento-row-fill'); prev.style.removeProperty('grid-column'); }
+      const compact = cols <= 2;
+      const vis = Array.from(e.target.children).filter(t => !(compact && t.dataset.tier));
+      let slots = 0;
+      for (const t of vis) slots += t.classList.contains('bento-hero') ? 2 : 1;
+      const gap = slots % cols;
+      if (gap && vis.length) {
+        vis[vis.length - 1].classList.add('bento-row-fill');
+        vis[vis.length - 1].style.gridColumn = 'span ' + (1 + cols - gap);
+      }
     }
   }).observe(grid);
 
@@ -4791,11 +4812,11 @@ function renderSettings(container) {
   resultsArea.appendChild(formSection);
   loadSettingsForm(formSection, accessSection);
 
-  // Updater section (Tauri only)
+  // Updater section
+  const updaterSection = h('div', { id: 'settings-updater' });
+  resultsArea.appendChild(updaterSection);
+  _updater.settingsEl = updaterSection;
   if (_isTauri()) {
-    const updaterSection = h('div', { id: 'settings-updater' });
-    resultsArea.appendChild(updaterSection);
-    _updater.settingsEl = updaterSection;
     if (_updater.state) {
       renderUpdaterSettings(updaterSection, _updater.state);
     } else {
@@ -4803,6 +4824,12 @@ function renderSettings(container) {
         _onUpdaterState(us);
       }).catch(() => {});
     }
+  } else {
+    _renderWebUpdaterPanel(updaterSection);
+  }
+  // Web update notification card (shown in both modes)
+  if (_updater.webUpdate && _updater.webUpdate.update_available) {
+    _renderWebUpdaterSettings(updaterSection);
   }
 }
 
@@ -5420,14 +5447,10 @@ function _tickPlayCount() {
   }
 }
 
-function playTrack(track) {
-  if (!track) return;
-
-  // Track history — dedupe by ISRC first, then by _trackKey, most recent first
+function _recordRecentlyPlayed(track) {
   const key = _trackKey(track);
   const idx = recentlyPlayed.findIndex(t => {
     if (key === '') return false;
-    // Check ISRC match first (catches same song from different file paths)
     if (track.isrc && t.isrc && track.isrc === t.isrc) return true;
     return _trackKey(t) === key;
   });
@@ -5436,6 +5459,10 @@ function playTrack(track) {
   recentlyPlayed.unshift(entry);
   if (recentlyPlayed.length > MAX_RECENT) recentlyPlayed.pop();
   _saveRecent();
+}
+
+function playTrack(track) {
+  if (!track) return;
 
   // Play count: fires after 30s of actual playback (or on ended for short tracks)
   _resetPlayCount(track);
@@ -5456,6 +5483,8 @@ function playTrack(track) {
     if (!state.playing) { audio.muted = false; return; }
     audio.play().then(() => {
       audio.muted = false;
+      // Only record to recently played after audio actually starts
+      _recordRecentlyPlayed(track);
     }).catch(() => {
       audio.muted = false;
       toast('Unable to play track', 'error');
@@ -5708,12 +5737,19 @@ audio.addEventListener('pause', () => {
   _playCountLastTime = null;
 });
 
+let _consecutiveErrors = 0;
+
 audio.addEventListener('error', () => {
   state.playing = false;
   updatePlayButton();
   setWaveformPlaying(false);
+  _consecutiveErrors++;
   const current = state.queue[state.queueIndex];
   const label = current ? (current.name || 'Track') : 'Track';
+  if (_consecutiveErrors >= 3) {
+    toast('Multiple tracks failed \u2014 check your Tidal session', 'error');
+    return;
+  }
   const canAutoSkip = current && state.queueIndex < state.queue.length - 1;
   toast(label + ' unavailable', 'error');
   if (canAutoSkip) {
@@ -5722,6 +5758,7 @@ audio.addEventListener('error', () => {
 });
 
 audio.addEventListener('play', () => {
+  _consecutiveErrors = 0;
   state.playing = true;
   updatePlayButton();
   setWaveformPlaying(true);
@@ -6158,6 +6195,7 @@ async function renderUpgradeScanner(container) {
   }
 
   function _connectSSE() {
+    if (eventSource) { eventSource.close(); }
     eventSource = new EventSource('/api/upgrade/scan');
     eventSource.onmessage = (e) => _handleScanEvent(JSON.parse(e.data));
     eventSource.onerror = () => {
@@ -6815,7 +6853,7 @@ btnSleep.addEventListener('click', () => {
 
 // ── Updater ──────────────────────────────────────────────────────────────────
 
-const _updater = { state: null, dismissed: false, settingsEl: null };
+const _updater = { state: null, dismissed: false, settingsEl: null, webUpdate: null };
 
 function _isTauri() {
   return !!(window.__TAURI__ || window.__TAURI_INTERNALS__);
@@ -6933,6 +6971,101 @@ function renderUpdaterSettings(container, us) {
   container.appendChild(wrap);
 }
 
+function _renderWebUpdaterPanel(container) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+  const data = _updater.webUpdate;
+  const wrap = h('div', { className: 'updater-settings' });
+  wrap.appendChild(textEl('div', 'About / Updates', 'updater-settings-title'));
+  wrap.appendChild(textEl('div', 'Current version: v' + (data ? data.current_version : '…'), 'updater-version'));
+  if (data && !data.update_available) {
+    wrap.appendChild(textEl('div', 'You are on the latest version.', 'updater-status updater-status--success'));
+  }
+  const btn = h('button', { className: 'updater-btn-check' });
+  btn.textContent = 'Check for Updates';
+  btn.onclick = () => {
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    api('/settings/update-check').then(d => {
+      _updater.webUpdate = d;
+      _renderWebUpdaterPanel(container);
+      if (d.update_available) _renderWebUpdaterSettings(container);
+    }).catch(() => {
+      btn.disabled = false;
+      btn.textContent = 'Check for Updates';
+      toast('Update check failed', 'error');
+    });
+  };
+  wrap.appendChild(btn);
+  container.appendChild(wrap);
+}
+
+function _checkWebUpdate() {
+  api('/settings/update-check').then(data => {
+    if (!data.update_available) return;
+    _updater.webUpdate = data;
+
+    // Badge on Settings nav
+    const settingsNav = document.querySelector('[data-view="settings"]');
+    if (settingsNav && !settingsNav.querySelector('.nav-badge')) {
+      const dot = h('span', { className: 'nav-badge' });
+      dot.textContent = '1';
+      settingsNav.appendChild(dot);
+    }
+
+    // Persistent toast with dismiss
+    const t = h('div', { className: 'toast toast-update' });
+    t.appendChild(textEl('span', 'v' + data.latest_version + ' is available', ''));
+    const viewBtn = h('a', {
+      className: 'toast-update-link',
+      href: data.release_url,
+      target: '_blank',
+      rel: 'noopener',
+    });
+    viewBtn.textContent = 'View';
+    viewBtn.addEventListener('click', e => e.stopPropagation());
+    t.appendChild(viewBtn);
+    const dismissBtn = h('button', { className: 'toast-update-dismiss' });
+    dismissBtn.textContent = '\u00d7';
+    dismissBtn.addEventListener('click', () => t.remove());
+    t.appendChild(dismissBtn);
+    toastSticky(t);
+
+    // Refresh settings panel if open
+    if (_updater.settingsEl) _renderWebUpdaterSettings(_updater.settingsEl);
+  }).catch(() => {});
+}
+
+function _renderWebUpdaterSettings(container) {
+  const data = _updater.webUpdate;
+  // Remove any previous web-update card
+  const prev = container.querySelector('.update-notification');
+  if (prev) prev.remove();
+  if (!data) return;
+
+  const card = h('div', { className: 'update-notification' });
+  const header = h('div', { className: 'update-notification-header' });
+  header.appendChild(textEl('span', 'Update Available', 'update-notification-title'));
+  header.appendChild(textEl('span', 'v' + data.latest_version, 'update-notification-version'));
+  card.appendChild(header);
+  if (data.release_notes) {
+    const notes = data.release_notes.length > 200
+      ? data.release_notes.slice(0, 200) + '…'
+      : data.release_notes;
+    card.appendChild(textEl('div', notes, 'update-notification-notes'));
+  }
+  const actions = h('div', { className: 'update-notification-actions' });
+  const dlBtn = h('a', {
+    className: 'update-notification-btn',
+    href: data.release_url,
+    target: '_blank',
+    rel: 'noopener',
+  });
+  dlBtn.textContent = 'Download from GitHub';
+  actions.appendChild(dlBtn);
+  card.appendChild(actions);
+  container.prepend(card);
+}
+
 function _initApp() {
   // Load settings into state for upgrade quality checks
   api('/settings').then(s => { state.settings = s; }).catch(() => {});
@@ -6940,6 +7073,7 @@ function _initApp() {
   _restoreQueue();
   _restorePosition();
   initUpdater();
+  _checkWebUpdate();
   navigate(location.hash.slice(1) || 'home');
 }
 

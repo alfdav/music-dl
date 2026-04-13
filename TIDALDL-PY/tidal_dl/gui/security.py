@@ -137,6 +137,8 @@ def validate_download_path(path_str: str) -> bool:
     Rejects system directories, non-existent paths, and paths the user
     likely doesn't intend to fill with music files.
     """
+    if not path_str or not path_str.strip():
+        return False
     try:
         resolved = Path(path_str).resolve()
     except (OSError, ValueError):

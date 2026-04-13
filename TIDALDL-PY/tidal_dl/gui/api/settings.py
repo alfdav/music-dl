@@ -240,6 +240,21 @@ def read_settings_status() -> dict:
     return settings_status()
 
 
+@router.get("/settings/update-check")
+def check_for_update() -> dict:
+    """Check GitHub releases for a newer version."""
+    from tidal_dl import update_available
+
+    available, info = update_available()
+    return {
+        "current_version": __version__,
+        "update_available": available,
+        "latest_version": info.version.lstrip("v"),
+        "release_url": info.url,
+        "release_notes": info.release_info,
+    }
+
+
 class SettingsUpdate(BaseModel):
     download_base_path: str | None = None
     quality_audio: str | None = None
@@ -303,6 +318,10 @@ def update_settings(update: SettingsUpdate) -> dict:
     from tidal_dl.gui.security import validate_download_path
 
     updates = update.model_dump(exclude_none=True)
+
+    _VALID_QUALITIES = {"NORMAL", "HIGH", "LOSSLESS", "HI_RES", "HI_RES_LOSSLESS"}
+    if "quality_audio" in updates and updates["quality_audio"] not in _VALID_QUALITIES:
+        raise HTTPException(status_code=400, detail=f"Invalid quality_audio value")
 
     if "download_base_path" in updates:
         path = updates["download_base_path"]
