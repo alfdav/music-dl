@@ -217,24 +217,14 @@ Settings are managed from the in-app **Settings** page. The config file lives at
 
 ## Architecture
 
-```
-┌─────────────┐     ┌──────────────┐     ┌───────────────┐
-│  CLI (Typer) │     │ GUI (FastAPI) │     │ Tidal API     │
-│  cli.py      │     │ gui/         │     │ (tidalapi)    │
-└──────┬───────┘     └──────┬───────┘     └───────┬───────┘
-       │                    │                     │
-       └────────┬───────────┘                     │
-                │                                 │
-        ┌───────▼────────┐               ┌────────▼────────┐
-        │  config.py     │               │  download.py    │
-        │  Settings()    │◄──────────────│  Download class │
-        │  Tidal()       │               └────────┬────────┘
-        └───────┬────────┘                        │
-                │                          ┌──────▼──────┐
-        ┌───────▼────────┐                 │  mutagen    │
-        │  library_db.py │                 │  (tagging)  │
-        │  SQLite + WAL  │                 └─────────────┘
-        └────────────────┘
+```mermaid
+graph TD
+    CLI["CLI · Typer<br/><code>cli.py</code>"] --> Core
+    GUI["GUI · FastAPI<br/><code>gui/</code>"] --> Core
+    Core["config.py<br/>Settings · Tidal"] --> DB["library_db.py<br/>SQLite + WAL"]
+    Core --> DL["download.py<br/>Download class"]
+    Tidal["Tidal API<br/>tidalapi"] --> DL
+    DL --> Tag["mutagen<br/>tagging"]
 ```
 
 Three entry points, one shared core. CLI and GUI use the same singletons (`Settings`, `Tidal`, `LibraryDB`). The download pipeline is identical regardless of entry point. The `<audio>` element plays files directly from source — no Web Audio API, no processing.
