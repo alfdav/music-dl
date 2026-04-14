@@ -60,7 +60,7 @@ target-version = ["py312", "py313"]
 line-length = 120
 
 [project.optional-dependencies]
-test = ["pytest>=8.0", "httpx>=0.27"]
+test = ["pytest>=9.0.3", "httpx>=0.27"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -71,5 +71,5 @@ filterwarnings = [
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
 ]
