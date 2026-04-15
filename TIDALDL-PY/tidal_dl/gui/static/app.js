@@ -3531,8 +3531,9 @@ function renderLibrary(container) {
   searchArea.appendChild(pills);
   container.appendChild(searchArea);
 
+  let shelfArea = null;
   if (!recentAddedExpanded) {
-    const shelfArea = h('section', { className: 'library-shelf' });
+    shelfArea = h('section', { className: 'library-shelf' });
     container.appendChild(shelfArea);
     loadLibraryRecentShelf(shelfArea);
   }
@@ -3546,6 +3547,7 @@ function renderLibrary(container) {
       _libSearchTimer = setTimeout(() => {
         libraryQuery = libInput.value.trim();
         libraryOffset = 0;
+        shelfArea.style.display = libraryQuery ? 'none' : '';
         if (librarySort === 'album') {
           loadLibraryAlbums(resultsArea, libraryQuery);
         } else if (librarySort === 'artist') {
@@ -4339,10 +4341,45 @@ function _ensureGlobalSSE() {
     try {
       const data = JSON.parse(event.data);
       if (data.type === 'ping') return;
+      if (data.type === 'batch_queued') {
+        updateDlBadge(data.count || 0);
+        const activeEl = document.getElementById('dl-active');
+        if (activeEl) {
+          const emptyEl = activeEl.querySelector('.dl-empty');
+          if (emptyEl) emptyEl.remove();
+          // Show a single summary card instead of 1600 individual cards
+          let summary = activeEl.querySelector('.dl-batch-summary');
+          if (!summary) {
+            summary = h('div', { className: 'dl-card dl-batch-summary' });
+            activeEl.prepend(summary);
+          }
+          while (summary.firstChild) summary.removeChild(summary.firstChild);
+          summary.appendChild(textEl('div', (data.count || 0) + ' tracks queued', 'dl-card-name'));
+          summary.appendChild(textEl('div', 'Waiting to start...', 'dl-card-status dl-status-queued'));
+        }
+        return;
+      }
       if (data.type === 'complete') _dlComplete(data.track_id, true);
       else if (data.type === 'error') {
         toast('Download failed: ' + (data.error || 'unknown'), 'error');
         _dlComplete(data.track_id, false);
+      }
+      else if (data.type === 'cancelled') {
+        _dlComplete(data.track_id, false);
+      }
+      // Queue control events
+      else if (data.type === 'queue_paused') {
+        _setQueuePaused(true);
+      } else if (data.type === 'queue_resumed') {
+        _setQueuePaused(false);
+      } else if (data.type === 'queue_cancelled') {
+        _setQueuePaused(false);
+        const activeEl = document.getElementById('dl-active');
+        if (activeEl) {
+          while (activeEl.firstChild) activeEl.removeChild(activeEl.firstChild);
+          _showActiveEmpty(activeEl);
+        }
+        _scheduleHistoryReload();
       }
       // Upgrade events — update badge and inline scanner rows
       else if (data.type === 'upgrade_complete') {
@@ -4508,6 +4545,19 @@ function _dlArtThumb(coverUrl, trackId) {
   return wrap;
 }
 
+function _setQueuePaused(paused) {
+  const pauseBtn = document.getElementById('dl-pause-btn');
+  const resumeBtn = document.getElementById('dl-resume-btn');
+  if (pauseBtn) pauseBtn.style.display = paused ? 'none' : '';
+  if (resumeBtn) resumeBtn.style.display = paused ? '' : 'none';
+  // Update batch summary text if visible
+  const summary = document.querySelector('.dl-batch-summary');
+  if (summary) {
+    const statusEl = summary.querySelector('.dl-card-status');
+    if (statusEl) statusEl.textContent = paused ? 'Paused' : 'Waiting to start...';
+  }
+}
+
 function _timeAgo(ts) {
   if (!ts) return '';
   const diff = (Date.now() / 1000) - ts;
@@ -4526,9 +4576,50 @@ function renderDownloads(container) {
     textEl('div', 'Downloads', 'results-title')
   ));
 
-  // Active section
-  const activeLabel = textEl('div', 'Active', 'dl-section-label');
-  resultsArea.appendChild(activeLabel);
+  // Active section header with queue controls
+  const activeHeader = h('div', { className: 'dl-active-header' });
+  activeHeader.appendChild(textEl('div', 'Active', 'dl-section-label'));
+
+  const queueControls = h('div', { id: 'dl-queue-controls', className: 'dl-queue-controls' });
+
+  const pauseBtn = h('button', { className: 'dl-ctrl-btn', id: 'dl-pause-btn' });
+  pauseBtn.textContent = 'Pause';
+  pauseBtn.onclick = async () => {
+    pauseBtn.disabled = true;
+    try {
+      await api('/downloads/pause', { method: 'POST' });
+    } catch (_) { toast('Failed to pause', 'error'); }
+    pauseBtn.disabled = false;
+  };
+
+  const resumeBtn = h('button', { className: 'dl-ctrl-btn', id: 'dl-resume-btn' });
+  resumeBtn.textContent = 'Resume';
+  resumeBtn.style.display = 'none';
+  resumeBtn.onclick = async () => {
+    resumeBtn.disabled = true;
+    try {
+      await api('/downloads/resume', { method: 'POST' });
+    } catch (_) { toast('Failed to resume', 'error'); }
+    resumeBtn.disabled = false;
+  };
+
+  const cancelBtn = h('button', { className: 'dl-ctrl-btn dl-ctrl-cancel' });
+  cancelBtn.textContent = 'Cancel All';
+  cancelBtn.onclick = () => {
+    inlineConfirm('Cancel all remaining downloads?', async () => {
+      try {
+        await api('/downloads/cancel', { method: 'POST' });
+        toast('Downloads cancelled', 'success');
+      } catch (_) { toast('Failed to cancel', 'error'); }
+    });
+  };
+
+  queueControls.appendChild(pauseBtn);
+  queueControls.appendChild(resumeBtn);
+  queueControls.appendChild(cancelBtn);
+  activeHeader.appendChild(queueControls);
+  resultsArea.appendChild(activeHeader);
+
   const activeSection = h('div', { id: 'dl-active', className: 'dl-card-list' });
   resultsArea.appendChild(activeSection);
 
@@ -4556,13 +4647,25 @@ function renderDownloads(container) {
   const historySection = h('div', { id: 'dl-history', className: 'dl-card-list' });
   resultsArea.appendChild(historySection);
 
+  // Sync queue control state (paused/running)
+  api('/downloads/queue-state').then(qs => {
+    _setQueuePaused(qs.paused);
+  }).catch(() => {});
+
   // Seed active section from current server state, then let SSE keep it updated
   api('/downloads/active/snapshot').then(data => {
     const entries = data.active || [];
-    if (entries.length === 0) {
+    const queuedCount = data.queued_count || 0;
+    if (entries.length === 0 && queuedCount === 0) {
       _showActiveEmpty(activeSection);
     } else {
       entries.forEach(e => updateActiveDownload(activeSection, { type: 'progress', ...e }));
+      if (queuedCount > 0) {
+        const summary = h('div', { className: 'dl-card dl-batch-summary' });
+        summary.appendChild(textEl('div', queuedCount + ' tracks queued', 'dl-card-name'));
+        summary.appendChild(textEl('div', 'Waiting to start...', 'dl-card-status dl-status-queued'));
+        activeSection.prepend(summary);
+      }
     }
   }).catch(() => {
     _showActiveEmpty(activeSection);
@@ -4574,18 +4677,31 @@ function renderDownloads(container) {
   loadDownloadHistory(historySection);
 }
 
+let _historyReloadTimer = null;
+function _scheduleHistoryReload() {
+  clearTimeout(_historyReloadTimer);
+  _historyReloadTimer = setTimeout(() => {
+    const histEl = document.getElementById('dl-history');
+    if (histEl) loadDownloadHistory(histEl);
+  }, 800);
+}
+
 function updateActiveDownload(container, data) {
   let card = container.querySelector('[data-dl-id="' + data.track_id + '"]');
 
   if (data.type === 'complete' || data.type === 'error') {
     if (card) card.remove();
-    // Check if active section is now empty
+    // Remove batch summary if no real download cards remain
+    const remaining = container.querySelectorAll('.dl-card:not(.dl-batch-summary):not(.dl-empty)');
+    if (!remaining.length) {
+      const summary = container.querySelector('.dl-batch-summary');
+      if (summary) summary.remove();
+    }
     if (!container.children.length) {
       _showActiveEmpty(container);
     }
-    // Refresh history to show the new entry
-    const histEl = document.getElementById('dl-history');
-    if (histEl) loadDownloadHistory(histEl);
+    // Debounce history reload — prevents 1600 re-renders during bulk downloads
+    _scheduleHistoryReload();
     return;
   }
 
@@ -6146,8 +6262,24 @@ async function renderUpgradeScanner(container) {
   const cancelBtn = h('button', { className: 'pill' });
   cancelBtn.textContent = 'Cancel';
   cancelBtn.style.display = 'none';
+  const purgeBtn = h('button', { className: 'pill' });
+  purgeBtn.textContent = 'Clear Probe Cache';
+  purgeBtn.title = 'Purge cached Tidal quality probes so the next scan re-probes all tracks fresh';
+  purgeBtn.onclick = async () => {
+    purgeBtn.disabled = true;
+    purgeBtn.textContent = 'Clearing...';
+    try {
+      const res = await api('/upgrade/probes', { method: 'DELETE' });
+      toast((res.deleted || 0) + ' cached probes cleared', 'success');
+    } catch (_) {
+      toast('Failed to clear probes', 'error');
+    }
+    purgeBtn.disabled = false;
+    purgeBtn.textContent = 'Clear Probe Cache';
+  };
   controls.appendChild(scanBtn);
   controls.appendChild(cancelBtn);
+  controls.appendChild(purgeBtn);
   header.appendChild(controls);
   wrapper.appendChild(header);
 

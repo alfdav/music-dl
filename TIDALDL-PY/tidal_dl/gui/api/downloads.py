@@ -40,6 +40,12 @@ _sse_clients: list[asyncio.Queue] = []
 _MAX_SSE_CLIENTS = 5
 _event_loop: asyncio.AbstractEventLoop | None = None
 
+# Download queue controls (shared with upgrade.py)
+_dl_running = threading.Event()  # clear = paused, set = running
+_dl_running.set()
+_dl_cancel_all = False
+_dl_cancelled_ids: set[int] = set()
+
 
 def set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
     global _event_loop
@@ -106,14 +112,18 @@ def _scan_new_downloads(db, settings) -> None:
 
 def trigger_download(track_ids: list[int]) -> dict:
     """Trigger downloads using the existing Download pipeline in a background thread."""
+    global _dl_cancel_all
+    _dl_cancel_all = False
+    _dl_cancelled_ids.clear()
+    _dl_running.set()
 
     with _lock:
         for tid in track_ids:
             _active[tid] = DownloadEntry(tid, f"Track {tid}")
 
-    # Broadcast queued state for all tracks so the UI shows the full queue
-    for tid in track_ids:
-        _broadcast({"type": "progress", "track_id": tid, "name": f"Track {tid}", "artist": "", "album": "", "cover_url": "", "quality": "", "status": "queued", "progress": 0})
+    # Single batch event so the UI knows how many items were queued
+    # (individual progress events fire as each track starts downloading)
+    _broadcast({"type": "batch_queued", "count": len(track_ids)})
 
     def _run() -> None:
         import logging
@@ -139,6 +149,19 @@ def trigger_download(track_ids: list[int]) -> dict:
         db.open()
 
         for tid in track_ids:
+            # Pause gate — blocks here until resumed
+            _dl_running.wait()
+
+            # Cancel check
+            if _dl_cancel_all or tid in _dl_cancelled_ids:
+                with _lock:
+                    entry = _active.pop(tid, None)
+                if entry:
+                    entry.status = "cancelled"
+                    _broadcast({"type": "cancelled", "track_id": tid, "name": entry.name})
+                _dl_cancelled_ids.discard(tid)
+                continue
+
             track = None
             try:
                 track = tidal.session.track(tid)
@@ -313,17 +336,82 @@ def download(req: DownloadRequest) -> dict:
     return trigger_download(req.track_ids)
 
 
+@router.post("/downloads/pause")
+def pause_downloads() -> dict:
+    """Pause the download queue. Current track finishes, then queue waits."""
+    _dl_running.clear()
+    _broadcast({"type": "queue_paused"})
+    return {"status": "paused"}
+
+
+@router.post("/downloads/resume")
+def resume_downloads() -> dict:
+    """Resume the download queue."""
+    _dl_running.set()
+    _broadcast({"type": "queue_resumed"})
+    return {"status": "running"}
+
+
+class CancelRequest(BaseModel):
+    track_ids: list[int] | None = None
+
+
+@router.post("/downloads/cancel")
+def cancel_downloads(req: CancelRequest | None = None) -> dict:
+    """Cancel downloads. If track_ids given, cancel those; otherwise cancel all."""
+    global _dl_cancel_all
+    if req and req.track_ids:
+        _dl_cancelled_ids.update(req.track_ids)
+        count = len(req.track_ids)
+        # Also remove them from active immediately
+        with _lock:
+            for tid in req.track_ids:
+                entry = _active.pop(tid, None)
+                if entry:
+                    _broadcast({"type": "cancelled", "track_id": tid, "name": entry.name})
+    else:
+        _dl_cancel_all = True
+        with _lock:
+            count = len(_active)
+            for tid, entry in list(_active.items()):
+                entry.status = "cancelled"
+            _active.clear()
+        _broadcast({"type": "queue_cancelled", "count": count})
+        # Also resume so the worker thread can exit its loop cleanly
+        _dl_running.set()
+    return {"status": "cancelled", "count": count}
+
+
+@router.get("/downloads/queue-state")
+def queue_state() -> dict:
+    """Return the current queue control state."""
+    return {
+        "paused": not _dl_running.is_set(),
+        "cancelled": _dl_cancel_all,
+        "active_count": len(_active),
+    }
+
+
 @router.get("/downloads/active/snapshot")
 def downloads_snapshot() -> dict:
-    """Return current in-progress downloads (non-SSE)."""
+    """Return current in-progress downloads (non-SSE).
+
+    Only returns actively-downloading items individually; queued items
+    are summarised as a count to keep payloads small for large queues.
+    """
     with _lock:
-        entries = [
-            {"track_id": e.track_id, "name": e.name, "artist": e.artist,
-             "album": e.album, "cover_url": e.cover_url, "quality": e.quality,
-             "status": e.status, "progress": e.progress}
-            for e in _active.values()
-        ]
-    return {"active": entries}
+        downloading = []
+        queued_count = 0
+        for e in _active.values():
+            if e.status == "downloading":
+                downloading.append(
+                    {"track_id": e.track_id, "name": e.name, "artist": e.artist,
+                     "album": e.album, "cover_url": e.cover_url, "quality": e.quality,
+                     "status": e.status, "progress": e.progress}
+                )
+            else:
+                queued_count += 1
+    return {"active": downloading, "queued_count": queued_count}
 
 
 @router.get("/downloads/active")
@@ -337,8 +425,20 @@ async def downloads_sse() -> StreamingResponse:
 
     async def event_stream():
         try:
+            # Only send individual events for actively downloading items;
+            # queued items are represented by a batch summary to avoid
+            # flooding the client with 1600+ events on connect.
+            downloading = []
+            queued_count = 0
             for entry in _active.values():
+                if entry.status == "downloading":
+                    downloading.append(entry)
+                else:
+                    queued_count += 1
+            for entry in downloading:
                 yield f"data: {_json({'type': 'progress', 'track_id': entry.track_id, 'name': entry.name, 'artist': entry.artist, 'album': entry.album, 'cover_url': entry.cover_url, 'quality': entry.quality, 'status': entry.status, 'progress': entry.progress})}\n\n"
+            if queued_count > 0:
+                yield f"data: {_json({'type': 'batch_queued', 'count': queued_count})}\n\n"
 
             while True:
                 try:

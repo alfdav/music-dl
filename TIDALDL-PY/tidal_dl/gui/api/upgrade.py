@@ -19,9 +19,17 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from tidal_dl.constants import QUALITY_STRING_TO_ENUM, TIER_RANK
-from tidal_dl.gui.api.downloads import DownloadEntry, _active, _broadcast, _lock
+from tidal_dl.gui.api.downloads import (
+    DownloadEntry, _active, _broadcast, _lock,
+    _dl_running, _dl_cancel_all, _dl_cancelled_ids,
+)
 from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.path import format_path_media, path_config_base
+
+
+def _norm(s: str) -> str:
+    """Normalize string for comparison: lowercase, alphanumeric only."""
+    return re.sub(r"[^a-z0-9]", "", s.lower())
 
 router = APIRouter()
 logger = logging.getLogger("music-dl.upgrade")
@@ -188,22 +196,20 @@ def _probe_tidal_meta(
         if not tracks:
             tracks = getattr(results, "tracks", []) or []
 
-        # Normalize for comparison
-        def _norm(s: str) -> str:
-            return re.sub(r"[^a-z0-9]", "", s.lower())
-
         target_title = _norm(title)
         target_artist = _norm(artist)
 
         for t in tracks:
             t_name = _norm(getattr(t, "name", "") or getattr(t, "full_name", "") or "")
-            t_artist = _norm(", ".join(a.name for a in (t.artists or []) if a.name) if hasattr(t, "artists") else "")
+            t_artist_raw = ", ".join(a.name for a in (t.artists or []) if a.name) if hasattr(t, "artists") else ""
+            t_artist = _norm(t_artist_raw)
 
-            # Title must match closely
+            # Title must match closely (substring ok — titles are usually unique)
             if target_title not in t_name and t_name not in target_title:
                 continue
-            # Artist must match closely
-            if target_artist not in t_artist and t_artist not in target_artist:
+            # Artist must match exactly after normalization to prevent
+            # wrong-artist downloads (e.g. "Drake" != "Drake Bell")
+            if target_artist != t_artist:
                 continue
             # Duration check if available (±5 seconds)
             if duration > 0:
@@ -526,6 +532,21 @@ def probe_by_meta(req: ProbeByMetaRequest) -> dict:
     return {"results": results}
 
 
+@router.delete("/upgrade/probes")
+def purge_probes() -> dict:
+    """Clear all cached Tidal quality probes so the next scan re-probes fresh."""
+    db = LibraryDB(Path(path_config_base()) / "library.db")
+    db.open()
+    try:
+        assert db._conn
+        cur = db._conn.execute("DELETE FROM quality_probes")
+        deleted = cur.rowcount
+        db.commit()
+    finally:
+        db.close()
+    return {"deleted": deleted}
+
+
 @router.post("/upgrade/start")
 def start_upgrade(req: UpgradeStartRequest) -> dict:
     """Trigger upgrade downloads for the given local track paths."""
@@ -710,6 +731,17 @@ def _trigger_upgrade_downloads(
         # Phase 3: Download each track (album-aware when possible)
         # ---------------------------------------------------------------
         for tid in track_ids:
+            # Pause gate — blocks here until resumed
+            _dl_running.wait()
+
+            # Cancel check
+            if _dl_cancel_all or tid in _dl_cancelled_ids:
+                with _lock:
+                    _active.pop(tid, None)
+                _dl_cancelled_ids.discard(tid)
+                _broadcast({"type": "cancelled", "track_id": tid, "name": f"Track {tid}"})
+                continue
+
             old_path = upgrade_map.get(tid, "")
             track_name = f"Track {tid}"
 
@@ -797,6 +829,26 @@ def _trigger_upgrade_downloads(
                 )
 
                 if outcome in (DownloadOutcome.DOWNLOADED, DownloadOutcome.COPIED):
+                    # Safety gate: verify the downloaded track's artist matches
+                    # the original before deleting. Prevents data loss from stale
+                    # probe results or matching errors.
+                    local_artist = _norm(row.get("artist", "")) if row else ""
+                    tidal_artist = _norm(artist_name)
+                    local_artist_display = (row.get("artist") or "") if row else ""
+                    if local_artist and tidal_artist and local_artist != tidal_artist:
+                        logger.warning(
+                            "Artist mismatch — keeping original. Local: %r, Tidal: %r, path: %s",
+                            local_artist_display, artist_name, old_path,
+                        )
+                        # Remove the wrong-artist file that was just downloaded
+                        _trash_file(str(new_path))
+                        with _lock:
+                            _active.pop(tid, None)
+                        err_msg = f"Artist mismatch: expected {local_artist_display}, got {artist_name}"
+                        _broadcast({"type": "error", "track_id": tid, "name": track_name, "artist": artist_name, "album": album_name, "cover_url": cover_url, "error": err_msg})
+                        _broadcast({"type": "upgrade_error", "track_id": tid, "name": track_name, "artist": artist_name, "error": err_msg, "old_path": old_path})
+                        continue
+
                     removed_paths = _cleanup_replaced_track_files(
                         db,
                         old_path=old_path,
