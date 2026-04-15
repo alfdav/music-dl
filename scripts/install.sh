@@ -35,6 +35,15 @@ curl -fSL --progress-bar -o "${TMPDIR_DL}/${DMG_FILE}" "$DMG_URL" \
   || die "Download failed."
 
 say "Installing to ${INSTALL_DIR}"
+
+# Stop the running app and sidecar so we don't replace a live binary
+if pgrep -f "${APP_NAME}.app" >/dev/null 2>&1; then
+  say "Stopping running ${APP_NAME}"
+  pkill -f "${APP_NAME}.app/Contents/MacOS/music-dl-server" 2>/dev/null || true
+  pkill -f "${APP_NAME}.app/Contents/MacOS/music-dl" 2>/dev/null || true
+  sleep 1
+fi
+
 MOUNT_POINT=$(hdiutil attach -nobrowse -readonly "${TMPDIR_DL}/${DMG_FILE}" 2>/dev/null \
   | grep '/Volumes/' | sed 's/.*\(\/Volumes\/.*\)/\1/') \
   || die "Could not mount DMG."
@@ -57,5 +66,4 @@ xattr -cr "${INSTALL_DIR}/${APP_NAME}.app" 2>/dev/null || true
 hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null || true
 
 done "${APP_NAME} ${VERSION} installed to ${INSTALL_DIR}/${APP_NAME}.app"
-printf '  Open it from your Applications folder or run:\n'
-printf '    open -a %s\n\n' "$APP_NAME"
+open -a "$APP_NAME"
