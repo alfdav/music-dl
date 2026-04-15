@@ -573,10 +573,17 @@ def start_upgrade(req: UpgradeStartRequest) -> dict:
         skipped = 0
         errors: list[str] = []
 
+        # Snapshot currently-active track IDs to avoid double-queuing
+        with _lock:
+            already_queued = set(_active.keys())
+
         for path, direct_tid in all_items:
             # If tidal_track_id provided directly (from meta probe), use it
             # No need to validate path — we already have the Tidal track ID
             if direct_tid:
+                if direct_tid in already_queued:
+                    skipped += 1
+                    continue
                 track_ids.append(direct_tid)
                 upgrade_map[direct_tid] = path
                 continue
@@ -609,7 +616,7 @@ def start_upgrade(req: UpgradeStartRequest) -> dict:
                 continue
 
             tid = probe["tidal_track_id"]
-            if tid and tid not in upgrade_map:
+            if tid and tid not in upgrade_map and tid not in already_queued:
                 track_ids.append(tid)
                 upgrade_map[tid] = path
     finally:

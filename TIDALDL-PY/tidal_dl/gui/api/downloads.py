@@ -118,6 +118,10 @@ def trigger_download(track_ids: list[int]) -> dict:
     _dl_running.set()
 
     with _lock:
+        # Skip tracks already in the queue to prevent duplicates
+        track_ids = [tid for tid in track_ids if tid not in _active]
+        if not track_ids:
+            return {"status": "already_queued", "count": 0}
         for tid in track_ids:
             _active[tid] = DownloadEntry(tid, f"Track {tid}")
 
