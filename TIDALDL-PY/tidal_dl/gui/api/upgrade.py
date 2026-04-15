@@ -863,6 +863,24 @@ def _trigger_upgrade_downloads(
                     )
                     db.commit()
 
+                    # Rename suffixed file into the original's slot if the
+                    # original was cleaned up and the new file has a _01 etc.
+                    # suffix (e.g. "Song_01.flac" → "Song.flac").
+                    new_p = Path(new_path) if not isinstance(new_path, Path) else new_path
+                    if old_path and old_path in removed_paths and str(new_p) != old_path:
+                        old_p = Path(old_path)
+                        # Only rename if new file is in the same directory and
+                        # the original filename slot is now free.
+                        if new_p.parent == old_p.parent and not old_p.exists():
+                            try:
+                                new_p.rename(old_p)
+                                # Update DB reference to the clean name
+                                db.remove(str(new_p))
+                                new_p = old_p
+                            except OSError:
+                                pass  # keep suffixed name if rename fails
+                    new_path = new_p
+
                     # Register new file in library
                     register_downloaded_track(new_path)
                     db.commit()
