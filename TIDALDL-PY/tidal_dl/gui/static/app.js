@@ -4816,20 +4816,24 @@ function renderSettings(container) {
   const updaterSection = h('div', { id: 'settings-updater' });
   resultsArea.appendChild(updaterSection);
   _updater.settingsEl = updaterSection;
-  if (_isTauri()) {
-    if (_updater.state) {
-      renderUpdaterSettings(updaterSection, _updater.state);
+  try {
+    if (_isTauri()) {
+      if (_updater.state) {
+        renderUpdaterSettings(updaterSection, _updater.state);
+      } else {
+        Promise.resolve().then(() => _tauriInvoke('get_updater_state')).then(us => {
+          _onUpdaterState(us);
+        }).catch(() => {});
+      }
     } else {
-      _tauriInvoke('get_updater_state').then(us => {
-        _onUpdaterState(us);
-      }).catch(() => {});
+      _renderWebUpdaterPanel(updaterSection);
     }
-  } else {
-    _renderWebUpdaterPanel(updaterSection);
-  }
-  // Web update notification card (shown in both modes)
-  if (_updater.webUpdate && _updater.webUpdate.update_available) {
-    _renderWebUpdaterSettings(updaterSection);
+    // Web update notification card (shown in both modes)
+    if (_updater.webUpdate && _updater.webUpdate.update_available) {
+      _renderWebUpdaterSettings(updaterSection);
+    }
+  } catch (e) {
+    console.error('Updater settings error:', e);
   }
 }
 
