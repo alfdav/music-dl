@@ -13,7 +13,7 @@ INSTALL_DIR="/Applications"
 
 say()  { printf '\n\033[1;33m==> %s\033[0m\n' "$1"; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$1" >&2; exit 1; }
-done() { printf '\033[1;32m==> %s\033[0m\n' "$1"; }
+ok()   { printf '\033[1;32m==> %s\033[0m\n' "$1"; }
 
 # ── Preflight ─────────────────────────────────────────────────────────
 [ "$(uname -s)" = "Darwin" ] || die "This installer only supports macOS."
@@ -65,5 +65,5 @@ xattr -cr "${INSTALL_DIR}/${APP_NAME}.app" 2>/dev/null || true
 
 hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null || true
 
-done "${APP_NAME} ${VERSION} installed to ${INSTALL_DIR}/${APP_NAME}.app"
+ok "${APP_NAME} ${VERSION} installed to ${INSTALL_DIR}/${APP_NAME}.app"
 open -a "$APP_NAME"
