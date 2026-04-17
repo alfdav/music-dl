@@ -657,7 +657,7 @@ const _viewState = {};
 function navigate(view) {
   // Dismiss card inspect if open
   if (_inspect.isOpen()) _inspect.dismiss();
-  if (!view) view = 'home';
+  const safeView = normalizeView(view);
 
   // Save outgoing view state
   if (state.view && viewEl.firstChild) {
@@ -667,19 +667,19 @@ function navigate(view) {
     };
   }
 
-  state.view = view;
-  _lastNavHash = view;
-  location.hash = view;
+  state.view = safeView;
+  _lastNavHash = safeView;
+  location.hash = safeView;
 
   navItems.forEach(n => {
-    n.classList.toggle('active', n.dataset.view === view);
+    n.classList.toggle('active', n.dataset.view === safeView);
   });
 
   // Deep-linked views: highlight parent nav item
   if (!document.querySelector('.nav-item.active')) {
-    const parent = view.startsWith('artist:') ? 'home'
-      : view.startsWith('localalbum:') ? 'library'
-      : view.startsWith('album:') ? 'search'
+    const parent = safeView.startsWith('artist:') ? 'home'
+      : safeView.startsWith('localalbum:') ? 'library'
+      : safeView.startsWith('album:') ? 'search'
       : null;
     if (parent) {
       navItems.forEach(n => { if (n.dataset.view === parent) n.classList.add('active'); });
@@ -692,7 +692,7 @@ function navigate(view) {
 
   const container = h('div', { className: 'view-enter' });
 
-  switch (view) {
+  switch (safeView) {
     case 'home': renderHome(container); break;
     case 'search': renderSearch(container); break;
     case 'library': renderLibrary(container); break;
@@ -705,13 +705,13 @@ function navigate(view) {
     case 'djai': renderDjai(container); break;
     case 'upgrades': renderUpgradeScanner(container); break;
     default:
-      if (view.startsWith('localalbum:')) {
-        const parts = view.substring(11).split(':');
+      if (safeView.startsWith('localalbum:')) {
+        const parts = safeView.substring(11).split(':');
         renderLocalAlbumDetail(container, decodeURIComponent(parts[0]), decodeURIComponent(parts.slice(1).join(':')));
-      } else if (view.startsWith('artist:')) {
-        renderArtistGallery(container, decodeURIComponent(view.substring(7)));
-      } else if (view.startsWith('album:')) {
-        renderAlbumDetail(container, view.split(':')[1]);
+      } else if (safeView.startsWith('artist:')) {
+        renderArtistGallery(container, decodeURIComponent(safeView.substring(7)));
+      } else if (safeView.startsWith('album:')) {
+        renderAlbumDetail(container, safeView.split(':')[1]);
       } else {
         renderPlaceholder(container, 'Not Found', 'This view does not exist.');
       }
@@ -722,7 +722,7 @@ function navigate(view) {
   // Restore saved scroll position or reset to top
   const scrollEl = document.querySelector('.main');
   if (scrollEl) {
-    const saved = _viewState[view];
+    const saved = _viewState[safeView];
     if (saved && saved.scrollY) {
       requestAnimationFrame(() => { scrollEl.scrollTop = saved.scrollY; });
     } else {
@@ -742,7 +742,7 @@ navItems.forEach(n => {
 window.addEventListener('hashchange', () => {
   const hash = location.hash.slice(1) || 'home';
   if (hash === _lastNavHash) return; // already handled by navigate()
-  navigate(hash);
+  navigate(normalizeView(hash));
 });
 
 // Sidebar Sync Library button
@@ -2744,7 +2744,7 @@ function breadcrumb(crumbs) {
     const isLast = i === crumbs.length - 1;
     const span = textEl('span', c.label, isLast ? 'crumb crumb-active' : 'crumb crumb-link');
     if (!isLast) {
-      span.addEventListener('click', () => navigate(c.view));
+      span.addEventListener('click', () => navigate(normalizeView(c.view)));
     }
     nav.appendChild(span);
     if (!isLast) {
@@ -2810,7 +2810,7 @@ async function renderArtistGallery(container, artistName) {
       card.appendChild(meta);
 
       card.addEventListener('click', () => {
-        navigate('localalbum:' + encodeURIComponent(artistName) + ':' + encodeURIComponent(album.name));
+        navigate(buildLocalAlbumView(artistName, album.name));
       });
       a11yClick(card);
 
@@ -2861,7 +2861,7 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
   albumMeta.appendChild(textEl('div', albumName, 'album-detail-title'));
   const artistLink = textEl('div', artistName, 'album-detail-artist');
   artistLink.style.cursor = 'pointer';
-  artistLink.addEventListener('click', () => navigate('artist:' + encodeURIComponent(artistName)));
+  artistLink.addEventListener('click', () => navigate(buildArtistView(artistName)));
   albumMeta.appendChild(artistLink);
 
   // Play / Shuffle / Download Missing pills
@@ -3120,7 +3120,7 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
 
 // ---- ALBUM DETAIL VIEW ----
 function navigateAlbum(albumId) {
-  navigate('album:' + albumId);
+  navigate(buildAlbumView(albumId));
 }
 
 async function renderAlbumDetail(container, albumId) {
@@ -7362,7 +7362,7 @@ function _initApp() {
   _restorePosition();
   initUpdater();
   _checkWebUpdate();
-  navigate(location.hash.slice(1) || 'home');
+  navigate(normalizeView(location.hash.slice(1) || 'home'));
 }
 
 // Setup check on load — wizard or normal app

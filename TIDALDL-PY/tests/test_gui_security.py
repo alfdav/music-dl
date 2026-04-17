@@ -126,6 +126,34 @@ class TestPathValidation:
         result = validate_audio_path(str(tmp_path / "nope.flac"), [str(tmp_path)])
         assert result is None
 
+    def test_library_resolver_allows_scanned_audio_outside_allowed_dirs(self, tmp_path):
+        from tidal_dl.gui.security import resolve_library_audio_path
+
+        outside = tmp_path.parent / "scanned.flac"
+        outside.write_bytes(b"fake")
+
+        result = resolve_library_audio_path(
+            str(outside),
+            [str(tmp_path)],
+            is_library_path_trusted=lambda path: path == str(outside),
+        )
+
+        assert result == outside.resolve()
+
+    def test_library_resolver_rejects_non_audio_even_when_scanned(self, tmp_path):
+        from tidal_dl.gui.security import resolve_library_audio_path
+
+        outside = tmp_path.parent / "scanned.txt"
+        outside.write_text("fake")
+
+        result = resolve_library_audio_path(
+            str(outside),
+            [str(tmp_path)],
+            is_library_path_trusted=lambda path: path == str(outside),
+        )
+
+        assert result is None
+
     def test_validates_download_path_change(self):
         from pathlib import Path
 

@@ -9,6 +9,7 @@ SSRF attacks.
 from __future__ import annotations
 
 import secrets
+from collections.abc import Callable
 from pathlib import Path
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -129,6 +130,26 @@ def validate_audio_path(path_str: str, allowed_dirs: list[str]) -> Path | None:
             return file_path
 
     return None
+
+
+def resolve_library_audio_path(
+    path_str: str,
+    allowed_dirs: list[str],
+    is_library_path_trusted: Callable[[str], bool] | None = None,
+) -> Path | None:
+    """Resolve an audio path from either configured dirs or the scanned library DB."""
+    validated = validate_audio_path(path_str, allowed_dirs)
+    if validated is not None:
+        return validated
+    if is_library_path_trusted is None or not is_library_path_trusted(path_str):
+        return None
+    try:
+        trusted = Path(path_str).resolve(strict=True)
+    except (OSError, ValueError):
+        return None
+    if trusted.suffix.lower() not in AUDIO_EXTENSIONS:
+        return None
+    return trusted
 
 
 def validate_download_path(path_str: str) -> bool:

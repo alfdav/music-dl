@@ -24,19 +24,11 @@ def get_download_paths() -> list[str]:
 @router.get("/local")
 def serve_local_file(path: str = Query(..., description="Absolute path to audio file")):
     """Serve a local audio file. Path must be within a configured download directory."""
-    from tidal_dl.gui.security import validate_audio_path
+    from tidal_dl.gui.api.library import _path_in_library
+    from tidal_dl.gui.security import resolve_library_audio_path
 
     allowed = get_download_paths()
-    validated_path = validate_audio_path(path, allowed)
-    # Fallback: if path is in our library DB, we already trusted it during scan
-    if validated_path is None:
-        from tidal_dl.gui.api.library import _path_in_library
-
-        if _path_in_library(path):
-            try:
-                validated_path = Path(path).resolve(strict=True)
-            except (OSError, ValueError):
-                validated_path = None
+    validated_path = resolve_library_audio_path(path, allowed, is_library_path_trusted=_path_in_library)
     if validated_path is None:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -114,21 +106,21 @@ def get_waveform(path: str = Query(..., description="Absolute path to audio file
     Hires peaks (~10/sec) drive per-frame animation during playback.
     Both are extracted at scan time and cached in the library DB.
     """
-    from tidal_dl.gui.security import validate_audio_path
+    from tidal_dl.gui.security import resolve_library_audio_path
     from tidal_dl.helper.library_db import LibraryDB
     from tidal_dl.helper.path import path_config_base
     from tidal_dl.helper.waveform import extract_both, peaks_from_json, peaks_to_json
 
-    s = Settings()
-    allowed = [s.data.download_base_path] if hasattr(s.data, "download_base_path") else []
-    if validate_audio_path(path, allowed) is None:
+    allowed = get_download_paths()
+    validated_path = resolve_library_audio_path(path, allowed)
+    if validated_path is None:
         raise HTTPException(status_code=400, detail="Invalid path")
 
     db = LibraryDB(Path(path_config_base()) / "library.db")
     db.open()
     try:
         row = db._conn.execute(
-            "SELECT waveform, waveform_hires FROM scanned WHERE path = ?", (path,)
+            "SELECT waveform, waveform_hires FROM scanned WHERE path = ?", (str(validated_path),)
         ).fetchone()
 
         if row and row["waveform"] and row["waveform_hires"]:
@@ -138,11 +130,11 @@ def get_waveform(path: str = Query(..., description="Absolute path to audio file
                 return {"peaks": display, "hires": hires}
 
         # Not cached — extract on demand (single ffmpeg decode) and store
-        both = extract_both(path)
+        both = extract_both(validated_path)
         if both:
             db._conn.execute(
                 "UPDATE scanned SET waveform = ?, waveform_hires = ? WHERE path = ?",
-                (peaks_to_json(both[0]), peaks_to_json(both[1]), path),
+                (peaks_to_json(both[0]), peaks_to_json(both[1]), str(validated_path)),
             )
             db.commit()
     finally:
