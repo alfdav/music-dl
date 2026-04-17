@@ -24,11 +24,11 @@ def get_download_paths() -> list[str]:
 @router.get("/local")
 def serve_local_file(path: str = Query(..., description="Absolute path to audio file")):
     """Serve a local audio file. Path must be within a configured download directory."""
-    from tidal_dl.gui.api.library import _path_in_library
+    from tidal_dl.gui.api.library import _trusted_library_path
     from tidal_dl.gui.security import resolve_library_audio_path
 
     allowed = get_download_paths()
-    validated_path = resolve_library_audio_path(path, allowed, is_library_path_trusted=_path_in_library)
+    validated_path = resolve_library_audio_path(path, allowed, trusted_library_path=_trusted_library_path(path))
     if validated_path is None:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -112,7 +112,9 @@ def get_waveform(path: str = Query(..., description="Absolute path to audio file
     from tidal_dl.helper.waveform import extract_both, peaks_from_json, peaks_to_json
 
     allowed = get_download_paths()
-    validated_path = resolve_library_audio_path(path, allowed)
+    from tidal_dl.gui.api.library import _trusted_library_path
+
+    validated_path = resolve_library_audio_path(path, allowed, trusted_library_path=_trusted_library_path(path))
     if validated_path is None:
         raise HTTPException(status_code=400, detail="Invalid path")
 

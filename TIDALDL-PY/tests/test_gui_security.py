@@ -135,7 +135,7 @@ class TestPathValidation:
         result = resolve_library_audio_path(
             str(outside),
             [str(tmp_path)],
-            is_library_path_trusted=lambda path: path == str(outside),
+            trusted_library_path=outside.resolve(),
         )
 
         assert result == outside.resolve()
@@ -149,7 +149,7 @@ class TestPathValidation:
         result = resolve_library_audio_path(
             str(outside),
             [str(tmp_path)],
-            is_library_path_trusted=lambda path: path == str(outside),
+            trusted_library_path=outside.resolve(),
         )
 
         assert result is None
