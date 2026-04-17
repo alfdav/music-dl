@@ -149,7 +149,17 @@ def resolve_library_audio_path(
         return None
     if trusted.suffix.lower() not in AUDIO_EXTENSIONS:
         return None
-    return trusted
+
+    # Defense in depth: even library-trusted paths must resolve under configured dirs.
+    for allowed in allowed_dirs:
+        try:
+            allowed_resolved = Path(allowed).resolve()
+        except (OSError, ValueError):
+            continue
+        if trusted.is_relative_to(allowed_resolved):
+            return trusted
+
+    return None
 
 
 def validate_download_path(path_str: str) -> bool:
