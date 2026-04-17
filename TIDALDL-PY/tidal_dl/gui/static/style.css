@@ -3930,6 +3930,53 @@ body {
 }
 .updater-banner .updater-btn-later:hover { background: var(--surface-active); }
 
+/* Sidecar / Server section */
+.sidecar-settings {
+  margin-top: 32px;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+}
+.sidecar-settings-title {
+  font-family: var(--serif);
+  font-size: 1.15rem;
+  color: var(--text);
+}
+.sidecar-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.sidecar-btn-row {
+  display: flex;
+  gap: 8px;
+}
+.sidecar-btn {
+  padding: 8px 20px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.sidecar-btn:hover { background: var(--surface-active); }
+.sidecar-btn:disabled { opacity: 0.4; cursor: default; }
+.sidecar-btn--danger {
+  border-color: var(--red);
+  color: var(--red);
+}
+.sidecar-btn--danger:hover { background: rgba(224, 96, 96, 0.1); }
+.sidecar-btn--primary {
+  border-color: var(--green);
+  color: var(--green);
+}
+.sidecar-btn--primary:hover { background: rgba(126, 201, 122, 0.1); }
+
 .updater-settings {
   margin-top: 32px;
   padding: 20px;

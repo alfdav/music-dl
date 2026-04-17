@@ -4928,6 +4928,21 @@ function renderSettings(container) {
   resultsArea.appendChild(formSection);
   loadSettingsForm(formSection, accessSection);
 
+  // Server section
+  const sidecarSection = h('div', { id: 'sidecar-section' });
+  resultsArea.appendChild(sidecarSection);
+  _sidecar.el = sidecarSection;
+  _renderSidecarSection(sidecarSection);
+  _startSidecarPoll();
+
+  // Clean up poll timer when navigating away from settings
+  const prevCleanup = viewEl._viewCleanup;
+  viewEl._viewCleanup = () => {
+    _stopSidecarPoll();
+    _sidecar.el = null;
+    if (prevCleanup) prevCleanup();
+  };
+
   // Updater section
   const updaterSection = h('div', { id: 'settings-updater' });
   resultsArea.appendChild(updaterSection);
@@ -6986,6 +7001,143 @@ btnSleep.addEventListener('click', () => {
   btnSleep.title = 'Sleep: ' + mins + 'min';
   toast('Sleep in ' + mins + ' minutes');
 });
+
+// ── Sidecar / Server lifecycle ────────────────────────────────────────────────
+
+const _sidecar = { status: 'unknown', pollTimer: null, reloadTimer: null, el: null };
+
+function _pollSidecarHealth() {
+  fetch('/api/server/health', { method: 'GET' })
+    .then(r => r.ok ? r.json() : Promise.reject())
+    .then(() => { _setSidecarStatus('running'); })
+    .catch(() => { _setSidecarStatus('stopped'); });
+}
+
+function _setSidecarStatus(status) {
+  const changed = _sidecar.status !== status;
+  _sidecar.status = status;
+  if (changed && _sidecar.el) _renderSidecarSection(_sidecar.el);
+}
+
+function _startSidecarPoll() {
+  if (_sidecar.pollTimer) return;
+  _pollSidecarHealth();
+  _sidecar.pollTimer = setInterval(_pollSidecarHealth, 5000);
+}
+
+function _stopSidecarPoll() {
+  if (_sidecar.pollTimer) {
+    clearInterval(_sidecar.pollTimer);
+    _sidecar.pollTimer = null;
+  }
+  if (_sidecar.reloadTimer) {
+    clearTimeout(_sidecar.reloadTimer);
+    _sidecar.reloadTimer = null;
+  }
+}
+
+function _renderSidecarSection(container) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+
+  const wrap = h('div', { className: 'sidecar-settings' });
+
+  // Title row with live status
+  const titleRow = h('div', { className: 'sidecar-title-row' });
+  titleRow.appendChild(textEl('div', 'Server', 'sidecar-settings-title'));
+
+  const isRunning = _sidecar.status === 'running';
+  const dotClass = 'connection-dot' + (isRunning ? '' : ' disconnected');
+  const statusRow = h('div', { className: 'connection', style: { padding: '0' } },
+    h('span', { className: dotClass }),
+    document.createTextNode(isRunning ? 'Running' : 'Stopped')
+  );
+  titleRow.appendChild(statusRow);
+  wrap.appendChild(titleRow);
+
+  // Action buttons
+  const btnRow = h('div', { className: 'sidecar-btn-row' });
+
+  if (_isTauri()) {
+    if (isRunning) {
+      const stopBtn = textEl('button', 'Stop', 'sidecar-btn sidecar-btn--danger');
+      stopBtn.onclick = () => _sidecarTauriAction('stop');
+      btnRow.appendChild(stopBtn);
+
+      const restartBtn = textEl('button', 'Restart', 'sidecar-btn');
+      restartBtn.onclick = () => _sidecarTauriAction('restart');
+      btnRow.appendChild(restartBtn);
+    } else {
+      const startBtn = textEl('button', 'Start', 'sidecar-btn sidecar-btn--primary');
+      startBtn.onclick = () => _sidecarTauriAction('start');
+      btnRow.appendChild(startBtn);
+    }
+  } else {
+    // Browser mode — restart only, and only when running
+    if (isRunning) {
+      const restartBtn = textEl('button', 'Restart', 'sidecar-btn');
+      restartBtn.onclick = _sidecarBrowserRestart;
+      btnRow.appendChild(restartBtn);
+    }
+  }
+
+  wrap.appendChild(btnRow);
+  container.appendChild(wrap);
+}
+
+function _sidecarDisableButtons() {
+  const row = document.querySelector('.sidecar-btn-row');
+  if (row) row.querySelectorAll('button').forEach(b => { b.disabled = true; });
+}
+
+function _sidecarTauriAction(action) {
+  _sidecarDisableButtons();
+  _tauriInvoke(action + '_sidecar').then(() => {
+    if (action === 'stop') {
+      _setSidecarStatus('stopped');
+    } else {
+      // start or restart — poll until the server is ready, then reload
+      _setSidecarStatus('stopped');
+      _sidecarWaitThenReload();
+    }
+  }).catch(e => {
+    toast('Server ' + action + ' failed: ' + e, 'error');
+    _pollSidecarHealth();
+  });
+}
+
+function _sidecarBrowserRestart() {
+  _sidecarDisableButtons();
+  api('/server/restart', { method: 'POST' }).then(() => {
+    _setSidecarStatus('stopped');
+    _sidecarWaitThenReload();
+  }).catch(e => {
+    toast('Restart failed: ' + e, 'error');
+    _pollSidecarHealth();
+  });
+}
+
+/** Poll /api/server/health until it responds, then reload the page. */
+function _sidecarWaitThenReload() {
+  const maxWait = 30000;
+  const interval = 500;
+  const start = Date.now();
+
+  const poll = () => {
+    if (Date.now() - start > maxWait) {
+      _sidecar.reloadTimer = null;
+      _setSidecarStatus('stopped');
+      toast('Server did not come back within 30 seconds', 'error');
+      return;
+    }
+    fetch('/api/server/health', { method: 'GET' })
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(() => { _sidecar.reloadTimer = null; window.location.reload(); })
+      .catch(() => { _sidecar.reloadTimer = setTimeout(poll, interval); });
+  };
+
+  // Wait a beat for the old server to finish dying
+  _sidecar.reloadTimer = setTimeout(poll, 1000);
+}
 
 // ── Updater ──────────────────────────────────────────────────────────────────
 
