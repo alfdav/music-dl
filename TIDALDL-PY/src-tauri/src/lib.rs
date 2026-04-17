@@ -25,6 +25,79 @@ fn sidecar_is_ready() -> bool {
     .is_ok()
 }
 
+// ── Sidecar lifecycle commands ───────────────────────────────────────────────
+
+#[tauri::command]
+fn sidecar_status(sidecar: tauri::State<'_, Sidecar>) -> bool {
+    let guard = sidecar.0.lock().unwrap();
+    guard.is_some() && sidecar_is_ready()
+}
+
+#[tauri::command]
+fn stop_sidecar(sidecar: tauri::State<'_, Sidecar>) -> Result<(), String> {
+    let mut guard = sidecar.0.lock().unwrap();
+    match guard.take() {
+        Some(child) => {
+            child.kill().map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        None => Err("Sidecar is not running".into()),
+    }
+}
+
+#[tauri::command]
+fn start_sidecar(
+    app: tauri::AppHandle,
+    sidecar: tauri::State<'_, Sidecar>,
+) -> Result<(), String> {
+    let mut guard = sidecar.0.lock().unwrap();
+    if guard.is_some() {
+        return Err("Sidecar is already running".into());
+    }
+
+    let sidecar_cmd = app
+        .shell()
+        .sidecar("music-dl-server")
+        .map_err(|e| e.to_string())?;
+    let (_rx, child) = sidecar_cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn sidecar: {e}"))?;
+    *guard = Some(child);
+
+    Ok(())
+}
+
+#[tauri::command]
+fn restart_sidecar(
+    app: tauri::AppHandle,
+    sidecar: tauri::State<'_, Sidecar>,
+) -> Result<(), String> {
+    // Hold the lock for the entire kill→sleep→spawn sequence so the Mutex
+    // is never transiently None (which would leave the sidecar unrecoverable
+    // if spawn fails after kill).
+    let mut guard = sidecar.0.lock().unwrap();
+
+    if let Some(child) = guard.take() {
+        let _ = child.kill();
+    }
+
+    // Brief pause so the port is freed before we respawn
+    thread::sleep(Duration::from_millis(500));
+
+    let sidecar_cmd = app
+        .shell()
+        .sidecar("music-dl-server")
+        .map_err(|e| e.to_string())?;
+    let (_rx, child) = sidecar_cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn sidecar: {e}"))?;
+    *guard = Some(child);
+
+    Ok(())
+}
+
+// ── App entry ────────────────────────────────────────────────────────────────
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -35,6 +108,10 @@ pub fn run() {
             updater::get_updater_state,
             updater::check_for_updates,
             updater::install_update,
+            sidecar_status,
+            stop_sidecar,
+            start_sidecar,
+            restart_sidecar,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -66,6 +143,8 @@ pub fn run() {
                     if sidecar_is_ready() {
                         if let Some(window) = handle.get_webview_window("main") {
                             // Navigate the webview to the sidecar-served frontend.
+                            // NOTE: window.eval is required by Tauri's webview API
+                            // to execute navigation — this is not user-supplied input.
                             let nav = format!("window.location.replace('{SIDECAR_URL}')");
                             let _ = window.eval(&nav);
                         }
