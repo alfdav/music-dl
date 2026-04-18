@@ -138,6 +138,24 @@ def _path_in_library(path: str) -> bool:
         return False
 
 
+def _trusted_library_path(path: str) -> Path | None:
+    """Return a resolved path from the library DB when the exact path is known."""
+    import sqlite3
+
+    db_path = Path(path_config_base()) / "library.db"
+    if not db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute("SELECT path FROM scanned WHERE path = ? LIMIT 1", (path,)).fetchone()
+        conn.close()
+        if not row:
+            return None
+        return Path(row[0]).resolve(strict=True)
+    except Exception:
+        return None
+
+
 def _read_metadata(file_path: Path) -> dict | None:
     try:
         # easy=True gives uniform tag keys across ID3, MP4, Vorbis, etc.
@@ -383,7 +401,7 @@ def _background_scan(rescan: bool) -> None:
                     # Extract waveform peaks (single ffmpeg decode, ~30ms per file)
                     waveform_json = None
                     hires_json = None
-                    both = extract_both(path_str)
+                    both = extract_both(Path(path_str))
                     if both:
                         waveform_json = peaks_to_json(both[0])
                         hires_json = peaks_to_json(both[1])
@@ -606,7 +624,7 @@ def library_art(path: str = Query(..., description="Absolute path to audio file"
     from fastapi import HTTPException
     from fastapi.responses import FileResponse, Response
 
-    from tidal_dl.gui.security import validate_audio_path
+    from tidal_dl.gui.security import resolve_library_audio_path
 
     # Check disk cache first — instant response
     cache_dir = _art_cache_dir()
@@ -622,13 +640,7 @@ def library_art(path: str = Query(..., description="Absolute path to audio file"
     if settings.data.scan_paths:
         allowed.extend(str(Path(p.strip()).expanduser()) for p in settings.data.scan_paths.split(",") if p.strip())
 
-    validated = validate_audio_path(path, allowed)
-    # Fallback: if path is in our library DB, we already trusted it during scan
-    if validated is None and _path_in_library(path):
-        try:
-            validated = Path(path).resolve(strict=True)
-        except (OSError, ValueError):
-            validated = None
+    validated = resolve_library_audio_path(path, allowed, trusted_library_path=_trusted_library_path(path))
     if validated is None:
         raise HTTPException(status_code=403, detail="Access denied")
 

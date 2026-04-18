@@ -11,7 +11,7 @@ import sys
 
 
 STATIC_DIR = Path(__file__).resolve().parents[1] / "tidal_dl" / "gui" / "static"
-REQUIRED_FILES = ["index.html", "app.js", "style.css"]
+REQUIRED_FILES = ["index.html", "routes.js", "app.js", "style.css"]
 
 
 class TestStaticAssetsExist:
@@ -85,3 +85,7 @@ class TestAppJsFeatureMarkers:
     def test_html_has_sleep_button(self):
         html = (STATIC_DIR / "index.html").read_text()
         assert "btn-sleep" in html, "Sleep timer button missing"
+
+    def test_html_loads_route_helper_before_app_js(self):
+        html = (STATIC_DIR / "index.html").read_text()
+        assert html.index('/routes.js') < html.index('/app.js')

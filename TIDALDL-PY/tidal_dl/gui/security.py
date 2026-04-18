@@ -131,6 +131,23 @@ def validate_audio_path(path_str: str, allowed_dirs: list[str]) -> Path | None:
     return None
 
 
+def resolve_library_audio_path(
+    path_str: str,
+    allowed_dirs: list[str],
+    trusted_library_path: Path | None = None,
+) -> Path | None:
+    """Resolve an audio path from either configured dirs or the scanned library DB."""
+    validated = validate_audio_path(path_str, allowed_dirs)
+    if validated is not None:
+        return validated
+    if trusted_library_path is None:
+        return None
+    trusted = trusted_library_path
+    if trusted.suffix.lower() not in AUDIO_EXTENSIONS:
+        return None
+    return trusted
+
+
 def validate_download_path(path_str: str) -> bool:
     """Validate that a path is safe to use as a download directory.
 
