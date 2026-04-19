@@ -1,19 +1,27 @@
 /**
- * Voice lifecycle manager (R6).
+ * Voice lifecycle + audio playback pipeline (R5, R6).
  *
- * Manages joining/leaving voice channels, bounded reconnect retries,
- * and enforces one-voice-channel-per-guild constraint.
+ * VoiceManager owns the Discord voice connection and AudioPlayer lifecycle.
+ * Playback composes VoiceManager + QueueState + MusicDlClient to turn queued
+ * items into audio streams. Media is only ever fetched through MusicDlClient
+ * — the bot never touches the filesystem directly and never talks to remote
+ * music services directly (R5-AC6, R5-AC7).
  */
 
 import {
   joinVoiceChannel,
   VoiceConnectionStatus,
+  AudioPlayerStatus,
   entersState,
   createAudioPlayer,
+  createAudioResource,
   type VoiceConnection,
   type AudioPlayer,
+  type AudioResource,
 } from "@discordjs/voice";
 import type { VoiceBasedChannel, TextBasedChannel } from "discord.js";
+import type { MusicDlClient } from "./musicDlClient";
+import type { QueueState, QueueItem } from "./queue";
 
 export interface VoiceManagerOptions {
   maxReconnectRetries?: number;
@@ -38,6 +46,10 @@ export class VoiceManager {
 
   getPlayer(): AudioPlayer {
     return this.player;
+  }
+
+  getTextChannel(): TextBasedChannel | null {
+    return this.textChannel;
   }
 
   isConnected(): boolean {
@@ -120,5 +132,176 @@ export class VoiceManager {
       }
       this.connection = null;
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Audio playback pipeline (R5)
+// ---------------------------------------------------------------------------
+
+export interface PlaybackOptions {
+  logger?: {
+    error: (...args: unknown[]) => void;
+  };
+}
+
+/**
+ * Wires QueueState + MusicDlClient to the VoiceManager's AudioPlayer.
+ *
+ * Playback listens for the player's transition to Idle (= track end) and
+ * advances the queue per its current repeat mode. A `stopping` flag lets
+ * us distinguish a user-initiated stop (from /leave) from a natural end.
+ */
+export class Playback {
+  private currentResource: AudioResource | null = null;
+  private currentVolume = 1.0;
+  private stopping = false;
+  private readonly logger: { error: (...args: unknown[]) => void };
+
+  constructor(
+    private readonly voice: VoiceManager,
+    private readonly queue: QueueState,
+    private readonly client: MusicDlClient,
+    options: PlaybackOptions = {},
+  ) {
+    this.logger = options.logger ?? { error: (...a) => console.error(...a) };
+
+    const player = this.voice.getPlayer();
+    // R5-AC3: on track end, advance the queue per repeat mode.
+    player.on(AudioPlayerStatus.Idle, (oldState, _newState) => {
+      if (oldState.status === AudioPlayerStatus.Idle) return; // not a transition
+      void this.handleTrackEnd();
+    });
+    // R5-AC5: track failure → log + advance.
+    player.on("error", (error) => {
+      this.logger.error("audio player error:", (error as Error).message);
+      void this.handleTrackEnd();
+    });
+  }
+
+  /** Current queue item, or null if nothing queued. */
+  current(): QueueItem | null {
+    return this.queue.current();
+  }
+
+  /** Start playing the queue's current item. Returns metadata on success. */
+  async playCurrent(): Promise<QueueItem | null> {
+    const item = this.queue.current();
+    if (!item) {
+      this.stopInternal();
+      return null;
+    }
+
+    // R5-AC1: fetch playable source URL from backend.
+    // R5-AC6/AC7: always through MusicDlClient, never direct.
+    const playable = await this.client.playable(item.id);
+    const absoluteUrl = this.client.absolutize(playable.url);
+
+    const resource = createAudioResource(absoluteUrl, {
+      inlineVolume: true,
+      inputType: undefined,
+    });
+    resource.volume?.setVolume(this.currentVolume);
+
+    this.currentResource = resource;
+    this.stopping = false;
+    this.voice.getPlayer().play(resource); // R5-AC2
+    return item;
+  }
+
+  /** Pause playback. Returns true if a pause actually took effect. */
+  pause(): boolean {
+    return this.voice.getPlayer().pause();
+  }
+
+  /** Resume paused playback. */
+  resume(): boolean {
+    return this.voice.getPlayer().unpause();
+  }
+
+  /** Skip to the next queue item per current repeat mode. */
+  async skip(): Promise<QueueItem | null> {
+    const next = this.queue.advance();
+    if (!next) {
+      this.stopInternal();
+      return null;
+    }
+    return this.playCurrent();
+  }
+
+  /**
+   * Stop playback and clear queue state.
+   * Called on /leave — disables auto-advance for this stop.
+   */
+  stop(): void {
+    this.queue.clear();
+    this.stopInternal();
+  }
+
+  /**
+   * Set playback volume (0.0 – 2.0). Applied to current and future resources.
+   * Values are clamped to the supported range.
+   */
+  setVolume(fraction: number): number {
+    const clamped = Math.max(0, Math.min(2, fraction));
+    this.currentVolume = clamped;
+    this.currentResource?.volume?.setVolume(clamped);
+    return clamped;
+  }
+
+  getVolume(): number {
+    return this.currentVolume;
+  }
+
+  private stopInternal(): void {
+    this.stopping = true;
+    this.currentResource = null;
+    try {
+      this.voice.getPlayer().stop(true);
+    } catch {
+      // player may already be idle
+    }
+  }
+
+  /**
+   * Handle an Idle transition (track end or player error).
+   *
+   * Retries up to MAX_ADVANCE_CHAIN consecutive failures before giving up,
+   * so a single bad item can't stall the queue but a persistently failing
+   * source (or repeat-one of a broken item) can't trap us in infinite retry.
+   */
+  private async handleTrackEnd(): Promise<void> {
+    if (this.stopping) {
+      // User-initiated stop — don't auto-advance. Re-arm for next play.
+      this.stopping = false;
+      return;
+    }
+
+    const MAX_ADVANCE_CHAIN = 5;
+    for (let attempt = 0; attempt < MAX_ADVANCE_CHAIN; attempt++) {
+      // R5-AC3: auto-advance per repeat mode.
+      const next = this.queue.advance();
+      if (!next) {
+        // R5-AC4: queue exhausted (repeat off, last item) — stop cleanly.
+        this.currentResource = null;
+        return;
+      }
+
+      try {
+        await this.playCurrent();
+        return;
+      } catch (error) {
+        // R5-AC5: playback-start failure → log, try the next item.
+        this.logger.error(
+          "failed to start next item, advancing:",
+          (error as Error).message,
+        );
+      }
+    }
+
+    this.logger.error(
+      `gave up after ${MAX_ADVANCE_CHAIN} consecutive failures`,
+    );
+    this.currentResource = null;
   }
 }

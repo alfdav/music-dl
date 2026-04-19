@@ -1,0 +1,523 @@
+/**
+ * Slash command registration + dispatch (R4).
+ *
+ * Exactly 11 commands are defined. Each handler runs ensureAuthorized
+ * before doing any work, and /play never triggers a download.
+ */
+
+import {
+  SlashCommandBuilder,
+  type ChatInputCommandInteraction,
+  type GuildMember,
+} from "discord.js";
+
+import type { BotConfig } from "./config";
+import type { MusicDlClient, ResolveResult, ResolvedItem } from "./musicDlClient";
+import { MusicDlError } from "./musicDlClient";
+import type { QueueState, RepeatMode } from "./queue";
+import type { VoiceManager, Playback } from "./player";
+import { ensureAuthorized } from "./auth";
+import { classifyError, ErrorKind, userMessage } from "./errors";
+
+export interface CommandDeps {
+  config: BotConfig;
+  client: MusicDlClient;
+  queue: QueueState;
+  voice: VoiceManager;
+  playback: Playback;
+  logger?: { error: (...args: unknown[]) => void };
+}
+
+const REPEAT_CHOICES: ReadonlyArray<{ name: string; value: RepeatMode }> = [
+  { name: "off", value: "off" },
+  { name: "one", value: "one" },
+  { name: "all", value: "all" },
+];
+
+/** Definitions for exactly 11 slash commands (R4-AC13). */
+export function buildCommands() {
+  return [
+    new SlashCommandBuilder()
+      .setName("summon")
+      .setDescription("Join your current voice channel"),
+    new SlashCommandBuilder()
+      .setName("leave")
+      .setDescription("Disconnect and clear playback state"),
+    new SlashCommandBuilder()
+      .setName("play")
+      .setDescription("Resolve and queue a track, playlist, or search result")
+      .addStringOption((o) =>
+        o.setName("query").setDescription("URL, playlist name, or search text").setRequired(true),
+      ),
+    new SlashCommandBuilder()
+      .setName("pause")
+      .setDescription("Pause the current track"),
+    new SlashCommandBuilder()
+      .setName("resume")
+      .setDescription("Resume paused playback"),
+    new SlashCommandBuilder()
+      .setName("skip")
+      .setDescription("Skip to the next queued item"),
+    new SlashCommandBuilder()
+      .setName("queue")
+      .setDescription("Show the current queue"),
+    new SlashCommandBuilder()
+      .setName("nowplaying")
+      .setDescription("Show what is currently playing"),
+    new SlashCommandBuilder()
+      .setName("volume")
+      .setDescription("Set playback volume (0 – 200%)")
+      .addIntegerOption((o) =>
+        o
+          .setName("level")
+          .setDescription("Volume level (0 – 200)")
+          .setMinValue(0)
+          .setMaxValue(200)
+          .setRequired(true),
+      ),
+    new SlashCommandBuilder()
+      .setName("repeat")
+      .setDescription("Set repeat mode")
+      .addStringOption((o) =>
+        o
+          .setName("mode")
+          .setDescription("off | one | all")
+          .setRequired(true)
+          .addChoices(...REPEAT_CHOICES),
+      ),
+    new SlashCommandBuilder()
+      .setName("download")
+      .setDescription("Resolve and explicitly download")
+      .addStringOption((o) =>
+        o.setName("query").setDescription("URL, playlist name, or search text").setRequired(true),
+      ),
+  ];
+}
+
+/** Names of all commands this bot registers. Exported for test inspection. */
+export const COMMAND_NAMES = [
+  "summon",
+  "leave",
+  "play",
+  "pause",
+  "resume",
+  "skip",
+  "queue",
+  "nowplaying",
+  "volume",
+  "repeat",
+  "download",
+] as const;
+
+/**
+ * Dispatcher. Called from the interactionCreate handler.
+ * Every command enforces the authorization gate before doing anything.
+ */
+export async function handleInteraction(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+): Promise<void> {
+  // R4-AC12: auth gate before every command.
+  const authz = ensureAuthorized(interaction, deps.config);
+  if (!authz.ok) {
+    await safeReply(interaction, { content: authz.message, ephemeral: true });
+    return;
+  }
+
+  const name = interaction.commandName;
+  try {
+    switch (name) {
+      case "summon":
+        return await handleSummon(interaction, deps);
+      case "leave":
+        return await handleLeave(interaction, deps);
+      case "play":
+        return await handlePlay(interaction, deps);
+      case "pause":
+        return await handlePause(interaction, deps);
+      case "resume":
+        return await handleResume(interaction, deps);
+      case "skip":
+        return await handleSkip(interaction, deps);
+      case "queue":
+        return await handleQueue(interaction, deps);
+      case "nowplaying":
+        return await handleNowPlaying(interaction, deps);
+      case "volume":
+        return await handleVolume(interaction, deps);
+      case "repeat":
+        return await handleRepeat(interaction, deps);
+      case "download":
+        return await handleDownload(interaction, deps);
+      default:
+        await safeReply(interaction, {
+          content: `Unknown command: ${name}`,
+          ephemeral: true,
+        });
+    }
+  } catch (error) {
+    deps.logger?.error(`command '${name}' failed:`, (error as Error).message);
+    await safeReply(interaction, {
+      content: userMessage(classifyError(error)),
+      ephemeral: true,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Individual command handlers
+// ---------------------------------------------------------------------------
+
+async function handleSummon(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+): Promise<void> {
+  const member = interaction.member as GuildMember | null;
+  const voiceChannel = member?.voice?.channel ?? null;
+  if (!voiceChannel) {
+    await safeReply(interaction, {
+      content: "Join a voice channel first, then call /summon.",
+      ephemeral: true,
+    });
+    return;
+  }
+  const textChannel = interaction.channel;
+  if (!textChannel) {
+    await safeReply(interaction, {
+      content: "I can only join when called from a text channel.",
+      ephemeral: true,
+    });
+    return;
+  }
+  try {
+    await deps.voice.join(voiceChannel, textChannel);
+    await safeReply(interaction, {
+      content: `Joined **${voiceChannel.name}**.`,
+    });
+  } catch (error) {
+    deps.logger?.error("summon failed:", (error as Error).message);
+    await safeReply(interaction, {
+      content: userMessage(ErrorKind.VoiceConnectionFailed),
+      ephemeral: true,
+    });
+  }
+}
+
+async function handleLeave(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+): Promise<void> {
+  deps.playback.stop();
+  deps.voice.leave();
+  await safeReply(interaction, { content: "Left the voice channel." });
+}
+
+async function handlePlay(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+): Promise<void> {
+  const query = interaction.options.getString("query", true).trim();
+  if (!query) {
+    await safeReply(interaction, {
+      content: "Query cannot be empty.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  // Resolution can take a moment; acknowledge the interaction.
+  await interaction.deferReply();
+
+  let result: ResolveResult;
+  try {
+    result = await deps.client.resolve(query);
+  } catch (error) {
+    const kind =
+      error instanceof MusicDlError && error.code === "unreachable"
+        ? ErrorKind.BackendUnavailable
+        : ErrorKind.ResolutionFailed;
+    await safeEdit(interaction, userMessage(kind));
+    return;
+  }
+
+  if (result.kind === "choices") {
+    // R4-AC3: free-text shows up to 5 visible choices. T-016 adds selection;
+    // for now, render the list and direct the user to the picker (coming).
+    const choices = result.choices.slice(0, 5);
+    if (choices.length === 0) {
+      await safeEdit(interaction, "No results found.");
+      return;
+    }
+    if (choices.length === 1) {
+      // R8-AC4: single result queues directly without selection.
+      await queueAndMaybeStart(interaction, deps, choices, "Queued");
+      return;
+    }
+    const body = formatChoices(choices);
+    await safeEdit(interaction, `Found ${choices.length} matches:\n${body}`);
+    return;
+  }
+
+  // R4-AC3: direct track/playlist queue immediately; NEVER downloads.
+  const items = result.items;
+  if (items.length === 0) {
+    await safeEdit(interaction, "No playable items in that resolution.");
+    return;
+  }
+  const label = result.kind === "playlist" ? "Queued playlist" : "Queued";
+  await queueAndMaybeStart(interaction, deps, items, label);
+}
+
+async function handlePause(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+): Promise<void> {
+  const paused = deps.playback.pause();
+  await safeReply(interaction, {
+    content: paused ? "Paused." : "Nothing is currently playing.",
+  });
+}
+
+async function handleResume(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+): Promise<void> {
+  const resumed = deps.playback.resume();
+  await safeReply(interaction, {
+    content: resumed ? "Resumed." : "Nothing to resume.",
+  });
+}
+
+async function handleSkip(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+): Promise<void> {
+  const next = await deps.playback.skip();
+  if (!next) {
+    await safeReply(interaction, { content: "Queue is empty." });
+    return;
+  }
+  await safeReply(interaction, {
+    content: `Skipped → now playing **${next.title ?? next.id}**.`,
+  });
+}
+
+async function handleQueue(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+): Promise<void> {
+  const contents = deps.queue.contents();
+  const current = deps.queue.current();
+  if (contents.length === 0) {
+    await safeReply(interaction, { content: "Queue is empty." });
+    return;
+  }
+  const lines = contents.map((item, i) => {
+    const mark = current && item.id === current.id ? "▶" : " ";
+    const title = (item as { title?: string }).title ?? item.id;
+    const artist = (item as { artist?: string }).artist ?? "";
+    return `${mark} ${i + 1}. ${title}${artist ? ` — ${artist}` : ""}`;
+  });
+  // Discord content cap is 2000 chars; trim conservatively.
+  const body = lines.join("\n").slice(0, 1900);
+  await safeReply(interaction, { content: "```\n" + body + "\n```" });
+}
+
+async function handleNowPlaying(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+): Promise<void> {
+  const item = deps.queue.current() as
+    | (ResolvedItem & { [k: string]: unknown })
+    | null;
+  if (!item) {
+    await safeReply(interaction, { content: "Nothing playing." });
+    return;
+  }
+  const title = item.title ?? String(item.id);
+  const artist = item.artist ?? "Unknown artist";
+  const duration = formatDuration(
+    typeof item.duration === "number" ? item.duration : undefined,
+  );
+  await safeReply(interaction, {
+    content: `**${title}** — ${artist}${duration ? ` · ${duration}` : ""}`,
+  });
+}
+
+async function handleVolume(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+): Promise<void> {
+  const level = interaction.options.getInteger("level", true);
+  // 0–200 percent maps to 0.0–2.0 gain.
+  const applied = deps.playback.setVolume(level / 100);
+  await safeReply(interaction, {
+    content: `Volume set to ${Math.round(applied * 100)}%.`,
+  });
+}
+
+async function handleRepeat(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+): Promise<void> {
+  const mode = interaction.options.getString("mode", true) as RepeatMode;
+  deps.queue.setRepeat(mode);
+  await safeReply(interaction, { content: `Repeat mode: **${mode}**.` });
+}
+
+async function handleDownload(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+): Promise<void> {
+  const query = interaction.options.getString("query", true).trim();
+  if (!query) {
+    await safeReply(interaction, {
+      content: "Query cannot be empty.",
+      ephemeral: true,
+    });
+    return;
+  }
+  await interaction.deferReply();
+
+  let result: ResolveResult;
+  try {
+    result = await deps.client.resolve(query);
+  } catch (error) {
+    const kind =
+      error instanceof MusicDlError && error.code === "unreachable"
+        ? ErrorKind.BackendUnavailable
+        : ErrorKind.ResolutionFailed;
+    await safeEdit(interaction, userMessage(kind));
+    return;
+  }
+
+  const firstItem: ResolvedItem | undefined =
+    result.kind === "choices" ? result.choices[0] : result.items[0];
+  if (!firstItem) {
+    await safeEdit(interaction, "No downloadable items found.");
+    return;
+  }
+
+  try {
+    const job = await deps.client.triggerDownload(firstItem.id);
+    await safeEdit(
+      interaction,
+      `Download queued for **${firstItem.title}** (job \`${job.job_id}\`, ${job.status}).`,
+    );
+    void pollDownload(interaction, deps, job.job_id, firstItem.title);
+  } catch (error) {
+    deps.logger?.error("download failed:", (error as Error).message);
+    await safeEdit(interaction, userMessage(classifyError(error)));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+async function queueAndMaybeStart(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+  items: ResolvedItem[],
+  label: string,
+): Promise<void> {
+  const wasEmpty = deps.queue.length === 0;
+  deps.queue.append(items as unknown as Parameters<typeof deps.queue.append>[0]);
+
+  // R4-AC3: never triggers a download on /play.
+  if (wasEmpty) {
+    try {
+      await deps.playback.playCurrent();
+    } catch (error) {
+      deps.logger?.error("play start failed:", (error as Error).message);
+      await safeEdit(interaction, userMessage(classifyError(error)));
+      return;
+    }
+  }
+
+  const headline = items.length === 1
+    ? `${label}: **${items[0].title}** — ${items[0].artist}`
+    : `${label}: ${items.length} items`;
+  await safeEdit(interaction, headline);
+}
+
+function formatChoices(choices: ResolvedItem[]): string {
+  return choices
+    .map(
+      (c, i) =>
+        `${i + 1}. **${c.title}** — ${c.artist}${c.local ? " _(local)_" : ""}`,
+    )
+    .join("\n");
+}
+
+function formatDuration(seconds: number | undefined): string {
+  if (!seconds || !Number.isFinite(seconds) || seconds <= 0) return "";
+  const total = Math.floor(seconds);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+const TERMINAL_STATUSES = new Set(["completed", "failed"]);
+const POLL_INTERVAL_MS = 2_000;
+const POLL_MAX_TICKS = 150; // ~5 minutes
+
+async function pollDownload(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+  jobId: string,
+  itemTitle: string,
+): Promise<void> {
+  for (let i = 0; i < POLL_MAX_TICKS; i++) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    try {
+      const status = await deps.client.downloadStatus(jobId);
+      if (TERMINAL_STATUSES.has(status.status)) {
+        const summary =
+          status.status === "completed"
+            ? `Download of **${itemTitle}** completed.`
+            : `Download of **${itemTitle}** failed.`;
+        await safeEdit(interaction, summary);
+        return;
+      }
+    } catch (error) {
+      deps.logger?.error("poll error:", (error as Error).message);
+      return;
+    }
+  }
+  await safeEdit(interaction, `Download of **${itemTitle}** is still in progress (stopped polling).`);
+}
+
+interface ReplyOptions {
+  content: string;
+  ephemeral?: boolean;
+}
+
+async function safeReply(
+  interaction: ChatInputCommandInteraction,
+  options: ReplyOptions,
+): Promise<void> {
+  try {
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({ content: options.content });
+    } else {
+      await interaction.reply({
+        content: options.content,
+        ephemeral: options.ephemeral ?? false,
+      });
+    }
+  } catch {
+    // nothing more we can do — interaction likely expired.
+  }
+}
+
+async function safeEdit(
+  interaction: ChatInputCommandInteraction,
+  content: string,
+): Promise<void> {
+  try {
+    await interaction.editReply({ content });
+  } catch {
+    // ignore
+  }
+}
