@@ -9,7 +9,10 @@ from pathlib import Path
 # library walk each time. Caches {name_casefold -> Path} per frozenset
 # of roots, with a TTL after which the index is rebuilt. Bounded staleness
 # acceptable for V1: new playlists appear within TTL_SECONDS of creation.
-_INDEX_CACHE: dict[frozenset[str], tuple[dict[str, Path], float]] = {}
+# F-018: Key by tuple, not frozenset, to preserve root order. Different
+# orderings are semantically different — first-seen wins when multiple
+# roots contain the same playlist name.
+_INDEX_CACHE: dict[tuple[str, ...], tuple[dict[str, Path], float]] = {}
 _TTL_SECONDS = 60.0
 
 
@@ -36,7 +39,7 @@ def _build_playlist_index(roots: list[Path]) -> dict[str, Path]:
 
 
 def _get_playlist_index(roots: list[Path]) -> dict[str, Path]:
-    cache_key = frozenset(str(r) for r in roots)
+    cache_key = tuple(str(r) for r in roots)
     cached = _INDEX_CACHE.get(cache_key)
     now = time.time()
     if cached is not None and (now - cached[1]) < _TTL_SECONDS:

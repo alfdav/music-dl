@@ -116,16 +116,25 @@ export class MusicDlClient {
     }
     const rec = obj as Record<string, unknown>;
     const kind = rec.kind;
+    let list: unknown;
     if (kind === "choices") {
-      if (!Array.isArray(rec.choices)) {
+      list = rec.choices;
+      if (!Array.isArray(list)) {
         throw new MusicDlError("parse", "resolve: 'choices' must be an array");
       }
     } else if (kind === "track" || kind === "playlist") {
-      if (!Array.isArray(rec.items)) {
+      list = rec.items;
+      if (!Array.isArray(list)) {
         throw new MusicDlError("parse", `resolve: '${kind}' response missing 'items' array`);
       }
     } else {
       throw new MusicDlError("parse", `resolve: unknown kind '${String(kind)}'`);
+    }
+
+    // F-020: validate each item has the minimum required fields.
+    const requiredItemFields = ["id", "title", "artist", "source_type", "local", "duration"];
+    for (let i = 0; i < list.length; i++) {
+      this.assertFields(list[i], requiredItemFields, `resolve: item[${i}]`);
     }
   }
 

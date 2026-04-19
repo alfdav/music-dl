@@ -327,9 +327,21 @@ def get_playable_source(
         token = sign_bot_stream_token(
             {"kind": "tidal", "track_id": str(track_id)}, ttl_seconds=300
         )
+        # F-019: map Tidal audio_quality to a likely content_type.
+        # LOSSLESS/HI_RES_LOSSLESS deliver FLAC; HIGH/LOW deliver M4A/AAC.
+        # This is a best-effort hint — the /bot-stream endpoint still
+        # forwards the real upstream Content-Type header.
+        quality = getattr(track, "audio_quality", "") or ""
+        tags = getattr(track, "media_metadata_tags", None) or []
+        if "HIRES_LOSSLESS" in tags or quality in ("HI_RES_LOSSLESS", "LOSSLESS"):
+            content_type = "audio/flac"
+        elif quality in ("HIGH", "LOW"):
+            content_type = "audio/mp4"
+        else:
+            content_type = "audio/mp4"  # safe default for Discord
         return {
             "url": f"/api/playback/bot-stream/{token}",
-            "content_type": "audio/flac",
+            "content_type": content_type,
             "title": track.full_name or track.name,
             "artist": ", ".join(a.name for a in (track.artists or []) if a.name),
             "duration": track.duration or 0,
