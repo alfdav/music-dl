@@ -91,7 +91,11 @@ export class MusicDlClient {
 
   async downloadStatus(jobId: string): Promise<DownloadStatus> {
     const data = await this.request<DownloadStatus>("GET", `/api/bot/downloads/${encodeURIComponent(jobId)}`);
-    this.assertFields(data, ["job_id", "status", "title", "artist"], "downloadStatus");
+    this.assertFields(
+      data,
+      ["job_id", "status", "progress", "title", "artist", "started_at", "finished_at"],
+      "downloadStatus",
+    );
     return data;
   }
 

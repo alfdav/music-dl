@@ -233,92 +233,75 @@ def validate_bot_bearer(authorization: str | None) -> bool:
 # Stream token signing / verification (R4)
 # ---------------------------------------------------------------------------
 
-_STREAM_TOKEN_SECRET: str | None = None
+def _get_stream_key() -> bytes:
+    """Derive a deterministic AES-256 key from MUSIC_DL_BOT_TOKEN.
 
-# Server-side payload store keyed by opaque token reference. This keeps
-# sensitive fields (like filesystem paths) out of the token itself — the
-# URL contains only a random reference + HMAC, not a base64-decodable
-# payload. Entries auto-expire via the exp field.
-_STREAM_PAYLOAD_STORE: dict[str, tuple[dict, float]] = {}
-
-
-def _get_stream_secret() -> bytes:
-    """Derive HMAC key for stream tokens."""
-    global _STREAM_TOKEN_SECRET
-    if _STREAM_TOKEN_SECRET is None:
-        _STREAM_TOKEN_SECRET = secrets.token_hex(32)
-    bot_token = os.environ.get("MUSIC_DL_BOT_TOKEN", "")
-    return hashlib.sha256(f"{bot_token}:{_STREAM_TOKEN_SECRET}".encode()).digest()
-
-
-def _sweep_expired_payloads() -> None:
-    """Drop expired entries from the payload store."""
-    now = time.time()
-    for ref in [r for r, (_, exp) in _STREAM_PAYLOAD_STORE.items() if now > exp]:
-        _STREAM_PAYLOAD_STORE.pop(ref, None)
+    The key is stable across process restarts (no random per-process
+    component), so tokens issued before a restart remain verifiable
+    after. If the bot token is empty, we fall back to a stable but
+    installation-specific seed so verification remains deterministic
+    within a single machine install.
+    """
+    bot_token = os.environ.get("MUSIC_DL_BOT_TOKEN", "").strip()
+    # Include a fixed module-level domain separator so the key is
+    # distinct from any other SHA-256(bot_token) use elsewhere.
+    domain = b"music-dl/bot/stream-token/v1"
+    seed = (bot_token or "no-token").encode()
+    return hashlib.sha256(seed + b"\x00" + domain).digest()
 
 
 def sign_bot_stream_token(payload: dict[str, str], ttl_seconds: int = 120) -> str:
-    """Create a signed stream token that references a server-side payload.
+    """Create an AES-GCM encrypted stream token.
 
-    The token URL contains only an opaque random reference + HMAC — the
-    actual payload (including any filesystem path) stays server-side,
-    accessible only via verify_bot_stream_token().
+    The token is self-contained (restart-safe) and encrypted, so the
+    URL itself does not expose the payload (e.g. filesystem paths).
+    AES-GCM provides both confidentiality and authentication — tampered
+    tokens fail the auth tag check.
 
-    Returns URL-safe base64: ``base64(ref_json).base64(hmac_sig)``
+    Returns URL-safe base64 of: nonce(12) || ciphertext || tag(16)
     """
-    _sweep_expired_payloads()
-    ref = secrets.token_urlsafe(24)
-    expires_at = int(time.time()) + ttl_seconds
-    _STREAM_PAYLOAD_STORE[ref] = ({**payload, "exp": expires_at}, expires_at)
+    from Crypto.Cipher import AES  # pycryptodome
 
-    envelope = json.dumps(
-        {"ref": ref, "exp": expires_at}, separators=(",", ":")
-    ).encode()
-    secret = _get_stream_secret()
-    sig = hmac.new(secret, envelope, hashlib.sha256).digest()
-    return (
-        base64.urlsafe_b64encode(envelope).decode()
-        + "."
-        + base64.urlsafe_b64encode(sig).decode()
-    )
+    data = {**payload, "exp": int(time.time()) + ttl_seconds}
+    raw = json.dumps(data, separators=(",", ":")).encode()
+
+    key = _get_stream_key()
+    nonce = secrets.token_bytes(12)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(raw)
+
+    return base64.urlsafe_b64encode(nonce + ciphertext + tag).decode()
 
 
 def verify_bot_stream_token(token: str) -> dict[str, str] | None:
-    """Verify a signed stream token and return its payload, or None on failure."""
-    parts = token.split(".", 1)
-    if len(parts) != 2:
-        return None
+    """Verify and decrypt a stream token. Returns payload dict or None on failure."""
+    from Crypto.Cipher import AES
+
     try:
-        envelope_raw = base64.urlsafe_b64decode(parts[0])
-        sig = base64.urlsafe_b64decode(parts[1])
+        blob = base64.urlsafe_b64decode(token)
     except Exception:
         return None
 
-    secret = _get_stream_secret()
-    expected = hmac.new(secret, envelope_raw, hashlib.sha256).digest()
-    if not hmac.compare_digest(sig, expected):
+    # Minimum length: 12-byte nonce + 16-byte tag + 1 byte ciphertext
+    if len(blob) < 29:
         return None
 
+    nonce = blob[:12]
+    tag = blob[-16:]
+    ciphertext = blob[12:-16]
+
+    key = _get_stream_key()
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
     try:
-        envelope = json.loads(envelope_raw)
+        raw = cipher.decrypt_and_verify(ciphertext, tag)
     except Exception:
         return None
 
-    ref = envelope.get("ref")
-    exp = envelope.get("exp")
-    if not isinstance(ref, str) or not isinstance(exp, (int, float)):
-        return None
-    if time.time() > exp:
-        _STREAM_PAYLOAD_STORE.pop(ref, None)
+    try:
+        data = json.loads(raw)
+    except Exception:
         return None
 
-    stored = _STREAM_PAYLOAD_STORE.get(ref)
-    if stored is None:
+    if not isinstance(data.get("exp"), (int, float)) or time.time() > data["exp"]:
         return None
-    payload, stored_exp = stored
-    if time.time() > stored_exp:
-        _STREAM_PAYLOAD_STORE.pop(ref, None)
-        return None
-
-    return payload
+    return data

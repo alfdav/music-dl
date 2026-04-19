@@ -15,9 +15,6 @@ TEST_TOKEN = "test-bot-token-secret"
 def bot_client(monkeypatch):
     """TestClient with bot token configured."""
     monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
-    # Reset the stream token secret so tests are deterministic
-    import tidal_dl.gui.security as sec
-    sec._STREAM_TOKEN_SECRET = None
 
     from tidal_dl.gui import create_app
     c = TestClient(create_app(port=8765))
@@ -111,7 +108,6 @@ class TestStreamTokens:
         """R4: Signed token encodes item reference and expiration."""
         monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
         import tidal_dl.gui.security as sec
-        sec._STREAM_TOKEN_SECRET = None
 
         token = sec.sign_bot_stream_token({"track_id": "12345", "kind": "local"})
         payload = sec.verify_bot_stream_token(token)
@@ -125,54 +121,80 @@ class TestStreamTokens:
         """R4: Expired token is rejected."""
         monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
         import tidal_dl.gui.security as sec
-        sec._STREAM_TOKEN_SECRET = None
 
         token = sec.sign_bot_stream_token({"track_id": "123"}, ttl_seconds=0)
         time.sleep(0.05)
         assert sec.verify_bot_stream_token(token) is None
 
-    def test_tampered_payload_rejected(self, monkeypatch):
-        """R4: Tampered payload is rejected."""
+    def test_tampered_ciphertext_rejected(self, monkeypatch):
+        """R4: Tampered ciphertext rejected (AES-GCM auth tag fails)."""
+        import base64
         monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
         import tidal_dl.gui.security as sec
-        sec._STREAM_TOKEN_SECRET = None
 
         token = sec.sign_bot_stream_token({"track_id": "123"})
-        parts = token.split(".")
-        tampered = ("A" if parts[0][0] != "A" else "B") + parts[0][1:]
-        assert sec.verify_bot_stream_token(f"{tampered}.{parts[1]}") is None
+        blob = bytearray(base64.urlsafe_b64decode(token))
+        blob[len(blob) // 2] ^= 0x01
+        tampered = base64.urlsafe_b64encode(bytes(blob)).decode()
+        assert sec.verify_bot_stream_token(tampered) is None
 
-    def test_tampered_signature_rejected(self, monkeypatch):
-        """R4: Tampered signature is rejected."""
+    def test_tampered_tag_rejected(self, monkeypatch):
+        """R4: Tampered auth tag rejected."""
+        import base64
         monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
         import tidal_dl.gui.security as sec
-        sec._STREAM_TOKEN_SECRET = None
 
         token = sec.sign_bot_stream_token({"track_id": "123"})
-        parts = token.split(".")
-        tampered = ("A" if parts[1][0] != "A" else "B") + parts[1][1:]
-        assert sec.verify_bot_stream_token(f"{parts[0]}.{tampered}") is None
+        blob = bytearray(base64.urlsafe_b64decode(token))
+        blob[-1] ^= 0x01
+        tampered = base64.urlsafe_b64encode(bytes(blob)).decode()
+        assert sec.verify_bot_stream_token(tampered) is None
+
+    def test_restart_safe(self, monkeypatch):
+        """F-012: Tokens verify across process restarts (deterministic key)."""
+        import importlib
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+        import tidal_dl.gui.security as sec
+
+        token = sec.sign_bot_stream_token({"track_id": "123"})
+        importlib.reload(sec)
+        payload = sec.verify_bot_stream_token(token)
+        assert payload is not None
+        assert payload["track_id"] == "123"
+
+    def test_path_not_in_token(self, monkeypatch):
+        """R3-AC5: Playable URL does not expose raw library filesystem paths."""
+        import base64
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+        import tidal_dl.gui.security as sec
+
+        secret_path = "/Users/hackbook/Music/secret_album/track.flac"
+        token = sec.sign_bot_stream_token({"kind": "local", "path": secret_path})
+        blob = base64.urlsafe_b64decode(token)
+        assert secret_path.encode() not in blob
+        assert b"secret_album" not in blob
+        payload = sec.verify_bot_stream_token(token)
+        assert payload is not None
+        assert payload["path"] == secret_path
 
     def test_lifetime_bounded(self, monkeypatch):
         """R4: Token lifetime is bounded (not indefinite)."""
         monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
         import tidal_dl.gui.security as sec
-        sec._STREAM_TOKEN_SECRET = None
 
         token = sec.sign_bot_stream_token({"track_id": "123"})
         payload = sec.verify_bot_stream_token(token)
         assert payload is not None
-        # Default 120s — must expire within 121s
         assert payload["exp"] <= time.time() + 121
 
     def test_malformed_rejected(self, monkeypatch):
         """R4: Malformed tokens rejected."""
         monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
         import tidal_dl.gui.security as sec
-        sec._STREAM_TOKEN_SECRET = None
 
         assert sec.verify_bot_stream_token("") is None
         assert sec.verify_bot_stream_token("not-a-token") is None
+        assert sec.verify_bot_stream_token("short") is None
 
 
 # ── R7: Logging Safety ───────────────────────────────────────────
@@ -293,7 +315,6 @@ class TestBotStreamEndpoint:
         """R3-AC3: Expired stream token returns 403."""
         import time
         import tidal_dl.gui.security as sec
-        sec._STREAM_TOKEN_SECRET = None
         token = sec.sign_bot_stream_token({"kind": "local", "path": "/tmp/x.flac"}, ttl_seconds=0)
         time.sleep(0.05)
         resp = bot_client.get(
@@ -369,7 +390,6 @@ class TestLoggingSafety:
         """R7: 403 for expired stream token doesn't leak token contents."""
         monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
         import tidal_dl.gui.security as sec
-        sec._STREAM_TOKEN_SECRET = None
 
         token = sec.sign_bot_stream_token({"track_id": "123"}, ttl_seconds=0)
         time.sleep(0.05)

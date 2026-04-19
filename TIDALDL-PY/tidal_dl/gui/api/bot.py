@@ -289,9 +289,20 @@ def get_playable_source(
         token = sign_bot_stream_token(
             {"kind": "local", "path": str(validated)}, ttl_seconds=300
         )
+        # F-013: content_type must match what /bot-stream actually serves —
+        # local files keep their real media type, not a hardcoded audio/flac.
+        media_types = {
+            ".flac": "audio/flac",
+            ".mp3": "audio/mpeg",
+            ".m4a": "audio/mp4",
+            ".ogg": "audio/ogg",
+            ".wav": "audio/wav",
+            ".aac": "audio/aac",
+        }
+        content_type = media_types.get(validated.suffix.lower(), "audio/flac")
         return {
             "url": f"/api/playback/bot-stream/{token}",
-            "content_type": "audio/flac",
+            "content_type": content_type,
             "title": meta["title"],
             "artist": meta["artist"],
             "duration": meta["duration"],
