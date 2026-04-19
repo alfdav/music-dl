@@ -11,6 +11,9 @@ Build site: context/plans/build-site.md
 ### Iteration 3 — 2026-04-19
 - T-014, T-015: Tier 2 — DONE. Files: commands.ts (11 slash commands + dispatcher), index.ts (entrypoint w/ REST command registration), player.ts (Playback class extending VoiceManager), commands.test.ts, player.test.ts. Build P, Tests P (46 backend + 87 bot = 133 total). Next: Codex review, then T-016 + T-017 (Tier 3)
 
+### Iteration 4 — 2026-04-19
+- T-016, T-017: Tier 3 — DONE. Files: picker.ts (buildPickerMessage pure + runPicker orchestration), picker.test.ts, commands.ts (wired picker into /play choices path + components clearing), commands.test.ts (picker invocation + selection tests). Build P, Tests P (79 backend + 100 bot = 179 total). Codex review Tier 3 converged after 1 round (2 findings: F-T3-001 button ack timing, F-T3-002 stale components). Final: clean on round 2.
+
 ### Codex review — Tier 2 — 2026-04-19
 - Converged after 5 rounds. 11 findings addressed total:
   - F-T2-001 (P1): /play rollback on playCurrent failure (queue wedge)

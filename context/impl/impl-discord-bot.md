@@ -16,4 +16,5 @@ Build site: context/plans/build-site.md
 | T-013 | DONE | Typed backend client with bearer auth, AbortController timeouts, MusicDlError taxonomy |
 | T-014 | DONE | 11 slash commands + dispatcher with auth gate; /play never downloads; index.ts entrypoint |
 | T-015 | DONE | Playback class: playCurrent/skip/pause/resume/setVolume; auto-advance on Idle+error; bounded failure chain |
+| T-016 | DONE | picker.ts: buttons-based visible picker with 30s timeout, component-clearing on finalize |
 | T-016 | PENDING | Visible picker for free-text search |
