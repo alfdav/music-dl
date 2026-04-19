@@ -137,6 +137,54 @@ describe("MusicDlClient", () => {
     }
   });
 
+  test("F-011: resolve rejects response missing 'kind'", async () => {
+    mockFetch(() => new Response(JSON.stringify({}), { status: 200 }));
+    const client = new MusicDlClient(BASE, TOKEN);
+    try {
+      await client.resolve("x");
+      expect(true).toBe(false);
+    } catch (e) {
+      expect(e).toBeInstanceOf(MusicDlError);
+      expect((e as MusicDlError).code).toBe("parse");
+    }
+  });
+
+  test("F-011: resolve rejects choices response without choices array", async () => {
+    mockFetch(() => new Response(JSON.stringify({ kind: "choices" }), { status: 200 }));
+    const client = new MusicDlClient(BASE, TOKEN);
+    try {
+      await client.resolve("x");
+      expect(true).toBe(false);
+    } catch (e) {
+      expect((e as MusicDlError).code).toBe("parse");
+    }
+  });
+
+  test("F-011: playable rejects response missing required fields", async () => {
+    mockFetch(() =>
+      new Response(JSON.stringify({ url: "/x" }), { status: 200 }),
+    );
+    const client = new MusicDlClient(BASE, TOKEN);
+    try {
+      await client.playable("tidal:1");
+      expect(true).toBe(false);
+    } catch (e) {
+      expect((e as MusicDlError).code).toBe("parse");
+      expect((e as MusicDlError).message).toContain("title");
+    }
+  });
+
+  test("F-011: download rejects response without job_id", async () => {
+    mockFetch(() => new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+    const client = new MusicDlClient(BASE, TOKEN);
+    try {
+      await client.triggerDownload("tidal:1");
+      expect(true).toBe(false);
+    } catch (e) {
+      expect((e as MusicDlError).code).toBe("parse");
+    }
+  });
+
   test("absolutize handles relative and absolute URLs", () => {
     const client = new MusicDlClient(BASE, TOKEN);
     expect(client.absolutize("/api/playback/bot-stream/abc")).toBe(

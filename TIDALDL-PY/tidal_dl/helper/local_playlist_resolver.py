@@ -9,10 +9,9 @@ def resolve_playlist_name(name: str, roots: list[Path]) -> Path | None:
     """Find a playlist file matching *name* (case-insensitive) across *roots*.
 
     Recursively searches each root for .m3u / .m3u8 files whose stem
-    matches *name*. Uses extension-scoped globs so large music libraries
-    (which typically contain thousands of audio files but only a handful
-    of playlists) don't materialize every descendant path. Returns the
-    first match in sorted order, or None.
+    matches *name*. Iterates lazily (no sorted materialization) and
+    filters by lowercased suffix so case-sensitive filesystems still
+    match uppercase extensions. Returns the first match found, or None.
     """
     wanted = name.strip().casefold()
     if not wanted:
@@ -21,11 +20,10 @@ def resolve_playlist_name(name: str, roots: list[Path]) -> Path | None:
     for root in roots:
         if not root.is_dir():
             continue
-        candidates = sorted(
-            list(root.rglob("*.m3u")) + list(root.rglob("*.m3u8"))
-        )
-        for candidate in candidates:
+        for candidate in root.rglob("*"):
             if not candidate.is_file():
+                continue
+            if candidate.suffix.lower() not in {".m3u", ".m3u8"}:
                 continue
             if candidate.stem.casefold() == wanted:
                 return candidate

@@ -235,6 +235,12 @@ def validate_bot_bearer(authorization: str | None) -> bool:
 
 _STREAM_TOKEN_SECRET: str | None = None
 
+# Server-side payload store keyed by opaque token reference. This keeps
+# sensitive fields (like filesystem paths) out of the token itself — the
+# URL contains only a random reference + HMAC, not a base64-decodable
+# payload. Entries auto-expire via the exp field.
+_STREAM_PAYLOAD_STORE: dict[str, tuple[dict, float]] = {}
+
 
 def _get_stream_secret() -> bytes:
     """Derive HMAC key for stream tokens."""
@@ -245,36 +251,74 @@ def _get_stream_secret() -> bytes:
     return hashlib.sha256(f"{bot_token}:{_STREAM_TOKEN_SECRET}".encode()).digest()
 
 
-def sign_bot_stream_token(payload: dict[str, str], ttl_seconds: int = 120) -> str:
-    """Create a signed stream token encoding payload and expiration.
+def _sweep_expired_payloads() -> None:
+    """Drop expired entries from the payload store."""
+    now = time.time()
+    for ref in [r for r, (_, exp) in _STREAM_PAYLOAD_STORE.items() if now > exp]:
+        _STREAM_PAYLOAD_STORE.pop(ref, None)
 
-    Returns URL-safe base64: ``base64(json_payload).base64(hmac_sig)``
+
+def sign_bot_stream_token(payload: dict[str, str], ttl_seconds: int = 120) -> str:
+    """Create a signed stream token that references a server-side payload.
+
+    The token URL contains only an opaque random reference + HMAC — the
+    actual payload (including any filesystem path) stays server-side,
+    accessible only via verify_bot_stream_token().
+
+    Returns URL-safe base64: ``base64(ref_json).base64(hmac_sig)``
     """
-    data = {**payload, "exp": int(time.time()) + ttl_seconds}
-    raw = json.dumps(data, separators=(",", ":")).encode()
+    _sweep_expired_payloads()
+    ref = secrets.token_urlsafe(24)
+    expires_at = int(time.time()) + ttl_seconds
+    _STREAM_PAYLOAD_STORE[ref] = ({**payload, "exp": expires_at}, expires_at)
+
+    envelope = json.dumps(
+        {"ref": ref, "exp": expires_at}, separators=(",", ":")
+    ).encode()
     secret = _get_stream_secret()
-    sig = hmac.new(secret, raw, hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(raw).decode() + "." + base64.urlsafe_b64encode(sig).decode()
+    sig = hmac.new(secret, envelope, hashlib.sha256).digest()
+    return (
+        base64.urlsafe_b64encode(envelope).decode()
+        + "."
+        + base64.urlsafe_b64encode(sig).decode()
+    )
 
 
 def verify_bot_stream_token(token: str) -> dict[str, str] | None:
-    """Verify a signed stream token. Returns payload dict or None on failure."""
+    """Verify a signed stream token and return its payload, or None on failure."""
     parts = token.split(".", 1)
     if len(parts) != 2:
         return None
     try:
-        raw = base64.urlsafe_b64decode(parts[0])
+        envelope_raw = base64.urlsafe_b64decode(parts[0])
         sig = base64.urlsafe_b64decode(parts[1])
     except Exception:
         return None
+
     secret = _get_stream_secret()
-    expected = hmac.new(secret, raw, hashlib.sha256).digest()
+    expected = hmac.new(secret, envelope_raw, hashlib.sha256).digest()
     if not hmac.compare_digest(sig, expected):
         return None
+
     try:
-        data = json.loads(raw)
+        envelope = json.loads(envelope_raw)
     except Exception:
         return None
-    if not isinstance(data.get("exp"), (int, float)) or time.time() > data["exp"]:
+
+    ref = envelope.get("ref")
+    exp = envelope.get("exp")
+    if not isinstance(ref, str) or not isinstance(exp, (int, float)):
         return None
-    return data
+    if time.time() > exp:
+        _STREAM_PAYLOAD_STORE.pop(ref, None)
+        return None
+
+    stored = _STREAM_PAYLOAD_STORE.get(ref)
+    if stored is None:
+        return None
+    payload, stored_exp = stored
+    if time.time() > stored_exp:
+        _STREAM_PAYLOAD_STORE.pop(ref, None)
+        return None
+
+    return payload

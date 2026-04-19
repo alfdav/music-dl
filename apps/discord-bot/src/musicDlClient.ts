@@ -72,19 +72,57 @@ export class MusicDlClient {
   }
 
   async resolve(query: string): Promise<ResolveResult> {
-    return this.request<ResolveResult>("POST", "/api/bot/play/resolve", { query });
+    const data = await this.request<ResolveResult>("POST", "/api/bot/play/resolve", { query });
+    this.assertResolveShape(data);
+    return data;
   }
 
   async playable(itemId: string): Promise<PlayableSource> {
-    return this.request<PlayableSource>("POST", "/api/bot/playable", { item_id: itemId });
+    const data = await this.request<PlayableSource>("POST", "/api/bot/playable", { item_id: itemId });
+    this.assertFields(data, ["url", "content_type", "title", "artist", "duration"], "playable");
+    return data;
   }
 
   async triggerDownload(itemId: string): Promise<DownloadJob> {
-    return this.request<DownloadJob>("POST", "/api/bot/download", { item_id: itemId });
+    const data = await this.request<DownloadJob>("POST", "/api/bot/download", { item_id: itemId });
+    this.assertFields(data, ["job_id", "status"], "download");
+    return data;
   }
 
   async downloadStatus(jobId: string): Promise<DownloadStatus> {
-    return this.request<DownloadStatus>("GET", `/api/bot/downloads/${encodeURIComponent(jobId)}`);
+    const data = await this.request<DownloadStatus>("GET", `/api/bot/downloads/${encodeURIComponent(jobId)}`);
+    this.assertFields(data, ["job_id", "status", "title", "artist"], "downloadStatus");
+    return data;
+  }
+
+  private assertFields(obj: unknown, required: string[], context: string): void {
+    if (typeof obj !== "object" || obj === null) {
+      throw new MusicDlError("parse", `${context}: response is not an object`);
+    }
+    const rec = obj as Record<string, unknown>;
+    const missing = required.filter((k) => !(k in rec));
+    if (missing.length > 0) {
+      throw new MusicDlError("parse", `${context}: missing fields ${missing.join(", ")}`);
+    }
+  }
+
+  private assertResolveShape(obj: unknown): void {
+    if (typeof obj !== "object" || obj === null) {
+      throw new MusicDlError("parse", "resolve: response is not an object");
+    }
+    const rec = obj as Record<string, unknown>;
+    const kind = rec.kind;
+    if (kind === "choices") {
+      if (!Array.isArray(rec.choices)) {
+        throw new MusicDlError("parse", "resolve: 'choices' must be an array");
+      }
+    } else if (kind === "track" || kind === "playlist") {
+      if (!Array.isArray(rec.items)) {
+        throw new MusicDlError("parse", `resolve: '${kind}' response missing 'items' array`);
+      }
+    } else {
+      throw new MusicDlError("parse", `resolve: unknown kind '${String(kind)}'`);
+    }
   }
 
   /** Resolve a relative stream URL returned by /playable to an absolute URL. */

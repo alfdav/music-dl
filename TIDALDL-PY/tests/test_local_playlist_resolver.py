@@ -91,6 +91,17 @@ class TestResolvePlaylistName:
         """R5: Nonexistent root returns None."""
         assert resolve_playlist_name("anything", [tmp_path / "no_such_dir"]) is None
 
+    def test_uppercase_extension_matched(self, tmp_path: Path):
+        """F-009: Extensions matched case-insensitively on case-sensitive FS.
+
+        Linux/NAS filesystems are case-sensitive — a playlist file named
+        'Night Drive.M3U8' must still resolve for query 'night drive'.
+        """
+        (tmp_path / "Night Drive.M3U8").write_text("#EXTM3U\nx.flac\n")
+        match = resolve_playlist_name("night drive", [tmp_path])
+        assert match is not None
+        assert match.name == "Night Drive.M3U8"
+
     def test_recursive_search_finds_nested_playlists(self, tmp_path: Path):
         """F-001: Playlists are often written to nested paths; search must recurse.
 
