@@ -19,6 +19,7 @@ import type { QueueState, RepeatMode } from "./queue";
 import type { VoiceManager, Playback } from "./player";
 import { ensureAuthorized } from "./auth";
 import { classifyError, ErrorKind, userMessage } from "./errors";
+import { runPicker } from "./picker";
 
 export interface CommandDeps {
   config: BotConfig;
@@ -27,6 +28,9 @@ export interface CommandDeps {
   voice: VoiceManager;
   playback: Playback;
   logger?: { error: (...args: unknown[]) => void };
+  // Optional override for the picker so tests can substitute a mock
+  // without building a full Discord button-collector runtime.
+  picker?: typeof runPicker;
 }
 
 const REPEAT_CHOICES: ReadonlyArray<{ name: string; value: RepeatMode }> = [
@@ -242,8 +246,6 @@ async function handlePlay(
   }
 
   if (result.kind === "choices") {
-    // R4-AC3: free-text shows up to 5 visible choices. T-016 adds selection;
-    // for now, render the list and direct the user to the picker (coming).
     const choices = result.choices.slice(0, 5);
     if (choices.length === 0) {
       await safeEdit(interaction, "No results found.");
@@ -254,8 +256,19 @@ async function handlePlay(
       await queueAndMaybeStart(interaction, deps, choices, "Queued");
       return;
     }
-    const body = formatChoices(choices);
-    await safeEdit(interaction, `Found ${choices.length} matches:\n${body}`);
+    // R8-AC1/AC2/AC3: present up to 5 visible choices, wait for the user
+    // to pick one, queue the selection. Timeout leaves the queue untouched.
+    const picker = deps.picker ?? runPicker;
+    const result2 = await picker(interaction, choices);
+    if (!result2) return;
+    try {
+      // Button interactions must be acknowledged or Discord shows a
+      // "This interaction failed" banner to the clicker.
+      await result2.buttonInteraction.deferUpdate();
+    } catch {
+      // Already acknowledged or expired.
+    }
+    await queueAndMaybeStart(interaction, deps, [result2.choice], "Queued");
     return;
   }
 

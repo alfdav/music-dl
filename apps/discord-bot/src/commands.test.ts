@@ -274,8 +274,9 @@ describe("individual commands", () => {
     expect((deps.client.triggerDownload as ReturnType<typeof mock>).mock.calls.length).toBe(0);
   });
 
-  test("/play with free-text choices lists matches, does not queue", async () => {
-    const deps = makeDeps();
+  test("/play with multi-choice result invokes picker", async () => {
+    const pickerMock = mock(async () => null);
+    const deps = makeDeps({ picker: pickerMock as never });
     (deps.client.resolve as ReturnType<typeof mock>).mockResolvedValueOnce({
       kind: "choices" as const,
       choices: [
@@ -289,10 +290,43 @@ describe("individual commands", () => {
       options: { query: "ambient" },
     });
     await handleInteraction(i as never, deps);
+    expect(pickerMock.mock.calls.length).toBe(1);
+    // Picker returned null (timeout) → nothing queued
     expect(deps.queue.length).toBe(0);
-    const msg = i._replies[0]?.content ?? "";
-    expect(msg).toContain("One");
-    expect(msg).toContain("Two");
+  });
+
+  test("/play picker selection queues chosen item", async () => {
+    const selected = {
+      id: "c2",
+      title: "Two",
+      artist: "A",
+      source_type: "tidal" as const,
+      local: false,
+      duration: 200,
+    };
+    const pickerMock = mock(async () => ({
+      choice: selected,
+      index: 1,
+      buttonInteraction: {
+        deferUpdate: mock(async () => {}),
+      },
+    }));
+    const deps = makeDeps({ picker: pickerMock as never });
+    (deps.client.resolve as ReturnType<typeof mock>).mockResolvedValueOnce({
+      kind: "choices" as const,
+      choices: [
+        { id: "c1", title: "One", artist: "A", source_type: "tidal" as const, local: false, duration: 200 },
+        selected,
+        { id: "c3", title: "Three", artist: "A", source_type: "tidal" as const, local: false, duration: 200 },
+      ],
+    });
+    const i = makeInteraction({
+      commandName: "play",
+      options: { query: "ambient" },
+    });
+    await handleInteraction(i as never, deps);
+    expect(deps.queue.length).toBe(1);
+    expect(deps.queue.current()?.id).toBe("c2");
   });
 
   test("/play with single free-text result auto-queues (R8-AC4)", async () => {
