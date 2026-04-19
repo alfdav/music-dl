@@ -19,21 +19,28 @@ _TTL_SECONDS = 60.0
 def _build_playlist_index(roots: list[Path]) -> dict[str, Path]:
     """Walk roots once and map casefolded playlist name -> path.
 
-    Uses iterdir with manual recursion (depth-bounded) and filters by
-    lowercased suffix so case-sensitive filesystems still match
-    uppercase .M3U/.M3U8 extensions.
+    F-021: Collects all playlist files and sorts them before populating
+    the index so duplicate-name resolution is deterministic across
+    machines. Path.rglob() does not guarantee ordering — without
+    sorting, the same query could return different playlists after
+    directory churn.
     """
     index: dict[str, Path] = {}
     for root in roots:
         if not root.is_dir():
             continue
+        candidates: list[Path] = []
         for candidate in root.rglob("*"):
             if not candidate.is_file():
                 continue
             if candidate.suffix.lower() not in {".m3u", ".m3u8"}:
                 continue
+            candidates.append(candidate)
+        # Sort by path string for stable iteration order across filesystems
+        candidates.sort(key=lambda p: str(p))
+        for candidate in candidates:
             key = candidate.stem.casefold()
-            # First-seen wins (consistent with prior first-match behavior)
+            # First-seen (lexicographically) wins per root
             index.setdefault(key, candidate)
     return index
 

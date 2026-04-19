@@ -222,8 +222,22 @@ def resolve_play_request(
         roots = _local_playlist_roots()
         match_path = resolve_playlist_name(query, roots)
         if match_path is not None:
+            from tidal_dl.gui.api.library import _trusted_library_path
+            from tidal_dl.gui.api.playback import get_download_paths
+            from tidal_dl.gui.security import resolve_library_audio_path
+
             track_paths = parse_playlist_file(match_path)
-            items = [_serialize_local_item(p) for p in track_paths]
+            allowed = get_download_paths()
+            # F-022: Validate each track against library-path rules so
+            # /resolve only returns items that /playable can actually serve.
+            # Invalid entries (stale paths, files outside library) are dropped.
+            items = []
+            for p in track_paths:
+                validated = resolve_library_audio_path(
+                    p, allowed, trusted_library_path=_trusted_library_path(p)
+                )
+                if validated is not None:
+                    items.append(_serialize_local_item(str(validated)))
             return {"kind": "playlist", "items": items}
 
     # 4. Free-text search — 5 candidates, locals first

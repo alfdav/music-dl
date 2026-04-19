@@ -250,17 +250,29 @@ class TestResolveEndpoint:
 
     def test_local_playlist_resolution(self, bot_client, tmp_path, monkeypatch):
         """R2-AC4: Local playlist name returns ordered list matching track order."""
-        # Set up a playlist dir with a matching file
-        playlist_dir = tmp_path / "playlists"
+        # Set up a playlist dir with real audio files (so library-path
+        # validation passes — see F-022 filtering)
+        playlist_dir = tmp_path / "library"
         playlist_dir.mkdir()
+        track1 = playlist_dir / "track1.flac"
+        track2 = playlist_dir / "track2.flac"
+        track1.write_text("")
+        track2.write_text("")
         (playlist_dir / "Night Drive.m3u8").write_text(
-            "#EXTM3U\n/music/track1.flac\n/music/track2.flac\n"
+            f"#EXTM3U\n{track1}\n{track2}\n"
         )
 
-        # Override the local playlist roots resolver
+        # Invalidate cache from prior tests, override roots + download paths
+        from tidal_dl.helper import local_playlist_resolver as lpr
+        lpr.invalidate_playlist_index_cache()
+
         import tidal_dl.gui.api.bot as bot_module
+        import tidal_dl.gui.api.playback as playback_module
         monkeypatch.setattr(
             bot_module, "_local_playlist_roots", lambda: [playlist_dir]
+        )
+        monkeypatch.setattr(
+            playback_module, "get_download_paths", lambda: [str(playlist_dir)]
         )
 
         resp = bot_client.post(
