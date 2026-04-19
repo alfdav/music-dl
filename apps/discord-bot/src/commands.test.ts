@@ -468,6 +468,47 @@ describe("Codex-F-T2-001: /play rollback on playback failure", () => {
   });
 });
 
+describe("Codex-F-T2-004: batched /download renders one aggregated summary", () => {
+  test("multi-track download uses batch summary, not per-job reply", async () => {
+    const deps = makeDeps();
+    (deps.client.resolve as ReturnType<typeof mock>).mockResolvedValueOnce({
+      kind: "playlist" as const,
+      items: [
+        { id: "t1", title: "One", artist: "A", source_type: "tidal" as const, local: false, duration: 1 },
+        { id: "t2", title: "Two", artist: "A", source_type: "tidal" as const, local: false, duration: 1 },
+      ],
+    });
+    const i = makeInteraction({
+      commandName: "download",
+      options: { query: "playlist-url" },
+    });
+    await handleInteraction(i as never, deps);
+    // First editReply must be the aggregated batch summary.
+    const first = i._replies.find((r) => r.kind === "editReply")?.content ?? "";
+    expect(first).toMatch(/Batch download/);
+    expect(first).toMatch(/2 tracks/);
+    expect(first).toContain("One");
+    expect(first).toContain("Two");
+  });
+});
+
+describe("Codex-F-T2-005: trigger failures classify actual error", () => {
+  test("MusicDlError('auth') yields Unknown message, not BackendUnavailable", async () => {
+    const deps = makeDeps();
+    (deps.client.triggerDownload as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+      throw new MusicDlError("auth", "Backend rejected bot credentials", 401);
+    });
+    const i = makeInteraction({
+      commandName: "download",
+      options: { query: "https://tidal.com/track/42" },
+    });
+    await handleInteraction(i as never, deps);
+    const last = i._replies.at(-1)?.content ?? "";
+    // Must NOT be the hard-coded "backend unavailable" string
+    expect(last).not.toMatch(/currently unavailable/i);
+  });
+});
+
 describe("Codex-F-T2-003: /queue highlights by position, not id", () => {
   test("duplicate items show the marker on only the current position", async () => {
     const deps = makeDeps();

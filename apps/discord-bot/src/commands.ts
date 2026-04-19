@@ -421,6 +421,7 @@ async function handleDownload(
   }
 
   const jobs: Array<{ title: string; jobId: string }> = [];
+  let firstTriggerError: unknown = null;
   for (const item of targets) {
     try {
       const job = await deps.client.triggerDownload(item.id);
@@ -430,23 +431,36 @@ async function handleDownload(
         `download trigger failed for ${item.id}:`,
         (error as Error).message,
       );
+      if (firstTriggerError === null) firstTriggerError = error;
     }
   }
 
   if (jobs.length === 0) {
-    await safeEdit(interaction, userMessage(ErrorKind.BackendUnavailable));
+    // Codex-F-T2-005: surface the real error class instead of hard-coding
+    // BackendUnavailable. Auth failures and backend 4xx/5xx were being
+    // routed to the wrong message.
+    await safeEdit(
+      interaction,
+      firstTriggerError
+        ? userMessage(classifyError(firstTriggerError))
+        : userMessage(ErrorKind.Unknown),
+    );
     return;
   }
 
-  const summary =
-    jobs.length === 1
-      ? `Download queued for **${jobs[0].title}** (job \`${jobs[0].jobId}\`).`
-      : `Download queued for ${jobs.length} tracks.`;
-  await safeEdit(interaction, summary);
-  // Poll each job independently; the single-job case still edits the reply.
-  for (const job of jobs) {
-    void pollDownload(interaction, deps, job.jobId, job.title);
+  if (jobs.length === 1) {
+    await safeEdit(
+      interaction,
+      `Download queued for **${jobs[0].title}** (job \`${jobs[0].jobId}\`).`,
+    );
+    void pollDownload(interaction, deps, jobs[0].jobId, jobs[0].title);
+    return;
   }
+
+  // Codex-F-T2-004: multi-item downloads share the single interaction reply,
+  // so parallel polls racing to editReply would overwrite each other's status.
+  // Poll all jobs and render one aggregated summary per tick.
+  void pollBatch(interaction, deps, jobs);
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +545,59 @@ async function pollDownload(
     }
   }
   await safeEdit(interaction, `Download of **${itemTitle}** is still in progress (stopped polling).`);
+}
+
+/**
+ * Poll a batch of download jobs and render a single aggregated status
+ * message per tick. Prevents concurrent editReply races (Codex-F-T2-004).
+ */
+async function pollBatch(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+  jobs: ReadonlyArray<{ title: string; jobId: string }>,
+): Promise<void> {
+  const statuses: string[] = jobs.map(() => "queued");
+
+  const renderSummary = () => {
+    const completed = statuses.filter((s) => s === "completed").length;
+    const failed = statuses.filter((s) => s === "failed").length;
+    const pending = statuses.length - completed - failed;
+    const lines = jobs.map(
+      (j, idx) => `• ${statuses[idx]}: ${j.title}`,
+    );
+    return (
+      `Batch download (${jobs.length} tracks): ` +
+      `${completed} done, ${failed} failed, ${pending} in flight\n` +
+      lines.join("\n").slice(0, 1800)
+    );
+  };
+
+  await safeEdit(interaction, renderSummary());
+
+  for (let tick = 0; tick < POLL_MAX_TICKS; tick++) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    let changed = false;
+    for (let i = 0; i < jobs.length; i++) {
+      if (TERMINAL_STATUSES.has(statuses[i])) continue;
+      try {
+        const s = await deps.client.downloadStatus(jobs[i].jobId);
+        if (s.status !== statuses[i]) {
+          statuses[i] = s.status;
+          changed = true;
+        }
+      } catch (error) {
+        deps.logger?.error(
+          `poll failed for ${jobs[i].jobId}:`,
+          (error as Error).message,
+        );
+        statuses[i] = "failed";
+        changed = true;
+      }
+    }
+    if (changed) await safeEdit(interaction, renderSummary());
+    if (statuses.every((s) => TERMINAL_STATUSES.has(s))) return;
+  }
+  await safeEdit(interaction, renderSummary() + "\n(stopped polling)");
 }
 
 interface ReplyOptions {
