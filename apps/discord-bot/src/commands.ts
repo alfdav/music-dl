@@ -576,22 +576,34 @@ async function pollBatch(
 
   for (let tick = 0; tick < POLL_MAX_TICKS; tick++) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+
+    // Codex-F-T2-007: fan out per-tick status checks so one slow job
+    // doesn't stall the whole batch summary.
+    const pending = jobs
+      .map((j, idx) => ({ idx, jobId: j.jobId }))
+      .filter((p) => !TERMINAL_STATUSES.has(statuses[p.idx]));
+
+    const results = await Promise.allSettled(
+      pending.map((p) => deps.client.downloadStatus(p.jobId)),
+    );
+
     let changed = false;
-    for (let i = 0; i < jobs.length; i++) {
-      if (TERMINAL_STATUSES.has(statuses[i])) continue;
-      try {
-        const s = await deps.client.downloadStatus(jobs[i].jobId);
-        if (s.status !== statuses[i]) {
-          statuses[i] = s.status;
+    for (let k = 0; k < pending.length; k++) {
+      const slot = pending[k].idx;
+      const res = results[k];
+      if (res.status === "fulfilled") {
+        if (res.value.status !== statuses[slot]) {
+          statuses[slot] = res.value.status;
           changed = true;
         }
-      } catch (error) {
+      } else {
+        // Codex-F-T2-006: transient poll failure — keep the previous
+        // status and retry next tick instead of fabricating "failed",
+        // which is terminal and would strand a still-running download.
         deps.logger?.error(
-          `poll failed for ${jobs[i].jobId}:`,
-          (error as Error).message,
+          `poll failed for ${pending[k].jobId}:`,
+          (res.reason as Error).message,
         );
-        statuses[i] = "failed";
-        changed = true;
       }
     }
     if (changed) await safeEdit(interaction, renderSummary());
