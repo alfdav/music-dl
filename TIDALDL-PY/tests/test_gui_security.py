@@ -225,6 +225,35 @@ class TestLocalAudioResolution:
         assert result.kind == "ok"
         assert result.path == audio.resolve()
 
+    def test_rejects_symlink_raw_path_in_db_fallback(self, tmp_path):
+        """Even if the DB trusts a path, a symlink raw path must never resolve —
+        guards against race conditions or stale DB entries past the scan-time skip.
+        """
+        from tidal_dl.gui.security import resolve_local_audio_path
+
+        # Real file OUTSIDE allowed_dirs (so primary validate_audio_path fails)
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        real_file = outside_dir / "track.flac"
+        real_file.write_bytes(b"fake")
+
+        # Symlink INSIDE allowed_dir pointing at the outside real file
+        allowed_dir = tmp_path / "allowed"
+        allowed_dir.mkdir()
+        symlink_path = allowed_dir / "track.flac"
+        symlink_path.symlink_to(real_file)
+
+        # Without the symlink guard, DB fallback would return "ok" here
+        result = resolve_local_audio_path(
+            str(symlink_path),
+            [str(allowed_dir)],
+            library_trusts_raw_path=True,
+            library_resolved_path=real_file.resolve(),
+        )
+
+        assert result.kind == "forbidden"
+        assert result.path is None
+
 
 class TestStreamUrlValidation:
     def test_allows_tidal_cdn(self):

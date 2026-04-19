@@ -385,6 +385,8 @@ def _background_scan(rescan: bool) -> None:
             # Phase 1: Walk filesystem — fast, just collect paths
             for scan_dir in scan_dirs:
                 for f in scan_dir.rglob("*"):
+                    if f.is_symlink():  # symlink → arbitrary target recorded as trusted path (DB poisoning)
+                        continue
                     if f.suffix.lower() not in _AUDIO_EXTENSIONS:
                         continue
                     disk_paths.add(str(f))

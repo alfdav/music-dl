@@ -11,6 +11,8 @@ _TIMESTAMP_RE = re.compile(r"\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]")
 _METADATA_LINE_RE = re.compile(r"^\[(ar|ti|al|by):.*\]$", re.IGNORECASE)
 _OFFSET_LINE_RE = re.compile(r"^\[offset:([+-]?\d+)\]$", re.IGNORECASE)
 
+MAX_LRC_BYTES = 1 * 1024 * 1024  # no legitimate LRC exceeds this; cap prevents local DoS
+
 
 def _payload(track_path: Path, mode: str, source: str, lines: list[dict] | None = None, text: str = "") -> dict:
     return {
@@ -24,7 +26,11 @@ def _payload(track_path: Path, mode: str, source: str, lines: list[dict] | None 
 
 def discover_sidecar_lrc(audio_path: Path) -> Path | None:
     target_name = f"{audio_path.stem}.lrc"
-    siblings = [child for child in audio_path.parent.iterdir() if child.is_file()]
+    siblings = [
+        child
+        for child in audio_path.parent.iterdir()
+        if child.is_file() and not child.is_symlink()  # symlink sidecar → arbitrary file read
+    ]
 
     exact_matches = [child for child in siblings if child.name == target_name]
     if exact_matches:
@@ -233,12 +239,13 @@ def read_local_lyrics(audio_path: Path) -> dict:
     sidecar = discover_sidecar_lrc(audio_path)
     if sidecar is not None:
         try:
-            sidecar_text = decode_lrc_bytes(sidecar.read_bytes())
-            sidecar_lines_raw, sidecar_plain = parse_lrc_text(sidecar_text)
-            sidecar_lines = normalize_synced_lines(sidecar_lines_raw, duration_ms)
-            if sidecar_lines:
-                return _payload(audio_path, "synced", "lrc-synced", lines=sidecar_lines)
-            sidecar_unsynced = _cleanup_unsynced_text(sidecar_plain)
+            if sidecar.stat().st_size <= MAX_LRC_BYTES:
+                sidecar_text = decode_lrc_bytes(sidecar.read_bytes())
+                sidecar_lines_raw, sidecar_plain = parse_lrc_text(sidecar_text)
+                sidecar_lines = normalize_synced_lines(sidecar_lines_raw, duration_ms)
+                if sidecar_lines:
+                    return _payload(audio_path, "synced", "lrc-synced", lines=sidecar_lines)
+                sidecar_unsynced = _cleanup_unsynced_text(sidecar_plain)
         except Exception:
             sidecar_unsynced = ""
 

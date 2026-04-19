@@ -89,6 +89,9 @@ def test_ambiguous_case_insensitive_sidecars_are_ignored(tmp_path, monkeypatch):
         def is_file(self) -> bool:
             return True
 
+        def is_symlink(self) -> bool:
+            return False
+
     track = _audio_file(tmp_path, "track.flac")
     monkeypatch.setattr(Path, "iterdir", lambda self: [FakeChild("track.LRC"), FakeChild("TRACK.lrc")])
     monkeypatch.setattr(
@@ -201,3 +204,53 @@ def test_normalization_merges_duplicates_and_uses_duration_fallback():
         {"start_ms": 1000, "end_ms": 3000, "text": "A\nB"},
         {"start_ms": 3000, "end_ms": 7000, "text": "C"},
     ]
+
+
+def test_sidecar_over_size_cap_ignored(tmp_path, monkeypatch):
+    from tidal_dl.gui.lyrics_local import MAX_LRC_BYTES, read_local_lyrics
+
+    track = _audio_file(tmp_path, "track.flac")
+    lrc = track.with_suffix(".lrc")
+    lrc.write_bytes(b"[00:01.00]Hello\n" + b"x" * MAX_LRC_BYTES)
+
+    monkeypatch.setattr("tidal_dl.gui.lyrics_local.MutagenFile", lambda path: DummyAudio(length=0.0))
+
+    payload = read_local_lyrics(track)
+
+    assert payload["mode"] == "none"
+
+
+def test_sidecar_under_size_cap_read_normally(tmp_path, monkeypatch):
+    from tidal_dl.gui.lyrics_local import read_local_lyrics
+
+    track = _audio_file(tmp_path, "track.flac")
+    track.with_suffix(".lrc").write_text("[00:01.00]Hello\n[00:02.00]World\n", encoding="utf-8")
+
+    monkeypatch.setattr("tidal_dl.gui.lyrics_local.MutagenFile", lambda path: DummyAudio(length=10.0))
+
+    payload = read_local_lyrics(track)
+
+    assert payload["mode"] == "synced"
+    assert payload["source"] == "lrc-synced"
+    assert payload["lines"][0]["text"] == "Hello"
+
+
+def test_sidecar_symlink_ignored(tmp_path, monkeypatch):
+    from tidal_dl.gui.lyrics_local import read_local_lyrics
+
+    real_lrc = tmp_path / "external.lrc"
+    real_lrc.write_text("[00:01.00]Secret\n", encoding="utf-8")
+
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    track = audio_dir / "track.flac"
+    track.write_bytes(b"fake")
+
+    lrc_symlink = audio_dir / "track.lrc"
+    lrc_symlink.symlink_to(real_lrc)
+
+    monkeypatch.setattr("tidal_dl.gui.lyrics_local.MutagenFile", lambda path: DummyAudio(length=0.0))
+
+    payload = read_local_lyrics(track)
+
+    assert payload["mode"] == "none"
