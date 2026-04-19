@@ -64,12 +64,20 @@ _bot_ref: MusicDLBot | None = None
 
 
 def _notify_channel(job: DownloadJob, embed: discord.Embed) -> None:
-    """Send an embed to the channel that requested the download (thread-safe)."""
+    """Send an embed to the channel that requested the download (thread-safe).
+
+    All discord.py internal state access (including get_channel) must happen on
+    the event loop thread — never from the worker thread directly.
+    """
     if _loop is None or _bot_ref is None:
         return
-    channel = _bot_ref.get_channel(job.channel_id)
-    if channel and isinstance(channel, discord.abc.Messageable):
-        asyncio.run_coroutine_threadsafe(channel.send(embed=embed), _loop)
+
+    async def _send() -> None:
+        channel = _bot_ref.get_channel(job.channel_id)  # type: ignore[union-attr]
+        if channel and isinstance(channel, discord.abc.Messageable):
+            await channel.send(embed=embed)
+
+    asyncio.run_coroutine_threadsafe(_send(), _loop)
 
 
 def _process_single_url(job: DownloadJob) -> None:
@@ -237,12 +245,18 @@ TIDAL_URL_RE = re.compile(r"https?://(?:listen\.)?tidal\.com/\S+", re.IGNORECASE
 class MusicDLBot(discord.Client):
     """Discord client with slash command tree."""
 
-    def __init__(self, *, allowed_channel_ids: set[int] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        allowed_channel_ids: set[int] | None = None,
+        dev_guild_id: int | None = None,
+    ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self.allowed_channel_ids = allowed_channel_ids or set()
+        self.dev_guild_id = dev_guild_id
         self._register_commands()
 
     def _register_commands(self) -> None:
@@ -321,8 +335,14 @@ class MusicDLBot(discord.Client):
             await interaction.response.send_message(embed=embed)
 
     async def setup_hook(self) -> None:
-        await self.tree.sync()
-        log.info("Slash commands synced.")
+        if self.dev_guild_id:
+            guild = discord.Object(id=self.dev_guild_id)
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            log.info("Slash commands synced to dev guild %d.", self.dev_guild_id)
+        else:
+            await self.tree.sync()
+            log.info("Slash commands synced globally.")
 
     async def on_ready(self) -> None:
         global _loop, _bot_ref, _worker_thread
@@ -336,10 +356,15 @@ class MusicDLBot(discord.Client):
         log.info("Bot ready as %s", self.user)
 
     async def on_message(self, message: discord.Message) -> None:
-        """Auto-detect Tidal URLs in messages and offer to download."""
+        """Auto-detect Tidal URLs in messages and queue downloads.
+
+        Only active when allowed_channel_ids is explicitly set — prevents
+        any guild member from flooding the queue in unrestricted mode.
+        """
         if message.author == self.user or message.author.bot:
             return
-        if self.allowed_channel_ids and message.channel.id not in self.allowed_channel_ids:
+        # Auto-detect is opt-in: only works in explicitly allowed channels
+        if not self.allowed_channel_ids or message.channel.id not in self.allowed_channel_ids:
             return
 
         urls = TIDAL_URL_RE.findall(message.content)
@@ -368,12 +393,17 @@ class MusicDLBot(discord.Client):
 # Entry point
 # ---------------------------------------------------------------------------
 
-def run_bot(token: str, allowed_channels: list[int] | None = None) -> None:
+def run_bot(
+    token: str,
+    allowed_channels: list[int] | None = None,
+    dev_guild_id: int | None = None,
+) -> None:
     """Start the Discord bot (blocking call).
 
     Args:
         token: Discord bot token.
         allowed_channels: Optional list of channel IDs to restrict commands to.
+        dev_guild_id: Guild ID for instant slash command sync (dev mode).
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -381,5 +411,5 @@ def run_bot(token: str, allowed_channels: list[int] | None = None) -> None:
     )
 
     channel_set = set(allowed_channels) if allowed_channels else set()
-    bot = MusicDLBot(allowed_channel_ids=channel_set)
+    bot = MusicDLBot(allowed_channel_ids=channel_set, dev_guild_id=dev_guild_id)
     bot.run(token, log_handler=None)

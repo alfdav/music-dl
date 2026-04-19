@@ -86,6 +86,14 @@ def bot_command(
             help="Restrict bot to specific channel IDs (repeatable). Omit to allow all.",
         ),
     ] = None,
+    guild: Annotated[
+        int | None,
+        typer.Option(
+            "--guild",
+            "-g",
+            help="Dev guild ID for instant slash command sync (avoids global rate limit).",
+        ),
+    ] = None,
 ) -> None:
     """Start the Discord bot for Tidal downloads.
 
@@ -114,7 +122,7 @@ def bot_command(
         )
         raise typer.Exit(code=1)
 
-    run_bot(token=resolved_token, allowed_channels=channels)
+    run_bot(token=resolved_token, allowed_channels=channels, dev_guild_id=guild)
 
 
 def _resolve_bot_token() -> str | None:
