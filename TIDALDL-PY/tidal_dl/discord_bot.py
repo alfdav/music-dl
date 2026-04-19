@@ -335,14 +335,22 @@ class MusicDLBot(discord.Client):
             await interaction.response.send_message(embed=embed)
 
     async def setup_hook(self) -> None:
-        if self.dev_guild_id:
-            guild = discord.Object(id=self.dev_guild_id)
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-            log.info("Slash commands synced to dev guild %d.", self.dev_guild_id)
-        else:
-            await self.tree.sync()
-            log.info("Slash commands synced globally.")
+        try:
+            if self.dev_guild_id:
+                guild = discord.Object(id=self.dev_guild_id)
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+                log.info("Slash commands synced to dev guild %d.", self.dev_guild_id)
+            else:
+                await self.tree.sync()
+                log.info("Slash commands synced globally.")
+        except discord.Forbidden:
+            log.error(
+                "Failed to sync slash commands — bot lacks 'applications.commands' scope. "
+                "Re-invite with both 'bot' and 'applications.commands' scopes."
+            )
+        except discord.HTTPException as exc:
+            log.error("Command sync failed: %s — bot will still respond to messages.", exc)
 
     async def on_ready(self) -> None:
         global _loop, _bot_ref, _worker_thread
