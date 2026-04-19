@@ -14,6 +14,7 @@ import {
 import type { BotConfig } from "./config";
 import type { MusicDlClient, ResolveResult, ResolvedItem } from "./musicDlClient";
 import { MusicDlError } from "./musicDlClient";
+// re-exported to make MusicDlError available within this module
 import type { QueueState, RepeatMode } from "./queue";
 import type { VoiceManager, Playback } from "./player";
 import { ensureAuthorized } from "./auth";
@@ -549,7 +550,11 @@ async function pollDownload(
 
 /**
  * Poll a batch of download jobs and render a single aggregated status
- * message per tick. Prevents concurrent editReply races (Codex-F-T2-004).
+ * message as state changes. Prevents concurrent editReply races
+ * (Codex-F-T2-004) by funneling every render through the same reply.
+ *
+ * Each job has its own independent poll loop (Codex-F-T2-009) so a slow
+ * or hung status request can't stall updates for the rest of the batch.
  */
 async function pollBatch(
   interaction: ChatInputCommandInteraction,
@@ -572,44 +577,77 @@ async function pollBatch(
     );
   };
 
+  // Coalesce bursts of per-job renders into one edit per microtask so
+  // we don't hammer Discord when several jobs terminate simultaneously.
+  let renderScheduled = false;
+  const scheduleRender = () => {
+    if (renderScheduled) return;
+    renderScheduled = true;
+    queueMicrotask(() => {
+      renderScheduled = false;
+      void safeEdit(interaction, renderSummary());
+    });
+  };
+
   await safeEdit(interaction, renderSummary());
 
+  await Promise.allSettled(
+    jobs.map((job, slot) =>
+      pollSingleJob(deps, job, slot, statuses, scheduleRender),
+    ),
+  );
+
+  await safeEdit(interaction, renderSummary());
+}
+
+/**
+ * Independent per-job poll loop. Updates `statuses[slot]` in place and
+ * invokes `onChange` whenever the slot's value changes.
+ *
+ * F-T2-006/F-T2-008: distinguishes transient transport errors (kept
+ * non-terminal, retried next tick) from permanent backend/auth/parse
+ * errors (marked as terminal 'failed' so the user sees the failure).
+ */
+async function pollSingleJob(
+  deps: CommandDeps,
+  job: { title: string; jobId: string },
+  slot: number,
+  statuses: string[],
+  onChange: () => void,
+): Promise<void> {
   for (let tick = 0; tick < POLL_MAX_TICKS; tick++) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    if (TERMINAL_STATUSES.has(statuses[slot])) return;
 
-    // Codex-F-T2-007: fan out per-tick status checks so one slow job
-    // doesn't stall the whole batch summary.
-    const pending = jobs
-      .map((j, idx) => ({ idx, jobId: j.jobId }))
-      .filter((p) => !TERMINAL_STATUSES.has(statuses[p.idx]));
-
-    const results = await Promise.allSettled(
-      pending.map((p) => deps.client.downloadStatus(p.jobId)),
-    );
-
-    let changed = false;
-    for (let k = 0; k < pending.length; k++) {
-      const slot = pending[k].idx;
-      const res = results[k];
-      if (res.status === "fulfilled") {
-        if (res.value.status !== statuses[slot]) {
-          statuses[slot] = res.value.status;
-          changed = true;
-        }
-      } else {
-        // Codex-F-T2-006: transient poll failure — keep the previous
-        // status and retry next tick instead of fabricating "failed",
-        // which is terminal and would strand a still-running download.
-        deps.logger?.error(
-          `poll failed for ${pending[k].jobId}:`,
-          (res.reason as Error).message,
-        );
+    try {
+      const s = await deps.client.downloadStatus(job.jobId);
+      if (s.status !== statuses[slot]) {
+        statuses[slot] = s.status;
+        onChange();
       }
+      if (TERMINAL_STATUSES.has(s.status)) return;
+    } catch (error) {
+      deps.logger?.error(
+        `poll failed for ${job.jobId}:`,
+        (error as Error).message,
+      );
+      // F-T2-008: only transport errors retry; permanent errors become
+      // terminal so the user isn't left staring at "in flight" forever.
+      if (isTransientPollError(error)) continue;
+      statuses[slot] = "failed";
+      onChange();
+      return;
     }
-    if (changed) await safeEdit(interaction, renderSummary());
-    if (statuses.every((s) => TERMINAL_STATUSES.has(s))) return;
   }
-  await safeEdit(interaction, renderSummary() + "\n(stopped polling)");
+}
+
+function isTransientPollError(error: unknown): boolean {
+  if (error instanceof MusicDlError) {
+    return error.code === "unreachable";
+  }
+  // Unknown error shapes default to transient — prefer retrying over
+  // marking a running download as permanently failed on ambiguous signals.
+  return true;
 }
 
 interface ReplyOptions {

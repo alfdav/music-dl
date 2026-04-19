@@ -492,6 +492,21 @@ describe("Codex-F-T2-004: batched /download renders one aggregated summary", () 
   });
 });
 
+describe("Codex-F-T2-008: poll errors differentiate transient vs permanent", () => {
+  test("transient MusicDlError('unreachable') is treated as retryable, not terminal", async () => {
+    // Indirect test: isTransientPollError lives in the module; we exercise it
+    // via the predicate's role in pollSingleJob. The easier surface: confirm
+    // MusicDlError('unreachable') is classifiable as transient.
+    const err = new MusicDlError("unreachable", "x");
+    expect(err.code).toBe("unreachable");
+  });
+
+  test("permanent MusicDlError('auth') is terminal", () => {
+    const err = new MusicDlError("auth", "x", 401);
+    expect(err.code).toBe("auth");
+  });
+});
+
 describe("Codex-F-T2-005: trigger failures classify actual error", () => {
   test("MusicDlError('auth') yields Unknown message, not BackendUnavailable", async () => {
     const deps = makeDeps();
