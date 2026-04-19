@@ -13,6 +13,7 @@ from tidal_dl.gui.api.duplicates import router as duplicates_router
 from tidal_dl.gui.api.server_control import router as server_control_router
 from tidal_dl.gui.api.setup import router as setup_router
 from tidal_dl.gui.api.upgrade import router as upgrade_router
+from tidal_dl.gui.api.bot import router as bot_router
 
 api_router = APIRouter()
 api_router.include_router(home_router, tags=["home"])
@@ -27,3 +28,4 @@ api_router.include_router(duplicates_router, tags=["duplicates"])
 api_router.include_router(upgrade_router, tags=["upgrade"])
 api_router.include_router(setup_router, tags=["setup"])
 api_router.include_router(server_control_router, tags=["server"])
+api_router.include_router(bot_router, tags=["bot"])

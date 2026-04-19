@@ -8,7 +8,13 @@ SSRF attacks.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
+import os
 import secrets
+import time
 from pathlib import Path
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -94,6 +100,10 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         if request.method in self.SAFE_METHODS:
+            return await call_next(request)
+
+        # Bot API uses bearer tokens, not CSRF — skip CSRF check
+        if request.url.path.startswith("/api/bot/"):
             return await call_next(request)
 
         token = request.headers.get("X-CSRF-Token", "")
@@ -196,3 +206,75 @@ def validate_stream_url(url: str) -> bool:
 
     host = parsed.hostname or ""
     return host.endswith(".tidal.com") or host == "tidal.com"
+
+
+# ---------------------------------------------------------------------------
+# Bot bearer-token authentication (R1)
+# ---------------------------------------------------------------------------
+
+
+def validate_bot_bearer(authorization: str | None) -> bool:
+    """Validate a bot bearer token from the Authorization header.
+
+    Reads the expected token from MUSIC_DL_BOT_TOKEN env var. Returns False
+    (fail-closed) when the env var is empty, whitespace-only, or unset.
+    Uses constant-time comparison to prevent timing attacks.
+    """
+    token = os.environ.get("MUSIC_DL_BOT_TOKEN", "").strip()
+    if not token or not authorization:
+        return False
+    scheme, _, supplied = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not supplied.strip():
+        return False
+    return secrets.compare_digest(supplied.strip(), token)
+
+
+# ---------------------------------------------------------------------------
+# Stream token signing / verification (R4)
+# ---------------------------------------------------------------------------
+
+_STREAM_TOKEN_SECRET: str | None = None
+
+
+def _get_stream_secret() -> bytes:
+    """Derive HMAC key for stream tokens."""
+    global _STREAM_TOKEN_SECRET
+    if _STREAM_TOKEN_SECRET is None:
+        _STREAM_TOKEN_SECRET = secrets.token_hex(32)
+    bot_token = os.environ.get("MUSIC_DL_BOT_TOKEN", "")
+    return hashlib.sha256(f"{bot_token}:{_STREAM_TOKEN_SECRET}".encode()).digest()
+
+
+def sign_bot_stream_token(payload: dict[str, str], ttl_seconds: int = 120) -> str:
+    """Create a signed stream token encoding payload and expiration.
+
+    Returns URL-safe base64: ``base64(json_payload).base64(hmac_sig)``
+    """
+    data = {**payload, "exp": int(time.time()) + ttl_seconds}
+    raw = json.dumps(data, separators=(",", ":")).encode()
+    secret = _get_stream_secret()
+    sig = hmac.new(secret, raw, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(raw).decode() + "." + base64.urlsafe_b64encode(sig).decode()
+
+
+def verify_bot_stream_token(token: str) -> dict[str, str] | None:
+    """Verify a signed stream token. Returns payload dict or None on failure."""
+    parts = token.split(".", 1)
+    if len(parts) != 2:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(parts[0])
+        sig = base64.urlsafe_b64decode(parts[1])
+    except Exception:
+        return None
+    secret = _get_stream_secret()
+    expected = hmac.new(secret, raw, hashlib.sha256).digest()
+    if not hmac.compare_digest(sig, expected):
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(data.get("exp"), (int, float)) or time.time() > data["exp"]:
+        return None
+    return data

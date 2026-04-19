@@ -1,0 +1,73 @@
+"""Tests for local playlist resolver — covers all R5 acceptance criteria."""
+
+from pathlib import Path
+
+import pytest
+
+from tidal_dl.helper.local_playlist_resolver import (
+    parse_playlist_file,
+    resolve_playlist_name,
+)
+
+
+class TestParsePlaylistFile:
+    """parse_playlist_file tests."""
+
+    def test_m3u_returns_tracks_in_order(self, tmp_path: Path):
+        """R5: .m3u file returns tracks in order."""
+        playlist = tmp_path / "chill.m3u"
+        playlist.write_text("/music/track1.flac\n/music/track2.flac\n/music/track3.flac\n")
+        assert parse_playlist_file(playlist) == [
+            "/music/track1.flac", "/music/track2.flac", "/music/track3.flac"
+        ]
+
+    def test_m3u8_returns_tracks_in_order(self, tmp_path: Path):
+        """R5: .m3u8 file returns tracks in order."""
+        playlist = tmp_path / "vibes.m3u8"
+        playlist.write_text("/music/a.flac\n/music/b.flac\n")
+        assert parse_playlist_file(playlist) == ["/music/a.flac", "/music/b.flac"]
+
+    def test_skips_comments_and_blank_lines(self, tmp_path: Path):
+        """R5: Comment lines and blank lines skipped during parsing."""
+        playlist = tmp_path / "mixed.m3u"
+        playlist.write_text(
+            "#EXTM3U\n#EXTINF:180,Artist - Song\n/music/song.flac\n\n   \n"
+            "#comment\n/music/other.flac\n"
+        )
+        assert parse_playlist_file(playlist) == ["/music/song.flac", "/music/other.flac"]
+
+    def test_nonexistent_file_returns_empty(self, tmp_path: Path):
+        assert parse_playlist_file(tmp_path / "nope.m3u") == []
+
+
+class TestResolvePlaylistName:
+    """resolve_playlist_name tests."""
+
+    def test_matching_m3u(self, tmp_path: Path):
+        """R5: .m3u file matched case-insensitively."""
+        (tmp_path / "Chill Vibes.m3u").write_text("/music/a.flac\n")
+        match = resolve_playlist_name("Chill Vibes", [tmp_path])
+        assert match is not None
+        assert match.name == "Chill Vibes.m3u"
+
+    def test_matching_m3u8(self, tmp_path: Path):
+        """R5: .m3u8 file matched case-insensitively."""
+        (tmp_path / "Night Drive.m3u8").write_text("/music/x.flac\n")
+        match = resolve_playlist_name("Night Drive", [tmp_path])
+        assert match is not None
+        assert match.name == "Night Drive.m3u8"
+
+    def test_case_insensitive(self, tmp_path: Path):
+        """R5: Name matching ignores case differences."""
+        (tmp_path / "night drive.m3u8").write_text("/music/1.flac\n")
+        match = resolve_playlist_name("Night Drive", [tmp_path])
+        assert match is not None
+
+    def test_no_match_returns_none(self, tmp_path: Path):
+        """R5: No matching file returns None."""
+        (tmp_path / "other.m3u").write_text("/music/z.flac\n")
+        assert resolve_playlist_name("nonexistent", [tmp_path]) is None
+
+    def test_nonexistent_directory(self, tmp_path: Path):
+        """R5: Nonexistent root returns None."""
+        assert resolve_playlist_name("anything", [tmp_path / "no_such_dir"]) is None
