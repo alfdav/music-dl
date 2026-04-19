@@ -577,27 +577,49 @@ async function pollBatch(
     );
   };
 
-  // Coalesce bursts of per-job renders into one edit per microtask so
-  // we don't hammer Discord when several jobs terminate simultaneously.
-  let renderScheduled = false;
+  // F-T2-010: serialize edits so an older summary can't overwrite a newer
+  // one when two jobs transition in quick succession. We also coalesce a
+  // burst into a single render: if another change arrives while an edit
+  // is already queued, we just flip the `dirty` flag and the in-flight
+  // chain picks up the latest state.
+  let chain: Promise<void> = Promise.resolve();
+  let dirty = false;
+  let running = false;
   const scheduleRender = () => {
-    if (renderScheduled) return;
-    renderScheduled = true;
-    queueMicrotask(() => {
-      renderScheduled = false;
-      void safeEdit(interaction, renderSummary());
+    dirty = true;
+    if (running) return;
+    running = true;
+    chain = chain.then(async () => {
+      while (dirty) {
+        dirty = false;
+        await safeEdit(interaction, renderSummary());
+      }
+      running = false;
     });
   };
 
   await safeEdit(interaction, renderSummary());
 
-  await Promise.allSettled(
+  const perJobResults = await Promise.allSettled(
     jobs.map((job, slot) =>
       pollSingleJob(deps, job, slot, statuses, scheduleRender),
     ),
   );
 
-  await safeEdit(interaction, renderSummary());
+  // Wait for any pending coalesced render to flush before the final edit.
+  await chain;
+
+  // F-T2-011: restore the "(stopped polling)" suffix for jobs that never
+  // reached a terminal state within POLL_MAX_TICKS, so the user knows
+  // updates are frozen.
+  const timedOut = perJobResults.some(
+    (r, i) =>
+      r.status === "fulfilled" && !TERMINAL_STATUSES.has(statuses[i]),
+  );
+  const finalMessage = timedOut
+    ? renderSummary() + "\n(stopped polling)"
+    : renderSummary();
+  await safeEdit(interaction, finalMessage);
 }
 
 /**
