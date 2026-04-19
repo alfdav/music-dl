@@ -99,7 +99,7 @@ export class VoiceManager {
 
       // R6: all retries exhausted — report in text channel
       this.destroyConnection();
-      if (this.textChannel) {
+      if (this.textChannel && "send" in this.textChannel) {
         try {
           await this.textChannel.send(
             `Lost voice connection and couldn't reconnect after ${this.maxRetries} attempts. Use /summon to reconnect.`,

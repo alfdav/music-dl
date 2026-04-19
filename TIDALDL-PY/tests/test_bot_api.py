@@ -55,13 +55,18 @@ class TestBotAuthRejectsInvalid:
 
 
 class TestBotAuthAcceptsValid:
-    """R1: Correct bearer token returns non-401."""
+    """R1: Correct bearer token returns non-401.
+
+    We send an empty query to avoid hitting Tidal auth. Bot auth passing
+    means the request reaches the body validator which returns 400.
+    """
 
     def test_valid_token(self, bot_client):
         resp = bot_client.post("/api/bot/play/resolve",
                                headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
-                               json={"query": "test"})
+                               json={"query": ""})
         assert resp.status_code != 401
+        assert resp.status_code == 400
 
 
 class TestBotAuthEmptyEnv:
@@ -174,6 +179,180 @@ class TestStreamTokens:
 # Note: T-004 is S-sized. Bot API code does not log tokens by design.
 # These tests verify the security module functions don't leak tokens
 # in their normal operation (defensive check).
+
+
+# ── R2: Input Resolution (URL parsing + local playlist paths) ────
+
+
+class TestResolveEndpoint:
+    """R2: Input resolution for unambiguous inputs that don't need Tidal."""
+
+    def test_empty_query_returns_400(self, bot_client):
+        """R2-AC5: Empty query returns 4xx, not server error."""
+        resp = bot_client.post(
+            "/api/bot/play/resolve",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"query": ""},
+        )
+        assert resp.status_code == 400
+
+    def test_whitespace_query_returns_400(self, bot_client):
+        resp = bot_client.post(
+            "/api/bot/play/resolve",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"query": "   "},
+        )
+        assert resp.status_code == 400
+
+    def test_local_playlist_resolution(self, bot_client, tmp_path, monkeypatch):
+        """R2-AC4: Local playlist name returns ordered list matching track order."""
+        # Set up a playlist dir with a matching file
+        playlist_dir = tmp_path / "playlists"
+        playlist_dir.mkdir()
+        (playlist_dir / "Night Drive.m3u8").write_text(
+            "#EXTM3U\n/music/track1.flac\n/music/track2.flac\n"
+        )
+
+        # Override the local playlist roots resolver
+        import tidal_dl.gui.api.bot as bot_module
+        monkeypatch.setattr(
+            bot_module, "_local_playlist_roots", lambda: [playlist_dir]
+        )
+
+        resp = bot_client.post(
+            "/api/bot/play/resolve",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"query": "night drive"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["kind"] == "playlist"
+        assert len(body["items"]) == 2
+        # R2-AC6: Items contain required fields
+        for item in body["items"]:
+            assert "id" in item
+            assert "title" in item
+            assert "artist" in item
+            assert "source_type" in item
+            assert "local" in item
+            assert "duration" in item
+        assert body["items"][0]["source_type"] == "local"
+
+
+# ── R3: Playable Source endpoint ─────────────────────────────────
+
+
+class TestPlayableEndpoint:
+    """R3: Playable source endpoint basic shape."""
+
+    def test_unknown_item_id_returns_400(self, bot_client):
+        """Unknown item_id format returns 400."""
+        resp = bot_client.post(
+            "/api/bot/playable",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"item_id": "garbage"},
+        )
+        assert resp.status_code == 400
+
+    def test_local_path_not_found(self, bot_client):
+        """Local item_id with nonexistent path returns 404."""
+        import base64
+        encoded = "local:" + base64.urlsafe_b64encode(b"/nonexistent/path.flac").decode().rstrip("=")
+        resp = bot_client.post(
+            "/api/bot/playable",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"item_id": encoded},
+        )
+        assert resp.status_code == 404
+
+    def test_requires_bot_auth(self, bot_client):
+        """R3-AC7: Requires valid bearer token."""
+        resp = bot_client.post(
+            "/api/bot/playable",
+            headers=bot_client._host,
+            json={"item_id": "tidal:12345"},
+        )
+        assert resp.status_code == 401
+
+
+# ── R3-AC3: Stream token verification via bot-stream endpoint ────
+
+
+class TestBotStreamEndpoint:
+    """R3: /api/playback/bot-stream/{token} verifies tokens."""
+
+    def test_invalid_token_returns_403(self, bot_client):
+        """R3-AC3: Invalid stream token returns 403."""
+        resp = bot_client.get(
+            "/api/playback/bot-stream/not-a-valid-token",
+            headers=bot_client._host,
+        )
+        assert resp.status_code == 403
+
+    def test_expired_token_returns_403(self, bot_client, monkeypatch):
+        """R3-AC3: Expired stream token returns 403."""
+        import time
+        import tidal_dl.gui.security as sec
+        sec._STREAM_TOKEN_SECRET = None
+        token = sec.sign_bot_stream_token({"kind": "local", "path": "/tmp/x.flac"}, ttl_seconds=0)
+        time.sleep(0.05)
+        resp = bot_client.get(
+            f"/api/playback/bot-stream/{token}",
+            headers=bot_client._host,
+        )
+        assert resp.status_code == 403
+
+
+# ── R6: Download Gateway ─────────────────────────────────────────
+
+
+class TestDownloadGateway:
+    """R6: Download trigger and status endpoints."""
+
+    def test_download_local_rejected(self, bot_client):
+        """R6: Local items cannot be downloaded (they're already local)."""
+        resp = bot_client.post(
+            "/api/bot/download",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"item_id": "local:abc"},
+        )
+        assert resp.status_code == 400
+
+    def test_download_invalid_tidal_id(self, bot_client):
+        """R6: Invalid tidal ID format returns 400."""
+        resp = bot_client.post(
+            "/api/bot/download",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"item_id": "tidal:not-a-number"},
+        )
+        assert resp.status_code == 400
+
+    def test_download_status_missing_job(self, bot_client):
+        """R6-AC2: Status for unknown job returns 404."""
+        resp = bot_client.get(
+            "/api/bot/downloads/999999999",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+        )
+        assert resp.status_code == 404
+
+    def test_download_status_invalid_job_id(self, bot_client):
+        """R6: Non-numeric job_id returns 400."""
+        resp = bot_client.get(
+            "/api/bot/downloads/not-a-number",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+        )
+        assert resp.status_code == 400
+
+    def test_download_requires_auth(self, bot_client):
+        """R6-AC6: Both endpoints require bearer auth."""
+        resp1 = bot_client.post(
+            "/api/bot/download",
+            headers=bot_client._host,
+            json={"item_id": "tidal:12345"},
+        )
+        assert resp1.status_code == 401
+        resp2 = bot_client.get("/api/bot/downloads/12345", headers=bot_client._host)
+        assert resp2.status_code == 401
 
 
 class TestLoggingSafety:
