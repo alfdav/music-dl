@@ -1,6 +1,7 @@
 """GET /api/search — Tidal search with ISRC cross-reference."""
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from fastapi import APIRouter, Query
@@ -11,16 +12,18 @@ from tidal_dl.helper.path import path_config_base
 
 router = APIRouter()
 _isrc_index: IsrcIndex | None = None
+_isrc_lock = threading.Lock()
 
 
 def _get_isrc_index() -> IsrcIndex:
     global _isrc_index
-    if _isrc_index is None:
-        from pathlib import Path
+    with _isrc_lock:
+        if _isrc_index is None:
+            from pathlib import Path
 
-        _isrc_index = IsrcIndex(Path(path_config_base()) / "isrc_index.json")
-        _isrc_index.load()
-    return _isrc_index
+            _isrc_index = IsrcIndex(Path(path_config_base()) / "isrc_index.json")
+            _isrc_index.load()
+        return _isrc_index
 
 
 def get_tidal_session():
@@ -83,7 +86,7 @@ def search(
 
     session = get_tidal_session()
     if not session.check_login():
-        raise HTTPException(status_code=401, detail="Not logged in to Tidal — run 'music-dl login' in terminal")
+        raise HTTPException(status_code=401, detail="Not logged in to Tidal")
 
     try:
         results = session.search(

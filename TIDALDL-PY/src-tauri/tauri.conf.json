@@ -1,12 +1,12 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "music-dl",
-  "version": "3.0.0",
+  "version": "1.4.3",
   "identifier": "com.alfdav.music-dl",
   "build": {
     "frontendDist": "./loading",
     "devUrl": "http://localhost:8765",
-    "beforeBuildCommand": "bash scripts/build-sidecar.sh"
+    "beforeBuildCommand": "bash -lc 'set -euo pipefail; xattr -cr src-tauri/ 2>/dev/null || true; BINARIES_DIR=\"src-tauri/binaries\"; TARGET_TRIPLE=\"$(rustc --print host-tuple)\"; SIDECAR_NAME=\"music-dl-server-${TARGET_TRIPLE}\"; SPEC_FILE=\"build/pyinstaller/music-dl-server.spec\"; rm -rf \"${TMPDIR:-/tmp}\"/_MEI* 2>/dev/null || true; .venv/bin/pyinstaller --clean --distpath \"$BINARIES_DIR\" --workpath build/pyinstaller --noconfirm \"$SPEC_FILE\"; mv \"$BINARIES_DIR/music-dl-server\" \"$BINARIES_DIR/${SIDECAR_NAME}\"; echo \"[verify] Checking bundled assets...\"; .venv/bin/python -c \"from pathlib import Path; js=(Path(\\\"tidal_dl/gui/static/app.js\\\")).read_text(); assert \\\"mediaSession\\\" in js, \\\"STALE JS: mediaSession missing\\\"; assert \\\"_wfHires\\\" in js, \\\"STALE JS: waveform hires missing\\\"; print(\\\"[verify] Static assets OK\\\")\"'"
   },
   "app": {
     "windows": [
@@ -36,6 +36,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "createUpdaterArtifacts": "v2",
     "macOS": {
       "dmg": {
         "background": "dmg-background.png",
@@ -52,6 +53,14 @@
           "height": 400
         }
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVGNEY3MzMxNkE0QUZCQ0MKUldUTSswcHFNWE5QN3dWSTFzaTNLeU1PcHlYQnVzTlVPcDVLbmJIMnF4cWh0TU5Uekl1OXgrcGoK",
+      "endpoints": [
+        "https://github.com/alfdav/music-dl/releases/latest/download/latest.json"
+      ]
     }
   }
 }

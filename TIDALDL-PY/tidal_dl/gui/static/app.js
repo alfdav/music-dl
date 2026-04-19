@@ -151,12 +151,33 @@ const state = {
   searchType: 'tracks',
   searchResults: null,
   queue: [],
+  queueOriginal: [],
   queueIndex: -1,
   playing: false,
   shuffle: false,
   repeat: 'off',  // 'off' | 'all' | 'one'
   volume: 0.7,
+  settingsReadOnly: false,
+  settingsAccess: null,
 };
+let _settingsLoad = null;
+let _queueEntrySeq = 0;
+
+async function _ensureSettingsLoaded() {
+  if (state.settings) return state.settings;
+  if (!_settingsLoad) {
+    _settingsLoad = api('/settings')
+      .then(settings => {
+        state.settings = settings;
+        return settings;
+      })
+      .catch(err => {
+        _settingsLoad = null;
+        throw err;
+      });
+  }
+  return _settingsLoad;
+}
 
 // ---- FAVORITES CACHE ----
 // Keyed by path for local tracks or "tidal:{id}" for Tidal tracks
@@ -239,6 +260,154 @@ async function upgradeTrack(track) {
   }
 }
 
+function _playlistUpgradeTargetRank() {
+  return { 'HI_RES': 3, 'HI_RES_LOSSLESS': 4 }[state.settings?.upgrade_target_quality] || 4;
+}
+
+function _playlistUpgradeCandidates(tracks) {
+  const tierRanks = { 'Common': 0, 'Uncommon': 1, 'Rare': 2, 'Epic': 3, 'Legendary': 4, 'Mythic': 5 };
+  const targetRank = _playlistUpgradeTargetRank();
+  return (tracks || []).filter(t => {
+    if (!t || !t.is_local || !t.isrc) return false;
+    const localRank = tierRanks[_qualityTier(t.quality, t.format).tier] || 0;
+    return localRank < targetRank;
+  });
+}
+
+function _setPlaylistUpgradeBadge(trackList, track, maxQuality) {
+  const row = trackList.querySelector('[data-track-id="' + _trackKey(track) + '"]');
+  if (!row) return false;
+  const ex = row.querySelector('.upgrade-badge');
+  if (ex) ex.remove();
+
+  const tierRanks = { 'LOW': 0, 'HIGH': 1, 'LOSSLESS': 2, 'HI_RES': 3, 'HI_RES_LOSSLESS': 4 };
+  const localRank = { 'Common': 0, 'Uncommon': 1, 'Rare': 2, 'Epic': 3, 'Legendary': 4, 'Mythic': 5 }[_qualityTier(track.quality, track.format).tier] || 0;
+  const probeRank = tierRanks[maxQuality] || 0;
+  const targetRank = _playlistUpgradeTargetRank();
+  if (probeRank <= localRank || probeRank < targetRank) return false;
+
+  const badge = h('span', { className: 'upgrade-badge' });
+  badge.textContent = '⬆ ' + qualityLabel(maxQuality);
+  const metaCell = row.querySelector('.track-artist');
+  if (metaCell && metaCell.parentElement) metaCell.parentElement.appendChild(badge);
+  return true;
+}
+
+async function _scanPlaylistUpgrades(tracks, trackList, upgradeBtn, refreshBtn, options) {
+  const opts = options || {};
+  const force = !!opts.force;
+
+  try {
+    await _ensureSettingsLoaded();
+  } catch (_) {
+    upgradeBtn.style.display = 'none';
+    if (refreshBtn) refreshBtn.style.display = 'none';
+    return;
+  }
+
+  const candidates = _playlistUpgradeCandidates(tracks);
+  if (candidates.length === 0) {
+    upgradeBtn.style.display = 'none';
+    if (refreshBtn) refreshBtn.style.display = 'none';
+    return;
+  }
+
+  const byIsrc = new Map();
+  candidates.forEach(track => {
+    const list = byIsrc.get(track.isrc) || [];
+    list.push(track);
+    byIsrc.set(track.isrc, list);
+  });
+
+  const applyResults = (results, upgradeableMap, unresolved, resolveMisses) => {
+    (results || []).forEach(result => {
+      const isrc = result.isrc;
+      const matches = byIsrc.get(isrc) || [];
+      if (resolveMisses || (result.tidal_track_id && result.max_quality)) {
+        unresolved.delete(isrc);
+      }
+      matches.forEach(track => {
+        if (!result.tidal_track_id || !result.max_quality) return;
+        if (!_setPlaylistUpgradeBadge(trackList, track, result.max_quality)) return;
+        const key = (track.local_path || track.path || '') + '::' + result.tidal_track_id;
+        upgradeableMap.set(key, { path: track.local_path || track.path, tidal_track_id: result.tidal_track_id });
+      });
+    });
+  };
+
+  const unresolved = new Set([...byIsrc.keys()]);
+  const upgradeableMap = new Map();
+  const isrcs = [...byIsrc.keys()];
+
+  if (force) {
+    trackList.querySelectorAll('.upgrade-badge').forEach(badge => badge.remove());
+  }
+
+  upgradeBtn.style.display = '';
+  upgradeBtn.disabled = true;
+  upgradeBtn.textContent = 'Checking upgrades...';
+  upgradeBtn.title = 'Checking Tidal for higher quality versions';
+  if (refreshBtn) {
+    refreshBtn.style.display = '';
+    refreshBtn.disabled = true;
+    refreshBtn.title = 'Refresh upgrade availability';
+  }
+
+  try {
+    if (!force) {
+      for (let i = 0; i < isrcs.length; i += 100) {
+        const batch = isrcs.slice(i, i + 100);
+        const statusData = await api('/upgrade/status?isrcs=' + encodeURIComponent(batch.join(',')));
+        applyResults(statusData.results, upgradeableMap, unresolved, false);
+      }
+    }
+
+    const misses = force ? isrcs : [...unresolved];
+    for (let i = 0; i < misses.length; i += 50) {
+      const batch = misses.slice(i, i + 50);
+      const probeData = await api('/upgrade/probe', { method: 'POST', body: { isrcs: batch, force: force } });
+      applyResults(probeData.results, upgradeableMap, unresolved, true);
+    }
+  } catch (_) {
+    upgradeBtn.style.display = 'none';
+    if (refreshBtn) refreshBtn.style.display = 'none';
+    return;
+  }
+
+  if (refreshBtn) {
+    refreshBtn.disabled = false;
+    refreshBtn.onclick = () => { _scanPlaylistUpgrades(tracks, trackList, upgradeBtn, refreshBtn, { force: true }); };
+  }
+
+  const allUpgradeable = [...upgradeableMap.values()].filter(item => item.path && item.tidal_track_id);
+  if (allUpgradeable.length === 0) {
+    upgradeBtn.textContent = 'No Upgrades Available';
+    upgradeBtn.disabled = true;
+    upgradeBtn.title = 'No higher quality playlist tracks found';
+    return;
+  }
+
+  upgradeBtn.textContent = 'Upgrade ' + allUpgradeable.length + ' Tracks';
+  upgradeBtn.disabled = false;
+  upgradeBtn.title = 'Upgrade playlist tracks with higher quality available on Tidal';
+  upgradeBtn.onclick = async () => {
+    upgradeBtn.disabled = true;
+    upgradeBtn.textContent = 'Upgrading...';
+    try {
+      const resp = await api('/upgrade/start', {
+        method: 'POST',
+        body: { tracks: allUpgradeable.map(u => ({ path: u.path, tidal_track_id: u.tidal_track_id })) }
+      });
+      if (resp.count > 0) { updateDlBadge(resp.count); _ensureGlobalSSE(); }
+      toast('Upgrade started for ' + (resp.count || allUpgradeable.length) + ' tracks', 'success');
+    } catch (err) {
+      toast('Upgrade failed', 'error');
+      upgradeBtn.disabled = false;
+      upgradeBtn.textContent = 'Upgrade ' + allUpgradeable.length + ' Tracks';
+    }
+  };
+}
+
 // ---- GLOBAL 409 HANDLER ----
 const _origFetch = window.fetch;
 window.fetch = async (...args) => {
@@ -280,10 +449,35 @@ async function api(path, options) {
       await refreshCsrfToken();
       return api(path, { ...opts, _csrfRetried: true });
     }
-    throw new Error(detail.detail || 'API error ' + resp.status);
+    const message = detail.detail || 'API error ' + resp.status;
+    const error = new Error(message);
+    error.status = resp.status;
+    error.detail = message;
+    throw error;
   }
 
   return resp.json();
+}
+
+function _isTidalAuthError(error) {
+  return !!(
+    error &&
+    error.status === 401 &&
+    typeof error.detail === 'string' &&
+    error.detail.toLowerCase().includes('not logged in to tidal')
+  );
+}
+
+async function apiTidal(path, options) {
+  try {
+    return await api(path, options);
+  } catch (error) {
+    if (_isTidalAuthError(error) && !_loginPoll) {
+      toast('Tidal login required — opening sign-in…', 'error');
+      triggerLogin();
+    }
+    throw error;
+  }
 }
 
 // ---- TOAST ----
@@ -297,6 +491,15 @@ function toast(message, type, durationMs) {
   const t = textEl('div', message, 'toast' + (type ? ' ' + type : ''));
   toastContainer.appendChild(t);
   setTimeout(() => { t.remove(); }, durationMs || (type === 'error' ? 5000 : 3000));
+}
+
+function toastSticky(contentEl) {
+  if (!toastContainer) {
+    toastContainer = h('div', { className: 'toast-container', role: 'status', 'aria-live': 'polite' });
+    document.body.appendChild(toastContainer);
+  }
+  toastContainer.appendChild(contentEl);
+  return contentEl;
 }
 
 // ---- INLINE CONFIRM ----
@@ -454,7 +657,7 @@ const _viewState = {};
 function navigate(view) {
   // Dismiss card inspect if open
   if (_inspect.isOpen()) _inspect.dismiss();
-  if (!view) view = 'home';
+  const safeView = normalizeView(view);
 
   // Save outgoing view state
   if (state.view && viewEl.firstChild) {
@@ -464,19 +667,19 @@ function navigate(view) {
     };
   }
 
-  state.view = view;
-  _lastNavHash = view;
-  location.hash = view;
+  state.view = safeView;
+  _lastNavHash = safeView;
+  location.hash = safeView;
 
   navItems.forEach(n => {
-    n.classList.toggle('active', n.dataset.view === view);
+    n.classList.toggle('active', n.dataset.view === safeView);
   });
 
   // Deep-linked views: highlight parent nav item
   if (!document.querySelector('.nav-item.active')) {
-    const parent = view.startsWith('artist:') ? 'home'
-      : view.startsWith('localalbum:') ? 'library'
-      : view.startsWith('album:') ? 'search'
+    const parent = safeView.startsWith('artist:') ? 'home'
+      : safeView.startsWith('localalbum:') ? 'library'
+      : safeView.startsWith('album:') ? 'search'
       : null;
     if (parent) {
       navItems.forEach(n => { if (n.dataset.view === parent) n.classList.add('active'); });
@@ -489,10 +692,11 @@ function navigate(view) {
 
   const container = h('div', { className: 'view-enter' });
 
-  switch (view) {
+  switch (safeView) {
     case 'home': renderHome(container); break;
     case 'search': renderSearch(container); break;
     case 'library': renderLibrary(container); break;
+    case 'recent-added': renderLibrary(container); break;
     case 'recent': renderRecentlyPlayed(container); break;
     case 'playlists': renderPlaylists(container); break;
     case 'favorites': renderFavorites(container); break;
@@ -501,13 +705,13 @@ function navigate(view) {
     case 'djai': renderDjai(container); break;
     case 'upgrades': renderUpgradeScanner(container); break;
     default:
-      if (view.startsWith('localalbum:')) {
-        const parts = view.substring(11).split(':');
+      if (safeView.startsWith('localalbum:')) {
+        const parts = safeView.substring(11).split(':');
         renderLocalAlbumDetail(container, decodeURIComponent(parts[0]), decodeURIComponent(parts.slice(1).join(':')));
-      } else if (view.startsWith('artist:')) {
-        renderArtistGallery(container, decodeURIComponent(view.substring(7)));
-      } else if (view.startsWith('album:')) {
-        renderAlbumDetail(container, view.split(':')[1]);
+      } else if (safeView.startsWith('artist:')) {
+        renderArtistGallery(container, decodeURIComponent(safeView.substring(7)));
+      } else if (safeView.startsWith('album:')) {
+        renderAlbumDetail(container, safeView.split(':')[1]);
       } else {
         renderPlaceholder(container, 'Not Found', 'This view does not exist.');
       }
@@ -518,7 +722,7 @@ function navigate(view) {
   // Restore saved scroll position or reset to top
   const scrollEl = document.querySelector('.main');
   if (scrollEl) {
-    const saved = _viewState[view];
+    const saved = _viewState[safeView];
     if (saved && saved.scrollY) {
       requestAnimationFrame(() => { scrollEl.scrollTop = saved.scrollY; });
     } else {
@@ -538,7 +742,7 @@ navItems.forEach(n => {
 window.addEventListener('hashchange', () => {
   const hash = location.hash.slice(1) || 'home';
   if (hash === _lastNavHash) return; // already handled by navigate()
-  navigate(hash);
+  navigate(normalizeView(hash));
 });
 
 // Sidebar Sync Library button
@@ -633,6 +837,18 @@ function _renderHomeGrid(container, data, totalPlays) {
       const cols = Math.max(2, Math.min(6, Math.floor(w / 280)));
       e.target.style.setProperty('--cols', cols);
       e.target.classList.toggle('density-compact', cols <= 2);
+      // Balance last row: stretch last tile to fill any gap
+      const prev = e.target.querySelector('.bento-row-fill');
+      if (prev) { prev.classList.remove('bento-row-fill'); prev.style.removeProperty('grid-column'); }
+      const compact = cols <= 2;
+      const vis = Array.from(e.target.children).filter(t => !(compact && t.dataset.tier));
+      let slots = 0;
+      for (const t of vis) slots += t.classList.contains('bento-hero') ? 2 : 1;
+      const gap = slots % cols;
+      if (gap && vis.length) {
+        vis[vis.length - 1].classList.add('bento-row-fill');
+        vis[vis.length - 1].style.gridColumn = 'span ' + (1 + cols - gap);
+      }
     }
   }).observe(grid);
 
@@ -1989,7 +2205,7 @@ async function doSearch(resultsArea) {
   // Tidal results (async, may fail if not logged in)
   let tidalData = null;
   try {
-    tidalData = await api('/search?q=' + encodeURIComponent(q) + '&type=' + state.searchType + '&limit=50');
+    tidalData = await apiTidal('/search?q=' + encodeURIComponent(q) + '&type=' + state.searchType + '&limit=50');
   } catch (_) { /* Tidal unavailable is OK */ }
 
   state.searchResults = { local: localData, tidal: tidalData };
@@ -2234,10 +2450,78 @@ function _extractFormat(track) {
   return '';
 }
 
+function _sameTrack(a, b) {
+  if (!a || !b) return false;
+  if (a._queueEntryId != null && b._queueEntryId != null) {
+    return a._queueEntryId === b._queueEntryId;
+  }
+  return _trackKey(a) !== '' && _trackKey(a) === _trackKey(b);
+}
+
+function _findTrackIndex(list, track) {
+  if (!track || !list || !list.length) return -1;
+  const sameRef = list.indexOf(track);
+  if (sameRef !== -1) return sameRef;
+  return list.findIndex(t => _sameTrack(t, track));
+}
+
+function _cloneQueueTrack(track, entryId) {
+  return { ...track, _queueEntryId: entryId };
+}
+
+function _shuffleTracks(tracks) {
+  const shuffled = tracks.slice();
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
+function _setQueueOrder(tracks, currentTrack) {
+  const source = tracks.slice();
+  const currentSourceIdx = currentTrack ? _findTrackIndex(source, currentTrack) : 0;
+  const ordered = source.map(track => _cloneQueueTrack(track, ++_queueEntrySeq));
+  const current = ordered[Math.max(0, currentSourceIdx)] || ordered[0] || null;
+  state.queueOriginal = ordered.slice();
+
+  if (state.shuffle) {
+    const currentIdx = _findTrackIndex(ordered, current);
+    const remaining = ordered.filter((_, idx) => idx !== currentIdx);
+    state.queue = current ? [current, ..._shuffleTracks(remaining)] : _shuffleTracks(ordered);
+    state.queueIndex = current ? 0 : 0;
+  } else {
+    state.queue = ordered;
+    state.queueIndex = current ? _findTrackIndex(ordered, current) : 0;
+  }
+}
+
+function _reshuffleCurrentQueue() {
+  if (!state.queueOriginal.length) return;
+  const current = state.queue[state.queueIndex] || state.queueOriginal[0] || null;
+  const currentIdx = _findTrackIndex(state.queueOriginal, current);
+  const remaining = state.queueOriginal.filter((_, idx) => idx !== currentIdx);
+  state.queue = current ? [current, ..._shuffleTracks(remaining)] : _shuffleTracks(state.queueOriginal);
+  state.queueIndex = current ? 0 : 0;
+  state.shuffle = true;
+  btnShuffle.classList.add('active');
+  _saveQueue();
+}
+
+function _restoreOriginalQueueOrder() {
+  if (!state.queueOriginal.length) return;
+  const current = state.queue[state.queueIndex] || null;
+  state.queue = state.queueOriginal.slice();
+  const idx = current ? _findTrackIndex(state.queueOriginal, current) : 0;
+  state.queueIndex = idx >= 0 ? idx : 0;
+  state.shuffle = false;
+  btnShuffle.classList.remove('active');
+  _saveQueue();
+}
+
 function startPlaybackFromList(track, tracks) {
-  state.queue = tracks.slice();
-  state.queueIndex = tracks.indexOf(track);
-  playTrack(track);
+  _setQueueOrder(tracks, track);
+  playTrack(state.queue[state.queueIndex]);
 }
 
 function renderTrackRow(track, num, allTracks) {
@@ -2411,8 +2695,17 @@ function renderTrackRow(track, num, allTracks) {
                   setWaveformPlaying(false);
                 }
 
-                // Remove from queue if present
-                state.queue = state.queue.filter(t => _trackKey(t) !== _trackKey(track));
+                // Remove deleted file from queue snapshots
+                const removedKey = _trackKey(track);
+                const currentQueueTrack = state.queue[state.queueIndex] || null;
+                const removedBeforeCurrent = state.queue.slice(0, state.queueIndex).filter(t => _trackKey(t) === removedKey).length;
+                const removedCurrent = currentQueueTrack && _trackKey(currentQueueTrack) === removedKey;
+                state.queue = state.queue.filter(t => _trackKey(t) !== removedKey);
+                state.queueOriginal = state.queueOriginal.filter(t => _trackKey(t) !== removedKey);
+                if (removedBeforeCurrent) state.queueIndex -= removedBeforeCurrent;
+                if (removedCurrent && state.queue.length === 0) state.queueIndex = -1;
+                else if (state.queueIndex >= state.queue.length) state.queueIndex = state.queue.length - 1;
+                _saveQueue();
 
                 toast('Track deleted', 'success');
               } catch (err) {
@@ -2451,7 +2744,7 @@ function breadcrumb(crumbs) {
     const isLast = i === crumbs.length - 1;
     const span = textEl('span', c.label, isLast ? 'crumb crumb-active' : 'crumb crumb-link');
     if (!isLast) {
-      span.addEventListener('click', () => navigate(c.view));
+      span.addEventListener('click', () => navigate(normalizeView(c.view)));
     }
     nav.appendChild(span);
     if (!isLast) {
@@ -2517,7 +2810,7 @@ async function renderArtistGallery(container, artistName) {
       card.appendChild(meta);
 
       card.addEventListener('click', () => {
-        navigate('localalbum:' + encodeURIComponent(artistName) + ':' + encodeURIComponent(album.name));
+        navigate(buildLocalAlbumView(artistName, album.name));
       });
       a11yClick(card);
 
@@ -2568,7 +2861,7 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
   albumMeta.appendChild(textEl('div', albumName, 'album-detail-title'));
   const artistLink = textEl('div', artistName, 'album-detail-artist');
   artistLink.style.cursor = 'pointer';
-  artistLink.addEventListener('click', () => navigate('artist:' + encodeURIComponent(artistName)));
+  artistLink.addEventListener('click', () => navigate(buildArtistView(artistName)));
   albumMeta.appendChild(artistLink);
 
   // Play / Shuffle / Download Missing pills
@@ -2625,19 +2918,16 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
       albumMeta.insertBefore(subLine, albumActions);
 
       playBtn.addEventListener('click', () => {
-        state.queue = tracks.slice();
-        state.queueIndex = 0;
         state.shuffle = false;
         btnShuffle.classList.remove('active');
-        playTrack(tracks[0]);
+        _setQueueOrder(tracks, tracks[0]);
+        playTrack(state.queue[state.queueIndex]);
       });
       shuffleBtn.addEventListener('click', () => {
-        const shuffled = tracks.slice().sort(() => Math.random() - 0.5);
-        state.queue = shuffled;
-        state.queueIndex = 0;
         state.shuffle = true;
         btnShuffle.classList.add('active');
-        playTrack(shuffled[0]);
+        _setQueueOrder(tracks, tracks[0]);
+        playTrack(state.queue[state.queueIndex]);
       });
 
       // Upgrade check — show button if any tracks are below target quality
@@ -2710,11 +3000,12 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
                 upgradeBtn.disabled = true;
                 upgradeBtn.textContent = 'Upgrading...';
                 try {
-                  await api('/upgrade/start', {
+                  const resp = await api('/upgrade/start', {
                     method: 'POST',
                     body: { tracks: allUpgradeable.map(u => ({ path: u.path, tidal_track_id: u.tidal_track_id })) }
                   });
-                  toast('Upgrade started for ' + allUpgradeable.length + ' tracks', 'success');
+                  if (resp.count > 0) { updateDlBadge(resp.count); _ensureGlobalSSE(); }
+                  toast('Upgrade started for ' + (resp.count || allUpgradeable.length) + ' tracks', 'success');
                 } catch (err) {
                   toast('Upgrade failed', 'error');
                   upgradeBtn.disabled = false;
@@ -2768,7 +3059,7 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
           const dlAllBtn = wrapper.querySelector('.album-dl-btn');
           dlAllBtn.addEventListener('click', async () => {
             try {
-              await api('/download', {
+              await apiTidal('/download', {
                 method: 'POST',
                 body: { track_ids: missingTracks.map(t => t.id) },
               });
@@ -2829,7 +3120,7 @@ async function renderLocalAlbumDetail(container, artistName, albumName) {
 
 // ---- ALBUM DETAIL VIEW ----
 function navigateAlbum(albumId) {
-  navigate('album:' + albumId);
+  navigate(buildAlbumView(albumId));
 }
 
 async function renderAlbumDetail(container, albumId) {
@@ -2872,9 +3163,10 @@ async function renderAlbumDetail(container, albumId) {
     playBtn.addEventListener('click', () => {
       const playable = tracks.filter(t => t.is_local);
       if (!playable.length) { toast('No local tracks to play', 'info'); return; }
-      state.queue = playable.slice();
-      state.queueIndex = 0;
-      playTrack(playable[0]);
+      state.shuffle = false;
+      btnShuffle.classList.remove('active');
+      _setQueueOrder(playable, playable[0]);
+      playTrack(state.queue[state.queueIndex]);
     });
 
     const shuffleBtn = h('button', { className: 'pill' });
@@ -2882,12 +3174,10 @@ async function renderAlbumDetail(container, albumId) {
     shuffleBtn.addEventListener('click', () => {
       const playable = tracks.filter(t => t.is_local);
       if (!playable.length) { toast('No local tracks to play', 'info'); return; }
-      const shuffled = playable.slice().sort(() => Math.random() - 0.5);
-      state.queue = shuffled;
-      state.queueIndex = 0;
       state.shuffle = true;
       btnShuffle.classList.add('active');
-      playTrack(shuffled[0]);
+      _setQueueOrder(playable, playable[0]);
+      playTrack(state.queue[state.queueIndex]);
     });
 
     const dlBtn = h('button', { className: 'pill' });
@@ -2899,7 +3189,7 @@ async function renderAlbumDetail(container, albumId) {
         return;
       }
       try {
-        await api('/download', {
+        await apiTidal('/download', {
           method: 'POST',
           body: { track_ids: nonLocal.map(t => t.id) },
         });
@@ -2949,12 +3239,238 @@ let librarySort = 'artist';
 let libraryQuery = '';
 let libraryScanPoll = null;
 const LIBRARY_PAGE_SIZE = 50;
+const LIBRARY_RECENT_SHELF_LIMIT = 12;
 let libraryOffset = 0;
 let libraryTotal = 0;
 let _libSearchTimer = null;
 let _libRequestId = 0;
 
+async function loadLibraryRecentAlbumsPage(limit, offset) {
+  return api('/library/recent-albums?limit=' + limit + '&offset=' + offset);
+}
+
+function renderRecentAlbumCard(album) {
+  const card = h('div', { className: 'album-card' });
+  const artWrap = h('div', { className: 'album-card-art-wrap' });
+  if (album.cover_url) {
+    const img = h('img', { className: 'album-card-art', src: album.cover_url, alt: '', loading: 'lazy' });
+    img.onerror = function() {
+      this.style.display = 'none';
+      artWrap.style.background = artGradient(album.name || album.artist);
+    };
+    artWrap.appendChild(img);
+  } else {
+    artWrap.style.background = artGradient(album.name || album.artist);
+  }
+  card.appendChild(artWrap);
+
+  const meta = h('div', { className: 'album-card-meta' });
+  meta.appendChild(textEl('div', album.name || 'Unknown Album', 'album-card-title'));
+  const sub = [album.artist || 'Unknown Artist'];
+  sub.push((album.track_count || 0) + ' track' + ((album.track_count || 0) !== 1 ? 's' : ''));
+  meta.appendChild(textEl('div', sub.join(' · '), 'album-card-sub'));
+  card.appendChild(meta);
+
+  card.addEventListener('click', () => {
+    navigate('localalbum:' + encodeURIComponent(album.artist || 'Unknown Artist') + ':' + encodeURIComponent(album.name || 'Unknown Album'));
+  });
+  a11yClick(card);
+  return card;
+}
+
+function renderRecentAlbumCards(albums, existingGrid) {
+  const grid = existingGrid || h('div', { className: 'album-gallery' });
+  albums.forEach(album => grid.appendChild(renderRecentAlbumCard(album)));
+  return grid;
+}
+
+function renderLibraryRecentShelfState(title, subtitle) {
+  return h('div', { className: 'empty-state library-shelf-empty' },
+    textEl('div', title, 'empty-state-title'),
+    textEl('div', subtitle, 'empty-state-sub')
+  );
+}
+
+async function loadLibraryRecentShelf(shelfArea) {
+  while (shelfArea.firstChild) shelfArea.removeChild(shelfArea.firstChild);
+
+  const heading = h('div', { className: 'library-shelf-heading' },
+    textEl('div', 'Recently Added', 'results-title'),
+    textEl('div', 'Latest albums from your library', 'results-count')
+  );
+  const header = h('div', { className: 'results-header library-shelf-header' }, heading);
+  shelfArea.appendChild(header);
+
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY = 1500; // ms — gives sidecar DB time to initialize on cold start
+  let lastErr = null;
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const data = await loadLibraryRecentAlbumsPage(LIBRARY_RECENT_SHELF_LIMIT, 0);
+      const albums = data.albums || [];
+
+      if (albums.length === 0) {
+        shelfArea.appendChild(renderLibraryRecentShelfState(
+          'No recently added albums yet',
+          'Download music or sync your library to populate this shelf.'
+        ));
+        return;
+      }
+
+      const seeAll = h('button', { className: 'library-shelf-action' }, 'See all');
+      seeAll.addEventListener('click', () => navigate('recent-added'));
+      header.appendChild(seeAll);
+
+      const grid = renderRecentAlbumCards(albums);
+      grid.classList.add('library-shelf-grid');
+      shelfArea.appendChild(grid);
+      return; // success
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_RETRIES - 1) {
+        await new Promise(r => setTimeout(r, RETRY_DELAY));
+      }
+    }
+  }
+
+  console.error('[shelf] Recently added failed after retries:', lastErr);
+  shelfArea.appendChild(renderLibraryRecentShelfState(
+    'Recently added unavailable',
+    'Check your library connection and try again.'
+  ));
+}
+
+function renderRecentAlbumRow(album) {
+  const row = h('div', { className: 'recent-album-row' });
+
+  // Small album art thumbnail
+  const artWrap = h('div', { className: 'recent-album-art' });
+  if (album.cover_url) {
+    const img = h('img', { src: album.cover_url, alt: '', loading: 'lazy' });
+    img.onerror = function() {
+      this.style.display = 'none';
+      artWrap.style.background = artGradient(album.name || album.artist);
+    };
+    artWrap.appendChild(img);
+  } else {
+    artWrap.style.background = artGradient(album.name || album.artist);
+  }
+  row.appendChild(artWrap);
+
+  // Album name + artist · track count
+  const meta = h('div', { className: 'recent-album-meta' });
+  meta.appendChild(textEl('div', album.name || 'Unknown Album', 'recent-album-name'));
+  const sub = [album.artist || 'Unknown Artist'];
+  sub.push((album.track_count || 0) + ' track' + ((album.track_count || 0) !== 1 ? 's' : ''));
+  meta.appendChild(textEl('div', sub.join(' \u00b7 '), 'recent-album-sub'));
+  row.appendChild(meta);
+
+  // Relative time (recent_at is epoch seconds)
+  if (album.recent_at) {
+    row.appendChild(textEl('div', _recentRelativeTime(album.recent_at * 1000), 'recent-album-time'));
+  }
+
+  // Source badge (download vs scan)
+  if (album.recent_source === 'download') {
+    row.appendChild(textEl('div', 'Downloaded', 'recent-album-source'));
+  }
+
+  row.addEventListener('click', () => {
+    navigate('localalbum:' + encodeURIComponent(album.artist || 'Unknown Artist') + ':' + encodeURIComponent(album.name || 'Unknown Album'));
+  });
+  row.style.cursor = 'pointer';
+  a11yClick(row);
+  return row;
+}
+
+async function loadLibraryRecentAlbumsExpanded(resultsArea, append) {
+  try {
+    const data = await loadLibraryRecentAlbumsPage(LIBRARY_PAGE_SIZE, libraryOffset);
+    const albums = data.albums || [];
+    libraryTotal = data.total || 0;
+
+    if (!append) {
+      while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
+      resultsArea.appendChild(h('div', { className: 'results-header' },
+        textEl('div', 'Recently Added', 'results-title'),
+        textEl('div', libraryTotal + ' albums', 'results-count')
+      ));
+
+      if (albums.length === 0) {
+        resultsArea.appendChild(h('div', { className: 'empty-state' },
+          textEl('div', 'No recently added albums yet', 'empty-state-title'),
+          textEl('div', 'Download music or sync your library to populate this view.', 'empty-state-sub')
+        ));
+        return 0;
+      }
+
+      const list = h('div', { className: 'recent-album-list', id: 'library-recent-albums' });
+      // Time-group dividers like Recently Played
+      let currentGroup = null;
+      albums.forEach(album => {
+        if (album.recent_at) {
+          const group = _recentTimeGroup(album.recent_at * 1000);
+          if (group !== currentGroup) {
+            currentGroup = group;
+            list.appendChild(textEl('div', group, 'recent-page-divider'));
+          }
+        }
+        list.appendChild(renderRecentAlbumRow(album));
+      });
+      resultsArea.appendChild(list);
+    } else {
+      const list = document.getElementById('library-recent-albums') ||
+        resultsArea.querySelector('.recent-album-list');
+      let currentGroup = list.lastElementChild
+        ? (list.lastElementChild.classList.contains('recent-page-divider')
+          ? list.lastElementChild.textContent : null)
+        : null;
+      albums.forEach(album => {
+        if (album.recent_at) {
+          const group = _recentTimeGroup(album.recent_at * 1000);
+          if (group !== currentGroup) {
+            currentGroup = group;
+            list.appendChild(textEl('div', group, 'recent-page-divider'));
+          }
+        }
+        list.appendChild(renderRecentAlbumRow(album));
+      });
+    }
+
+    const oldBtn = resultsArea.querySelector('.load-more');
+    if (oldBtn) oldBtn.remove();
+
+    if (libraryOffset + albums.length < libraryTotal) {
+      const loadMore = h('button', {
+        className: 'load-more pill active',
+        onClick: () => {
+          libraryOffset += LIBRARY_PAGE_SIZE;
+          loadLibraryRecentAlbumsExpanded(resultsArea, true);
+        },
+      });
+      loadMore.textContent = 'Load more (' +
+        (libraryTotal - libraryOffset - albums.length) + ' remaining)';
+      resultsArea.appendChild(loadMore);
+    }
+
+    return albums.length;
+  } catch (err) {
+    if (!append) {
+      while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
+      resultsArea.appendChild(h('div', { className: 'empty-state' },
+        textEl('div', 'Could not load recently added albums', 'empty-state-title'),
+        textEl('div', err.message || 'Check that your music folder is mounted and try again.', 'empty-state-sub')
+      ));
+    } else {
+      toast('Could not load recently added albums', 'error');
+    }
+    return 0;
+  }
+}
+
 function renderLibrary(container) {
+  const recentAddedExpanded = state.view === 'recent-added';
   libraryOffset = 0;
   libraryQuery = '';
   const searchArea = h('div', { className: 'search-area' });
@@ -2964,20 +3480,34 @@ function renderLibrary(container) {
   searchField.appendChild(svgIcon(ICONS.search));
   const libInput = h('input', {
     type: 'text', className: 'search-input',
-    placeholder: 'Search your library...', value: libraryQuery,
+    placeholder: recentAddedExpanded ? 'Recently added albums' : 'Search your library...', value: libraryQuery,
   });
+  if (recentAddedExpanded) libInput.disabled = true;
   searchField.appendChild(libInput);
   searchRow.appendChild(searchField);
   searchArea.appendChild(searchRow);
 
+  const resultsArea = h('div', { className: 'results' });
   const pills = h('div', { className: 'filter-pills' });
+  const recentAddedPill = textEl('div', 'Recently Added', 'pill' + (recentAddedExpanded ? ' active' : ''));
+  recentAddedPill.style.cursor = 'pointer';
+  recentAddedPill.addEventListener('click', () => {
+    if (state.view !== 'recent-added') navigate('recent-added');
+  });
+  a11yClick(recentAddedPill);
+  pills.appendChild(recentAddedPill);
+
   for (const sort of ['artist', 'album', 'title', 'plays']) {
     const pill = textEl('div', sort.charAt(0).toUpperCase() + sort.slice(1),
-      'pill' + (librarySort === sort ? ' active' : ''));
+      'pill' + (!recentAddedExpanded && librarySort === sort ? ' active' : ''));
     pill.style.cursor = 'pointer';
     pill.addEventListener('click', () => {
       librarySort = sort;
       libraryOffset = 0;
+      if (recentAddedExpanded) {
+        navigate('library');
+        return;
+      }
       pills.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
       pill.classList.add('active');
       if (sort === 'album') {
@@ -3001,32 +3531,43 @@ function renderLibrary(container) {
   searchArea.appendChild(pills);
   container.appendChild(searchArea);
 
-  const resultsArea = h('div', { className: 'results' });
+  let shelfArea = null;
+  if (!recentAddedExpanded) {
+    shelfArea = h('section', { className: 'library-shelf' });
+    container.appendChild(shelfArea);
+    loadLibraryRecentShelf(shelfArea);
+  }
+
   container.appendChild(resultsArea);
 
-  // Debounced search
-  libInput.addEventListener('input', () => {
-    clearTimeout(_libSearchTimer);
-    _libSearchTimer = setTimeout(() => {
-      libraryQuery = libInput.value.trim();
-      libraryOffset = 0;
-      if (librarySort === 'album') {
-        loadLibraryAlbums(resultsArea, libraryQuery);
-      } else if (librarySort === 'artist') {
-        loadLibraryArtistGrouped(resultsArea, libraryQuery);
-      } else {
-        loadLibrary(resultsArea);
-      }
-    }, 300);
-  });
+  if (!recentAddedExpanded) {
+    // Debounced search
+    libInput.addEventListener('input', () => {
+      clearTimeout(_libSearchTimer);
+      _libSearchTimer = setTimeout(() => {
+        libraryQuery = libInput.value.trim();
+        libraryOffset = 0;
+        shelfArea.style.display = libraryQuery ? 'none' : '';
+        if (librarySort === 'album') {
+          loadLibraryAlbums(resultsArea, libraryQuery);
+        } else if (librarySort === 'artist') {
+          loadLibraryArtistGrouped(resultsArea, libraryQuery);
+        } else {
+          loadLibrary(resultsArea);
+        }
+      }, 300);
+    });
 
-  // Load cached results — user clicks Sync Library to scan
-  if (librarySort === 'album') {
-    loadLibraryAlbums(resultsArea, '');
-  } else if (librarySort === 'artist') {
-    loadLibraryArtistGrouped(resultsArea, '');
+    // Load cached results — user clicks Sync Library to scan
+    if (librarySort === 'album') {
+      loadLibraryAlbums(resultsArea, '');
+    } else if (librarySort === 'artist') {
+      loadLibraryArtistGrouped(resultsArea, '');
+    } else {
+      loadLibrary(resultsArea, false);
+    }
   } else {
-    loadLibrary(resultsArea, false);
+    loadLibraryRecentAlbumsExpanded(resultsArea, false);
   }
 }
 
@@ -3647,9 +4188,25 @@ async function loadPlaylistTracks(resultsArea, pl) {
   const dlBtn = h('button', { className: 'pill album-dl-btn' });
   dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download Missing';
 
+  const upgradeBtn = h('button', { className: 'pill album-upgrade-btn' });
+  upgradeBtn.textContent = 'Checking upgrades...';
+  upgradeBtn.style.display = 'none';
+  upgradeBtn.disabled = true;
+
+  const refreshUpgradeBtn = h('button', {
+    className: 'pill pill-sm album-upgrade-refresh-btn',
+    title: 'Refresh upgrade availability',
+    'aria-label': 'Refresh upgrade availability'
+  });
+  refreshUpgradeBtn.textContent = '↻';
+  refreshUpgradeBtn.style.display = 'none';
+  refreshUpgradeBtn.disabled = true;
+
   actions.appendChild(playBtn);
   actions.appendChild(shuffleBtn);
   actions.appendChild(dlBtn);
+  actions.appendChild(upgradeBtn);
+  actions.appendChild(refreshUpgradeBtn);
   plMeta.appendChild(actions);
   plHeader.appendChild(plMeta);
   resultsArea.appendChild(plHeader);
@@ -3675,19 +4232,16 @@ async function loadPlaylistTracks(resultsArea, pl) {
       playBtn.disabled = false;
       shuffleBtn.disabled = false;
       playBtn.addEventListener('click', () => {
-        state.queue = tracks.slice();
-        state.queueIndex = 0;
         state.shuffle = false;
         btnShuffle.classList.remove('active');
-        playTrack(tracks[0]);
+        _setQueueOrder(tracks, tracks[0]);
+        playTrack(state.queue[state.queueIndex]);
       });
       shuffleBtn.addEventListener('click', () => {
-        const shuffled = tracks.slice().sort(() => Math.random() - 0.5);
-        state.queue = shuffled;
-        state.queueIndex = 0;
         state.shuffle = true;
         btnShuffle.classList.add('active');
-        playTrack(shuffled[0]);
+        _setQueueOrder(tracks, tracks[0]);
+        playTrack(state.queue[state.queueIndex]);
       });
     }
 
@@ -3707,6 +4261,8 @@ async function loadPlaylistTracks(resultsArea, pl) {
             dlBtn.style.display = 'none';
           } else {
             toast('Downloading ' + result.missing + ' missing tracks', 'success');
+            updateDlBadge(result.missing);
+            _ensureGlobalSSE();
             dlBtn.textContent = 'Queued';
             dlBtn.disabled = true;
           }
@@ -3717,6 +4273,8 @@ async function loadPlaylistTracks(resultsArea, pl) {
         }
       });
     }
+
+    _scanPlaylistUpgrades(tracks, trackList, upgradeBtn, refreshUpgradeBtn);
 
     // Update track count
     plMeta.querySelector('.album-detail-sub').textContent = tracks.length + ' tracks';
@@ -3741,7 +4299,7 @@ async function downloadTrack(track, btn) {
   btn.classList.add('downloading');
 
   try {
-    await api('/download', {
+    await apiTidal('/download', {
       method: 'POST',
       body: { track_ids: [track.id] },
     });
@@ -3783,10 +4341,45 @@ function _ensureGlobalSSE() {
     try {
       const data = JSON.parse(event.data);
       if (data.type === 'ping') return;
+      if (data.type === 'batch_queued') {
+        updateDlBadge(data.count || 0);
+        const activeEl = document.getElementById('dl-active');
+        if (activeEl) {
+          const emptyEl = activeEl.querySelector('.dl-empty');
+          if (emptyEl) emptyEl.remove();
+          // Show a single summary card instead of 1600 individual cards
+          let summary = activeEl.querySelector('.dl-batch-summary');
+          if (!summary) {
+            summary = h('div', { className: 'dl-card dl-batch-summary' });
+            activeEl.prepend(summary);
+          }
+          while (summary.firstChild) summary.removeChild(summary.firstChild);
+          summary.appendChild(textEl('div', (data.count || 0) + ' tracks queued', 'dl-card-name'));
+          summary.appendChild(textEl('div', 'Waiting to start...', 'dl-card-status dl-status-queued'));
+        }
+        return;
+      }
       if (data.type === 'complete') _dlComplete(data.track_id, true);
       else if (data.type === 'error') {
         toast('Download failed: ' + (data.error || 'unknown'), 'error');
         _dlComplete(data.track_id, false);
+      }
+      else if (data.type === 'cancelled') {
+        _dlComplete(data.track_id, false);
+      }
+      // Queue control events
+      else if (data.type === 'queue_paused') {
+        _setQueuePaused(true);
+      } else if (data.type === 'queue_resumed') {
+        _setQueuePaused(false);
+      } else if (data.type === 'queue_cancelled') {
+        _setQueuePaused(false);
+        const activeEl = document.getElementById('dl-active');
+        if (activeEl) {
+          while (activeEl.firstChild) activeEl.removeChild(activeEl.firstChild);
+          _showActiveEmpty(activeEl);
+        }
+        _scheduleHistoryReload();
       }
       // Upgrade events — update badge and inline scanner rows
       else if (data.type === 'upgrade_complete') {
@@ -3952,6 +4545,19 @@ function _dlArtThumb(coverUrl, trackId) {
   return wrap;
 }
 
+function _setQueuePaused(paused) {
+  const pauseBtn = document.getElementById('dl-pause-btn');
+  const resumeBtn = document.getElementById('dl-resume-btn');
+  if (pauseBtn) pauseBtn.style.display = paused ? 'none' : '';
+  if (resumeBtn) resumeBtn.style.display = paused ? '' : 'none';
+  // Update batch summary text if visible
+  const summary = document.querySelector('.dl-batch-summary');
+  if (summary) {
+    const statusEl = summary.querySelector('.dl-card-status');
+    if (statusEl) statusEl.textContent = paused ? 'Paused' : 'Waiting to start...';
+  }
+}
+
 function _timeAgo(ts) {
   if (!ts) return '';
   const diff = (Date.now() / 1000) - ts;
@@ -3970,9 +4576,50 @@ function renderDownloads(container) {
     textEl('div', 'Downloads', 'results-title')
   ));
 
-  // Active section
-  const activeLabel = textEl('div', 'Active', 'dl-section-label');
-  resultsArea.appendChild(activeLabel);
+  // Active section header with queue controls
+  const activeHeader = h('div', { className: 'dl-active-header' });
+  activeHeader.appendChild(textEl('div', 'Active', 'dl-section-label'));
+
+  const queueControls = h('div', { id: 'dl-queue-controls', className: 'dl-queue-controls' });
+
+  const pauseBtn = h('button', { className: 'dl-ctrl-btn', id: 'dl-pause-btn' });
+  pauseBtn.textContent = 'Pause';
+  pauseBtn.onclick = async () => {
+    pauseBtn.disabled = true;
+    try {
+      await api('/downloads/pause', { method: 'POST' });
+    } catch (_) { toast('Failed to pause', 'error'); }
+    pauseBtn.disabled = false;
+  };
+
+  const resumeBtn = h('button', { className: 'dl-ctrl-btn', id: 'dl-resume-btn' });
+  resumeBtn.textContent = 'Resume';
+  resumeBtn.style.display = 'none';
+  resumeBtn.onclick = async () => {
+    resumeBtn.disabled = true;
+    try {
+      await api('/downloads/resume', { method: 'POST' });
+    } catch (_) { toast('Failed to resume', 'error'); }
+    resumeBtn.disabled = false;
+  };
+
+  const cancelBtn = h('button', { className: 'dl-ctrl-btn dl-ctrl-cancel' });
+  cancelBtn.textContent = 'Cancel All';
+  cancelBtn.onclick = () => {
+    inlineConfirm('Cancel all remaining downloads?', async () => {
+      try {
+        await api('/downloads/cancel', { method: 'POST' });
+        toast('Downloads cancelled', 'success');
+      } catch (_) { toast('Failed to cancel', 'error'); }
+    });
+  };
+
+  queueControls.appendChild(pauseBtn);
+  queueControls.appendChild(resumeBtn);
+  queueControls.appendChild(cancelBtn);
+  activeHeader.appendChild(queueControls);
+  resultsArea.appendChild(activeHeader);
+
   const activeSection = h('div', { id: 'dl-active', className: 'dl-card-list' });
   resultsArea.appendChild(activeSection);
 
@@ -4000,13 +4647,25 @@ function renderDownloads(container) {
   const historySection = h('div', { id: 'dl-history', className: 'dl-card-list' });
   resultsArea.appendChild(historySection);
 
+  // Sync queue control state (paused/running)
+  api('/downloads/queue-state').then(qs => {
+    _setQueuePaused(qs.paused);
+  }).catch(() => {});
+
   // Seed active section from current server state, then let SSE keep it updated
   api('/downloads/active/snapshot').then(data => {
     const entries = data.active || [];
-    if (entries.length === 0) {
+    const queuedCount = data.queued_count || 0;
+    if (entries.length === 0 && queuedCount === 0) {
       _showActiveEmpty(activeSection);
     } else {
       entries.forEach(e => updateActiveDownload(activeSection, { type: 'progress', ...e }));
+      if (queuedCount > 0) {
+        const summary = h('div', { className: 'dl-card dl-batch-summary' });
+        summary.appendChild(textEl('div', queuedCount + ' tracks queued', 'dl-card-name'));
+        summary.appendChild(textEl('div', 'Waiting to start...', 'dl-card-status dl-status-queued'));
+        activeSection.prepend(summary);
+      }
     }
   }).catch(() => {
     _showActiveEmpty(activeSection);
@@ -4018,18 +4677,31 @@ function renderDownloads(container) {
   loadDownloadHistory(historySection);
 }
 
+let _historyReloadTimer = null;
+function _scheduleHistoryReload() {
+  clearTimeout(_historyReloadTimer);
+  _historyReloadTimer = setTimeout(() => {
+    const histEl = document.getElementById('dl-history');
+    if (histEl) loadDownloadHistory(histEl);
+  }, 800);
+}
+
 function updateActiveDownload(container, data) {
   let card = container.querySelector('[data-dl-id="' + data.track_id + '"]');
 
   if (data.type === 'complete' || data.type === 'error') {
     if (card) card.remove();
-    // Check if active section is now empty
+    // Remove batch summary if no real download cards remain
+    const remaining = container.querySelectorAll('.dl-card:not(.dl-batch-summary):not(.dl-empty)');
+    if (!remaining.length) {
+      const summary = container.querySelector('.dl-batch-summary');
+      if (summary) summary.remove();
+    }
     if (!container.children.length) {
       _showActiveEmpty(container);
     }
-    // Refresh history to show the new entry
-    const histEl = document.getElementById('dl-history');
-    if (histEl) loadDownloadHistory(histEl);
+    // Debounce history reload — prevents 1600 re-renders during bulk downloads
+    _scheduleHistoryReload();
     return;
   }
 
@@ -4122,7 +4794,9 @@ async function loadDownloadHistory(container) {
             quality: dl.quality,
             format: dl.quality,
           };
-          state.queue = [track];
+          const queuedTrack = _cloneQueueTrack(track, ++_queueEntrySeq);
+          state.queueOriginal = [queuedTrack];
+          state.queue = [queuedTrack];
           state.queueIndex = 0;
           playTrack(track);
         });
@@ -4210,7 +4884,7 @@ async function loadDownloadHistory(container) {
           retryBtn.disabled = true;
           retryBtn.textContent = 'Retrying\u2026';
           try {
-            await api('/download', { method: 'POST', body: { track_ids: [dl.track_id] } });
+            await apiTidal('/download', { method: 'POST', body: { track_ids: [dl.track_id] } });
           } catch (_) {
             retryBtn.disabled = false;
             retryBtn.textContent = 'Retry';
@@ -4242,14 +4916,56 @@ function renderSettings(container) {
   ));
 
   // Auth status
-  const authSection = h('div', { style: { marginBottom: '24px' } });
+  const authSection = h('div', { id: 'settings-auth-status', style: { marginBottom: '24px' } });
   resultsArea.appendChild(authSection);
   loadAuthStatus(authSection);
+
+  const accessSection = h('div', { id: 'settings-access-status' });
+  resultsArea.appendChild(accessSection);
 
   // Settings form
   const formSection = h('div');
   resultsArea.appendChild(formSection);
-  loadSettingsForm(formSection);
+  loadSettingsForm(formSection, accessSection);
+
+  // Server section
+  const sidecarSection = h('div', { id: 'sidecar-section' });
+  resultsArea.appendChild(sidecarSection);
+  _sidecar.el = sidecarSection;
+  _renderSidecarSection(sidecarSection);
+  _startSidecarPoll();
+
+  // Clean up poll timer when navigating away from settings
+  const prevCleanup = viewEl._viewCleanup;
+  viewEl._viewCleanup = () => {
+    _stopSidecarPoll();
+    _sidecar.el = null;
+    if (prevCleanup) prevCleanup();
+  };
+
+  // Updater section
+  const updaterSection = h('div', { id: 'settings-updater' });
+  resultsArea.appendChild(updaterSection);
+  _updater.settingsEl = updaterSection;
+  try {
+    if (_isTauri()) {
+      if (_updater.state) {
+        renderUpdaterSettings(updaterSection, _updater.state);
+      } else {
+        Promise.resolve().then(() => _tauriInvoke('get_updater_state')).then(us => {
+          _onUpdaterState(us);
+        }).catch(() => {});
+      }
+    } else {
+      _renderWebUpdaterPanel(updaterSection);
+    }
+    // Web update notification card (shown in both modes)
+    if (_updater.webUpdate && _updater.webUpdate.update_available) {
+      _renderWebUpdaterSettings(updaterSection);
+    }
+  } catch (e) {
+    console.error('Updater settings error:', e);
+  }
 }
 
 async function loadAuthStatus(container) {
@@ -4264,20 +4980,102 @@ async function loadAuthStatus(container) {
       ));
     } else {
       const dot = h('span', { className: 'connection-dot disconnected' });
-      container.appendChild(h('div', { className: 'connection', style: { padding: '0 0 16px' } },
+      const row = h('div', { className: 'connection', style: { padding: '0 0 16px', gap: '12px' } },
         dot,
-        document.createTextNode('Not logged in \u2014 run music-dl login in terminal')
-      ));
+        document.createTextNode('Not logged in to Tidal')
+      );
+      const loginBtn = textEl('button', 'Log in to Tidal', 'banner-action');
+      loginBtn.addEventListener('click', () => { triggerLogin(); });
+      row.appendChild(loginBtn);
+      container.appendChild(row);
     }
   } catch (_) {
     container.appendChild(textEl('div', 'Could not check auth status', 'track-artist'));
   }
 }
 
-async function loadSettingsForm(container) {
+function _setVersionChip(version) {
+  if (!version) return;
+  const chip = document.getElementById('app-version-chip');
+  if (!chip) return;
+  chip.textContent = 'v' + String(version).replace(/^v/i, '');
+}
+
+function setSettingsReadOnly(container, readOnly) {
+  state.settingsReadOnly = !!readOnly;
+  container.dataset.readOnly = readOnly ? 'true' : 'false';
+  container.classList.toggle('settings-read-only', !!readOnly);
+
+  container.querySelectorAll('.settings-input, .settings-browse-btn').forEach(el => {
+    el.disabled = !!readOnly;
+  });
+
+  container.querySelectorAll('.settings-toggle').forEach(toggle => {
+    toggle.dataset.disabled = readOnly ? 'true' : 'false';
+    toggle.classList.toggle('disabled', !!readOnly);
+    toggle.setAttribute('aria-disabled', readOnly ? 'true' : 'false');
+    toggle.tabIndex = readOnly ? -1 : 0;
+  });
+}
+
+async function chooseSettingsFolder(formContainer, accessContainer, currentSettings) {
   try {
-    const data = await api('/settings');
+    const result = await api('/browse-directory', { method: 'POST' });
+    if (!result.path) return;
+
+    const body = { download_base_path: result.path };
+    const currentScan = (currentSettings.scan_paths || '').trim();
+    const currentDownload = (currentSettings.download_base_path || '').trim();
+    if (!currentScan || currentScan === currentDownload) {
+      body.scan_paths = result.path;
+    }
+
+    await api('/settings', { method: 'PATCH', body });
+    toast('Music folder updated', 'success');
+    await loadSettingsForm(formContainer, accessContainer);
+  } catch (err) {
+    if (!String(err.message || '').includes('No directory selected')) {
+      toast('Browse failed: ' + err.message, 'error');
+    }
+  }
+}
+
+function renderSettingsAccessBanner(container, access, formContainer, currentSettings) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+  if (!access || !access.read_only) return;
+
+  const banner = h('div', { className: 'error-banner settings-status-banner' });
+  banner.appendChild(textEl('span', access.banner_message || 'Settings are read-only until access is restored.', ''));
+
+  const retryBtn = textEl('button', 'Retry Access', 'banner-action');
+  retryBtn.addEventListener('click', () => { loadSettingsForm(formContainer, container); });
+  banner.appendChild(retryBtn);
+
+  const chooseBtn = textEl('button', 'Choose Folder', 'banner-action');
+  chooseBtn.style.marginLeft = '0';
+  chooseBtn.addEventListener('click', () => { chooseSettingsFolder(formContainer, container, currentSettings); });
+  banner.appendChild(chooseBtn);
+
+  container.appendChild(banner);
+}
+
+async function loadSettingsForm(container, accessContainer) {
+  try {
+    const [data, access] = await Promise.all([
+      api('/settings'),
+      api('/settings/status').catch(() => ({ read_only: false, banner_message: null, paths: [], version: null })),
+    ]);
+    state.settings = data;
+    _settingsLoad = Promise.resolve(data);
+    state.settingsAccess = access;
+    _setVersionChip(access.version);
+
     while (container.firstChild) container.removeChild(container.firstChild);
+    renderSettingsAccessBanner(accessContainer, access, container, data);
+
+    if (access && access.read_only) {
+      container.appendChild(textEl('div', 'Settings are read-only until access is restored.', 'settings-read-only-note'));
+    }
 
     const sections = [
       { title: 'Storage', fields: [
@@ -4323,18 +5121,19 @@ async function loadSettingsForm(container) {
           const input = h('input', { className: 'settings-input', type: 'text' });
           input.style.width = '260px';
           input.value = data[field.key] || '';
-          input.addEventListener('blur', () => saveSetting(field.key, input.value));
+          input.addEventListener('blur', () => { if (!state.settingsReadOnly) saveSetting(field.key, input.value); });
           wrapper.appendChild(input);
-          const browseBtn = textEl('button', 'Browse', 'pill active');
+          const browseBtn = textEl('button', 'Browse', 'pill active settings-browse-btn');
           browseBtn.style.cursor = 'pointer';
           browseBtn.style.whiteSpace = 'nowrap';
           browseBtn.addEventListener('click', async () => {
+            if (state.settingsReadOnly) return;
             browseBtn.textContent = '...';
             try {
               const result = await api('/browse-directory', { method: 'POST' });
               if (result.path) {
                 input.value = result.path;
-                saveSetting(field.key, result.path);
+                await saveSetting(field.key, result.path);
               }
             } catch (err) {
               if (!err.message.includes('No directory selected')) {
@@ -4349,7 +5148,7 @@ async function loadSettingsForm(container) {
           const input = h('input', { className: 'settings-input', type: 'text' });
           input.style.width = '300px';
           input.value = data[field.key] || '';
-          input.addEventListener('blur', () => saveSetting(field.key, input.value));
+          input.addEventListener('blur', () => { if (!state.settingsReadOnly) saveSetting(field.key, input.value); });
           row.appendChild(input);
         } else if (field.type === 'number') {
           const input = h('input', { className: 'settings-input', type: 'number' });
@@ -4358,6 +5157,7 @@ async function loadSettingsForm(container) {
           input.max = '10';
           input.value = data[field.key] || 3;
           input.addEventListener('blur', () => {
+            if (state.settingsReadOnly) return;
             let v = parseInt(input.value, 10);
             if (isNaN(v) || v < 1) v = 1;
             if (v > 10) v = 10;
@@ -4386,6 +5186,7 @@ async function loadSettingsForm(container) {
           });
           let val = !!data[field.key];
           const flipToggle = () => {
+            if (toggle.dataset.disabled === 'true') return;
             val = !val;
             toggle.className = 'settings-toggle' + (val ? ' on' : '');
             toggle.setAttribute('aria-checked', val ? 'true' : 'false');
@@ -4401,16 +5202,24 @@ async function loadSettingsForm(container) {
 
       container.appendChild(sectionEl);
     });
+
+    setSettingsReadOnly(container, !!(access && access.read_only));
   } catch (err) {
     container.appendChild(textEl('div', 'Failed to load settings: ' + err.message, 'track-artist'));
   }
 }
 
 async function saveSetting(key, value) {
+  if (state.settingsReadOnly) {
+    toast('Settings are read-only until access is restored.', 'error', 5000);
+    return;
+  }
   try {
     const body = {};
     body[key] = value;
-    await api('/settings', { method: 'PATCH', body });
+    const updated = await api('/settings', { method: 'PATCH', body });
+    state.settings = updated;
+    _settingsLoad = Promise.resolve(updated);
     toast('Setting saved', 'success');
   } catch (err) {
     toast('Failed to save: ' + err.message, 'error');
@@ -4749,44 +5558,134 @@ if (lyricsBody) {
 }
 
 // ── Waveform visualization (no Web Audio API — audio path stays untouched) ──
-const WF_BARS = 80;
+// Display peaks (~100) define the static bar shape.
+// Hires peaks (~10/sec) drive per-frame animation — bars pulse to the music
+// using pre-computed amplitude data, like a DAW waveform display.
+// The <audio> element is NEVER wrapped in an AudioContext.
+const WF_BARS = 100;
 let _wfAnimId = null;
 let _wfBars = [];
+let _wfPeaks = null;    // display-resolution peaks (100 bars)
+let _wfHires = null;    // high-res peaks (~10/sec) for animation
+let _wfPrevActive = -1; // last active bar index for cleanup
 
-function generateWaveform() {
+function generateWaveform(peaks, hires) {
   while (waveform.firstChild) waveform.removeChild(waveform.firstChild);
   _wfBars = [];
-  for (let i = 0; i < WF_BARS; i++) {
+  _wfPeaks = peaks;
+  _wfHires = hires || null;
+  _wfPrevActive = -1;
+  const count = peaks ? peaks.length : WF_BARS;
+  for (let i = 0; i < count; i++) {
     const bar = h('div', { className: 'wf-bar' });
-    bar.style.transform = 'scaleY(' + (0.15 + Math.random() * 0.6).toFixed(2) + ')';
+    const scale = peaks ? Math.max(0.05, peaks[i]) : (0.15 + Math.random() * 0.6);
+    // Set base height — mirrored via transform-origin: center in CSS
+    bar.style.height = '100%';
+    bar.style.transform = 'scaleY(' + scale.toFixed(3) + ')';
+    bar._baseScale = scale;  // stash for animation
     waveform.appendChild(bar);
     _wfBars.push(bar);
   }
 }
 generateWaveform();
 
-// Decorative waveform: static random heights + yellow sweep following playhead.
-// No frequency analysis — we refuse to touch the audio signal path.
+// Animation loop: yellow sweep + ALL bars modulated by hires amplitude data.
+// Each bar maps to a time slice. The hires array has ~10 peaks/sec, so each
+// bar's height is driven by the real amplitude at its corresponding moment
+// in the song. The whole waveform breathes — not just near the playhead.
 function _wfLoop() {
+  const total = _wfBars.length;
   const pct = audio.duration ? (audio.currentTime / audio.duration) : 0;
-  for (let i = 0; i < WF_BARS; i++) {
-    const barPct = (i + 1) / WF_BARS;
+  const activeIdx = Math.floor(pct * total);
+  const hiLen = _wfHires ? _wfHires.length : 0;
+
+  for (let i = 0; i < total; i++) {
+    const bar = _wfBars[i];
+    const barPct = (i + 1) / total;
+
+    // Yellow sweep — played bars get accent color
     if (barPct <= pct) {
-      _wfBars[i].classList.add('wf-played');
+      bar.classList.add('wf-played');
     } else {
-      _wfBars[i].classList.remove('wf-played');
+      bar.classList.remove('wf-played');
+    }
+
+    // Active glow on playhead bar
+    if (i === activeIdx) {
+      bar.classList.add('wf-active');
+    } else {
+      bar.classList.remove('wf-active');
+    }
+
+    // Ripple propagation: amplitude at the playhead ripples outward.
+    // Bars further from the playhead show the amplitude from earlier
+    // in time, as if the energy is radiating out from the play position.
+    // Uses only pre-computed hires data — zero audio processing.
+    if (hiLen > 0) {
+      const dist = Math.abs(i - activeIdx);
+      const RADIUS = 16;             // wider ripple reach
+      if (dist <= RADIUS) {
+        // Each bar-distance = ~0.12s of delay into the past
+        const delay = dist * 0.12;
+        const delayedTime = Math.max(0, audio.currentTime - delay);
+        const delayedPct = audio.duration ? (delayedTime / audio.duration) : 0;
+        const hiIdx = Math.min(Math.floor(delayedPct * hiLen), hiLen - 1);
+        const amp = _wfHires[hiIdx];
+        // Influence fades with distance from playhead
+        const influence = 1 - (dist / (RADIUS + 1));
+        const pulse = 1 + (amp * 0.5 * influence);
+        bar.style.transform = 'scaleY(' + (bar._baseScale * pulse).toFixed(3) + ')';
+      } else if (i < activeIdx) {
+        // Played bars (yellow, behind playhead): keep them alive.
+        // They breathe with the current amplitude, fading gently
+        // the further back they are from the ripple edge.
+        var tailDist = activeIdx - RADIUS - i;
+        var tailMax = activeIdx - RADIUS;
+        // Gentle influence: 20% at ripple edge, fading to 5% at bar 0
+        var tailInf = tailMax > 0 ? 0.05 + 0.15 * (1 - tailDist / tailMax) : 0.1;
+        var hiNow = Math.min(Math.floor(pct * hiLen), hiLen - 1);
+        var ampNow = _wfHires[hiNow];
+        var pulse = 1 + (ampNow * tailInf);
+        bar.style.transform = 'scaleY(' + (bar._baseScale * pulse).toFixed(3) + ')';
+      } else {
+        // Unplayed bars (ahead of playhead): settle to idle
+        var idle = bar._baseScale * 0.35;
+        if (idle < 0.05) idle = 0.05;
+        bar.style.transform = 'scaleY(' + idle.toFixed(3) + ')';
+      }
     }
   }
+
   _wfAnimId = requestAnimationFrame(_wfLoop);
+}
+
+function _fetchWaveform(track) {
+  if (!track || !track.is_local || !track.local_path) {
+    generateWaveform();
+    return;
+  }
+  fetch('/api/playback/waveform?path=' + encodeURIComponent(track.local_path))
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (data && data.peaks && data.peaks.length > 0) {
+        generateWaveform(data.peaks, data.hires || null);
+      } else {
+        generateWaveform();
+      }
+    })
+    .catch(() => generateWaveform());
 }
 
 function setWaveformPlaying(playing) {
   waveform.classList.toggle('playing', playing);
   waveform.classList.toggle('paused', !playing);
   if (playing) {
-    // Regenerate random bar heights each track for visual variety
-    for (let i = 0; i < WF_BARS; i++) {
-      _wfBars[i].style.transform = 'scaleY(' + (0.15 + Math.random() * 0.6).toFixed(2) + ')';
+    if (!_wfPeaks) {
+      for (let i = 0; i < _wfBars.length; i++) {
+        const s = 0.15 + Math.random() * 0.6;
+        _wfBars[i].style.transform = 'scaleY(' + s.toFixed(2) + ')';
+        _wfBars[i]._baseScale = s;
+      }
     }
     if (!_wfAnimId) _wfAnimId = requestAnimationFrame(_wfLoop);
   } else {
@@ -4907,7 +5806,7 @@ function updatePlayerHeart() {
       if (trk.is_local) { toast('Already in your library', 'success'); return; }
       dlEl.classList.add('downloading');
       try {
-        await api('/download', { method: 'POST', body: { track_ids: [trk.id] } });
+        await apiTidal('/download', { method: 'POST', body: { track_ids: [trk.id] } });
         toast('Downloading ' + (trk.name || 'track'));
       } catch (_) {
         toast('Download failed', 'error');
@@ -4984,14 +5883,10 @@ function _tickPlayCount() {
   }
 }
 
-function playTrack(track) {
-  if (!track) return;
-
-  // Track history — dedupe by ISRC first, then by _trackKey, most recent first
+function _recordRecentlyPlayed(track) {
   const key = _trackKey(track);
   const idx = recentlyPlayed.findIndex(t => {
     if (key === '') return false;
-    // Check ISRC match first (catches same song from different file paths)
     if (track.isrc && t.isrc && track.isrc === t.isrc) return true;
     return _trackKey(t) === key;
   });
@@ -5000,6 +5895,10 @@ function playTrack(track) {
   recentlyPlayed.unshift(entry);
   if (recentlyPlayed.length > MAX_RECENT) recentlyPlayed.pop();
   _saveRecent();
+}
+
+function playTrack(track) {
+  if (!track) return;
 
   // Play count: fires after 30s of actual playback (or on ended for short tracks)
   _resetPlayCount(track);
@@ -5020,6 +5919,8 @@ function playTrack(track) {
     if (!state.playing) { audio.muted = false; return; }
     audio.play().then(() => {
       audio.muted = false;
+      // Only record to recently played after audio actually starts
+      _recordRecentlyPlayed(track);
     }).catch(() => {
       audio.muted = false;
       toast('Unable to play track', 'error');
@@ -5029,9 +5930,11 @@ function playTrack(track) {
   updatePlayButton();
   updateNowPlaying(track);
   handleLyricsTrackChange(track);
-  generateWaveform();
+  _updateMediaSession(track);
+  _fetchWaveform(track);
   highlightPlayingTrack();
   updatePlayerHeart();
+  _saveQueue();
 }
 
 function updateNowPlaying(track) {
@@ -5175,11 +6078,7 @@ btnPlay.addEventListener('click', () => {
 
 btnNext.addEventListener('click', () => {
   if (state.queue.length === 0) return;
-  if (state.shuffle) {
-    state.queueIndex = Math.floor(Math.random() * state.queue.length);
-  } else {
-    state.queueIndex = (state.queueIndex + 1) % state.queue.length;
-  }
+  state.queueIndex = (state.queueIndex + 1) % state.queue.length;
   playTrack(state.queue[state.queueIndex]);
 });
 
@@ -5194,8 +6093,13 @@ btnPrev.addEventListener('click', () => {
 });
 
 btnShuffle.addEventListener('click', () => {
-  state.shuffle = !state.shuffle;
-  btnShuffle.classList.toggle('active', state.shuffle);
+  if (!state.queue.length) {
+    state.shuffle = !state.shuffle;
+    btnShuffle.classList.toggle('active', state.shuffle);
+    return;
+  }
+  if (state.shuffle) _restoreOriginalQueueOrder();
+  else _reshuffleCurrentQueue();
 });
 
 btnRepeat.addEventListener('click', () => {
@@ -5204,6 +6108,15 @@ btnRepeat.addEventListener('click', () => {
   else state.repeat = 'off';
   btnRepeat.classList.toggle('active', state.repeat !== 'off');
   _updateRepeatIcon(btnRepeat);
+  // Repeat-one: collapse queue to just the current track
+  if (state.repeat === 'one' && state.queue.length > 0) {
+    const current = state.queue[state.queueIndex];
+    if (current) {
+      state.queue = [current];
+      state.queueIndex = 0;
+    }
+  }
+  _saveQueue();
 });
 
 function _updateRepeatIcon(btn) {
@@ -5224,11 +6137,14 @@ function _updateRepeatIcon(btn) {
 // Progress
 audio.addEventListener('timeupdate', () => {
   if (!audio.duration) return;
+  _tickPlayCount();
+  // Skip UI updates while user is dragging the progress bar — _seekFromEvent
+  // handles the display directly and the browser's currentTime lags behind.
+  if (_seeking) return;
   const pct = (audio.currentTime / audio.duration) * 100;
   progressFill.style.width = pct + '%';
   timeElapsed.textContent = formatTime(audio.currentTime);
   timeTotal.textContent = formatTime(audio.duration);
-  _tickPlayCount();
 });
 
 audio.addEventListener('ended', () => {
@@ -5242,7 +6158,7 @@ audio.addEventListener('ended', () => {
     return;
   }
   const hasNext = state.queueIndex < state.queue.length - 1;
-  if (hasNext || state.shuffle) {
+  if (hasNext) {
     btnNext.click();
   } else if (state.repeat === 'all') {
     state.queueIndex = 0;
@@ -5264,20 +6180,28 @@ audio.addEventListener('pause', () => {
   _playCountLastTime = null;
 });
 
+let _consecutiveErrors = 0;
+
 audio.addEventListener('error', () => {
   state.playing = false;
   updatePlayButton();
   setWaveformPlaying(false);
+  _consecutiveErrors++;
   const current = state.queue[state.queueIndex];
   const label = current ? (current.name || 'Track') : 'Track';
-  toast(label + ' unavailable — skipping', 'error');
-  // Auto-skip to next track after a brief pause
-  if (state.queueIndex < state.queue.length - 1) {
+  if (_consecutiveErrors >= 3) {
+    toast('Multiple tracks failed \u2014 check your Tidal session', 'error');
+    return;
+  }
+  const canAutoSkip = current && state.queueIndex < state.queue.length - 1;
+  toast(label + ' unavailable', 'error');
+  if (canAutoSkip) {
     setTimeout(() => { state.queueIndex++; playTrack(state.queue[state.queueIndex]); }, 800);
   }
 });
 
 audio.addEventListener('play', () => {
+  _consecutiveErrors = 0;
   state.playing = true;
   updatePlayButton();
   setWaveformPlaying(true);
@@ -5287,20 +6211,25 @@ audio.addEventListener('play', () => {
 });
 
 // Seek
+let _seeking = false;
+
 function _seekFromEvent(e) {
   if (!audio.duration) return;
   const rect = progressBar.getBoundingClientRect();
   const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
   audio.currentTime = pct * audio.duration;
+  // Update UI immediately during seek so counter stays in sync
+  progressFill.style.width = (pct * 100) + '%';
+  timeElapsed.textContent = formatTime(pct * audio.duration);
 }
-
-progressBar.addEventListener('click', _seekFromEvent);
 
 progressBar.addEventListener('mousedown', (e) => {
   e.preventDefault();
+  _seeking = true;
   _seekFromEvent(e);
   const onMove = (ev) => _seekFromEvent(ev);
   const onUp = () => {
+    _seeking = false;
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
   };
@@ -5508,18 +6437,88 @@ async function refreshStatusLights() {
 
 let _loginPoll = null;
 
+async function _handleLoginSuccess() {
+  refreshStatusLights();
+  await _checkErrorBanners();
+  const authSection = document.getElementById('settings-auth-status');
+  if (authSection) await loadAuthStatus(authSection);
+  toast('Connected to Tidal', 'success');
+}
+
+function _openExternal(url) {
+  // Prefer Tauri shell plugin (opens user's default browser), fall back to window.open
+  if (_isTauri() && window.__TAURI__?.core?.invoke) {
+    window.__TAURI__.core.invoke('plugin:shell|open', { path: url, with: '' })
+      .catch(() => window.open(url, '_blank'));
+  } else {
+    window.open(url, '_blank');
+  }
+}
+
+function _showDeviceCodeModal(userCode, verificationUri) {
+  _dismissDeviceCodeModal();
+  const overlay = h('div', { className: 'modal-overlay', id: 'device-code-modal' });
+  overlay.addEventListener('click', e => { if (e.target === overlay) _dismissDeviceCodeModal(); });
+
+  const modal = h('div', { className: 'modal device-code-modal' });
+  modal.appendChild(textEl('h3', 'Connect to Tidal'));
+  modal.appendChild(textEl('p', 'Open the link below and enter this code:', 'device-code-label'));
+
+  const codeEl = h('div', { className: 'code device-code-value' });
+  codeEl.textContent = userCode;
+  codeEl.title = 'Click to copy';
+  codeEl.style.cursor = 'pointer';
+  codeEl.addEventListener('click', () => {
+    navigator.clipboard.writeText(userCode).then(() => toast('Code copied', 'success'));
+  });
+  modal.appendChild(codeEl);
+
+  if (verificationUri) {
+    const linkEl = h('a', {
+      className: 'wizard-link',
+      href: verificationUri,
+      target: '_blank',
+      rel: 'noopener',
+    });
+    linkEl.textContent = verificationUri;
+    linkEl.addEventListener('click', e => { e.preventDefault(); _openExternal(verificationUri); });
+    modal.appendChild(linkEl);
+  }
+
+  const spinnerRow = h('div', { className: 'wizard-spinner-row' });
+  spinnerRow.appendChild(h('div', { className: 'spinner' }));
+  spinnerRow.appendChild(textEl('span', 'Waiting for you to confirm in browser...', 'wizard-waiting-text'));
+  modal.appendChild(spinnerRow);
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
+function _dismissDeviceCodeModal() {
+  const existing = document.getElementById('device-code-modal');
+  if (existing) existing.remove();
+}
+
 async function triggerLogin() {
   const tidalEl = document.getElementById('connection-tidal');
   try {
     const data = await api('/auth/login', { method: 'POST' });
     if (data.status === 'already_logged_in') {
-      refreshStatusLights();
+      await _handleLoginSuccess();
       return;
     }
-    if (data.verification_uri) {
-      window.open(data.verification_uri, '_blank');
+
+    // Show device code modal so user always has the code + link visible in-app
+    if (data.user_code) {
+      _showDeviceCodeModal(data.user_code, data.verification_uri);
     }
-    // Update light to show waiting state
+
+    // Also try to auto-open the verification URL in the default browser
+    if (data.verification_uri) {
+      _openExternal(data.verification_uri);
+    }
+
+    // Update sidebar light to show waiting state
     if (tidalEl) {
       while (tidalEl.firstChild) tidalEl.removeChild(tidalEl.firstChild);
       const dot = h('span', { className: 'connection-dot disconnected' });
@@ -5535,19 +6534,30 @@ async function triggerLogin() {
         if (status.status === 'success') {
           clearInterval(_loginPoll);
           _loginPoll = null;
-          refreshStatusLights();
-        } else if (status.status === 'failed') {
+          _dismissDeviceCodeModal();
+          await _handleLoginSuccess();
+        } else if (status.status === 'failed' || status.status === 'timeout') {
           clearInterval(_loginPoll);
           _loginPoll = null;
+          _dismissDeviceCodeModal();
+          const msg = status.status === 'timeout'
+            ? 'Tidal login timed out — tap the status light to try again'
+            : 'Tidal login failed — tap the status light to try again';
+          toast(msg, 'error');
           refreshStatusLights();
         }
       } catch (_) {
         clearInterval(_loginPoll);
         _loginPoll = null;
+        _dismissDeviceCodeModal();
+        toast('Connection lost during login — tap the status light to retry', 'error');
+        refreshStatusLights();
       }
     }, 3000);
   } catch (err) {
     console.error('[music-dl] login failed:', err);
+    toast('Could not start Tidal login — check your connection', 'error');
+    refreshStatusLights();
   }
 }
 
@@ -5595,7 +6605,10 @@ function renderQueue() {
     remove.textContent = '\u00d7';
     remove.addEventListener('click', (e) => {
       e.stopPropagation();
+      const removedTrack = state.queue[i];
       state.queue.splice(i, 1);
+      const originalIdx = _findTrackIndex(state.queueOriginal, removedTrack);
+      if (originalIdx !== -1) state.queueOriginal.splice(originalIdx, 1);
       if (i < state.queueIndex) state.queueIndex--;
       else if (i === state.queueIndex && state.queue.length === 0) {
         state.queueIndex = -1;
@@ -5603,6 +6616,7 @@ function renderQueue() {
         state.queueIndex = state.queue.length - 1;
       }
       renderQueue();
+      _saveQueue();
     });
 
     item.addEventListener('click', () => {
@@ -5651,8 +6665,24 @@ async function renderUpgradeScanner(container) {
   const cancelBtn = h('button', { className: 'pill' });
   cancelBtn.textContent = 'Cancel';
   cancelBtn.style.display = 'none';
+  const purgeBtn = h('button', { className: 'pill' });
+  purgeBtn.textContent = 'Clear Probe Cache';
+  purgeBtn.title = 'Purge cached Tidal quality probes so the next scan re-probes all tracks fresh';
+  purgeBtn.onclick = async () => {
+    purgeBtn.disabled = true;
+    purgeBtn.textContent = 'Clearing...';
+    try {
+      const res = await api('/upgrade/probes', { method: 'DELETE' });
+      toast((res.deleted || 0) + ' cached probes cleared', 'success');
+    } catch (_) {
+      toast('Failed to clear probes', 'error');
+    }
+    purgeBtn.disabled = false;
+    purgeBtn.textContent = 'Clear Probe Cache';
+  };
   controls.appendChild(scanBtn);
   controls.appendChild(cancelBtn);
+  controls.appendChild(purgeBtn);
   header.appendChild(controls);
   wrapper.appendChild(header);
 
@@ -5704,6 +6734,7 @@ async function renderUpgradeScanner(container) {
   }
 
   function _connectSSE() {
+    if (eventSource) { eventSource.close(); }
     eventSource = new EventSource('/api/upgrade/scan');
     eventSource.onmessage = (e) => _handleScanEvent(JSON.parse(e.data));
     eventSource.onerror = () => {
@@ -5957,10 +6988,11 @@ function _wizardStepLogin(wizard, setupData) {
           rel: 'noopener',
         });
         linkEl.textContent = data.verification_uri;
+        linkEl.addEventListener('click', e => { e.preventDefault(); _openExternal(data.verification_uri); });
         codeBox.appendChild(linkEl);
 
         // Also auto-open in browser
-        window.open(data.verification_uri, '_blank');
+        _openExternal(data.verification_uri);
       }
 
       statusArea.appendChild(codeBox);
@@ -6164,15 +7196,15 @@ async function _checkErrorBanners() {
       const banner = h('div', { className: 'error-banner' });
       banner.appendChild(textEl('span', 'Tidal session expired.'));
       const reloginBtn = textEl('button', 'Re-connect', 'banner-action');
-      reloginBtn.addEventListener('click', () => navigate('settings'));
+      reloginBtn.addEventListener('click', () => triggerLogin());
       banner.appendChild(reloginBtn);
       const mainEl = document.querySelector('.main');
       if (mainEl) mainEl.insertBefore(banner, mainEl.firstChild);
     }
   } catch (_) { /* silent */ }
 
-  // Library view: check scan_paths
-  if (state.view === 'library') {
+  // Library views: check scan_paths
+  if (state.view === 'library' || state.view === 'recent-added') {
     try {
       const settings = state.settings || await api('/settings');
       const scanPaths = (settings.scan_paths || '').trim();
@@ -6191,11 +7223,561 @@ async function _checkErrorBanners() {
 
 // ---- INIT ----
 
+// ── Media Session API — OS media controls (headphones, lock screen, menu bar) ──
+
+function _updateMediaSession(track) {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: track.name || 'Unknown',
+    artist: track.artist || '',
+    album: track.album || '',
+    artwork: track.cover_url ? [{ src: track.cover_url, sizes: '320x320', type: 'image/jpeg' }] : [],
+  });
+}
+
+if ('mediaSession' in navigator) {
+  navigator.mediaSession.setActionHandler('play', () => { if (!state.playing) btnPlay.click(); });
+  navigator.mediaSession.setActionHandler('pause', () => { if (state.playing) btnPlay.click(); });
+  navigator.mediaSession.setActionHandler('previoustrack', () => btnPrev.click());
+  navigator.mediaSession.setActionHandler('nexttrack', () => btnNext.click());
+  navigator.mediaSession.setActionHandler('seekto', (d) => { if (d.seekTime != null) audio.currentTime = d.seekTime; });
+  navigator.mediaSession.setActionHandler('seekbackward', (d) => { audio.currentTime = Math.max(0, audio.currentTime - (d.seekOffset || 10)); });
+  navigator.mediaSession.setActionHandler('seekforward', (d) => { if (audio.duration) audio.currentTime = Math.min(audio.duration, audio.currentTime + (d.seekOffset || 10)); });
+}
+
+// ── Gapless Playback — preload next track so no gap on transition ──
+
+const _preloadAudio = document.getElementById('audio-preload');
+let _preloadedSrc = '';
+
+function _preloadNext() {
+  if (state.queue.length === 0 || state.repeat === 'one') return;
+  const nextIdx = (state.queueIndex + 1) % state.queue.length;
+  const next = state.queue[nextIdx];
+  if (!next) return;
+  const src = (next.is_local && next.local_path)
+    ? '/api/playback/local?path=' + encodeURIComponent(next.local_path)
+    : '/api/playback/stream/' + next.id;
+  if (_preloadedSrc === src) return;  // already preloaded
+  _preloadedSrc = src;
+  _preloadAudio.src = src;
+  _preloadAudio.load();
+}
+
+// Trigger preload once we have enough of the current track
+audio.addEventListener('canplaythrough', () => _preloadNext());
+
+// ── Queue Persistence — survive page reloads ──
+
+function _saveQueue() {
+  try {
+    const data = { queue: state.queue, queueOriginal: state.queueOriginal, queueIndex: state.queueIndex, shuffle: state.shuffle, repeat: state.repeat };
+    localStorage.setItem('playerQueue', JSON.stringify(data));
+  } catch (_) { /* quota exceeded — ignore */ }
+}
+
+function _restoreQueue() {
+  try {
+    const raw = localStorage.getItem('playerQueue');
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data.queue && data.queue.length > 0) {
+      state.queue = data.queue;
+      state.queueOriginal = (data.queueOriginal && data.queueOriginal.length > 0) ? data.queueOriginal : data.queue.slice();
+      state.queueIndex = typeof data.queueIndex === 'number' ? data.queueIndex : 0;
+      state.shuffle = !!data.shuffle;
+      state.repeat = data.repeat || 'off';
+      btnShuffle.classList.toggle('active', state.shuffle);
+      btnRepeat.classList.toggle('active', state.repeat !== 'off');
+      _updateRepeatIcon(btnRepeat);
+      // Show now-playing info without auto-playing
+      const current = state.queue[state.queueIndex];
+      if (current) updateNowPlaying(current);
+    }
+  } catch (_) {}
+}
+
+// ── Resume Playback Position — pick up where you left off ──
+
+function _savePosition() {
+  const current = state.queue[state.queueIndex];
+  if (!current || !audio.currentTime) return;
+  try {
+    localStorage.setItem('playerPosition', JSON.stringify({
+      time: audio.currentTime,
+      key: _trackKey(current),
+    }));
+  } catch (_) {}
+}
+
+function _restorePosition() {
+  try {
+    const raw = localStorage.getItem('playerPosition');
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    const current = state.queue[state.queueIndex];
+    if (current && data.key === _trackKey(current) && data.time > 0) {
+      // Set source and seek to saved position without auto-playing
+      const src = (current.is_local && current.local_path)
+        ? '/api/playback/local?path=' + encodeURIComponent(current.local_path)
+        : '/api/playback/stream/' + current.id;
+      audio.src = src;
+      audio.addEventListener('loadedmetadata', function _onMeta() {
+        audio.currentTime = data.time;
+        timeElapsed.textContent = formatTime(data.time);
+        if (audio.duration) {
+          timeTotal.textContent = formatTime(audio.duration);
+          progressFill.style.width = ((data.time / audio.duration) * 100) + '%';
+        }
+      }, { once: true });
+      _fetchWaveform(current);
+    }
+  } catch (_) {}
+}
+
+// Save on pause, on track change, and on page unload
+audio.addEventListener('pause', _savePosition);
+audio.addEventListener('pause', _saveQueue);
+window.addEventListener('beforeunload', () => { _savePosition(); _saveQueue(); });
+
+// ── Loading / Buffer Indicator ──
+
+audio.addEventListener('waiting', () => {
+  progressBar.classList.add('buffering');
+});
+audio.addEventListener('canplay', () => {
+  progressBar.classList.remove('buffering');
+});
+audio.addEventListener('playing', () => {
+  progressBar.classList.remove('buffering');
+});
+
+// ── Sleep Timer ──
+
+let _sleepTimerId = null;
+let _sleepEnd = null;
+const SLEEP_OPTIONS = [15, 30, 45, 60, 90];  // minutes
+let _sleepOptionIdx = -1;  // -1 = off
+
+const btnSleep = document.getElementById('btn-sleep');
+btnSleep.addEventListener('click', () => {
+  _sleepOptionIdx++;
+  if (_sleepOptionIdx >= SLEEP_OPTIONS.length) {
+    // Cancel
+    _sleepOptionIdx = -1;
+    if (_sleepTimerId) { clearTimeout(_sleepTimerId); _sleepTimerId = null; }
+    _sleepEnd = null;
+    btnSleep.classList.remove('active');
+    btnSleep.title = 'Sleep timer';
+    toast('Sleep timer off');
+    return;
+  }
+  const mins = SLEEP_OPTIONS[_sleepOptionIdx];
+  if (_sleepTimerId) clearTimeout(_sleepTimerId);
+  _sleepEnd = Date.now() + mins * 60000;
+  _sleepTimerId = setTimeout(() => {
+    audio.pause();
+    state.playing = false;
+    updatePlayButton();
+    toast('Sleep timer — goodnight');
+    btnSleep.classList.remove('active');
+    btnSleep.title = 'Sleep timer';
+    _sleepTimerId = null;
+    _sleepEnd = null;
+    _sleepOptionIdx = -1;
+  }, mins * 60000);
+  btnSleep.classList.add('active');
+  btnSleep.title = 'Sleep: ' + mins + 'min';
+  toast('Sleep in ' + mins + ' minutes');
+});
+
+// ── Sidecar / Server lifecycle ────────────────────────────────────────────────
+
+const _sidecar = { status: 'unknown', pollTimer: null, reloadTimer: null, el: null };
+
+function _pollSidecarHealth() {
+  fetch('/api/server/health', { method: 'GET' })
+    .then(r => r.ok ? r.json() : Promise.reject())
+    .then(() => { _setSidecarStatus('running'); })
+    .catch(() => { _setSidecarStatus('stopped'); });
+}
+
+function _setSidecarStatus(status) {
+  const changed = _sidecar.status !== status;
+  _sidecar.status = status;
+  if (changed && _sidecar.el) _renderSidecarSection(_sidecar.el);
+}
+
+function _startSidecarPoll() {
+  if (_sidecar.pollTimer) return;
+  _pollSidecarHealth();
+  _sidecar.pollTimer = setInterval(_pollSidecarHealth, 5000);
+}
+
+function _stopSidecarPoll() {
+  if (_sidecar.pollTimer) {
+    clearInterval(_sidecar.pollTimer);
+    _sidecar.pollTimer = null;
+  }
+  if (_sidecar.reloadTimer) {
+    clearTimeout(_sidecar.reloadTimer);
+    _sidecar.reloadTimer = null;
+  }
+}
+
+function _renderSidecarSection(container) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+
+  const wrap = h('div', { className: 'sidecar-settings' });
+
+  // Title row with live status
+  const titleRow = h('div', { className: 'sidecar-title-row' });
+  titleRow.appendChild(textEl('div', 'Server', 'sidecar-settings-title'));
+
+  const isRunning = _sidecar.status === 'running';
+  const dotClass = 'connection-dot' + (isRunning ? '' : ' disconnected');
+  const statusRow = h('div', { className: 'connection', style: { padding: '0' } },
+    h('span', { className: dotClass }),
+    document.createTextNode(isRunning ? 'Running' : 'Stopped')
+  );
+  titleRow.appendChild(statusRow);
+  wrap.appendChild(titleRow);
+
+  // Action buttons
+  const btnRow = h('div', { className: 'sidecar-btn-row' });
+
+  if (_isTauri()) {
+    if (isRunning) {
+      const stopBtn = textEl('button', 'Stop', 'sidecar-btn sidecar-btn--danger');
+      stopBtn.onclick = () => _sidecarTauriAction('stop');
+      btnRow.appendChild(stopBtn);
+
+      const restartBtn = textEl('button', 'Restart', 'sidecar-btn');
+      restartBtn.onclick = () => _sidecarTauriAction('restart');
+      btnRow.appendChild(restartBtn);
+    } else {
+      const startBtn = textEl('button', 'Start', 'sidecar-btn sidecar-btn--primary');
+      startBtn.onclick = () => _sidecarTauriAction('start');
+      btnRow.appendChild(startBtn);
+    }
+  } else {
+    // Browser mode — restart only, and only when running
+    if (isRunning) {
+      const restartBtn = textEl('button', 'Restart', 'sidecar-btn');
+      restartBtn.onclick = _sidecarBrowserRestart;
+      btnRow.appendChild(restartBtn);
+    }
+  }
+
+  wrap.appendChild(btnRow);
+  container.appendChild(wrap);
+}
+
+function _sidecarDisableButtons() {
+  const row = document.querySelector('.sidecar-btn-row');
+  if (row) row.querySelectorAll('button').forEach(b => { b.disabled = true; });
+}
+
+function _sidecarTauriAction(action) {
+  _sidecarDisableButtons();
+  _tauriInvoke(action + '_sidecar').then(() => {
+    if (action === 'stop') {
+      _setSidecarStatus('stopped');
+    } else {
+      // start or restart — poll until the server is ready, then reload
+      _setSidecarStatus('stopped');
+      _sidecarWaitThenReload();
+    }
+  }).catch(e => {
+    toast('Server ' + action + ' failed: ' + e, 'error');
+    _pollSidecarHealth();
+  });
+}
+
+function _sidecarBrowserRestart() {
+  _sidecarDisableButtons();
+  api('/server/restart', { method: 'POST' }).then(() => {
+    _setSidecarStatus('stopped');
+    _sidecarWaitThenReload();
+  }).catch(e => {
+    toast('Restart failed: ' + e, 'error');
+    _pollSidecarHealth();
+  });
+}
+
+/** Poll /api/server/health until it responds, then reload the page. */
+function _sidecarWaitThenReload() {
+  const maxWait = 30000;
+  const interval = 500;
+  const start = Date.now();
+
+  const poll = () => {
+    if (Date.now() - start > maxWait) {
+      _sidecar.reloadTimer = null;
+      _setSidecarStatus('stopped');
+      toast('Server did not come back within 30 seconds', 'error');
+      return;
+    }
+    fetch('/api/server/health', { method: 'GET' })
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(() => { _sidecar.reloadTimer = null; window.location.reload(); })
+      .catch(() => { _sidecar.reloadTimer = setTimeout(poll, interval); });
+  };
+
+  // Wait a beat for the old server to finish dying
+  _sidecar.reloadTimer = setTimeout(poll, 1000);
+}
+
+// ── Updater ──────────────────────────────────────────────────────────────────
+
+const _updater = { state: null, dismissed: false, settingsEl: null, webUpdate: null };
+
+function _isTauri() {
+  return !!(window.__TAURI__ || window.__TAURI_INTERNALS__);
+}
+
+function _tauriInvoke(cmd) {
+  return window.__TAURI__.core.invoke(cmd);
+}
+
+function _onUpdaterState(us) {
+  _updater.state = us;
+  renderUpdaterBanner(us);
+  if (_updater.settingsEl) renderUpdaterSettings(_updater.settingsEl, us);
+}
+
+function initUpdater() {
+  if (!_isTauri()) return;
+  window.__TAURI__.event.listen('updater-state-changed', ev => {
+    _onUpdaterState(ev.payload);
+  });
+  _tauriInvoke('get_updater_state').then(_onUpdaterState).catch(() => {});
+}
+
+function checkForUpdates() {
+  if (!_isTauri()) return;
+  _tauriInvoke('check_for_updates').then(_onUpdaterState).catch(e => {
+    toast('Update check failed: ' + e, 'error');
+  });
+}
+
+function installUpdate() {
+  if (!_isTauri()) return;
+  _tauriInvoke('install_update').then(_onUpdaterState).catch(e => {
+    toast('Install failed: ' + e, 'error');
+  });
+}
+
+function renderUpdaterBanner(us) {
+  const existing = document.getElementById('updater-banner');
+  if (existing) existing.remove();
+
+  if (!us) return;
+  if (_updater.dismissed && us.status !== 'downloading') return;
+
+  if (us.status === 'downloading') {
+    const pct = us.progress_pct || 0;
+    const ver = us.available_version || '';
+    const banner = h('div', { id: 'updater-banner', className: 'updater-banner' },
+      textEl('span', 'Downloading v' + ver + '… ' + pct + '%', 'updater-banner-text'),
+      h('div', { className: 'updater-progress-wrap' },
+        h('div', { className: 'updater-progress-bar', style: { width: pct + '%' } })
+      )
+    );
+    _insertBanner(banner);
+  } else if (us.status === 'ready_to_install') {
+    const ver = us.available_version || '';
+    const btnInstall = h('button', { className: 'updater-btn-install' }, document.createTextNode('Restart & Install'));
+    btnInstall.onclick = () => installUpdate();
+    const btnLater = h('button', { className: 'updater-btn-later' }, document.createTextNode('Later'));
+    btnLater.onclick = () => { _updater.dismissed = true; const b = document.getElementById('updater-banner'); if (b) b.remove(); };
+    const banner = h('div', { id: 'updater-banner', className: 'updater-banner' },
+      textEl('span', 'Update v' + ver + ' ready', 'updater-banner-text'),
+      btnInstall,
+      btnLater
+    );
+    _insertBanner(banner);
+  }
+}
+
+function _insertBanner(banner) {
+  const nav = document.querySelector('.bottom-nav') || document.querySelector('nav');
+  if (nav && nav.parentNode) {
+    nav.parentNode.insertBefore(banner, nav.nextSibling);
+  } else {
+    document.body.prepend(banner);
+  }
+}
+
+function renderUpdaterSettings(container, us) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+  if (!us) return;
+
+  const wrap = h('div', { className: 'updater-settings' });
+  wrap.appendChild(textEl('div', 'About / Updates', 'updater-settings-title'));
+  wrap.appendChild(textEl('div', 'Current version: ' + (us.current_version || '—'), 'updater-version'));
+
+  // Status text
+  let statusText = '';
+  let statusClass = 'updater-status';
+  switch (us.status) {
+    case 'idle': statusText = ''; break;
+    case 'checking': statusText = 'Checking for updates…'; break;
+    case 'up_to_date': statusText = 'You are on the latest version.'; statusClass += ' updater-status--success'; break;
+    case 'update_available': statusText = 'Update v' + (us.available_version || '') + ' is available.'; break;
+    case 'downloading': statusText = 'Downloading… ' + (us.progress_pct || 0) + '%'; break;
+    case 'ready_to_install': statusText = 'v' + (us.available_version || '') + ' is ready to install.'; statusClass += ' updater-status--success'; break;
+    case 'installing': statusText = 'Installing…'; break;
+    case 'error': statusText = us.error_message || 'An error occurred.'; statusClass += ' updater-status--error'; break;
+    case 'unsupported_install_context': statusText = 'Auto-update only works after you move music-dl.app into Applications.'; statusClass += ' updater-status--error'; break;
+  }
+  if (statusText) {
+    const sEl = textEl('div', statusText, '');
+    sEl.className = statusClass;
+    wrap.appendChild(sEl);
+  }
+
+  // Check button
+  const busy = us.status === 'checking' || us.status === 'downloading' || us.status === 'installing';
+  const btn = h('button', { className: 'updater-btn-check', disabled: busy },
+    document.createTextNode(busy ? 'Please wait…' : 'Check for Updates')
+  );
+  btn.onclick = () => { if (!busy) checkForUpdates(); };
+  wrap.appendChild(btn);
+
+  container.appendChild(wrap);
+}
+
+function _renderWebUpdaterPanel(container) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+  const data = _updater.webUpdate;
+  const wrap = h('div', { className: 'updater-settings' });
+  wrap.appendChild(textEl('div', 'About / Updates', 'updater-settings-title'));
+  wrap.appendChild(textEl('div', 'Current version: v' + (data ? data.current_version : '…'), 'updater-version'));
+  if (data && !data.update_available) {
+    wrap.appendChild(textEl('div', 'You are on the latest version.', 'updater-status updater-status--success'));
+  }
+  const btn = h('button', { className: 'updater-btn-check' });
+  btn.textContent = 'Check for Updates';
+  btn.onclick = () => {
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    api('/settings/update-check').then(d => {
+      _updater.webUpdate = d;
+      _renderWebUpdaterPanel(container);
+      if (d.update_available) _renderWebUpdaterSettings(container);
+    }).catch(() => {
+      btn.disabled = false;
+      btn.textContent = 'Check for Updates';
+      toast('Update check failed', 'error');
+    });
+  };
+  wrap.appendChild(btn);
+  container.appendChild(wrap);
+}
+
+function _checkWebUpdate() {
+  api('/settings/update-check').then(data => {
+    if (!data.update_available) return;
+    _updater.webUpdate = data;
+
+    // Badge on Settings nav
+    const settingsNav = document.querySelector('[data-view="settings"]');
+    if (settingsNav && !settingsNav.querySelector('.nav-badge')) {
+      const dot = h('span', { className: 'nav-badge' });
+      dot.textContent = '1';
+      settingsNav.appendChild(dot);
+    }
+
+    // Persistent toast with dismiss
+    const t = h('div', { className: 'toast toast-update' });
+    t.appendChild(textEl('span', 'v' + data.latest_version + ' is available', ''));
+    const viewBtn = h('a', {
+      className: 'toast-update-link',
+      href: data.release_url,
+      target: '_blank',
+      rel: 'noopener',
+    });
+    viewBtn.textContent = 'View';
+    viewBtn.addEventListener('click', e => e.stopPropagation());
+    t.appendChild(viewBtn);
+    const dismissBtn = h('button', { className: 'toast-update-dismiss' });
+    dismissBtn.textContent = '\u00d7';
+    dismissBtn.addEventListener('click', () => t.remove());
+    t.appendChild(dismissBtn);
+    toastSticky(t);
+
+    // Refresh settings panel if open
+    if (_updater.settingsEl) _renderWebUpdaterSettings(_updater.settingsEl);
+  }).catch(() => {});
+}
+
+function _renderWebUpdaterSettings(container) {
+  const data = _updater.webUpdate;
+  // Remove any previous web-update card
+  const prev = container.querySelector('.update-notification');
+  if (prev) prev.remove();
+  if (!data) return;
+
+  const card = h('div', { className: 'update-notification' });
+  const header = h('div', { className: 'update-notification-header' });
+  header.appendChild(textEl('span', 'Update Available', 'update-notification-title'));
+  header.appendChild(textEl('span', 'v' + data.latest_version, 'update-notification-version'));
+  card.appendChild(header);
+  if (data.release_notes) {
+    const notes = data.release_notes.length > 200
+      ? data.release_notes.slice(0, 200) + '…'
+      : data.release_notes;
+    card.appendChild(textEl('div', notes, 'update-notification-notes'));
+  }
+  const actions = h('div', { className: 'update-notification-actions' });
+  const dlBtn = h('a', {
+    className: 'update-notification-btn',
+    href: data.release_url,
+    target: '_blank',
+    rel: 'noopener',
+  });
+  dlBtn.textContent = 'Download from GitHub';
+  actions.appendChild(dlBtn);
+  card.appendChild(actions);
+  container.prepend(card);
+}
+
+// ---- TOKEN KEEPALIVE ----
+// Pings /auth/keepalive every 10 min while the window is visible so the token
+// never expires silently during idle periods.  Stops when the tab is hidden
+// and fires immediately + restarts the interval when it becomes visible again.
+let _keepaliveTimer = null;
+const _KEEPALIVE_MS = 10 * 60 * 1000; // 10 minutes
+
+function _keepaliveTick() {
+  api('/auth/keepalive', { method: 'POST' }).catch(() => {});
+}
+
+function _startKeepalive() {
+  if (_keepaliveTimer) return;
+  _keepaliveTick(); // immediate tick on visibility restore
+  _keepaliveTimer = setInterval(_keepaliveTick, _KEEPALIVE_MS);
+}
+
+function _stopKeepalive() {
+  if (_keepaliveTimer) { clearInterval(_keepaliveTimer); _keepaliveTimer = null; }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) _stopKeepalive(); else _startKeepalive();
+});
+
 function _initApp() {
   // Load settings into state for upgrade quality checks
   api('/settings').then(s => { state.settings = s; }).catch(() => {});
   refreshStatusLights();
-  navigate(location.hash.slice(1) || 'home');
+  _restoreQueue();
+  _restorePosition();
+  initUpdater();
+  _checkWebUpdate();
+  _startKeepalive();
+  navigate(normalizeView(location.hash.slice(1) || 'home'));
 }
 
 // Setup check on load — wizard or normal app

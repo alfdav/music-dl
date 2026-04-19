@@ -1,6 +1,6 @@
 [project]
 name = "music-dl"
-version = "3.0.0"
+version = "1.4.3"
 description = "music-dl — CLI Tidal downloader with next-generation features."
 readme = "README.md"
 license = "Apache-2.0"
@@ -16,7 +16,7 @@ classifiers = [
 ]
 
 dependencies = [
-  "requests~=2.32.5",
+  "requests~=2.33.0",
   "mutagen>=1.47.0",
   "dataclasses-json>=0.6.7",
   "pathvalidate>=3.3.1",
@@ -47,6 +47,9 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["tidal_dl*"]
 
+[tool.setuptools.package-data]
+"tidal_dl.gui" = ["static/**/*"]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120
@@ -57,7 +60,7 @@ target-version = ["py312", "py313"]
 line-length = 120
 
 [project.optional-dependencies]
-test = ["pytest>=8.0", "httpx>=0.27"]
+test = ["pytest>=9.0.3", "httpx>=0.27"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -68,5 +71,5 @@ filterwarnings = [
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
 ]

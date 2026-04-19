@@ -28,6 +28,7 @@ from Crypto.Util import Counter
 from dataclasses_json import DataClassJsonMixin, dataclass_json
 from typer.testing import CliRunner
 
+from tidal_dl import version_app
 from tidal_dl.config import BaseConfig, Settings
 from tidal_dl.constants import MediaType
 from tidal_dl.helper.camelot import (
@@ -882,7 +883,7 @@ class TestCLI:
             text=True,
         )
         assert result.returncode == 0
-        assert "3.0.0" in result.stdout
+        assert version_app() in result.stdout
 
     def test_help_command(self):
         result = subprocess.run(

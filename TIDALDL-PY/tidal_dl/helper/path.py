@@ -1,5 +1,6 @@
 """File path formatting, sanitization, and template expansion."""
 
+import functools
 import math
 import os
 import pathlib

@@ -79,6 +79,28 @@ class TestLibraryAlbums:
         assert resp.status_code == 200
 
 
+class TestRecentAlbums:
+    def test_returns_200(self, client):
+        resp = client.get("/api/library/recent-albums", headers=client._host_header)
+        assert resp.status_code == 200
+
+    def test_response_shape(self, client):
+        resp = client.get("/api/library/recent-albums", headers=client._host_header)
+        data = resp.json()
+        assert "albums" in data
+        assert "total" in data
+        assert "limit" in data
+        assert "offset" in data
+        assert isinstance(data["albums"], list)
+        assert isinstance(data["total"], int)
+        assert isinstance(data["limit"], int)
+        assert isinstance(data["offset"], int)
+
+    def test_pagination_params_accepted(self, client):
+        resp = client.get("/api/library/recent-albums?limit=10&offset=5", headers=client._host_header)
+        assert resp.status_code == 200
+
+
 class TestLibraryFavorites:
     def test_returns_200(self, client):
         resp = client.get("/api/library/favorites", headers=client._host_header)
@@ -163,7 +185,30 @@ class TestDownloadTrigger:
         )
 
         assert resp.status_code == 401
-        assert "Not logged in to Tidal" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Not logged in to Tidal"
+        assert "terminal" not in resp.json()["detail"].lower()
+
+
+class TestSearchAuth:
+    def test_requires_tidal_login_without_terminal_hint(self, client, monkeypatch):
+        class FakeSession:
+            def check_login(self):
+                return False
+
+        class FakeTidal:
+            def __init__(self):
+                self.session = FakeSession()
+
+        monkeypatch.setattr("tidal_dl.gui.api.search.Tidal", FakeTidal)
+
+        resp = client.get(
+            "/api/search?q=test",
+            headers=client._host_header,
+        )
+
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "Not logged in to Tidal"
+        assert "terminal" not in resp.json()["detail"].lower()
 
 
 class TestDuplicatesPreview:

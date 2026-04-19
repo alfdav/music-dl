@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.egg
+
+# Virtual environments
+.venv/
+test_venv/
+
+# Build artifacts (PyInstaller, setuptools bdist, etc.)
+build/
+!build/pyinstaller/music-dl-server.spec
+
+# Node / Bun (Tauri CLI)
+node_modules/
+bun.lock
+
+# Tauri build artifacts (handled in src-tauri/.gitignore too)
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/gen/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Output
+output/

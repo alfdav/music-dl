@@ -64,12 +64,14 @@ class BaseConfig(Generic[ConfigModelT]):
     data: ConfigModelT
     file_path: str
     cls_model: type[ConfigModelT]
-    path_base: str = path_config_base()
+    path_base: str = ""
 
     def __init__(self, cls_model: type[ConfigModelT], file_path: str) -> None:
         self.cls_model = cls_model
         self.file_path = file_path
         self.data = cls_model()
+        if not self.path_base:
+            self.path_base = path_config_base()
 
     def save(self, config_to_compare: str | None = None) -> None:
         """Persist current config to disk.

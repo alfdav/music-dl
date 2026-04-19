@@ -32,7 +32,9 @@
       font-size: 15px;
       letter-spacing: 0.5px;
       opacity: 0.7;
+      transition: opacity 0.3s ease;
     }
+    .text.fade { opacity: 0; }
     .error {
       color: #ff6b6b;
       font-size: 13px;
@@ -45,7 +47,41 @@
 </head>
 <body>
   <div class="spinner" id="spinner"></div>
-  <div class="text">Loading music-dl...</div>
+  <div class="text" id="status">Loading music-dl...</div>
   <div class="error" id="error"></div>
+  <script>
+    var phrases = [
+      "Tuning the frequencies...",
+      "Warming up the vacuum tubes...",
+      "Polishing the vinyl...",
+      "Rewinding the cassette...",
+      "Dropping the needle...",
+      "Calibrating the subwoofer...",
+      "Untangling the headphone cable...",
+      "Blowing into the cartridge...",
+      "Adjusting the tracking force...",
+      "Flipping to side B...",
+      "Cuing up the next track...",
+      "Syncing the turntables...",
+      "Loading the 8-track...",
+      "Degaussing the tape heads...",
+      "Almost there, hang tight...",
+    ];
+    var el = document.getElementById('status');
+    var idx = 0;
+    // Shuffle so it's different each launch
+    for (var i = phrases.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = phrases[i]; phrases[i] = phrases[j]; phrases[j] = tmp;
+    }
+    setInterval(function() {
+      el.classList.add('fade');
+      setTimeout(function() {
+        idx = (idx + 1) % phrases.length;
+        el.textContent = phrases[idx];
+        el.classList.remove('fade');
+      }, 300);
+    }, 2500);
+  </script>
 </body>
 </html>

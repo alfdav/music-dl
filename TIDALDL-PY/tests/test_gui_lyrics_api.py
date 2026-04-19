@@ -9,7 +9,7 @@ def test_get_local_lyrics_returns_synced_payload(client, monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         "tidal_dl.gui.api.lyrics.resolve_local_audio_path",
-        lambda raw_path, allowed_dirs: LocalAudioPathResolution("ok", path.resolve()),
+        lambda raw_path, allowed_dirs, **_kwargs: LocalAudioPathResolution("ok", path.resolve()),
     )
     monkeypatch.setattr(
         "tidal_dl.gui.api.lyrics.read_local_lyrics",
@@ -40,7 +40,7 @@ def test_get_local_lyrics_returns_403_for_forbidden_path(client, monkeypatch):
 
     monkeypatch.setattr(
         "tidal_dl.gui.api.lyrics.resolve_local_audio_path",
-        lambda raw_path, allowed_dirs: LocalAudioPathResolution("forbidden"),
+        lambda raw_path, allowed_dirs, **_kwargs: LocalAudioPathResolution("forbidden"),
     )
 
     resp = client.get("/api/lyrics/local?path=%2Fetc%2Fpasswd", headers=client._host_header)
@@ -53,7 +53,7 @@ def test_get_local_lyrics_returns_404_for_missing_trusted_path(client, monkeypat
 
     monkeypatch.setattr(
         "tidal_dl.gui.api.lyrics.resolve_local_audio_path",
-        lambda raw_path, allowed_dirs: LocalAudioPathResolution("not_found"),
+        lambda raw_path, allowed_dirs, **_kwargs: LocalAudioPathResolution("not_found"),
     )
 
     resp = client.get("/api/lyrics/local?path=%2Ftmp%2Fmissing.flac", headers=client._host_header)
@@ -66,7 +66,7 @@ def test_get_local_lyrics_returns_404_for_not_audio(client, monkeypatch):
 
     monkeypatch.setattr(
         "tidal_dl.gui.api.lyrics.resolve_local_audio_path",
-        lambda raw_path, allowed_dirs: LocalAudioPathResolution("not_audio"),
+        lambda raw_path, allowed_dirs, **_kwargs: LocalAudioPathResolution("not_audio"),
     )
 
     resp = client.get("/api/lyrics/local?path=%2Ftmp%2Fnotes.txt", headers=client._host_header)
@@ -82,7 +82,7 @@ def test_get_local_lyrics_none_payload_keeps_required_fields(client, monkeypatch
 
     monkeypatch.setattr(
         "tidal_dl.gui.api.lyrics.resolve_local_audio_path",
-        lambda raw_path, allowed_dirs: LocalAudioPathResolution("ok", path.resolve()),
+        lambda raw_path, allowed_dirs, **_kwargs: LocalAudioPathResolution("ok", path.resolve()),
     )
     monkeypatch.setattr(
         "tidal_dl.gui.api.lyrics.read_local_lyrics",

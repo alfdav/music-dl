@@ -1,0 +1,50 @@
+name: gui-smoke
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gui-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      COLUMNS: '120'
+    defaults:
+      run:
+        working-directory: TIDALDL-PY
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Run GUI smoke tests
+        run: >-
+          uv run --extra test pytest
+          tests/test_gui_command.py::TestGuiCommandHelp::test_gui_help_exits_zero
+          tests/test_gui_command.py::TestGuiCommandHelp::test_gui_help_mentions_port
+          tests/test_gui_command.py::TestGuiCommandHelp::test_gui_appears_in_root_help
+          tests/test_gui_command.py::TestGuiCommandInvocation::test_default_port_and_browser
+          tests/test_gui_command.py::TestGuiCommandInvocation::test_custom_port
+          tests/test_gui_command.py::TestGuiCommandInvocation::test_no_browser_flag
+          tests/test_gui_command.py::TestGuiCommandInvocation::test_custom_port_and_no_browser
+          tests/test_gui_api.py
+          tests/test_setup.py
+          tests/test_api_endpoints.py
+          tests/test_downloads.py
+          tests/test_gui_security.py
+          -q

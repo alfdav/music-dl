@@ -9,6 +9,8 @@
 
 # Python
 __pycache__/
+.pytest_cache/
+**/.pytest_cache/
 *.py[cod]
 *.egg-info/
 *.egg
@@ -61,3 +63,10 @@ test-results/
 .venv/
 output/
 **/docs/superpowers/
+
+# Local-only helper scripts
+/scripts/
+/TIDALDL-PY/scripts/
+
+# Local MCP config
+.mcp.json

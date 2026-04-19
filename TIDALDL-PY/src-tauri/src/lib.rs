@@ -1,3 +1,5 @@
+mod updater;
+
 use std::net::TcpStream;
 use std::sync::Mutex;
 use std::thread;
@@ -9,10 +11,10 @@ use tauri_plugin_shell::process::CommandChild;
 
 const SIDECAR_URL: &str = "http://localhost:8765";
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
-const POLL_TIMEOUT: Duration = Duration::from_secs(10);
+const POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
 // Wrapper so we can manage CommandChild in Tauri state (needs Send + Sync)
-struct Sidecar(Mutex<Option<CommandChild>>);
+pub(crate) struct Sidecar(pub(crate) Mutex<Option<CommandChild>>);
 
 /// Check if the sidecar is accepting TCP connections on port 8765.
 fn sidecar_is_ready() -> bool {
@@ -23,10 +25,94 @@ fn sidecar_is_ready() -> bool {
     .is_ok()
 }
 
+// ── Sidecar lifecycle commands ───────────────────────────────────────────────
+
+#[tauri::command]
+fn sidecar_status(sidecar: tauri::State<'_, Sidecar>) -> bool {
+    let guard = sidecar.0.lock().unwrap();
+    guard.is_some() && sidecar_is_ready()
+}
+
+#[tauri::command]
+fn stop_sidecar(sidecar: tauri::State<'_, Sidecar>) -> Result<(), String> {
+    let mut guard = sidecar.0.lock().unwrap();
+    match guard.take() {
+        Some(child) => {
+            child.kill().map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        None => Err("Sidecar is not running".into()),
+    }
+}
+
+#[tauri::command]
+fn start_sidecar(
+    app: tauri::AppHandle,
+    sidecar: tauri::State<'_, Sidecar>,
+) -> Result<(), String> {
+    let mut guard = sidecar.0.lock().unwrap();
+    if guard.is_some() {
+        return Err("Sidecar is already running".into());
+    }
+
+    let sidecar_cmd = app
+        .shell()
+        .sidecar("music-dl-server")
+        .map_err(|e| e.to_string())?;
+    let (_rx, child) = sidecar_cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn sidecar: {e}"))?;
+    *guard = Some(child);
+
+    Ok(())
+}
+
+#[tauri::command]
+fn restart_sidecar(
+    app: tauri::AppHandle,
+    sidecar: tauri::State<'_, Sidecar>,
+) -> Result<(), String> {
+    // Hold the lock for the entire kill→sleep→spawn sequence so the Mutex
+    // is never transiently None (which would leave the sidecar unrecoverable
+    // if spawn fails after kill).
+    let mut guard = sidecar.0.lock().unwrap();
+
+    if let Some(child) = guard.take() {
+        let _ = child.kill();
+    }
+
+    // Brief pause so the port is freed before we respawn
+    thread::sleep(Duration::from_millis(500));
+
+    let sidecar_cmd = app
+        .shell()
+        .sidecar("music-dl-server")
+        .map_err(|e| e.to_string())?;
+    let (_rx, child) = sidecar_cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn sidecar: {e}"))?;
+    *guard = Some(child);
+
+    Ok(())
+}
+
+// ── App entry ────────────────────────────────────────────────────────────────
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .invoke_handler(tauri::generate_handler![
+            updater::get_updater_state,
+            updater::check_for_updates,
+            updater::install_update,
+            sidecar_status,
+            stop_sidecar,
+            start_sidecar,
+            restart_sidecar,
+        ])
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -35,6 +121,12 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            // Manage updater shared state
+            app.manage(updater::UpdaterSharedState(Mutex::new(
+                updater::UpdaterState::default(),
+            )));
+            app.manage(updater::StagedUpdate(Mutex::new(None)));
 
             // Spawn the Python FastAPI sidecar
             let sidecar_cmd = app.shell().sidecar("music-dl-server").unwrap();
@@ -51,7 +143,8 @@ pub fn run() {
                     if sidecar_is_ready() {
                         if let Some(window) = handle.get_webview_window("main") {
                             // Navigate the webview to the sidecar-served frontend.
-                            // This is a hardcoded URL, not user input — safe to eval.
+                            // NOTE: window.eval is required by Tauri's webview API
+                            // to execute navigation — this is not user-supplied input.
                             let nav = format!("window.location.replace('{SIDECAR_URL}')");
                             let _ = window.eval(&nav);
                         }
@@ -70,6 +163,9 @@ pub fn run() {
                     ));
                 }
             });
+
+            // Spawn background update check (non-blocking, release only)
+            updater::spawn_update_check(app.handle());
 
             Ok(())
         })

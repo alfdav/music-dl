@@ -126,6 +126,34 @@ class TestPathValidation:
         result = validate_audio_path(str(tmp_path / "nope.flac"), [str(tmp_path)])
         assert result is None
 
+    def test_library_resolver_allows_scanned_audio_outside_allowed_dirs(self, tmp_path):
+        from tidal_dl.gui.security import resolve_library_audio_path
+
+        outside = tmp_path.parent / "scanned.flac"
+        outside.write_bytes(b"fake")
+
+        result = resolve_library_audio_path(
+            str(outside),
+            [str(tmp_path)],
+            trusted_library_path=outside.resolve(),
+        )
+
+        assert result == outside.resolve()
+
+    def test_library_resolver_rejects_non_audio_even_when_scanned(self, tmp_path):
+        from tidal_dl.gui.security import resolve_library_audio_path
+
+        outside = tmp_path.parent / "scanned.txt"
+        outside.write_text("fake")
+
+        result = resolve_library_audio_path(
+            str(outside),
+            [str(tmp_path)],
+            trusted_library_path=outside.resolve(),
+        )
+
+        assert result is None
+
     def test_validates_download_path_change(self):
         from pathlib import Path
 
@@ -157,24 +185,31 @@ class TestLocalAudioResolution:
         assert result.kind == "forbidden"
         assert result.path is None
 
-    def test_reports_not_found_for_db_trusted_missing_path(self, monkeypatch, tmp_path):
+    def test_reports_not_found_for_db_trusted_missing_path(self, tmp_path):
         from tidal_dl.gui.security import resolve_local_audio_path
 
-        monkeypatch.setattr("tidal_dl.gui.security._path_in_library", lambda path: True)
-
-        result = resolve_local_audio_path(str(tmp_path / "missing.flac"), [str(tmp_path)])
+        result = resolve_local_audio_path(
+            str(tmp_path / "missing.flac"),
+            [str(tmp_path)],
+            library_trusts_raw_path=True,
+            library_resolved_path=None,
+        )
 
         assert result.kind == "not_found"
         assert result.path is None
 
-    def test_reports_not_audio_for_db_trusted_non_audio(self, monkeypatch, tmp_path):
+    def test_reports_not_audio_for_db_trusted_non_audio(self, tmp_path):
         from tidal_dl.gui.security import resolve_local_audio_path
 
         bad = tmp_path / "notes.txt"
         bad.write_text("x")
-        monkeypatch.setattr("tidal_dl.gui.security._path_in_library", lambda path: True)
 
-        result = resolve_local_audio_path(str(bad), [str(tmp_path)])
+        result = resolve_local_audio_path(
+            str(bad),
+            [str(tmp_path)],
+            library_trusts_raw_path=True,
+            library_resolved_path=bad.resolve(),
+        )
 
         assert result.kind == "not_audio"
         assert result.path is None

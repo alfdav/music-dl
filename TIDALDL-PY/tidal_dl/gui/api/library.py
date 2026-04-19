@@ -46,36 +46,75 @@ def _normalize_genre(raw: str | None) -> str | None:
     return _GENRE_MAP.get(g.lower(), g)
 
 
-_db: LibraryDB | None = None
-_db_opened_at: float = 0
+_db: LibraryDB | None = None  # Compatibility alias for tests/debugging.
+_db_opened_at: float = 0  # Compatibility alias for tests/debugging.
 _DB_MAX_AGE = 300  # Force reconnect every 5 min to catch stale NAS handles
 _scan_lock = threading.Lock()
 _scan_running = False
 _scan_progress = {"scanned": 0, "total": 0, "done": True}
+_db_local = threading.local()
+_db_generation = 0
+_db_generation_lock = threading.Lock()
+
+
+def _close_thread_db() -> None:
+    db = getattr(_db_local, "db", None)
+    if db is not None:
+        try:
+            db.close()
+        except Exception:
+            pass
+    _db_local.db = None
+    _db_local.opened_at = 0.0
+    _db_local.generation = -1
+
+
+def _invalidate_db_cache() -> None:
+    global _db, _db_opened_at, _db_generation
+    _close_thread_db()
+    _db = None
+    _db_opened_at = 0
+    with _db_generation_lock:
+        _db_generation += 1
 
 
 def _get_db() -> LibraryDB:
     global _db, _db_opened_at
     now = time.time()
-    if _db is not None and (now - _db_opened_at) > _DB_MAX_AGE:
-        try:
-            _db.close()
-        except Exception:
-            pass
-        _db = None
-    if _db is None:
-        _db = LibraryDB(Path(path_config_base()) / "library.db")
-        _db.open()
-        _db_opened_at = now
+    db_path = Path(path_config_base()) / "library.db"
+    db = getattr(_db_local, "db", None)
+    opened_at = getattr(_db_local, "opened_at", 0.0)
+    generation = getattr(_db_local, "generation", -1)
+
+    if db is not None:
+        expired = (now - opened_at) > _DB_MAX_AGE
+        stale_generation = generation != _db_generation
+        stale_path = db._path != db_path
+        if expired or stale_generation or stale_path:
+            _close_thread_db()
+            db = None
+
+    if db is None:
+        db = LibraryDB(db_path)
+        db.open()
+        _db_local.db = db
+        _db_local.opened_at = now
+        _db_local.generation = _db_generation
     else:
         # Validate the connection is still alive (NAS mounts can drop)
         try:
-            _db._conn.execute("SELECT 1")
+            db._conn.execute("SELECT 1")
         except Exception:
-            _db = LibraryDB(Path(path_config_base()) / "library.db")
-            _db.open()
-            _db_opened_at = now
-    return _db
+            _close_thread_db()
+            db = LibraryDB(db_path)
+            db.open()
+            _db_local.db = db
+            _db_local.opened_at = now
+            _db_local.generation = _db_generation
+
+    _db = db
+    _db_opened_at = getattr(_db_local, "opened_at", now)
+    return db
 
 
 def get_download_path() -> str:
@@ -97,6 +136,24 @@ def _path_in_library(path: str) -> bool:
         return row is not None
     except Exception:
         return False
+
+
+def _trusted_library_path(path: str) -> Path | None:
+    """Return a resolved path from the library DB when the exact path is known."""
+    import sqlite3
+
+    db_path = Path(path_config_base()) / "library.db"
+    if not db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute("SELECT path FROM scanned WHERE path = ? LIMIT 1", (path,)).fetchone()
+        conn.close()
+        if not row:
+            return None
+        return Path(row[0]).resolve(strict=True)
+    except Exception:
+        return None
 
 
 def _read_metadata(file_path: Path) -> dict | None:
@@ -137,7 +194,7 @@ def _read_metadata(file_path: Path) -> dict | None:
             "name": _tag("title", file_path.stem),
             "artist": _tag("artist", "Unknown Artist"),
             "album": _tag("album", "Unknown Album"),
-            "duration": int(audio.info.length) if audio.info else 0,
+            "duration": round(audio.info.length) if audio.info else 0,
             "isrc": isrc,
             "genre": _normalize_genre(_tag("genre")),
             "quality": quality,
@@ -291,7 +348,8 @@ def _background_scan(rescan: bool) -> None:
         # delete every row because disk_paths would be empty.
         if not scan_dirs:
             print("[library] No scan directories reachable — skipping scan to preserve cache")
-            _scan_progress = {"scanned": 0, "total": 0, "done": True}
+            with _scan_lock:
+                _scan_progress = {"scanned": 0, "total": 0, "done": True}
             db.close()
             return
 
@@ -313,11 +371,13 @@ def _background_scan(rescan: bool) -> None:
             stored = db.get_meta("scan_fingerprint")
             if stored == finger:
                 print("[library] Scan directories unchanged — skipping")
-                _scan_progress = {"scanned": 0, "total": 0, "done": True}
+                with _scan_lock:
+                    _scan_progress = {"scanned": 0, "total": 0, "done": True}
                 db.close()
                 return
 
-        _scan_progress = {"scanned": 0, "total": 0, "done": False}
+        with _scan_lock:
+            _scan_progress = {"scanned": 0, "total": 0, "done": False}
         disk_paths: set[str] = set()
         batch = 0
 
@@ -330,12 +390,22 @@ def _background_scan(rescan: bool) -> None:
                     disk_paths.add(str(f))
                     _scan_progress["total"] = len(disk_paths)
 
-            # Phase 2: Read metadata only for NEW files (the diff)
+            # Phase 2: Read metadata + waveform only for NEW files (the diff)
+            from tidal_dl.helper.waveform import extract_both, peaks_to_json
+
             new_paths = disk_paths - known
             _scan_progress["scanned"] = 0
             for path_str in new_paths:
                 meta = _read_metadata(Path(path_str))
                 if meta:
+                    # Extract waveform peaks (single ffmpeg decode, ~30ms per file)
+                    waveform_json = None
+                    hires_json = None
+                    both = extract_both(Path(path_str))
+                    if both:
+                        waveform_json = peaks_to_json(both[0])
+                        hires_json = peaks_to_json(both[1])
+
                     db.record(
                         path_str,
                         status="tagged" if meta["isrc"] else "needs_isrc",
@@ -347,6 +417,8 @@ def _background_scan(rescan: bool) -> None:
                         genre=meta.get("genre"),
                         quality=meta["quality"],
                         fmt=meta["format"],
+                        waveform=waveform_json,
+                        waveform_hires=hires_json,
                     )
                 else:
                     db.record(path_str, status="unreadable")
@@ -370,7 +442,8 @@ def _background_scan(rescan: bool) -> None:
             if batch > 0 or stale:
                 db.commit()
 
-        _scan_progress["done"] = True
+        with _scan_lock:
+            _scan_progress["done"] = True
 
         # Save scan fingerprint so next scan can skip if nothing changed
         if finger:
@@ -421,9 +494,8 @@ def _background_scan(rescan: bool) -> None:
                 db.commit()
         db.close()
 
-        # Flag invalidation — main thread reopens on next request
-        global _db
-        _db = None
+        # Flag invalidation — request threads reopen on next access
+        _invalidate_db_cache()
     finally:
         with _scan_lock:
             _scan_running = False
@@ -472,6 +544,29 @@ def all_albums(q: str = Query("", description="Search filter")):
         ],
         "total": len(albums),
     }
+
+
+@router.get("/library/recent-albums")
+def library_recent_albums(
+    limit: int = Query(12, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    from urllib.parse import quote
+
+    db = _get_db()
+    rows, total = db.recent_albums_page(limit=limit, offset=offset)
+    albums = [
+        {
+            "name": row["album"],
+            "artist": row["artist"],
+            "track_count": row["track_count"],
+            "cover_url": "/api/library/art?path=" + quote(row["cover_path"], safe="") if row.get("cover_path") else "",
+            "recent_at": row["recent_at"],
+            "recent_source": row["recent_source"],
+        }
+        for row in rows
+    ]
+    return {"albums": albums, "total": total, "limit": limit, "offset": offset}
 
 
 @router.get("/library/artist/{artist_name}/albums")
@@ -545,7 +640,12 @@ def library_art(path: str = Query(..., description="Absolute path to audio file"
     if settings.data.scan_paths:
         allowed.extend(str(Path(p.strip()).expanduser()) for p in settings.data.scan_paths.split(",") if p.strip())
 
-    resolution = resolve_local_audio_path(path, allowed)
+    resolution = resolve_local_audio_path(
+        path,
+        allowed,
+        library_trusts_raw_path=_path_in_library(path),
+        library_resolved_path=_trusted_library_path(path),
+    )
     if resolution.kind != "ok" or resolution.path is None:
         raise HTTPException(status_code=403, detail="Access denied")
     validated = resolution.path
@@ -704,7 +804,8 @@ def scan_library(
 @router.get("/library/scan/status")
 def scan_status() -> dict:
     """Check background scan progress."""
-    return {"scanning": _scan_running, **_scan_progress}
+    with _scan_lock:
+        return {"scanning": _scan_running, **_scan_progress}
 
 
 from pydantic import BaseModel

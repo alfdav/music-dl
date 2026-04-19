@@ -24,9 +24,15 @@ def get_download_paths() -> list[str]:
 @router.get("/local")
 def serve_local_file(path: str = Query(..., description="Absolute path to audio file")):
     """Serve a local audio file. Path must be within a configured download directory."""
+    from tidal_dl.gui.api.library import _path_in_library, _trusted_library_path
     from tidal_dl.gui.security import resolve_local_audio_path
 
-    resolution = resolve_local_audio_path(path, get_download_paths())
+    resolution = resolve_local_audio_path(
+        path,
+        get_download_paths(),
+        library_trusts_raw_path=_path_in_library(path),
+        library_resolved_path=_trusted_library_path(path),
+    )
     if resolution.kind != "ok" or resolution.path is None:
         raise HTTPException(status_code=403, detail="Access denied")
     validated_path = resolution.path
@@ -95,3 +101,56 @@ def stream_tidal_track(track_id: int):
         pass
 
     raise HTTPException(status_code=503, detail="Unable to stream track")
+
+
+@router.get("/waveform")
+def get_waveform(path: str = Query(..., description="Absolute path to audio file")):
+    """Return pre-computed waveform peaks (display + hires) for a local track.
+
+    Display peaks (~100) define the static bar shape.
+    Hires peaks (~10/sec) drive per-frame animation during playback.
+    Both are extracted at scan time and cached in the library DB.
+    """
+    from tidal_dl.gui.api.library import _path_in_library, _trusted_library_path
+    from tidal_dl.gui.security import resolve_local_audio_path
+    from tidal_dl.helper.library_db import LibraryDB
+    from tidal_dl.helper.path import path_config_base
+    from tidal_dl.helper.waveform import extract_both, peaks_from_json, peaks_to_json
+
+    resolution = resolve_local_audio_path(
+        path,
+        get_download_paths(),
+        library_trusts_raw_path=_path_in_library(path),
+        library_resolved_path=_trusted_library_path(path),
+    )
+    if resolution.kind != "ok" or resolution.path is None:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    validated_path = resolution.path
+
+    db = LibraryDB(Path(path_config_base()) / "library.db")
+    db.open()
+    try:
+        row = db._conn.execute(
+            "SELECT waveform, waveform_hires FROM scanned WHERE path = ?", (str(validated_path),)
+        ).fetchone()
+
+        if row and row["waveform"] and row["waveform_hires"]:
+            display = peaks_from_json(row["waveform"])
+            hires = peaks_from_json(row["waveform_hires"])
+            if display and hires:
+                return {"peaks": display, "hires": hires}
+
+        # Not cached — extract on demand (single ffmpeg decode) and store
+        both = extract_both(validated_path)
+        if both:
+            db._conn.execute(
+                "UPDATE scanned SET waveform = ?, waveform_hires = ? WHERE path = ?",
+                (peaks_to_json(both[0]), peaks_to_json(both[1]), str(validated_path)),
+            )
+            db.commit()
+    finally:
+        db.close()
+
+    if not both:
+        raise HTTPException(status_code=404, detail="Could not extract waveform")
+    return {"peaks": both[0], "hires": both[1]}

@@ -14,6 +14,21 @@ def db(tmp_path):
     db.close()
 
 
+@pytest.fixture
+def api_home_client(tmp_path, monkeypatch, clear_singletons):
+    from fastapi.testclient import TestClient
+    from tidal_dl.gui import create_app
+    import tidal_dl.gui.api.home as home_api
+
+    monkeypatch.setenv("MUSIC_DL_CONFIG_DIR", str(tmp_path))
+    home_api._invalidate_db_cache()
+
+    client = TestClient(create_app(port=8765))
+    yield client
+
+    home_api._invalidate_db_cache()
+
+
 def test_schema_v3_columns_exist(db):
     """play_count, last_played, genre columns on scanned table."""
     cols = {r["name"] for r in db._conn.execute("PRAGMA table_info(scanned)")}
@@ -144,14 +159,10 @@ def test_genre_normalization():
     assert _normalize_genre("") is None
 
 
-def test_api_home_returns_200():
+def test_api_home_returns_200(api_home_client):
     """GET /api/home returns 200 with expected structure."""
-    from fastapi.testclient import TestClient
-    from tidal_dl.gui import create_app
-
-    client = TestClient(create_app(port=8765))
     host = {"host": "localhost:8765"}
-    resp = client.get("/api/home", headers=host)
+    resp = api_home_client.get("/api/home", headers=host)
     assert resp.status_code == 200
     data = resp.json()
     assert "total_plays" in data
@@ -159,21 +170,17 @@ def test_api_home_returns_200():
     assert len(data["weekly_activity"]) == 7
 
 
-def test_api_home_play_returns_204():
+def test_api_home_play_returns_204(api_home_client):
     """POST /api/home/play returns 204."""
-    from fastapi.testclient import TestClient
-    from tidal_dl.gui import create_app
-
-    client = TestClient(create_app(port=8765))
     host = {"host": "localhost:8765"}
 
     # Get CSRF token
-    index = client.get("/", headers=host)
+    index = api_home_client.get("/", headers=host)
     import re
     csrf = re.search(r'name="csrf-token" content="([^"]+)"', index.text)
     token = csrf.group(1) if csrf else ""
 
-    resp = client.post(
+    resp = api_home_client.post(
         "/api/home/play",
         json={"artist": "Daft Punk", "genre": "Electronic", "duration": 320},
         headers={**host, "X-CSRF-Token": token},
@@ -181,16 +188,12 @@ def test_api_home_play_returns_204():
     assert resp.status_code == 204
 
 
-def test_api_home_play_dedup_within_60s():
+def test_api_home_play_dedup_within_60s(api_home_client, tmp_path):
     """POST /api/home/play silently deduplicates the same path within 60 seconds."""
-    from fastapi.testclient import TestClient
-    from tidal_dl.gui import create_app
-
-    client = TestClient(create_app(port=8766))
-    host = {"host": "localhost:8766"}
+    host = {"host": "localhost:8765"}
 
     # Get CSRF token
-    index = client.get("/", headers=host)
+    index = api_home_client.get("/", headers=host)
     import re
     csrf = re.search(r'name="csrf-token" content="([^"]+)"', index.text)
     token = csrf.group(1) if csrf else ""
@@ -199,18 +202,16 @@ def test_api_home_play_dedup_within_60s():
     payload = {"path": "/tmp/test_dedup.flac", "artist": "Test", "genre": "Rock", "duration": 180}
 
     # First play — accepted
-    resp1 = client.post("/api/home/play", json=payload, headers=headers)
+    resp1 = api_home_client.post("/api/home/play", json=payload, headers=headers)
     assert resp1.status_code == 204
 
     # Immediate duplicate — still 204 but should NOT create a second event
-    resp2 = client.post("/api/home/play", json=payload, headers=headers)
+    resp2 = api_home_client.post("/api/home/play", json=payload, headers=headers)
     assert resp2.status_code == 204
 
     # Verify only one play_event was inserted
-    from pathlib import Path
     from tidal_dl.helper.library_db import LibraryDB
-    from tidal_dl.helper.path import path_config_base
-    db = LibraryDB(Path(path_config_base()) / "library.db")
+    db = LibraryDB(tmp_path / "library.db")
     db.open()
     count = db._conn.execute(
         "SELECT COUNT(*) FROM play_events WHERE path = ?", ("/tmp/test_dedup.flac",)
@@ -301,14 +302,10 @@ def test_home_stats_this_week_top_artists_list(db):
     assert tw["top_artists"][2]["name"] == "C"
 
 
-def test_api_home_includes_this_week():
+def test_api_home_includes_this_week(api_home_client):
     """GET /api/home response includes this_week key."""
-    from fastapi.testclient import TestClient
-    from tidal_dl.gui import create_app
-
-    client = TestClient(create_app(port=8765))
     host = {"host": "localhost:8765"}
-    resp = client.get("/api/home", headers=host)
+    resp = api_home_client.get("/api/home", headers=host)
     assert resp.status_code == 200
     data = resp.json()
     assert "this_week" in data

@@ -1,0 +1,214 @@
+name: build-desktop
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: linux-x86_64
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: TIDALDL-PY
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── System deps (Linux only) ─────────────────────────────────
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev librsvg2-dev \
+            patchelf libgtk-3-dev libayatana-appindicator3-dev \
+            ffmpeg
+
+      # ── Node.js (for Tauri CLI via npx) ──────────────────────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # ── Python + PyInstaller sidecar ─────────────────────────────
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Create venv and install deps
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python -e ".[test]"
+          uv pip install --python .venv/bin/python pyinstaller
+
+      - name: Build PyInstaller sidecar
+        run: |
+          TARGET_TRIPLE=$(rustc --print host-tuple)
+          .venv/bin/pyinstaller --clean \
+            --distpath src-tauri/binaries \
+            --workpath build/pyinstaller \
+            --noconfirm \
+            build/pyinstaller/music-dl-server.spec
+          mv src-tauri/binaries/music-dl-server \
+             src-tauri/binaries/music-dl-server-${TARGET_TRIPLE}
+
+      - name: Verify bundled assets
+        run: |
+          .venv/bin/python -c "
+          from pathlib import Path
+          js = Path('tidal_dl/gui/static/app.js').read_text()
+          assert 'mediaSession' in js, 'STALE JS: mediaSession missing'
+          assert '_wfHires' in js, 'STALE JS: waveform hires missing'
+          print('[verify] Static assets OK')
+          "
+
+      # ── Rust + Tauri ─────────────────────────────────────────────
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: TIDALDL-PY/src-tauri -> target
+
+      - name: Install Tauri CLI
+        run: npm install
+
+      - name: Build Tauri app
+        run: npx tauri build --target ${{ matrix.target }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # ── Upload artifacts ─────────────────────────────────────────
+      - name: Upload Linux desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: music-dl-${{ matrix.label }}
+          path: |
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+          if-no-files-found: warn
+
+      # ── Attach to release if tagged ──────────────────────────────
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
+            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+
+  publish-manifest:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          REPO="${GITHUB_REPOSITORY}"
+
+          PREV_TAG=$(gh release list \
+            --repo "$REPO" \
+            --exclude-drafts \
+            --exclude-pre-releases \
+            --limit 20 \
+            --json tagName \
+            --jq "map(select(.tagName != \"$TAG\"))[0].tagName")
+
+          if [ -n "${PREV_TAG}" ] && [ "${PREV_TAG}" != "null" ]; then
+            gh api "repos/${REPO}/releases/generate-notes" \
+              -f tag_name="$TAG" \
+              -f previous_tag_name="$PREV_TAG" > release-notes.json
+          else
+            gh api "repos/${REPO}/releases/generate-notes" \
+              -f tag_name="$TAG" > release-notes.json
+          fi
+
+          jq -r '.body' release-notes.json > RELEASE_NOTES.md
+
+          TRIMMED_NOTES=$(tr -d '[:space:]' < RELEASE_NOTES.md)
+          if [ -z "$TRIMMED_NOTES" ] || [ "$TRIMMED_NOTES" = "null" ]; then
+            echo "::error::Generated release notes were empty"
+            exit 1
+          fi
+
+          echo "Generated release notes:"
+          cat RELEASE_NOTES.md
+
+      - name: Generate latest.json
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          REPO="${GITHUB_REPOSITORY}"
+          BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
+
+          find artifacts/ -type f | sort
+
+          LINUX_SIG=$(cat "$(find artifacts/music-dl-linux-x86_64 -name '*.AppImage.sig' | head -1)")
+          LINUX_APPIMAGE=$(basename "$(find artifacts/music-dl-linux-x86_64 -name '*.AppImage' ! -name '*.sig' | head -1)")
+
+          jq -n \
+            --arg version "$TAG" \
+            --arg notes "$(cat RELEASE_NOTES.md)" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg linux_sig "$LINUX_SIG" \
+            --arg linux_url "${BASE_URL}/${LINUX_APPIMAGE}" \
+            '{
+              version: $version,
+              notes: $notes,
+              pub_date: $pub_date,
+              platforms: {
+                "linux-x86_64": {
+                  signature: $linux_sig,
+                  url: $linux_url
+                }
+              }
+            }' > latest.json
+
+          echo "Generated latest.json:"
+          cat latest.json
+
+      - name: Upload latest.json to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: latest.json
+
+      - name: Apply release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --notes-file RELEASE_NOTES.md

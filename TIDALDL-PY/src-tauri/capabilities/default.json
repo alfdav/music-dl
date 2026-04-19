@@ -5,6 +5,7 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "process:allow-restart",
     {
       "identifier": "shell:allow-spawn",
       "allow": [
@@ -13,6 +14,7 @@
           "sidecar": true
         }
       ]
-    }
+    },
+    "shell:allow-open"
   ]
 }

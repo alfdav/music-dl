@@ -140,15 +140,23 @@ def validate_audio_path(path_str: str, allowed_dirs: list[str]) -> Path | None:
     return None
 
 
-def _path_in_library(path: str) -> bool:
-    """Check library DB trust using the existing library helper."""
-    from tidal_dl.gui.api.library import _path_in_library as library_path_in_library
+def resolve_local_audio_path(
+    raw_path: str | None,
+    allowed_dirs: list[str],
+    *,
+    library_trusts_raw_path: bool = False,
+    library_resolved_path: Path | None = None,
+) -> LocalAudioPathResolution:
+    """Resolve a local audio path using GUI trust rules.
 
-    return library_path_in_library(path)
+    Caller owns the library DB lookup so security.py stays import-clean
+    (CodeQL hardening from PR #38). The two library_* args together cover
+    the spec's 4-step DB fallback (see local-lyrics-v1 spec §5):
 
-
-def resolve_local_audio_path(raw_path: str | None, allowed_dirs: list[str]) -> LocalAudioPathResolution:
-    """Resolve a local audio path using the GUI's shared trust rules."""
+    - library_trusts_raw_path: True iff raw_path is present in the library DB
+    - library_resolved_path: result of strict-resolving raw_path, or None
+      if either the path is not trusted OR strict resolve failed
+    """
     if raw_path is None or not raw_path.strip():
         return LocalAudioPathResolution("bad_request")
 
@@ -156,18 +164,34 @@ def resolve_local_audio_path(raw_path: str | None, allowed_dirs: list[str]) -> L
     if validated is not None:
         return LocalAudioPathResolution("ok", validated)
 
-    if not _path_in_library(raw_path):
+    if not library_trusts_raw_path:
         return LocalAudioPathResolution("forbidden")
 
-    try:
-        resolved = Path(raw_path).resolve(strict=True)
-    except (OSError, ValueError):
+    if library_resolved_path is None:
         return LocalAudioPathResolution("not_found")
 
-    if resolved.suffix.lower() not in AUDIO_EXTENSIONS:
+    if library_resolved_path.suffix.lower() not in AUDIO_EXTENSIONS:
         return LocalAudioPathResolution("not_audio")
 
-    return LocalAudioPathResolution("ok", resolved)
+    return LocalAudioPathResolution("ok", library_resolved_path)
+
+
+def resolve_library_audio_path(
+    path_str: str,
+    allowed_dirs: list[str],
+    trusted_library_path: Path | None = None,
+) -> Path | None:
+    """Compatibility shim: thin Path|None wrapper for callers that don't need rich kinds.
+
+    Prefer resolve_local_audio_path for new code.
+    """
+    resolution = resolve_local_audio_path(
+        path_str,
+        allowed_dirs,
+        library_trusts_raw_path=trusted_library_path is not None,
+        library_resolved_path=trusted_library_path,
+    )
+    return resolution.path if resolution.kind == "ok" else None
 
 
 def validate_download_path(path_str: str) -> bool:
@@ -176,6 +200,8 @@ def validate_download_path(path_str: str) -> bool:
     Rejects system directories, non-existent paths, and paths the user
     likely doesn't intend to fill with music files.
     """
+    if not path_str or not path_str.strip():
+        return False
     try:
         resolved = Path(path_str).resolve()
     except (OSError, ValueError):
