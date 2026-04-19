@@ -2757,6 +2757,30 @@ body {
   margin: 0 0 12px;
 }
 
+.dl-active-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.dl-active-header .dl-section-label { margin: 0; }
+.dl-queue-controls { display: flex; gap: 6px; }
+.dl-ctrl-btn {
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  color: var(--text-secondary);
+  font-family: var(--sans);
+  font-size: 11px;
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+.dl-ctrl-btn:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+.dl-ctrl-btn:disabled { opacity: 0.4; cursor: default; }
+.dl-ctrl-cancel { border-color: rgba(224,96,96,0.3); color: var(--red); }
+.dl-ctrl-cancel:hover { background: rgba(224,96,96,0.08); }
+
 .dl-history-header {
   display: flex;
   align-items: center;
@@ -4000,11 +4024,13 @@ body {
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
-  background: var(--surface);
+  background: var(--bg-warm);
   border: 1px solid var(--accent);
   border-radius: var(--radius-sm);
   font-size: 12px;
   color: var(--text);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 .toast-update-link {
   color: var(--accent);

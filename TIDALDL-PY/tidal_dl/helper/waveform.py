@@ -82,18 +82,17 @@ def _bin_peaks(samples: tuple[int, ...], num_bins: int) -> list[float]:
     return [round(p / mx, 3) for p in peaks]
 
 
-def extract_peaks(path: Path | str, num_bars: int = NUM_BARS) -> list[float] | None:
+def extract_peaks(path: Path, num_bars: int = NUM_BARS) -> list[float] | None:
     """Return *num_bars* normalised peak amplitudes (display resolution)."""
-    samples = _decode_to_pcm(Path(path))
+    samples = _decode_to_pcm(path)
     if samples is None:
         return None
     return _bin_peaks(samples, num_bars)
 
 
-def extract_hires(path: Path | str) -> list[float] | None:
+def extract_hires(path: Path) -> list[float] | None:
     """Return high-resolution peaks (~10/sec) for playback animation."""
-    p = Path(path)
-    samples = _decode_to_pcm(p)
+    samples = _decode_to_pcm(path)
     if samples is None:
         return None
     duration_sec = len(samples) / 8000  # decoded at 8 kHz
@@ -101,9 +100,9 @@ def extract_hires(path: Path | str) -> list[float] | None:
     return _bin_peaks(samples, num_bins)
 
 
-def extract_both(path: Path | str) -> tuple[list[float], list[float]] | None:
+def extract_both(path: Path) -> tuple[list[float], list[float]] | None:
     """Return (display_peaks, hires_peaks) in a single ffmpeg decode pass."""
-    samples = _decode_to_pcm(Path(path))
+    samples = _decode_to_pcm(path)
     if samples is None:
         return None
     display = _bin_peaks(samples, NUM_BARS)

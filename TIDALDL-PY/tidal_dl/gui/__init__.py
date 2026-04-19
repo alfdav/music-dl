@@ -91,6 +91,7 @@ def create_app(port: int = 8765) -> FastAPI:
         # Cache-bust static assets so browser always gets fresh JS/CSS
         v = str(int(time.time()))
         html = html.replace('/style.css', f'/style.css?v={v}')
+        html = html.replace('/routes.js', f'/routes.js?v={v}')
         html = html.replace('/app.js', f'/app.js?v={v}')
         html = html.replace("__APP_VERSION__", _APP_VERSION)
         return HTMLResponse(html.replace("__CSRF_TOKEN__", csrf_token))
