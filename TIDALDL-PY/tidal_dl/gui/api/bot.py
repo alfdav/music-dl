@@ -241,6 +241,10 @@ def resolve_play_request(
         raise HTTPException(status_code=502, detail=f"Tidal search failed: {exc}") from exc
 
     tracks = results.get("tracks", []) or []
+    if not tracks:
+        # F-008: Unrecognized query — 4xx, not 200 with empty choices.
+        # Spec treats unresolved input as a client error.
+        raise HTTPException(status_code=404, detail="No matches found")
     isrc_index = _get_isrc_index()
     candidates = [_serialize_tidal_track(t, isrc_index) for t in tracks]
     # Prioritize local matches (Option A — matches existing search.py behavior)
@@ -265,11 +269,25 @@ def get_playable_source(
     # Local item
     local_path = _decode_local_id(item_id)
     if local_path is not None:
-        if not Path(local_path).is_file():
-            raise HTTPException(status_code=404, detail="Local file not found")
-        meta = _lookup_local_metadata(local_path)
+        # F-007: Validate the path is inside allowed dirs / matches the
+        # scanned library BEFORE signing a token. Otherwise a valid
+        # bearer could mint tokens for arbitrary on-disk files and
+        # leak existence via the resulting URL behavior, even if the
+        # stream endpoint later rejects them.
+        from tidal_dl.gui.api.library import _trusted_library_path
+        from tidal_dl.gui.api.playback import get_download_paths
+        from tidal_dl.gui.security import resolve_library_audio_path
+
+        validated = resolve_library_audio_path(
+            local_path,
+            get_download_paths(),
+            trusted_library_path=_trusted_library_path(local_path),
+        )
+        if validated is None:
+            raise HTTPException(status_code=404, detail="Local file not found or not allowed")
+        meta = _lookup_local_metadata(str(validated))
         token = sign_bot_stream_token(
-            {"kind": "local", "path": local_path}, ttl_seconds=300
+            {"kind": "local", "path": str(validated)}, ttl_seconds=300
         )
         return {
             "url": f"/api/playback/bot-stream/{token}",

@@ -8,11 +8,11 @@ from pathlib import Path
 def resolve_playlist_name(name: str, roots: list[Path]) -> Path | None:
     """Find a playlist file matching *name* (case-insensitive) across *roots*.
 
-    Recursively searches each root for .m3u and .m3u8 files whose stem
-    matches *name* (case-insensitive). music-dl writes playlists to
-    nested paths (per-album subdirs, "Playlists/{name}/..." etc.), so
-    immediate-children-only matching misses the common case. Returns
-    the first match in sorted order, or None.
+    Recursively searches each root for .m3u / .m3u8 files whose stem
+    matches *name*. Uses extension-scoped globs so large music libraries
+    (which typically contain thousands of audio files but only a handful
+    of playlists) don't materialize every descendant path. Returns the
+    first match in sorted order, or None.
     """
     wanted = name.strip().casefold()
     if not wanted:
@@ -21,10 +21,11 @@ def resolve_playlist_name(name: str, roots: list[Path]) -> Path | None:
     for root in roots:
         if not root.is_dir():
             continue
-        for candidate in sorted(root.rglob("*")):
+        candidates = sorted(
+            list(root.rglob("*.m3u")) + list(root.rglob("*.m3u8"))
+        )
+        for candidate in candidates:
             if not candidate.is_file():
-                continue
-            if candidate.suffix.lower() not in {".m3u", ".m3u8"}:
                 continue
             if candidate.stem.casefold() == wanted:
                 return candidate
