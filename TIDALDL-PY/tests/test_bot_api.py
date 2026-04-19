@@ -218,6 +218,26 @@ class TestStreamTokens:
         with pytest.raises(sec._StreamKeyError):
             sec.sign_bot_stream_token({"track_id": "123"})
 
+    def test_non_dict_payload_rejected(self, monkeypatch):
+        """F-025: Decrypted non-dict payloads don't raise, return None cleanly."""
+        import base64
+        import json
+        import secrets as secret_lib
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+        import tidal_dl.gui.security as sec
+        from Crypto.Cipher import AES
+
+        key = sec._get_stream_key()
+        # Construct a valid-signed token whose payload is a JSON array
+        raw = json.dumps(["not", "a", "dict"]).encode()
+        nonce = secret_lib.token_bytes(12)
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        ct, tag = cipher.encrypt_and_digest(raw)
+        token = base64.urlsafe_b64encode(nonce + ct + tag).decode()
+
+        # Must return None, not raise AttributeError
+        assert sec.verify_bot_stream_token(token) is None
+
 
 # ── R7: Logging Safety ───────────────────────────────────────────
 # Note: T-004 is S-sized. Bot API code does not log tokens by design.

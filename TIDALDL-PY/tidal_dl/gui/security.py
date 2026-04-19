@@ -311,6 +311,9 @@ def verify_bot_stream_token(token: str) -> dict[str, str] | None:
     except Exception:
         return None
 
+    # F-025: reject non-dict payloads (e.g. arrays, null) before accessing keys
+    if not isinstance(data, dict):
+        return None
     if not isinstance(data.get("exp"), (int, float)) or time.time() > data["exp"]:
         return None
     return data

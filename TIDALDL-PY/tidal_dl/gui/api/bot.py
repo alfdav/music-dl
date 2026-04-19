@@ -403,9 +403,27 @@ def trigger_bot_download(
 
     with _lock:
         entry = _active.get(track_id)
-        status = entry.status if entry else "queued"
+        status = _normalize_status(entry.status) if entry else "queued"
 
     return {"job_id": str(track_id), "status": status}
+
+
+# F-026: Map the download subsystem's internal state strings to the
+# normalized contract the bot API advertises (queued, in-progress,
+# completed, failed). Callers shouldn't need to know about internal
+# states like "downloading", "retrying", "done", "error".
+_STATUS_NORMALIZE = {
+    "queued": "queued",
+    "downloading": "in-progress",
+    "retrying": "in-progress",
+    "done": "completed",
+    "error": "failed",
+    "cancelled": "failed",
+}
+
+
+def _normalize_status(internal: str) -> str:
+    return _STATUS_NORMALIZE.get(internal, internal)
 
 
 @router.get("/downloads/{job_id}")
@@ -431,7 +449,7 @@ def get_bot_download_status(
         if entry is not None:
             return {
                 "job_id": job_id,
-                "status": entry.status,
+                "status": _normalize_status(entry.status),
                 "progress": entry.progress,
                 "title": entry.name,
                 "artist": entry.artist,
@@ -465,7 +483,7 @@ def get_bot_download_status(
 
     return {
         "job_id": job_id,
-        "status": row["status"],
+        "status": _normalize_status(row["status"]),
         "progress": 100.0 if row["status"] == "done" else 0.0,
         "title": row["name"],
         "artist": row["artist"],
