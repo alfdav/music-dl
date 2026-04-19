@@ -44,6 +44,26 @@ export class QueueState {
     return this.items[this.index];
   }
 
+  /** Current position in the queue, or -1 if empty/exhausted. */
+  currentIndex(): number {
+    if (this.index < 0 || this.index >= this.items.length) return -1;
+    return this.index;
+  }
+
+  /** Drop the item at *position*. Adjusts the cursor so the relative order is preserved. */
+  removeAt(position: number): QueueItem | null {
+    if (position < 0 || position >= this.items.length) return null;
+    const [removed] = this.items.splice(position, 1);
+    if (this.items.length === 0) {
+      this.index = -1;
+    } else if (position < this.index) {
+      this.index -= 1;
+    } else if (position === this.index && this.index >= this.items.length) {
+      this.index = this.items.length - 1;
+    }
+    return removed ?? null;
+  }
+
   /**
    * Advance to next item per repeat mode.
    * Returns new current item or null when exhausted.

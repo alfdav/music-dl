@@ -389,14 +389,97 @@ describe("individual commands", () => {
     expect(deps.queue.getRepeat()).toBe("one");
   });
 
-  test("/download triggers job and is the only path that calls triggerDownload", async () => {
+  test("/download on a direct track triggers exactly one job", async () => {
     const deps = makeDeps();
-    // downloadStatus returns completed immediately so polling finishes fast
     const i = makeInteraction({
       commandName: "download",
       options: { query: "https://tidal.com/track/42" },
     });
     await handleInteraction(i as never, deps);
     expect((deps.client.triggerDownload as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  });
+
+  // Codex-F-T2-002: ambiguous free-text with >1 match must NOT trigger download
+  test("/download with ambiguous choices rejects without downloading", async () => {
+    const deps = makeDeps();
+    (deps.client.resolve as ReturnType<typeof mock>).mockResolvedValueOnce({
+      kind: "choices" as const,
+      choices: [
+        { id: "a", title: "A", artist: "X", source_type: "tidal" as const, local: false, duration: 100 },
+        { id: "b", title: "B", artist: "Y", source_type: "tidal" as const, local: false, duration: 110 },
+      ],
+    });
+    const i = makeInteraction({
+      commandName: "download",
+      options: { query: "vague" },
+    });
+    await handleInteraction(i as never, deps);
+    expect((deps.client.triggerDownload as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+    expect(i._replies.at(-1)?.content).toMatch(/narrow the query|direct URL/i);
+  });
+
+  // Codex-F-T2-002: playlist URL must download every track, not just the first
+  test("/download on a playlist triggers a job for every track", async () => {
+    const deps = makeDeps();
+    (deps.client.resolve as ReturnType<typeof mock>).mockResolvedValueOnce({
+      kind: "playlist" as const,
+      items: [
+        { id: "t1", title: "One", artist: "A", source_type: "tidal" as const, local: false, duration: 100 },
+        { id: "t2", title: "Two", artist: "A", source_type: "tidal" as const, local: false, duration: 100 },
+        { id: "t3", title: "Three", artist: "A", source_type: "tidal" as const, local: false, duration: 100 },
+      ],
+    });
+    const i = makeInteraction({
+      commandName: "download",
+      options: { query: "https://tidal.com/playlist/abc" },
+    });
+    await handleInteraction(i as never, deps);
+    const ids = (deps.client.triggerDownload as ReturnType<typeof mock>).mock.calls
+      .map((c) => c[0])
+      .sort();
+    expect(ids).toEqual(["t1", "t2", "t3"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression tests for Codex findings on this tier
+// ---------------------------------------------------------------------------
+
+describe("Codex-F-T2-001: /play rollback on playback failure", () => {
+  test("failed initial playCurrent removes the queued items", async () => {
+    const deps = makeDeps();
+    (deps.playback.playCurrent as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+      throw new Error("backend down");
+    });
+    const i1 = makeInteraction({
+      commandName: "play",
+      options: { query: "https://tidal.com/track/1" },
+    });
+    await handleInteraction(i1 as never, deps);
+    expect(deps.queue.length).toBe(0); // rolled back
+
+    // Next /play must trigger playCurrent again (not wedged)
+    const i2 = makeInteraction({
+      commandName: "play",
+      options: { query: "https://tidal.com/track/2" },
+    });
+    await handleInteraction(i2 as never, deps);
+    expect((deps.playback.playCurrent as ReturnType<typeof mock>).mock.calls.length).toBe(2);
+  });
+});
+
+describe("Codex-F-T2-003: /queue highlights by position, not id", () => {
+  test("duplicate items show the marker on only the current position", async () => {
+    const deps = makeDeps();
+    deps.queue.append([
+      { id: "a", title: "A" },
+      { id: "a", title: "A" }, // same id, different position
+    ]);
+    // queue.current() returns position 0
+    const i = makeInteraction({ commandName: "queue" });
+    await handleInteraction(i as never, deps);
+    const content = i._replies[0]?.content ?? "";
+    const markerLines = content.split("\n").filter((l: string) => l.includes("▶"));
+    expect(markerLines.length).toBe(1);
   });
 });

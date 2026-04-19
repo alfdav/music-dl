@@ -307,13 +307,15 @@ async function handleQueue(
   deps: CommandDeps,
 ): Promise<void> {
   const contents = deps.queue.contents();
-  const current = deps.queue.current();
+  const currentPos = deps.queue.currentIndex();
   if (contents.length === 0) {
     await safeReply(interaction, { content: "Queue is empty." });
     return;
   }
+  // Marker is tied to position, not id — duplicates in the queue must not
+  // all render as ▶. (Codex-F-T2-003)
   const lines = contents.map((item, i) => {
-    const mark = current && item.id === current.id ? "▶" : " ";
+    const mark = i === currentPos ? "▶" : " ";
     const title = (item as { title?: string }).title ?? item.id;
     const artist = (item as { artist?: string }).artist ?? "";
     return `${mark} ${i + 1}. ${title}${artist ? ` — ${artist}` : ""}`;
@@ -391,23 +393,59 @@ async function handleDownload(
     return;
   }
 
-  const firstItem: ResolvedItem | undefined =
-    result.kind === "choices" ? result.choices[0] : result.items[0];
-  if (!firstItem) {
-    await safeEdit(interaction, "No downloadable items found.");
+  // Codex-F-T2-002: do not silently pick choices[0] or items[0] when the
+  // resolve result is ambiguous or multi-item — the user would get a
+  // download they didn't ask for. Require disambiguation for free-text
+  // with multiple matches; iterate every track for a playlist.
+  let targets: ResolvedItem[];
+  if (result.kind === "choices") {
+    if (result.choices.length === 0) {
+      await safeEdit(interaction, "No downloadable items found.");
+      return;
+    }
+    if (result.choices.length > 1) {
+      const body = formatChoices(result.choices.slice(0, 5));
+      await safeEdit(
+        interaction,
+        `Multiple matches — narrow the query or paste a direct URL:\n${body}`,
+      );
+      return;
+    }
+    targets = [result.choices[0]];
+  } else {
+    if (result.items.length === 0) {
+      await safeEdit(interaction, "No downloadable items found.");
+      return;
+    }
+    targets = [...result.items];
+  }
+
+  const jobs: Array<{ title: string; jobId: string }> = [];
+  for (const item of targets) {
+    try {
+      const job = await deps.client.triggerDownload(item.id);
+      jobs.push({ title: item.title, jobId: job.job_id });
+    } catch (error) {
+      deps.logger?.error(
+        `download trigger failed for ${item.id}:`,
+        (error as Error).message,
+      );
+    }
+  }
+
+  if (jobs.length === 0) {
+    await safeEdit(interaction, userMessage(ErrorKind.BackendUnavailable));
     return;
   }
 
-  try {
-    const job = await deps.client.triggerDownload(firstItem.id);
-    await safeEdit(
-      interaction,
-      `Download queued for **${firstItem.title}** (job \`${job.job_id}\`, ${job.status}).`,
-    );
-    void pollDownload(interaction, deps, job.job_id, firstItem.title);
-  } catch (error) {
-    deps.logger?.error("download failed:", (error as Error).message);
-    await safeEdit(interaction, userMessage(classifyError(error)));
+  const summary =
+    jobs.length === 1
+      ? `Download queued for **${jobs[0].title}** (job \`${jobs[0].jobId}\`).`
+      : `Download queued for ${jobs.length} tracks.`;
+  await safeEdit(interaction, summary);
+  // Poll each job independently; the single-job case still edits the reply.
+  for (const job of jobs) {
+    void pollDownload(interaction, deps, job.jobId, job.title);
   }
 }
 
@@ -422,6 +460,7 @@ async function queueAndMaybeStart(
   label: string,
 ): Promise<void> {
   const wasEmpty = deps.queue.length === 0;
+  const insertedAt = deps.queue.length;
   deps.queue.append(items as unknown as Parameters<typeof deps.queue.append>[0]);
 
   // R4-AC3: never triggers a download on /play.
@@ -429,7 +468,13 @@ async function queueAndMaybeStart(
     try {
       await deps.playback.playCurrent();
     } catch (error) {
+      // Codex-F-T2-001: if initial playback fails, roll back the append
+      // so a later /play can re-trigger playCurrent. Otherwise the failed
+      // item wedges the queue and playback stays silent forever.
       deps.logger?.error("play start failed:", (error as Error).message);
+      for (let i = deps.queue.length - 1; i >= insertedAt; i--) {
+        deps.queue.removeAt(i);
+      }
       await safeEdit(interaction, userMessage(classifyError(error)));
       return;
     }
