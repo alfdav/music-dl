@@ -4076,3 +4076,42 @@ body {
   transition: opacity 0.15s;
 }
 .update-notification-btn:hover { opacity: 0.85; }
+
+/* ---- DEVICE CODE RE-AUTH MODAL ---- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.15s ease;
+}
+
+.modal {
+  background: var(--surface-glass);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 32px;
+  max-width: 420px;
+  width: 90%;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+}
+
+.modal h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.device-code-modal .device-code-value {
+  user-select: all;
+}
+
+.device-code-modal .wizard-spinner-row {
+  margin-top: 8px;
+}

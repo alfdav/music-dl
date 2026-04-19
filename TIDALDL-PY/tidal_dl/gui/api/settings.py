@@ -207,6 +207,24 @@ def auth_login() -> dict:
         return _login_state.copy()
 
 
+@router.post("/auth/keepalive")
+def auth_keepalive() -> dict:
+    """Proactively refresh the token if it's within 30 min of expiry.
+
+    Called by the frontend heartbeat to prevent silent expiration during idle
+    periods.  Uses a wide refresh window (1800s) so the token stays fresh even
+    when the user isn't actively making API calls.
+    """
+    tidal = get_tidal_instance()
+    if not tidal.session.check_login():
+        return {"refreshed": False, "reason": "not_logged_in"}
+    try:
+        refreshed = tidal._ensure_token_fresh(refresh_window_sec=1800)
+        return {"refreshed": refreshed}
+    except Exception:
+        return {"refreshed": False, "reason": "refresh_error"}
+
+
 @router.get("/auth/login/status")
 def auth_login_status() -> dict:
     """Poll login progress."""

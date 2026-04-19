@@ -61,6 +61,7 @@ line-length = 120
 
 [project.optional-dependencies]
 test = ["pytest>=9.0.3", "httpx>=0.27"]
+discord = ["discord.py>=2.4.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

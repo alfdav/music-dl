@@ -64,10 +64,16 @@ def create_app(port: int = 8765) -> FastAPI:
     from starlette.requests import Request
 
     class TokenRefreshMiddleware(BaseHTTPMiddleware):
-        _TIDAL_PATHS = ("/api/search", "/api/download", "/api/playlists")
+        _SKIP_PREFIXES = (
+            "/api/settings", "/api/auth", "/api/setup",
+            "/api/library/scan", "/api/queue",
+        )
 
         async def dispatch(self, request: Request, call_next):
-            if any(request.url.path.startswith(p) for p in self._TIDAL_PATHS):
+            path = request.url.path
+            if path.startswith("/api/") and not any(
+                path.startswith(p) for p in self._SKIP_PREFIXES
+            ):
                 try:
                     from tidal_dl.config import Tidal as _Tidal
                     _Tidal()._ensure_token_fresh()
