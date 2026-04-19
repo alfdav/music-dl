@@ -327,7 +327,7 @@ def trigger_bot_download(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid Tidal item_id")
 
-    from tidal_dl.gui.api.downloads import _active, _lock
+    from tidal_dl.gui.api.downloads import _active, _lock, trigger_download
     from tidal_dl.gui.api.search import get_tidal_session
 
     session = get_tidal_session()
@@ -335,21 +335,17 @@ def trigger_bot_download(
         raise HTTPException(status_code=401, detail="Tidal session not logged in")
 
     try:
-        track = session.track(track_id)
+        session.track(track_id)  # validate the track exists
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Tidal track lookup failed: {exc}") from exc
 
-    # Delegate to existing download subsystem by placing into _active map
-    # The background download thread picks up queued entries
-    from tidal_dl.gui.api.downloads import DownloadEntry
+    # Delegate to existing download subsystem — trigger_download() spawns
+    # the worker thread that actually processes _active entries.
+    trigger_download([track_id])
 
     with _lock:
-        if track_id not in _active:
-            entry = DownloadEntry(track_id, track.full_name or track.name)
-            entry.artist = ", ".join(a.name for a in (track.artists or []) if a.name)
-            entry.status = "queued"
-            _active[track_id] = entry
-        status = _active[track_id].status
+        entry = _active.get(track_id)
+        status = entry.status if entry else "queued"
 
     return {"job_id": str(track_id), "status": status}
 
@@ -358,7 +354,13 @@ def trigger_bot_download(
 def get_bot_download_status(
     job_id: str, _: None = Depends(require_bot_auth)
 ) -> dict:
-    """Poll the status of a bot-triggered download."""
+    """Poll the status of a bot-triggered download.
+
+    Checks the in-memory _active map first (for in-progress jobs), then
+    falls back to download_history so the bot can observe terminal
+    done/error states — the worker removes entries from _active as soon
+    as they finish.
+    """
     try:
         track_id = int(job_id)
     except ValueError:
@@ -368,14 +370,48 @@ def get_bot_download_status(
 
     with _lock:
         entry = _active.get(track_id)
-        if entry is None:
-            raise HTTPException(status_code=404, detail="Job not found")
-        return {
-            "job_id": job_id,
-            "status": entry.status,
-            "progress": entry.progress,
-            "title": entry.name,
-            "artist": entry.artist,
-            "started_at": entry.started_at,
-            "finished_at": entry.finished_at,
-        }
+        if entry is not None:
+            return {
+                "job_id": job_id,
+                "status": entry.status,
+                "progress": entry.progress,
+                "title": entry.name,
+                "artist": entry.artist,
+                "started_at": entry.started_at,
+                "finished_at": entry.finished_at,
+            }
+
+    # Fall back to download_history for completed/failed jobs
+    from tidal_dl.helper.library_db import LibraryDB
+    from tidal_dl.helper.path import path_config_base
+
+    db = LibraryDB(Path(path_config_base()) / "library.db")
+    try:
+        db.open()
+        row = db._conn.execute(
+            "SELECT track_id, name, artist, status, error, started_at, finished_at "
+            "FROM download_history WHERE track_id = ? "
+            "ORDER BY finished_at DESC LIMIT 1",
+            (track_id,),
+        ).fetchone()
+    except Exception:
+        row = None
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return {
+        "job_id": job_id,
+        "status": row["status"],
+        "progress": 100.0 if row["status"] == "done" else 0.0,
+        "title": row["name"],
+        "artist": row["artist"],
+        "started_at": row["started_at"],
+        "finished_at": row["finished_at"],
+        "error": row["error"],
+    }

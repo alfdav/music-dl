@@ -36,6 +36,25 @@ class TestParsePlaylistFile:
         )
         assert parse_playlist_file(playlist) == ["/music/song.flac", "/music/other.flac"]
 
+    def test_resolves_relative_paths_against_playlist_dir(self, tmp_path: Path):
+        """F-002: Relative M3U entries resolve against the playlist's directory.
+
+        music-dl writes relative paths in generated playlists, so parsing must
+        resolve them to absolute paths using the .m3u file as the base — not
+        the process cwd.
+        """
+        album_dir = tmp_path / "My Album"
+        album_dir.mkdir()
+        (album_dir / "01-track.flac").write_text("")
+        (album_dir / "02-track.flac").write_text("")
+        playlist = album_dir / "playlist.m3u8"
+        playlist.write_text("#EXTM3U\n01-track.flac\n02-track.flac\n")
+
+        result = parse_playlist_file(playlist)
+        assert len(result) == 2
+        assert result[0] == str((album_dir / "01-track.flac").resolve())
+        assert result[1] == str((album_dir / "02-track.flac").resolve())
+
     def test_nonexistent_file_returns_empty(self, tmp_path: Path):
         assert parse_playlist_file(tmp_path / "nope.m3u") == []
 
@@ -71,3 +90,17 @@ class TestResolvePlaylistName:
     def test_nonexistent_directory(self, tmp_path: Path):
         """R5: Nonexistent root returns None."""
         assert resolve_playlist_name("anything", [tmp_path / "no_such_dir"]) is None
+
+    def test_recursive_search_finds_nested_playlists(self, tmp_path: Path):
+        """F-001: Playlists are often written to nested paths; search must recurse.
+
+        music-dl writes playlists into album-named subdirectories, so a
+        top-level-only search misses the common case.
+        """
+        nested = tmp_path / "Albums" / "My Album"
+        nested.mkdir(parents=True)
+        (nested / "My Album.m3u8").write_text("#EXTM3U\n01.flac\n")
+
+        match = resolve_playlist_name("My Album", [tmp_path])
+        assert match is not None
+        assert match.name == "My Album.m3u8"

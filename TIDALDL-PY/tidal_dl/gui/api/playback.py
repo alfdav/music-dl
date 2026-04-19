@@ -153,6 +153,14 @@ def serve_bot_stream(token: str):
             if not validate_stream_url(stream_url):
                 raise HTTPException(status_code=502, detail="Untrusted stream source")
             resp = http_requests.get(stream_url, stream=True, timeout=30, allow_redirects=True)
+            # Reject CDN errors before piping body — otherwise the bot
+            # gets a broken source and can't distinguish it from audio.
+            if resp.status_code >= 400:
+                resp.close()
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Upstream stream returned {resp.status_code}",
+                )
             headers = {}
             if resp.headers.get("Content-Length"):
                 headers["Content-Length"] = resp.headers["Content-Length"]
