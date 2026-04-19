@@ -6132,6 +6132,60 @@ async function _handleLoginSuccess() {
   toast('Connected to Tidal', 'success');
 }
 
+function _openExternal(url) {
+  // Prefer Tauri shell plugin (opens user's default browser), fall back to window.open
+  if (_isTauri() && window.__TAURI__?.core?.invoke) {
+    window.__TAURI__.core.invoke('plugin:shell|open', { path: url, with: '' })
+      .catch(() => window.open(url, '_blank'));
+  } else {
+    window.open(url, '_blank');
+  }
+}
+
+function _showDeviceCodeModal(userCode, verificationUri) {
+  _dismissDeviceCodeModal();
+  const overlay = h('div', { className: 'modal-overlay', id: 'device-code-modal' });
+  overlay.addEventListener('click', e => { if (e.target === overlay) _dismissDeviceCodeModal(); });
+
+  const modal = h('div', { className: 'modal device-code-modal' });
+  modal.appendChild(textEl('h3', 'Connect to Tidal'));
+  modal.appendChild(textEl('p', 'Open the link below and enter this code:', 'device-code-label'));
+
+  const codeEl = h('div', { className: 'code device-code-value' });
+  codeEl.textContent = userCode;
+  codeEl.title = 'Click to copy';
+  codeEl.style.cursor = 'pointer';
+  codeEl.addEventListener('click', () => {
+    navigator.clipboard.writeText(userCode).then(() => toast('Code copied', 'success'));
+  });
+  modal.appendChild(codeEl);
+
+  if (verificationUri) {
+    const linkEl = h('a', {
+      className: 'wizard-link',
+      href: verificationUri,
+      target: '_blank',
+      rel: 'noopener',
+    });
+    linkEl.textContent = verificationUri;
+    linkEl.addEventListener('click', e => { e.preventDefault(); _openExternal(verificationUri); });
+    modal.appendChild(linkEl);
+  }
+
+  const spinnerRow = h('div', { className: 'wizard-spinner-row' });
+  spinnerRow.appendChild(h('div', { className: 'spinner' }));
+  spinnerRow.appendChild(textEl('span', 'Waiting for you to confirm in browser...', 'wizard-waiting-text'));
+  modal.appendChild(spinnerRow);
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
+function _dismissDeviceCodeModal() {
+  const existing = document.getElementById('device-code-modal');
+  if (existing) existing.remove();
+}
+
 async function triggerLogin() {
   const tidalEl = document.getElementById('connection-tidal');
   try {
@@ -6140,10 +6194,18 @@ async function triggerLogin() {
       await _handleLoginSuccess();
       return;
     }
-    if (data.verification_uri) {
-      window.open(data.verification_uri, '_blank');
+
+    // Show device code modal so user always has the code + link visible in-app
+    if (data.user_code) {
+      _showDeviceCodeModal(data.user_code, data.verification_uri);
     }
-    // Update light to show waiting state
+
+    // Also try to auto-open the verification URL in the default browser
+    if (data.verification_uri) {
+      _openExternal(data.verification_uri);
+    }
+
+    // Update sidebar light to show waiting state
     if (tidalEl) {
       while (tidalEl.firstChild) tidalEl.removeChild(tidalEl.firstChild);
       const dot = h('span', { className: 'connection-dot disconnected' });
@@ -6159,19 +6221,30 @@ async function triggerLogin() {
         if (status.status === 'success') {
           clearInterval(_loginPoll);
           _loginPoll = null;
+          _dismissDeviceCodeModal();
           await _handleLoginSuccess();
-        } else if (status.status === 'failed') {
+        } else if (status.status === 'failed' || status.status === 'timeout') {
           clearInterval(_loginPoll);
           _loginPoll = null;
+          _dismissDeviceCodeModal();
+          const msg = status.status === 'timeout'
+            ? 'Tidal login timed out — tap the status light to try again'
+            : 'Tidal login failed — tap the status light to try again';
+          toast(msg, 'error');
           refreshStatusLights();
         }
       } catch (_) {
         clearInterval(_loginPoll);
         _loginPoll = null;
+        _dismissDeviceCodeModal();
+        toast('Connection lost during login — tap the status light to retry', 'error');
+        refreshStatusLights();
       }
     }, 3000);
   } catch (err) {
     console.error('[music-dl] login failed:', err);
+    toast('Could not start Tidal login — check your connection', 'error');
+    refreshStatusLights();
   }
 }
 
@@ -6600,10 +6673,11 @@ function _wizardStepLogin(wizard, setupData) {
           rel: 'noopener',
         });
         linkEl.textContent = data.verification_uri;
+        linkEl.addEventListener('click', e => { e.preventDefault(); _openExternal(data.verification_uri); });
         codeBox.appendChild(linkEl);
 
         // Also auto-open in browser
-        window.open(data.verification_uri, '_blank');
+        _openExternal(data.verification_uri);
       }
 
       statusArea.appendChild(codeBox);
@@ -6807,7 +6881,7 @@ async function _checkErrorBanners() {
       const banner = h('div', { className: 'error-banner' });
       banner.appendChild(textEl('span', 'Tidal session expired.'));
       const reloginBtn = textEl('button', 'Re-connect', 'banner-action');
-      reloginBtn.addEventListener('click', () => navigate('settings'));
+      reloginBtn.addEventListener('click', () => triggerLogin());
       banner.appendChild(reloginBtn);
       const mainEl = document.querySelector('.main');
       if (mainEl) mainEl.insertBefore(banner, mainEl.firstChild);
@@ -7354,6 +7428,31 @@ function _renderWebUpdaterSettings(container) {
   container.prepend(card);
 }
 
+// ---- TOKEN KEEPALIVE ----
+// Pings /auth/keepalive every 10 min while the window is visible so the token
+// never expires silently during idle periods.  Stops when the tab is hidden
+// and fires immediately + restarts the interval when it becomes visible again.
+let _keepaliveTimer = null;
+const _KEEPALIVE_MS = 10 * 60 * 1000; // 10 minutes
+
+function _keepaliveTick() {
+  api('/auth/keepalive', { method: 'POST' }).catch(() => {});
+}
+
+function _startKeepalive() {
+  if (_keepaliveTimer) return;
+  _keepaliveTick(); // immediate tick on visibility restore
+  _keepaliveTimer = setInterval(_keepaliveTick, _KEEPALIVE_MS);
+}
+
+function _stopKeepalive() {
+  if (_keepaliveTimer) { clearInterval(_keepaliveTimer); _keepaliveTimer = null; }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) _stopKeepalive(); else _startKeepalive();
+});
+
 function _initApp() {
   // Load settings into state for upgrade quality checks
   api('/settings').then(s => { state.settings = s; }).catch(() => {});
@@ -7362,6 +7461,7 @@ function _initApp() {
   _restorePosition();
   initUpdater();
   _checkWebUpdate();
+  _startKeepalive();
   navigate(normalizeView(location.hash.slice(1) || 'home'));
 }
 
