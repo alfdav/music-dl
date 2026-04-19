@@ -227,19 +227,58 @@ def resolve_play_request(
             from tidal_dl.gui.api.library import _trusted_library_path
             from tidal_dl.gui.api.playback import get_download_paths
             from tidal_dl.gui.security import resolve_library_audio_path
+            from tidal_dl.helper.library_db import LibraryDB
+            from tidal_dl.helper.path import path_config_base
 
             track_paths = parse_playlist_file(match_path)
             allowed = get_download_paths()
             # F-022: Validate each track against library-path rules so
-            # /resolve only returns items that /playable can actually serve.
-            # Invalid entries (stale paths, files outside library) are dropped.
-            items = []
+            # /resolve only returns playable items.
+            # F-028: Open library.db once and batch metadata lookup.
+            validated_paths: list[str] = []
             for p in track_paths:
                 validated = resolve_library_audio_path(
                     p, allowed, trusted_library_path=_trusted_library_path(p)
                 )
                 if validated is not None:
-                    items.append(_serialize_local_item(str(validated)))
+                    validated_paths.append(str(validated))
+
+            meta_by_path: dict[str, dict[str, Any]] = {}
+            if validated_paths:
+                db = LibraryDB(Path(path_config_base()) / "library.db")
+                try:
+                    db.open()
+                    placeholders = ",".join("?" * len(validated_paths))
+                    rows = db._conn.execute(
+                        f"SELECT path, title, artist, duration FROM scanned "
+                        f"WHERE path IN ({placeholders})",
+                        validated_paths,
+                    ).fetchall()
+                    for row in rows:
+                        meta_by_path[row["path"]] = {
+                            "title": row["title"] or Path(row["path"]).stem,
+                            "artist": row["artist"] or "",
+                            "duration": row["duration"] or 0,
+                        }
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
+
+            items = []
+            for p in validated_paths:
+                meta = meta_by_path.get(p, {"title": Path(p).stem, "artist": "", "duration": 0})
+                items.append({
+                    "id": _encode_local_id(p),
+                    "title": meta["title"],
+                    "artist": meta["artist"],
+                    "source_type": "local",
+                    "local": True,
+                    "duration": meta["duration"],
+                })
             return {"kind": "playlist", "items": items}
 
     # 4. Free-text search — 5 candidates, locals first

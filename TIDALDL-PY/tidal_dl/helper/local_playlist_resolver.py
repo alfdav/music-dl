@@ -19,23 +19,23 @@ _TTL_SECONDS = 60.0
 def _build_playlist_index(roots: list[Path]) -> dict[str, Path]:
     """Walk roots once and map casefolded playlist name -> path.
 
-    F-021: Collects all playlist files and sorts them before populating
-    the index so duplicate-name resolution is deterministic across
-    machines. Path.rglob() does not guarantee ordering — without
-    sorting, the same query could return different playlists after
-    directory churn.
+    F-021: Sorts candidates before populating the index so
+    duplicate-name resolution is deterministic across machines.
+    F-027: Uses playlist-specific glob patterns instead of rglob('*')
+    so work scales with the number of playlist files, not the whole
+    library. Covers both lowercase and uppercase extensions for
+    case-sensitive filesystems.
     """
     index: dict[str, Path] = {}
+    patterns = ("*.m3u", "*.M3U", "*.m3u8", "*.M3U8")
     for root in roots:
         if not root.is_dir():
             continue
         candidates: list[Path] = []
-        for candidate in root.rglob("*"):
-            if not candidate.is_file():
-                continue
-            if candidate.suffix.lower() not in {".m3u", ".m3u8"}:
-                continue
-            candidates.append(candidate)
+        for pattern in patterns:
+            for candidate in root.rglob(pattern):
+                if candidate.is_file():
+                    candidates.append(candidate)
         # Sort by path string for stable iteration order across filesystems
         candidates.sort(key=lambda p: str(p))
         for candidate in candidates:
