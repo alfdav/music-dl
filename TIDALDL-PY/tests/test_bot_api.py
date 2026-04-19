@@ -196,6 +196,28 @@ class TestStreamTokens:
         assert sec.verify_bot_stream_token("not-a-token") is None
         assert sec.verify_bot_stream_token("short") is None
 
+    def test_fail_closed_when_token_blank(self, monkeypatch):
+        """F-015: Signing and verifying fail closed when bot token blank."""
+        import tidal_dl.gui.security as sec
+
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", "")
+        import pytest
+        with pytest.raises(sec._StreamKeyError):
+            sec.sign_bot_stream_token({"track_id": "123"})
+
+        # Verification also fails closed — even a "valid" token from
+        # another install would not verify because the key can't be derived.
+        assert sec.verify_bot_stream_token("anytoken") is None
+
+    def test_fail_closed_when_token_whitespace(self, monkeypatch):
+        """F-015: Whitespace-only token treated as blank (fail closed)."""
+        import tidal_dl.gui.security as sec
+
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", "   ")
+        import pytest
+        with pytest.raises(sec._StreamKeyError):
+            sec.sign_bot_stream_token({"track_id": "123"})
+
 
 # ── R7: Logging Safety ───────────────────────────────────────────
 # Note: T-004 is S-sized. Bot API code does not log tokens by design.

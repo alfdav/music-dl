@@ -193,7 +193,7 @@ def resolve_play_request(
 
         session = get_tidal_session()
         if not session.check_login():
-            raise HTTPException(status_code=401, detail="Tidal session not logged in")
+            raise HTTPException(status_code=503, detail="Tidal session not logged in")
         try:
             track = session.track(int(track_match.group(1)))
         except Exception as exc:
@@ -207,7 +207,7 @@ def resolve_play_request(
 
         session = get_tidal_session()
         if not session.check_login():
-            raise HTTPException(status_code=401, detail="Tidal session not logged in")
+            raise HTTPException(status_code=503, detail="Tidal session not logged in")
         try:
             playlist = session.playlist(playlist_match.group(1))
             tracks = playlist.tracks()
@@ -231,7 +231,7 @@ def resolve_play_request(
 
     session = get_tidal_session()
     if not session.check_login():
-        raise HTTPException(status_code=401, detail="Tidal session not logged in")
+        raise HTTPException(status_code=503, detail="Tidal session not logged in")
 
     try:
         from tidalapi.media import Track
@@ -318,7 +318,7 @@ def get_playable_source(
 
         session = get_tidal_session()
         if not session.check_login():
-            raise HTTPException(status_code=401, detail="Tidal session not logged in")
+            raise HTTPException(status_code=503, detail="Tidal session not logged in")
         try:
             track = session.track(track_id)
         except Exception as exc:
@@ -361,7 +361,7 @@ def trigger_bot_download(
 
     session = get_tidal_session()
     if not session.check_login():
-        raise HTTPException(status_code=401, detail="Tidal session not logged in")
+        raise HTTPException(status_code=503, detail="Tidal session not logged in")
 
     try:
         session.track(track_id)  # validate the track exists

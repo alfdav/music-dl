@@ -233,21 +233,24 @@ def validate_bot_bearer(authorization: str | None) -> bool:
 # Stream token signing / verification (R4)
 # ---------------------------------------------------------------------------
 
+class _StreamKeyError(Exception):
+    """Raised when the stream-token key cannot be derived (bot token blank)."""
+
+
 def _get_stream_key() -> bytes:
     """Derive a deterministic AES-256 key from MUSIC_DL_BOT_TOKEN.
 
     The key is stable across process restarts (no random per-process
     component), so tokens issued before a restart remain verifiable
-    after. If the bot token is empty, we fall back to a stable but
-    installation-specific seed so verification remains deterministic
-    within a single machine install.
+    after. F-015: fail closed when MUSIC_DL_BOT_TOKEN is blank — a
+    fallback constant would let anyone with the source code mint valid
+    stream tokens in misconfigured deployments.
     """
     bot_token = os.environ.get("MUSIC_DL_BOT_TOKEN", "").strip()
-    # Include a fixed module-level domain separator so the key is
-    # distinct from any other SHA-256(bot_token) use elsewhere.
+    if not bot_token:
+        raise _StreamKeyError("MUSIC_DL_BOT_TOKEN is not configured")
     domain = b"music-dl/bot/stream-token/v1"
-    seed = (bot_token or "no-token").encode()
-    return hashlib.sha256(seed + b"\x00" + domain).digest()
+    return hashlib.sha256(bot_token.encode() + b"\x00" + domain).digest()
 
 
 def sign_bot_stream_token(payload: dict[str, str], ttl_seconds: int = 120) -> str:
@@ -258,14 +261,16 @@ def sign_bot_stream_token(payload: dict[str, str], ttl_seconds: int = 120) -> st
     AES-GCM provides both confidentiality and authentication — tampered
     tokens fail the auth tag check.
 
+    Raises _StreamKeyError when MUSIC_DL_BOT_TOKEN is not configured.
     Returns URL-safe base64 of: nonce(12) || ciphertext || tag(16)
     """
     from Crypto.Cipher import AES  # pycryptodome
 
+    key = _get_stream_key()  # fail-closed if blank
+
     data = {**payload, "exp": int(time.time()) + ttl_seconds}
     raw = json.dumps(data, separators=(",", ":")).encode()
 
-    key = _get_stream_key()
     nonce = secrets.token_bytes(12)
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
     ciphertext, tag = cipher.encrypt_and_digest(raw)
@@ -276,6 +281,11 @@ def sign_bot_stream_token(payload: dict[str, str], ttl_seconds: int = 120) -> st
 def verify_bot_stream_token(token: str) -> dict[str, str] | None:
     """Verify and decrypt a stream token. Returns payload dict or None on failure."""
     from Crypto.Cipher import AES
+
+    try:
+        key = _get_stream_key()  # fail-closed if blank: None for everyone
+    except _StreamKeyError:
+        return None
 
     try:
         blob = base64.urlsafe_b64decode(token)
@@ -290,7 +300,6 @@ def verify_bot_stream_token(token: str) -> dict[str, str] | None:
     tag = blob[-16:]
     ciphertext = blob[12:-16]
 
-    key = _get_stream_key()
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
     try:
         raw = cipher.decrypt_and_verify(ciphertext, tag)

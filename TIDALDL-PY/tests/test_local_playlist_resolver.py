@@ -102,6 +102,34 @@ class TestResolvePlaylistName:
         assert match is not None
         assert match.name == "Night Drive.M3U8"
 
+    def test_index_is_cached(self, tmp_path: Path, monkeypatch):
+        """F-016: Playlist index cached, subsequent lookups don't re-walk."""
+        from tidal_dl.helper import local_playlist_resolver as lpr
+
+        lpr.invalidate_playlist_index_cache()
+        (tmp_path / "Morning.m3u8").write_text("#EXTM3U\nx.flac\n")
+
+        build_calls = {"count": 0}
+        original = lpr._build_playlist_index
+
+        def counting_build(roots):
+            build_calls["count"] += 1
+            return original(roots)
+
+        monkeypatch.setattr(lpr, "_build_playlist_index", counting_build)
+
+        # First call builds the index
+        assert lpr.resolve_playlist_name("morning", [tmp_path]) is not None
+        assert build_calls["count"] == 1
+
+        # Second call hits cache — no rebuild
+        assert lpr.resolve_playlist_name("morning", [tmp_path]) is not None
+        assert build_calls["count"] == 1
+
+        # Different query same roots — still cached
+        assert lpr.resolve_playlist_name("nonexistent", [tmp_path]) is None
+        assert build_calls["count"] == 1
+
     def test_recursive_search_finds_nested_playlists(self, tmp_path: Path):
         """F-001: Playlists are often written to nested paths; search must recurse.
 
