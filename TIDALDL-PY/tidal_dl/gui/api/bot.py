@@ -44,9 +44,11 @@ _TIDAL_TRACK_URL = re.compile(
     re.IGNORECASE,
 )
 
-# Matches Tidal playlist URLs (UUID format)
+# Matches Tidal playlist URLs. Tidal uses UUIDs in practice but the rest
+# of the codebase (get_tidal_media_id) accepts arbitrary path segments,
+# so keep the pattern permissive.
 _TIDAL_PLAYLIST_URL = re.compile(
-    r"https?://(?:[a-z-]+\.)?tidal\.com/(?:browse/)?playlist/([a-f0-9-]{36})",
+    r"https?://(?:[a-z-]+\.)?tidal\.com/(?:browse/)?playlist/([A-Za-z0-9-]+)",
     re.IGNORECASE,
 )
 
@@ -312,6 +314,7 @@ def get_playable_source(
             ".ogg": "audio/ogg",
             ".wav": "audio/wav",
             ".aac": "audio/aac",
+            ".wma": "audio/x-ms-wma",
         }
         content_type = media_types.get(validated.suffix.lower(), "audio/flac")
         return {

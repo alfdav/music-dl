@@ -128,6 +128,7 @@ def serve_bot_stream(token: str):
             ".ogg": "audio/ogg",
             ".wav": "audio/wav",
             ".aac": "audio/aac",
+            ".wma": "audio/x-ms-wma",
         }
         media_type = media_types.get(validated.suffix.lower(), "audio/flac")
         return FileResponse(validated, media_type=media_type)
