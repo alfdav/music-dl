@@ -261,13 +261,8 @@ async function handlePlay(
     const picker = deps.picker ?? runPicker;
     const result2 = await picker(interaction, choices);
     if (!result2) return;
-    try {
-      // Button interactions must be acknowledged or Discord shows a
-      // "This interaction failed" banner to the clicker.
-      await result2.buttonInteraction.deferUpdate();
-    } catch {
-      // Already acknowledged or expired.
-    }
+    // Button click is acknowledged inside runPicker before it edits the
+    // reply, so no follow-up deferUpdate is needed here.
     await queueAndMaybeStart(interaction, deps, [result2.choice], "Queued");
     return;
   }
@@ -696,7 +691,8 @@ async function safeReply(
 ): Promise<void> {
   try {
     if (interaction.deferred || interaction.replied) {
-      await interaction.editReply({ content: options.content });
+      // F-T3-002: clear components so stale picker buttons don't linger.
+      await interaction.editReply({ content: options.content, components: [] });
     } else {
       await interaction.reply({
         content: options.content,
@@ -713,7 +709,10 @@ async function safeEdit(
   content: string,
 ): Promise<void> {
   try {
-    await interaction.editReply({ content });
+    // F-T3-002: explicitly clear components. Discord preserves existing
+    // components on partial edits, so without this the picker's disabled
+    // buttons would linger on the final "Queued..." / error message.
+    await interaction.editReply({ content, components: [] });
   } catch {
     // ignore
   }

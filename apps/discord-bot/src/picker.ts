@@ -111,6 +111,16 @@ export async function runPicker(
         i.customId.startsWith(`${PICK_PREFIX}:`),
     });
 
+    // F-T3-001: acknowledge the button click BEFORE editing the original
+    // command reply. Editing via interaction.editReply doesn't satisfy
+    // Discord's 3-second response budget for the click itself, so without
+    // this the user sees "interaction failed" under API latency spikes.
+    try {
+      await clicked.deferUpdate();
+    } catch {
+      // already acknowledged / expired — continue anyway
+    }
+
     const idx = parsePickIndex(clicked.customId, capped.length);
     if (idx === null) {
       await interaction.editReply(
