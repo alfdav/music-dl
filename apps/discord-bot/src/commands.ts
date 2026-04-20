@@ -194,17 +194,15 @@ async function handleSummon(
     });
     return;
   }
+  // Voice join can take several seconds (UDP handshake + entersState wait),
+  // which exceeds Discord's 3s interaction-ack budget. Defer first.
+  await interaction.deferReply();
   try {
     await deps.voice.join(voiceChannel, textChannel);
-    await safeReply(interaction, {
-      content: `Joined **${voiceChannel.name}**.`,
-    });
+    await safeEdit(interaction, `Joined **${voiceChannel.name}**.`);
   } catch (error) {
     deps.logger?.error("summon failed:", (error as Error).message);
-    await safeReply(interaction, {
-      content: userMessage(ErrorKind.VoiceConnectionFailed),
-      ephemeral: true,
-    });
+    await safeEdit(interaction, userMessage(ErrorKind.VoiceConnectionFailed));
   }
 }
 
@@ -301,14 +299,17 @@ async function handleSkip(
   interaction: ChatInputCommandInteraction,
   deps: CommandDeps,
 ): Promise<void> {
+  // skip() fetches the next playable URL from the backend; can exceed 3s.
+  await interaction.deferReply();
   const next = await deps.playback.skip();
   if (!next) {
-    await safeReply(interaction, { content: "Queue is empty." });
+    await safeEdit(interaction, "Queue is empty.");
     return;
   }
-  await safeReply(interaction, {
-    content: `Skipped → now playing **${next.title ?? next.id}**.`,
-  });
+  await safeEdit(
+    interaction,
+    `Skipped → now playing **${next.title ?? next.id}**.`,
+  );
 }
 
 async function handleQueue(
