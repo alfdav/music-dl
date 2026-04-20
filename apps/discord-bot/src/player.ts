@@ -87,6 +87,17 @@ export class VoiceManager {
     connection.subscribe(this.player);
     this.attachDisconnectHandler(connection);
 
+    // Diagnostic: log every voice connection state transition so we can
+    // see where the handshake stalls (Signalling → Connecting → Ready).
+    connection.on("stateChange" as any, (oldState: any, newState: any) => {
+      console.error(
+        `[voice] state: ${oldState.status} → ${newState.status}`,
+      );
+    });
+    connection.on("error" as any, (err: Error) => {
+      console.error("[voice] connection error:", err);
+    });
+
     try {
       // Bumped from 10s to 30s: cold native-opus init on first join can
       // take longer than the default entersState window, especially when
