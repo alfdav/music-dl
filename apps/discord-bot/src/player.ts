@@ -192,6 +192,13 @@ export class Playback {
     this.logger = options.logger ?? { error: (...a) => console.error(...a) };
 
     const player = this.voice.getPlayer();
+    // Visibility into the AudioPlayer state machine so silent-failure
+    // cases (resource created but never plays) are diagnosable.
+    player.on("stateChange", (oldState, newState) => {
+      if (oldState.status !== newState.status) {
+        console.log(`[audio] ${oldState.status} → ${newState.status}`);
+      }
+    });
     // R5-AC3: on track end, advance the queue per repeat mode.
     player.on(AudioPlayerStatus.Idle, (oldState, _newState) => {
       if (oldState.status === AudioPlayerStatus.Idle) return; // not a transition
@@ -199,7 +206,7 @@ export class Playback {
     });
     // R5-AC5: track failure → log + advance.
     player.on("error", (error) => {
-      this.logger.error("audio player error:", (error as Error).message);
+      this.logger.error("audio player error:", error);
       void this.handleTrackEnd();
     });
   }
