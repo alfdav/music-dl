@@ -1,13 +1,15 @@
 /**
- * Onboarding wizard (onboarding-wizard R1 entry + R2 returning-user).
+ * Onboarding wizard (onboarding-wizard R1 entry + R2 returning-user + R3 prompts).
  *
  * Future tasks fill in:
- *   T-004 prompt sequence             T-006 preflight checks
- *   T-008 env file write              T-009 retry-single-field
- *   T-010 logging safety              T-012 atomic two-file commit
+ *   T-006 preflight checks            T-008 env file write
+ *   T-009 retry-single-field          T-010 logging safety audit
+ *   T-012 atomic two-file commit
  */
 
-import { resolveEntryDecision } from "./returningUser";
+import { makeMaskedLineReader } from "./maskedInput";
+import { collectBotValues } from "./prompts";
+import { makeLineReader, resolveEntryDecision } from "./returningUser";
 
 export const WIZARD_HEADER = "music-dl Discord bot setup";
 
@@ -49,13 +51,22 @@ export async function runWizard(
     return { exitCode: 130 };
   }
 
-  // decision.mode === "fresh" or "reconfigure" — T-004 replaces this stub.
-  // Until the prompt sequence lands, surface a non-zero exit so any caller
-  // (notably onboarding-backend R4) does not treat the stub run as a
-  // completed setup. Code 75 mirrors EX_TEMPFAIL (sysexits) — "setup
-  // incomplete, try again later" rather than a hard error.
+  // decision.mode === "fresh" or "reconfigure" — run the prompt sequence.
+  const readLine = makeLineReader(io.stdin);
+  const readMaskedLine = makeMaskedLineReader(io.stdin);
+  const values = await collectBotValues(io, {
+    mode: decision.mode,
+    defaults: decision.mode === "reconfigure" ? decision.defaults : undefined,
+    readLine,
+    readMaskedLine,
+  });
+
+  // T-006 (preflight) + T-008 (env write) + T-012 (atomic two-file commit)
+  // consume `values`. Until those land, surface a non-zero exit so the
+  // backend does not treat the run as a completed setup.
   io.stdout.write(
-    "Setup flow not yet implemented in this build. No configuration written.\n",
+    "\nCollected values. Preflight/persistence not yet implemented; no configuration written.\n",
   );
+  void values; // keep the collected values visible to the linter until T-008 consumes them
   return { exitCode: 75 };
 }

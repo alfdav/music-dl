@@ -51,13 +51,13 @@ describe("wizard R1 — entry points and header", () => {
   it("AC3: prints the header line on start", async () => {
     const stdout = new Capture();
     const stderr = new Capture();
-    const result = await runWizard({
-      stdout,
-      stderr,
-      stdin: new Readable({ read() {} }),
-    });
-    // Fresh install, T-004 prompt sequence not yet implemented — stub
-    // signals incomplete setup (75 = EX_TEMPFAIL).
+    // Feed enough blank answers so the prompt sequence reaches EOF
+    // quickly; the test only cares that the header prints. Required
+    // fields reject blanks and re-prompt up to 10 times per field,
+    // after which they fall back to "" and the wizard returns 75.
+    const blankAnswers = "\n".repeat(120);
+    const stdin = Readable.from([blankAnswers]);
+    const result = await runWizard({ stdout, stderr, stdin });
     expect(result.exitCode).toBe(75);
     expect(stdout.text.split("\n")[0]).toBe(WIZARD_HEADER);
   });
