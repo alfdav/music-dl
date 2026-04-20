@@ -148,3 +148,173 @@ def test_decide_skip_on_no() -> None:
         ask_fn=lambda: PromptAnswer.NO,
     )
     assert result is SKIP
+
+
+# ------- write_dismissal_flag (backend R3 AC3) -------
+
+
+def test_write_dismissal_flag_creates_empty_file(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tidal_dl.gui.bot_first_run import write_dismissal_flag
+
+    flag = tmp_path / "nested" / "dismissed"
+    monkeypatch.setenv("MUSIC_DL_BOT_DISMISSAL_PATH", str(flag))
+    write_dismissal_flag()
+    assert flag.exists()
+    assert flag.read_text() == ""
+    # Idempotent: second call does not raise.
+    write_dismissal_flag()
+
+
+# ------- run_first_run_flow (backend R4 + R5) -------
+
+
+def test_run_first_run_skips_when_not_tty(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tidal_dl.gui.bot_first_run import run_first_run_flow
+
+    monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(tmp_path / "t"))
+    monkeypatch.setenv("MUSIC_DL_BOT_DISMISSAL_PATH", str(tmp_path / "d"))
+    dispatch_called = []
+    rc = run_first_run_flow(
+        is_tty_fn=lambda: False,
+        detect_fn=lambda: OnboardingState.NEEDS_SETUP,
+        ask_fn=lambda: PromptAnswer.YES,
+        dispatch_fn=lambda: dispatch_called.append(1) or 0,
+    )
+    assert rc == 0
+    assert dispatch_called == []
+
+
+def test_run_first_run_dispatches_on_yes(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tidal_dl.gui.bot_first_run import run_first_run_flow
+
+    monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(tmp_path / "t"))
+    monkeypatch.setenv("MUSIC_DL_BOT_DISMISSAL_PATH", str(tmp_path / "d"))
+    calls = []
+    rc = run_first_run_flow(
+        is_tty_fn=lambda: True,
+        detect_fn=lambda: OnboardingState.NEEDS_SETUP,
+        ask_fn=lambda: PromptAnswer.YES,
+        dispatch_fn=lambda: calls.append("wizard") or 0,
+        output=io.StringIO(),
+    )
+    assert rc == 0
+    assert calls == ["wizard"]
+
+
+def test_run_first_run_writes_flag_on_never(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tidal_dl.gui.bot_first_run import run_first_run_flow
+
+    flag_path = tmp_path / "dismissed"
+    monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(tmp_path / "t"))
+    monkeypatch.setenv("MUSIC_DL_BOT_DISMISSAL_PATH", str(flag_path))
+    dispatch_calls = []
+    rc = run_first_run_flow(
+        is_tty_fn=lambda: True,
+        detect_fn=lambda: OnboardingState.NEEDS_SETUP,
+        ask_fn=lambda: PromptAnswer.NEVER,
+        dispatch_fn=lambda: dispatch_calls.append(1) or 0,
+        output=io.StringIO(),
+    )
+    assert rc == 0
+    assert flag_path.exists()
+    # R3 AC3: wizard is NOT run when answer is "never"
+    assert dispatch_calls == []
+
+
+def test_run_first_run_wizard_failure_does_not_abort_server(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R4 AC5: backend server startup is never aborted by wizard failure."""
+    from tidal_dl.gui.bot_first_run import run_first_run_flow
+
+    monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(tmp_path / "t"))
+    monkeypatch.setenv("MUSIC_DL_BOT_DISMISSAL_PATH", str(tmp_path / "d"))
+    out = io.StringIO()
+    rc = run_first_run_flow(
+        is_tty_fn=lambda: True,
+        detect_fn=lambda: OnboardingState.NEEDS_SETUP,
+        ask_fn=lambda: PromptAnswer.YES,
+        dispatch_fn=lambda: 42,  # non-zero exit
+        output=out,
+    )
+    assert rc == 0
+    assert "retry" in out.getvalue().lower() or "re-run" in out.getvalue().lower()
+
+
+def test_r5_force_bypasses_configured_state(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R5 AC1 + AC4: force flag triggers prompt even when state is configured."""
+    from tidal_dl.gui.bot_first_run import run_first_run_flow
+
+    monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(tmp_path / "t"))
+    monkeypatch.setenv("MUSIC_DL_BOT_DISMISSAL_PATH", str(tmp_path / "d"))
+    dispatch_calls = []
+    run_first_run_flow(
+        is_tty_fn=lambda: True,
+        detect_fn=lambda: OnboardingState.CONFIGURED,  # would normally skip
+        ask_fn=lambda: PromptAnswer.YES,
+        dispatch_fn=lambda: dispatch_calls.append(1) or 0,
+        output=io.StringIO(),
+        force=True,
+    )
+    assert dispatch_calls == [1]
+
+
+def test_r5_force_ignores_dismissal_flag_without_modifying_it(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R5 AC2 + AC3: force ignores dismissal for this invocation but does
+    NOT touch the flag — a previously-dismissed user is not re-enrolled
+    just because they ran --setup-bot once."""
+    from tidal_dl.gui.bot_first_run import run_first_run_flow
+
+    flag_path = tmp_path / "dismissed"
+    flag_path.write_text("")  # pre-existing dismissal
+    monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(tmp_path / "t"))
+    monkeypatch.setenv("MUSIC_DL_BOT_DISMISSAL_PATH", str(flag_path))
+    flag_mtime_before = flag_path.stat().st_mtime_ns
+
+    dispatch_calls = []
+    run_first_run_flow(
+        is_tty_fn=lambda: True,
+        detect_fn=lambda: OnboardingState.DISMISSED,
+        ask_fn=lambda: PromptAnswer.NO,  # user chooses No on the forced prompt
+        dispatch_fn=lambda: dispatch_calls.append(1) or 0,
+        output=io.StringIO(),
+        force=True,
+    )
+    # Force prompted the user → but they said "no" → no wizard, no flag change.
+    assert dispatch_calls == []
+    assert flag_path.exists()
+    assert flag_path.stat().st_mtime_ns == flag_mtime_before
+
+
+def test_r5_force_without_tty_prints_and_skips(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tidal_dl.gui.bot_first_run import run_first_run_flow
+
+    monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(tmp_path / "t"))
+    monkeypatch.setenv("MUSIC_DL_BOT_DISMISSAL_PATH", str(tmp_path / "d"))
+    out = io.StringIO()
+    dispatch_calls = []
+    rc = run_first_run_flow(
+        is_tty_fn=lambda: False,
+        detect_fn=lambda: OnboardingState.NEEDS_SETUP,
+        ask_fn=lambda: PromptAnswer.YES,
+        dispatch_fn=lambda: dispatch_calls.append(1) or 0,
+        output=out,
+        force=True,
+    )
+    assert rc == 0
+    assert dispatch_calls == []
+    assert "interactive terminal" in out.getvalue()

@@ -1640,9 +1640,21 @@ def isrc_tag(
 def gui(
     port: int = typer.Option(8765, help="Port to serve on."),
     no_browser: bool = typer.Option(False, "--no-browser", help="Don't auto-open browser."),
+    setup_bot: bool = typer.Option(
+        False,
+        "--setup-bot",
+        help="Force the Discord bot onboarding prompt regardless of saved state.",
+    ),
 ) -> None:
     """Launch the music-dl web interface."""
+    from tidal_dl.gui.bot_first_run import run_first_run_flow
     from tidal_dl.gui.server import run
+
+    # R2 / R4 / R5: TTY-aware bot-onboarding prompt before the HTTP
+    # server begins accepting requests. Always non-fatal for server
+    # startup (R4 AC5). The --setup-bot flag (R5) bypasses state
+    # detection without touching the dismissal flag.
+    run_first_run_flow(force=setup_bot)
 
     run(port=port, open_browser=not no_browser)
 
