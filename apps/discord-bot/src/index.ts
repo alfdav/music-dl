@@ -35,7 +35,10 @@ async function main(): Promise<void> {
   const voice = new VoiceManager();
   const playback = new Playback(voice, queue, musicDl);
 
-  const deps = { config, client: musicDl, queue, voice, playback };
+  const logger = {
+    error: (...args: unknown[]) => console.error("[bot]", ...args),
+  };
+  const deps = { config, client: musicDl, queue, voice, playback, logger };
 
   // Register slash commands for the allowed guild only.
   const rest = new REST({ version: "10" }).setToken(config.discordToken);

@@ -202,7 +202,8 @@ async function handleSummon(
     await deps.voice.join(voiceChannel, textChannel);
     await safeEdit(interaction, `Joined **${voiceChannel.name}**.`);
   } catch (error) {
-    deps.logger?.error("summon failed:", (error as Error).message);
+    // Full object so we see stack + cause (voice errors nest their root cause)
+    deps.logger?.error("summon failed:", error);
     await safeEdit(interaction, userMessage(ErrorKind.VoiceConnectionFailed));
   }
 }
