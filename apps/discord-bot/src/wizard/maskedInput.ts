@@ -79,6 +79,14 @@ export function makeMaskedLineReader(
             outputStream.write("\n");
             return finalize(null);
           }
+          if (ch === "\u0004") {
+            // Ctrl+D (EOT) in raw mode arrives as a data chunk rather
+            // than as an "end" event. Without this, the prompt hangs
+            // forever on a real TTY because the line reader above has
+            // been handed stdin (pause()) and will not surface the EOF.
+            outputStream.write("\n");
+            return finalize(buffer.length > 0 ? buffer : null);
+          }
           if (ch === "\u0008" || ch === "\u007f") {
             buffer = buffer.slice(0, -1);
             continue;
