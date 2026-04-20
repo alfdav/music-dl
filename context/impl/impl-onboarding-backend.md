@@ -8,7 +8,7 @@ Build site: context/plans/build-site.md
 
 | Task | Status | Notes |
 |------|--------|-------|
-| T-005 | PENDING | Config status detect (R1) |
+| T-005 | DONE | bot_onboarding.py (OnboardingState + detect_state) + 8 tests. AC1-AC3 + precedence + env-override verified. |
 | T-007 | PENDING | TTY first-run prompt (R2) |
 | T-011 | PENDING | Y/n retry handling (R3) |
 | T-013 | PENDING | Wizard dispatch (R4) |
