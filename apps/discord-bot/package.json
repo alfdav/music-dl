@@ -12,6 +12,7 @@
   "dependencies": {
     "@discordjs/opus": "^0.10.0",
     "@discordjs/voice": "^0.18.0",
+    "@snazzah/davey": "^0.1.11",
     "discord.js": "^14.18.0",
     "libsodium-wrappers": "^0.8.4",
     "tweetnacl": "^1.0.3"
