@@ -212,7 +212,9 @@ async function handleLeave(
   deps: CommandDeps,
 ): Promise<void> {
   deps.playback.stop();
-  deps.voice.leave();
+  // Pass guildId so VoiceManager can also tear down any ghost voice
+  // session Discord may still be holding from a previous process.
+  deps.voice.leave(interaction.guildId ?? undefined);
   await safeReply(interaction, { content: "Left the voice channel." });
 }
 

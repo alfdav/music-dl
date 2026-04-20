@@ -10,6 +10,7 @@
 
 import {
   joinVoiceChannel,
+  getVoiceConnection,
   VoiceConnectionStatus,
   AudioPlayerStatus,
   entersState,
@@ -64,9 +65,14 @@ export class VoiceManager {
     voiceChannel: VoiceBasedChannel,
     textChannel: TextBasedChannel,
   ): Promise<VoiceConnection> {
-    // R6: at most one voice channel at a time
-    if (this.connection) {
-      this.destroyConnection();
+    // R6: at most one voice channel at a time. Also handles "ghost"
+    // sessions where a previous bot process died mid-join: Discord
+    // holds the voice session for ~60s, so a fresh process must
+    // actively clean it up before joining.
+    this.destroyConnection();
+    const ghost = getVoiceConnection(voiceChannel.guild.id);
+    if (ghost) {
+      try { ghost.destroy(); } catch { /* already gone */ }
     }
 
     this.textChannel = textChannel;
@@ -81,14 +87,33 @@ export class VoiceManager {
     connection.subscribe(this.player);
     this.attachDisconnectHandler(connection);
 
-    await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
+    try {
+      // Bumped from 10s to 30s: cold native-opus init on first join can
+      // take longer than the default entersState window, especially when
+      // Bun has to load sodium-native for the first time.
+      await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+    } catch (error) {
+      // Connection never reached Ready — destroy so we don't leak a
+      // half-open session that blocks future /summon attempts.
+      try { connection.destroy(); } catch { /* already gone */ }
+      this.connection = null;
+      throw error;
+    }
     return connection;
   }
 
   /** Leave voice and stop playback (R6). */
-  leave(): void {
+  leave(guildId?: string): void {
     this.player.stop(true);
     this.destroyConnection();
+    // Also destroy any guild-level connection we don't have cached, so
+    // /leave reliably detaches ghost sessions from a prior process.
+    if (guildId) {
+      const other = getVoiceConnection(guildId);
+      if (other) {
+        try { other.destroy(); } catch { /* already gone */ }
+      }
+    }
     this.textChannel = null;
   }
 
