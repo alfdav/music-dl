@@ -88,12 +88,22 @@ export class VoiceManager {
     connection.subscribe(this.player);
     this.attachDisconnectHandler(connection);
 
-    // Diagnostic: log every voice connection state transition so we can
-    // see where the handshake stalls (Signalling → Connecting → Ready).
+    // Diagnostic: log every voice connection state transition + WS close
+    // code. The close code lives on the internal Networking instance
+    // (connection.state.networking) which is only present once we leave
+    // Signalling. Attach the listener the first time we see it.
+    let closeLoggerAttached = false;
     connection.on("stateChange" as any, (oldState: any, newState: any) => {
       console.error(
         `[voice] state: ${oldState.status} → ${newState.status}`,
       );
+      const nw = newState?.networking ?? oldState?.networking;
+      if (nw && !closeLoggerAttached) {
+        closeLoggerAttached = true;
+        nw.on("close", (code: number) => {
+          console.error(`[voice:ws-close] code=${code}`);
+        });
+      }
     });
     connection.on("error" as any, (err: Error) => {
       console.error("[voice] connection error:", err);
