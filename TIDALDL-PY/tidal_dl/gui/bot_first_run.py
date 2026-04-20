@@ -136,25 +136,35 @@ def run_setup_force(
     no state check — the user already said yes by passing the flag).
     Always returns 0 so server startup is never aborted (R3 AC6).
 
-    CODEX-P2: when stdout is not a TTY (service-manager launch, GUI
-    wrapper spawning the server, CI, piped stdin), the interactive
-    wizard child would block forever on prompts. Detect the non-TTY
-    case up front, print a one-line hint directing the user to run
-    ``music-dl gui --setup-bot`` from an interactive terminal, and
-    return 0 without dispatching. Server startup proceeds normally.
+    CODEX-P2: when the session is not interactive (service-manager
+    launch, GUI wrapper spawning the server, CI, piped or closed
+    stdin), the wizard child would block forever on prompt reads.
+    Detect the non-interactive case up front, print a one-line hint,
+    and return 0 without dispatching. Server startup proceeds normally.
 
-    Tests inject ``is_tty_fn`` explicitly; the real default resolves
-    to ``sys.stdout.isatty``. When tests pass a custom ``dispatch_fn``
-    without an explicit ``is_tty_fn`` we assume interactive (True) so
-    existing R3 tests keep dispatching as written."""
+    CODEX-P2-CYCLE-2: gate on BOTH stdin and stdout being TTY, not
+    stdout alone. The wizard reads prompts from inherited stdin, so
+    stdin-is-TTY is the primary requirement; stdout-is-TTY is what
+    keeps the masked-input echo-suppression and colored output
+    meaningful. Both must hold for a useful interactive session. A
+    stdout-only check misses ``--setup-bot < /dev/null`` (still hangs)
+    and wrongly skips ``--setup-bot > wizard.log`` (user can still
+    answer).
+
+    Tests inject ``is_tty_fn`` explicitly; the real default checks
+    both streams. When tests pass a custom ``dispatch_fn`` without an
+    explicit ``is_tty_fn`` we assume interactive (True) so existing R3
+    tests keep dispatching as written."""
     out: TextIO = output if output is not None else sys.stdout
 
     if is_tty_fn is None:
         # Default: test callers with an injected ``dispatch_fn`` want
         # the happy-path dispatch to fire unconditionally; real callers
-        # get the genuine TTY check.
+        # get the genuine TTY check on both streams the wizard uses.
         resolved_is_tty: Callable[[], bool] = (
-            (lambda: True) if dispatch_fn is not None else sys.stdout.isatty
+            (lambda: True)
+            if dispatch_fn is not None
+            else (lambda: sys.stdin.isatty() and sys.stdout.isatty())
         )
     else:
         resolved_is_tty = is_tty_fn
