@@ -72,11 +72,17 @@ function makeInteraction(init: MockInteractionInit) {
     get replied() {
       return replied;
     },
-    reply: mock(async (payload: { content: string; ephemeral?: boolean }) => {
+    reply: mock(async (payload: { content: string; flags?: number; ephemeral?: boolean }) => {
       replied = true;
+      // Derive the old-style `ephemeral` boolean from the new `flags` bit
+      // so existing tests can keep asserting on a plain ephemeral flag.
+      // MessageFlags.Ephemeral is 1<<6 = 64.
+      const isEphemeral =
+        payload.ephemeral === true ||
+        (typeof payload.flags === "number" && (payload.flags & 64) !== 0);
       replies.push({
         content: payload.content,
-        ephemeral: payload.ephemeral,
+        ephemeral: isEphemeral,
         kind: "reply",
       });
     }),

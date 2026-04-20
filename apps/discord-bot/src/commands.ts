@@ -6,6 +6,7 @@
  */
 
 import {
+  MessageFlags,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
   type GuildMember,
@@ -695,9 +696,11 @@ async function safeReply(
       // F-T3-002: clear components so stale picker buttons don't linger.
       await interaction.editReply({ content: options.content, components: [] });
     } else {
+      // discord.js v14.16+ deprecated the `ephemeral: true` field in favor
+      // of `flags: MessageFlags.Ephemeral`.
       await interaction.reply({
         content: options.content,
-        ephemeral: options.ephemeral ?? false,
+        flags: options.ephemeral ? MessageFlags.Ephemeral : undefined,
       });
     }
   } catch {
