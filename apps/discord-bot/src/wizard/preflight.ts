@@ -11,6 +11,8 @@
  */
 
 import { execFile } from "node:child_process";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { BotEnvKey, BotEnvShape } from "./returningUser";
 
@@ -175,16 +177,23 @@ async function checkOpus(
 }
 
 async function defaultOpusCheck(): Promise<boolean> {
-  try {
-    const mod: unknown = await import("@discordjs/opus");
-    const OpusEncoder = (mod as { OpusEncoder?: unknown }).OpusEncoder;
-    if (typeof OpusEncoder !== "function") return false;
-    const Ctor = OpusEncoder as new (rate: number, channels: number) => unknown;
-    new Ctor(48000, 2);
-    return true;
-  } catch {
-    return false;
-  }
+  // The bot starts under `node` (package.json `start`: node --import tsx).
+  // The wizard itself runs under `bun`, whose NAPI ABI can differ from the
+  // prebuilt binary fetched during install (e.g. bun v137 vs Node v25 v141).
+  // Checking opus in-process under bun gives a false negative in that case.
+  // Shell out to `node` so the check reflects the actual bot runtime.
+  const botRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+  return new Promise((resolve) => {
+    execFile(
+      "node",
+      [
+        "-e",
+        "const m = require('@discordjs/opus'); new m.OpusEncoder(48000, 2);",
+      ],
+      { cwd: botRoot, timeout: 5000 },
+      (err) => resolve(err === null),
+    );
+  });
 }
 
 // ----------------------------------------------------------------------

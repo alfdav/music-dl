@@ -26,8 +26,8 @@ from typing import Callable, TextIO
 from tidal_dl.gui.bot_onboarding import OnboardingState, detect_state
 
 HINT_TEXT = (
-    "Discord bot not configured — "
-    "run `music-dl gui --setup-bot` to set it up.\n"
+    "Discord bot not configured — run `music-dl gui --setup-bot` "
+    "in another terminal (keep this server running).\n"
 )
 
 
