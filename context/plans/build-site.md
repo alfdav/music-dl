@@ -138,6 +138,13 @@ last_edited: 2026-04-20
 
 ## Dependency Graph
 
+<!--
+    Revised 2026-04-20: onboarding-backend kit collapse pruned edges for
+    deprecated tasks. T-007 and T-011 were deleted (see Coverage Matrix
+    note + context/impl/impl-onboarding-backend.md). Their outgoing
+    edges (T-007 → T-011, T-014; T-011 → T-013, T-014) are removed so
+    this graph tracks the code that actually exists.
+-->
 ```mermaid
 graph LR
     T-001 --> T-002
@@ -146,7 +153,6 @@ graph LR
     T-002 --> T-004
     T-003 --> T-005
     T-004 --> T-006
-    T-005 --> T-007
     T-003 --> T-008
     T-004 --> T-008
     T-006 --> T-008
@@ -154,14 +160,10 @@ graph LR
     T-003 --> T-010
     T-004 --> T-010
     T-006 --> T-010
-    T-007 --> T-011
     T-003 --> T-012
     T-006 --> T-012
     T-008 --> T-012
     T-001 --> T-013
-    T-011 --> T-013
-    T-007 --> T-014
-    T-011 --> T-014
 ```
 
 ## Architect Report

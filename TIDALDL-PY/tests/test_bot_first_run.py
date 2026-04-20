@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import io
+import json
+import os
+import shutil
+import stat
+from pathlib import Path
 
 import pytest
 
+from tidal_dl.gui import bot_first_run as bot_first_run_module
 from tidal_dl.gui.bot_first_run import (
     HINT_TEXT,
+    dispatch_wizard,
     print_setup_hint,
     run_setup_force,
 )
@@ -27,7 +34,9 @@ def test_r2_ac1_needs_setup_on_tty_prints_hint() -> None:
         output=out,
     )
     assert out.getvalue() == HINT_TEXT
-    assert "--setup-bot" in HINT_TEXT
+    # GAP-2: hint must contain the full runnable command, not just the
+    # flag — truncating to "--setup-bot" alone would silently regress UX.
+    assert "music-dl gui --setup-bot" in out.getvalue()
 
 
 def test_r2_ac2_configured_prints_nothing() -> None:
@@ -152,3 +161,109 @@ def test_hint_visibility_matrix(
         is_tty_fn=lambda: True, detect_fn=lambda: state, output=out
     )
     assert bool(out.getvalue()) is expected_hint
+
+
+# --------------------------------------------------------------------------
+# GAP-3: R3 AC5 — force triggers regardless of current state
+# --------------------------------------------------------------------------
+
+
+def test_r3_ac5_force_does_not_consult_detect_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_setup_force must not branch on the current onboarding state.
+    The user already said yes by passing --setup-bot. Monkeypatch
+    detect_state to blow up if anyone calls it; run_setup_force should
+    still dispatch cleanly."""
+
+    def explode(*args: object, **kwargs: object) -> OnboardingState:
+        raise AssertionError(
+            "run_setup_force must not consult detect_state (R3 AC5)"
+        )
+
+    # Patch on bot_onboarding (source of truth) and bot_first_run (re-
+    # exported symbol) so a future refactor can't route around the guard.
+    from tidal_dl.gui import bot_onboarding
+
+    monkeypatch.setattr(bot_onboarding, "detect_state", explode)
+    monkeypatch.setattr(bot_first_run_module, "detect_state", explode)
+
+    out = io.StringIO()
+    calls: list[str] = []
+
+    def fake_dispatch() -> int:
+        calls.append("wizard")
+        return 0
+
+    rc = run_setup_force(dispatch_fn=fake_dispatch, output=out)
+    assert rc == 0
+    assert calls == ["wizard"]
+
+
+# --------------------------------------------------------------------------
+# RISK-3: real subprocess.run dispatch path — regression guard on
+# stdio inheritance and on bot_root resolution via MUSIC_DL_BOT_PATH.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    shutil.which("bun") is None,
+    reason="bun not available — real-dispatch smoke test requires bun",
+)
+def test_dispatch_wizard_real_subprocess_with_fake_bot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stand up a throwaway ``bot_root`` with a no-op ``wizard`` script
+    and invoke the REAL dispatch_wizard. Proves the subprocess.run wiring
+    actually runs the script (stdio inheritance + cwd + bun resolution)
+    instead of just trusting the mocks."""
+    bot_root = tmp_path / "fake-bot"
+    bot_root.mkdir()
+
+    # Minimal package.json with a wizard script that exits 0.
+    pkg = {
+        "name": "fake-bot",
+        "private": True,
+        "scripts": {"wizard": 'printf "stdio-proof\\n"'},
+    }
+    (bot_root / "package.json").write_text(json.dumps(pkg), encoding="utf-8")
+
+    monkeypatch.setenv("MUSIC_DL_BOT_PATH", str(bot_root))
+
+    rc = dispatch_wizard()
+    assert rc == 0, "wizard script should exit 0 under real subprocess.run"
+
+
+def test_dispatch_wizard_returns_127_when_bot_root_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GAP-4 companion: a non-existent bot_root resolves to 127, not a
+    FileNotFoundError escaping into run_setup_force."""
+    missing = tmp_path / "does-not-exist"
+    monkeypatch.setenv("MUSIC_DL_BOT_PATH", str(missing))
+    assert dispatch_wizard() == 127
+
+
+def test_dispatch_wizard_returns_127_on_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GAP-4: PermissionError from ``bot_root.is_dir()`` must be caught
+    and turned into a 127 retry hint, not propagated to the caller."""
+    inaccessible_parent = tmp_path / "locked"
+    inaccessible_parent.mkdir()
+    bot_root = inaccessible_parent / "discord-bot"
+    bot_root.mkdir()
+
+    original_mode = stat.S_IMODE(inaccessible_parent.stat().st_mode)
+    # Strip execute bit so traversal into ``bot_root`` raises
+    # PermissionError on is_dir().
+    os.chmod(inaccessible_parent, 0)
+    try:
+        # Running as root defeats chmod — skip if the guard is bypassed.
+        if os.geteuid() == 0:
+            pytest.skip("root bypasses chmod; cannot exercise PermissionError")
+        monkeypatch.setenv("MUSIC_DL_BOT_PATH", str(bot_root))
+        rc = dispatch_wizard()
+        assert rc == 127
+    finally:
+        os.chmod(inaccessible_parent, original_mode)
