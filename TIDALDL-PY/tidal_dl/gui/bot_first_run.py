@@ -142,17 +142,16 @@ def run_setup_force(
     Detect the non-interactive case up front, print a one-line hint,
     and return 0 without dispatching. Server startup proceeds normally.
 
-    CODEX-P2-CYCLE-2: gate on BOTH stdin and stdout being TTY, not
-    stdout alone. The wizard reads prompts from inherited stdin, so
-    stdin-is-TTY is the primary requirement; stdout-is-TTY is what
-    keeps the masked-input echo-suppression and colored output
-    meaningful. Both must hold for a useful interactive session. A
-    stdout-only check misses ``--setup-bot < /dev/null`` (still hangs)
-    and wrongly skips ``--setup-bot > wizard.log`` (user can still
-    answer).
+    CODEX-P2-CYCLE-3: gate on stdin only. The wizard's masked input
+    reader (apps/discord-bot/src/wizard/maskedInput.ts) checks
+    stdin.isTTY; prompts are plain writes to stdout. ``--setup-bot |
+    tee wizard.log`` is a legitimate power-user workflow where stdout
+    is piped but stdin is still a terminal — the cycle-2 both-TTY gate
+    rejected that use case. What we truly need to prevent is a closed
+    or non-interactive stdin, which hangs the wizard on read.
 
     Tests inject ``is_tty_fn`` explicitly; the real default checks
-    both streams. When tests pass a custom ``dispatch_fn`` without an
+    stdin only. When tests pass a custom ``dispatch_fn`` without an
     explicit ``is_tty_fn`` we assume interactive (True) so existing R3
     tests keep dispatching as written."""
     out: TextIO = output if output is not None else sys.stdout
@@ -160,11 +159,10 @@ def run_setup_force(
     if is_tty_fn is None:
         # Default: test callers with an injected ``dispatch_fn`` want
         # the happy-path dispatch to fire unconditionally; real callers
-        # get the genuine TTY check on both streams the wizard uses.
+        # get the genuine stdin-TTY check — the only stream the wizard
+        # needs interactive.
         resolved_is_tty: Callable[[], bool] = (
-            (lambda: True)
-            if dispatch_fn is not None
-            else (lambda: sys.stdin.isatty() and sys.stdout.isatty())
+            (lambda: True) if dispatch_fn is not None else sys.stdin.isatty
         )
     else:
         resolved_is_tty = is_tty_fn

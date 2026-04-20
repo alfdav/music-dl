@@ -152,57 +152,89 @@ def test_codex_p2_force_with_tty_still_dispatches() -> None:
     assert "complete" in out.getvalue().lower()
 
 
-def test_codex_p2_cycle2_default_tty_check_reads_stdin_not_just_stdout(
+def test_codex_p2_cycle3_default_tty_check_is_stdin_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression: cycle-1 fix checked sys.stdout.isatty() only, which
-    both skipped valid ``--setup-bot > log.txt`` (stdin still TTY, user
-    can answer) AND dispatched on ``--setup-bot < /dev/null`` (stdin
-    closed, wizard hangs). Gate must hold on BOTH streams. Cycle-2
-    asserts the default resolves stdin-AND-stdout."""
+    """Regression across three review cycles:
+    - cycle-1 checked sys.stdout.isatty() only → false positive on
+      closed stdin, false negative on piped stdout.
+    - cycle-2 checked BOTH streams → false negative on
+      ``--setup-bot | tee log.txt`` (valid power-user workflow where
+      the user types on a terminal stdin but pipes output to a file).
+    - cycle-3 (this test): check stdin ONLY. The wizard's masked reader
+      (apps/discord-bot/src/wizard/maskedInput.ts) gates on stdin.isTTY
+      and prompts write to stdout. A piped stdout still works.
+    """
     import sys
 
+    # Case A: stdin is NOT TTY → SKIP (wizard would hang on read).
     out = io.StringIO()
-    calls: list[str] = []
-
-    # Case A: stdout is TTY, stdin is NOT TTY → must SKIP (wizard would hang).
-    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     rc = run_setup_force(output=out)
     assert rc == 0
-    assert calls == []
     assert "interactive terminal" in out.getvalue().lower()
 
-    # Case B: stdin is TTY, stdout is NOT TTY (piped to a log) → also
-    # SKIP — even though the user could answer, we lose the masked-input
-    # safety and the user can't see remediation text. Conservative:
-    # both-TTY required.
+    # Case B: stdin IS TTY but stdout is piped → DISPATCH.
+    # ``--setup-bot | tee wizard.log`` is a legitimate workflow.
     out2 = io.StringIO()
-    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    rc = run_setup_force(output=out2)
-    assert rc == 0
-    assert "interactive terminal" in out2.getvalue().lower()
-
-    # Case C: both TTY → DISPATCH. Use a fake dispatcher so we do not
-    # actually spawn bun/node.
-    out3 = io.StringIO()
-    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    calls: list[str] = []
 
     def fake_dispatch() -> int:
-        calls.append("wizard")
+        calls.append("wizard-piped-stdout")
         return 0
 
-    # dispatch_fn is an escape-hatch: when provided, the default TTY
-    # check resolves to True (so existing tests don't need to inject
-    # is_tty_fn). This case still uses the dispatch_fn escape hatch but
-    # explicitly asserts we got here via the monkeypatched True+True
-    # pairing — a standalone regression line would still fail if the
-    # default resolver used stdout only.
-    rc = run_setup_force(dispatch_fn=fake_dispatch, output=out3)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+    # No is_tty_fn injected AND no dispatch_fn → exercises the real
+    # default resolver. But we cannot actually spawn a subprocess in
+    # tests, so verify the gate decision reaches the dispatch path:
+    # invoke with dispatch_fn so we can assert it fires, while also
+    # proving the default resolver would have said "go" by NOT injecting
+    # is_tty_fn on a separate call.
+    rc = run_setup_force(dispatch_fn=fake_dispatch, output=out2)
     assert rc == 0
-    assert calls == ["wizard"]
+    assert calls == ["wizard-piped-stdout"]
+
+    # Case B (real resolver): prove the stdin-only check lets piped
+    # stdout through. Inject only a dispatcher that short-circuits back
+    # to the same decision by inspecting the resolver directly — here
+    # we just assert that when we bypass dispatch_fn, the resolver is
+    # stdin.isatty, which returns True in this setup.
+    # We simulate by calling the module-level behaviour without dispatch_fn
+    # AND without is_tty_fn, and expect it to NOT print "interactive
+    # terminal" when stdin is TTY (it would call dispatch_wizard which
+    # in tests resolves to 127 since no bun/node runs with our fake
+    # bot_root). The observable is: no "interactive terminal" hint.
+    out3 = io.StringIO()
+    import os
+
+    # Point MUSIC_DL_BOT_PATH at a nonexistent dir so dispatch_wizard
+    # returns 126 quickly instead of actually spawning anything.
+    monkeypatch.setenv("MUSIC_DL_BOT_PATH", "/nonexistent/music-dl-bot-path")
+    rc = run_setup_force(output=out3)
+    assert rc == 0
+    assert "interactive terminal" not in out3.getvalue().lower(), (
+        "stdin-TTY + piped stdout must DISPATCH, not skip with the "
+        "interactive-terminal hint. cycle-3 fix regression."
+    )
+
+    # Case C: both TTY → DISPATCH.
+    out4 = io.StringIO()
+    calls2: list[str] = []
+
+    def fake_dispatch_c() -> int:
+        calls2.append("wizard-both-tty")
+        return 0
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    rc = run_setup_force(dispatch_fn=fake_dispatch_c, output=out4)
+    assert rc == 0
+    assert calls2 == ["wizard-both-tty"]
+
+    # Quiet the unused-import warning.
+    _ = os
 
 
 # --------------------------------------------------------------------------
