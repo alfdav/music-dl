@@ -50,6 +50,12 @@ export async function runWizard(
   }
 
   // decision.mode === "fresh" or "reconfigure" — T-004 replaces this stub.
-  io.stdout.write("Not yet implemented.\n");
-  return { exitCode: 0 };
+  // Until the prompt sequence lands, surface a non-zero exit so any caller
+  // (notably onboarding-backend R4) does not treat the stub run as a
+  // completed setup. Code 75 mirrors EX_TEMPFAIL (sysexits) — "setup
+  // incomplete, try again later" rather than a hard error.
+  io.stdout.write(
+    "Setup flow not yet implemented in this build. No configuration written.\n",
+  );
+  return { exitCode: 75 };
 }

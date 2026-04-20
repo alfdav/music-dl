@@ -9,6 +9,7 @@
  */
 
 import {
+  chmod,
   open,
   mkdir,
   readFile,
@@ -60,6 +61,13 @@ export async function ensureSharedToken(
 
 async function readExistingToken(path: string): Promise<string | null> {
   try {
+    const s = await stat(path);
+    // Heal permissions on reuse — a pre-existing token file from an older
+    // build or a manual copy must not remain world-readable just because
+    // we already have a token. Canonical mode is 0600.
+    if ((s.mode & 0o777) !== 0o600) {
+      await chmod(path, 0o600);
+    }
     const content = (await readFile(path, "utf8")).trim();
     return content.length > 0 ? content : null;
   } catch (err: unknown) {

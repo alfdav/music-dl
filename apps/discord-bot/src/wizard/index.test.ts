@@ -1,11 +1,17 @@
 /**
  * R1 acceptance tests — header + invocability.
+ *
+ * Note: isolation. These tests point the wizard at a guaranteed-absent
+ * config directory so the "fresh" path is exercised deterministically
+ * regardless of the user's real ~/.config/music-dl state.
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { Readable, Writable } from "node:stream";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
 
 import { WIZARD_HEADER, runWizard } from "./index";
 
@@ -22,6 +28,25 @@ class Capture extends Writable {
   }
 }
 
+let work: string;
+let envOverrides: NodeJS.ProcessEnv;
+
+beforeEach(async () => {
+  work = await mkdtemp(join(tmpdir(), "wizard-r1-"));
+  envOverrides = {
+    MUSIC_DL_BOT_ENV_PATH: join(work, "discord-bot.env"),
+    MUSIC_DL_BOT_TOKEN_PATH: join(work, "bot-shared-token"),
+  };
+  Object.assign(process.env, envOverrides);
+});
+
+afterEach(async () => {
+  for (const key of Object.keys(envOverrides)) {
+    delete process.env[key];
+  }
+  await rm(work, { recursive: true, force: true });
+});
+
 describe("wizard R1 — entry points and header", () => {
   it("AC3: prints the header line on start", async () => {
     const stdout = new Capture();
@@ -31,7 +56,9 @@ describe("wizard R1 — entry points and header", () => {
       stderr,
       stdin: new Readable({ read() {} }),
     });
-    expect(result.exitCode).toBe(0);
+    // Fresh install, T-004 prompt sequence not yet implemented — stub
+    // signals incomplete setup (75 = EX_TEMPFAIL).
+    expect(result.exitCode).toBe(75);
     expect(stdout.text.split("\n")[0]).toBe(WIZARD_HEADER);
   });
 
@@ -39,8 +66,13 @@ describe("wizard R1 — entry points and header", () => {
     const result = spawnSync("bun", [CLI_PATH], {
       cwd: resolve(__dirname, "../.."),
       encoding: "utf8",
+      env: { ...process.env, ...envOverrides },
     });
-    expect(result.status).toBe(0);
     expect(result.stdout.split("\n")[0]).toBe(WIZARD_HEADER);
+    // AC1 + AC2 care that invocation works and produces the header. The
+    // exit code reflects current build state (75 on fresh while T-004
+    // pending); both values are acceptable per R1 (not an exit-code spec).
+    expect(result.status).not.toBeNull();
+    expect([0, 75]).toContain(result.status as number);
   });
 });

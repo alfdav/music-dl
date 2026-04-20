@@ -102,4 +102,17 @@ describe("wizard R4 — shared-token generation", () => {
     const again = await ensureSharedToken({ path: tokenPath });
     expect(again.rotated).toBe(false);
   });
+
+  it("heals permissions on reuse when existing file is world-readable", async () => {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(dirname(tokenPath), { recursive: true });
+    // Simulate an older build that wrote 0644 (or a manual copy):
+    await writeFile(tokenPath, "legacy-token\n", { mode: 0o644 });
+    await chmod(tokenPath, 0o644); // in case umask interfered
+
+    const result = await ensureSharedToken({ path: tokenPath });
+    expect(result.rotated).toBe(false);
+    expect(result.token).toBe("legacy-token");
+    expect(await tokenFileMode(tokenPath)).toBe(0o600);
+  });
 });
