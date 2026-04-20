@@ -108,6 +108,67 @@ def test_r3_runtime_missing_prints_install_hint() -> None:
 
 
 # --------------------------------------------------------------------------
+# CODEX-P2: --setup-bot with no TTY must not dispatch (wizard child would
+# block forever on piped/closed stdin, preventing server startup).
+# --------------------------------------------------------------------------
+
+
+def test_codex_p2_force_without_tty_skips_dispatch_and_prints_hint() -> None:
+    out = io.StringIO()
+    calls: list[str] = []
+
+    def fake_dispatch() -> int:
+        calls.append("wizard")
+        return 0
+
+    rc = run_setup_force(
+        dispatch_fn=fake_dispatch,
+        output=out,
+        is_tty_fn=lambda: False,
+    )
+    assert rc == 0
+    assert calls == [], (
+        "Wizard must NOT be dispatched on non-TTY startup — it would "
+        "block on prompts and never let the server start."
+    )
+    assert "interactive terminal" in out.getvalue().lower()
+
+
+def test_codex_p2_force_with_tty_still_dispatches() -> None:
+    out = io.StringIO()
+    calls: list[str] = []
+
+    def fake_dispatch() -> int:
+        calls.append("wizard")
+        return 0
+
+    rc = run_setup_force(
+        dispatch_fn=fake_dispatch,
+        output=out,
+        is_tty_fn=lambda: True,
+    )
+    assert rc == 0
+    assert calls == ["wizard"]
+    assert "complete" in out.getvalue().lower()
+
+
+# --------------------------------------------------------------------------
+# CODEX-P3: exit-code split — 126 = "bot sources missing" (MUSIC_DL_BOT_PATH
+# hint), 127 = "runtime missing" (install bun / tsx hint). Conflating the
+# two sent users down the wrong remediation path.
+# --------------------------------------------------------------------------
+
+
+def test_run_setup_force_126_prints_bot_root_hint_not_runtime_hint() -> None:
+    out = io.StringIO()
+    rc = run_setup_force(dispatch_fn=lambda: 126, output=out)
+    assert rc == 0
+    text = out.getvalue()
+    assert "MUSIC_DL_BOT_PATH" in text
+    assert "install bun" not in text.lower()
+
+
+# --------------------------------------------------------------------------
 # Regression: the deleted interactive path stays deleted
 # --------------------------------------------------------------------------
 
@@ -176,7 +237,7 @@ def test_r3_ac5_force_does_not_consult_detect_state(
     detect_state to blow up if anyone calls it; run_setup_force should
     still dispatch cleanly."""
 
-    def explode(*args: object, **kwargs: object) -> OnboardingState:
+    def explode(*_args: object, **_kwargs: object) -> OnboardingState:
         raise AssertionError(
             "run_setup_force must not consult detect_state (R3 AC5)"
         )
@@ -234,21 +295,23 @@ def test_dispatch_wizard_real_subprocess_with_fake_bot(
     assert rc == 0, "wizard script should exit 0 under real subprocess.run"
 
 
-def test_dispatch_wizard_returns_127_when_bot_root_missing(
+def test_dispatch_wizard_returns_126_when_bot_root_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GAP-4 companion: a non-existent bot_root resolves to 127, not a
-    FileNotFoundError escaping into run_setup_force."""
+    """CODEX-P3: a non-existent bot_root resolves to 126 (bot sources
+    missing), not 127 (runtime missing) — the user should be pointed at
+    MUSIC_DL_BOT_PATH, not told to install bun."""
     missing = tmp_path / "does-not-exist"
     monkeypatch.setenv("MUSIC_DL_BOT_PATH", str(missing))
-    assert dispatch_wizard() == 127
+    assert dispatch_wizard() == 126
 
 
-def test_dispatch_wizard_returns_127_on_permission_error(
+def test_dispatch_wizard_returns_126_on_permission_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GAP-4: PermissionError from ``bot_root.is_dir()`` must be caught
-    and turned into a 127 retry hint, not propagated to the caller."""
+    """CODEX-P3: PermissionError from ``bot_root.is_dir()`` is still a
+    bot-sources-unreachable condition (not a runtime problem), so it
+    must return 126 and route the user to the MUSIC_DL_BOT_PATH hint."""
     inaccessible_parent = tmp_path / "locked"
     inaccessible_parent.mkdir()
     bot_root = inaccessible_parent / "discord-bot"
@@ -264,6 +327,6 @@ def test_dispatch_wizard_returns_127_on_permission_error(
             pytest.skip("root bypasses chmod; cannot exercise PermissionError")
         monkeypatch.setenv("MUSIC_DL_BOT_PATH", str(bot_root))
         rc = dispatch_wizard()
-        assert rc == 127
+        assert rc == 126
     finally:
         os.chmod(inaccessible_parent, original_mode)

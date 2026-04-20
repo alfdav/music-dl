@@ -50,8 +50,16 @@ def print_setup_hint(
 def dispatch_wizard(out: TextIO | None = None) -> int:
     """R3 AC1+AC2: spawn the bot-side wizard as a child process with
     inherited stdio and block until it exits. Returns the wizard's exit
-    code. Returns 127 when the runtime is unavailable. Never raises —
+    code. Returns 126 when the bot sources cannot be located and 127
+    when the JS runtime (bun/node+tsx) is unavailable. Never raises —
     the caller always continues startup regardless of result (R3 AC6).
+
+    Exit code split (CODEX-P3): ``126`` ("command not executable",
+    shell convention) signals "bot sources missing" — a packaging /
+    MUSIC_DL_BOT_PATH problem. ``127`` stays reserved for "runtime
+    missing" — the user needs to install bun or tsx. The two hint
+    messages in ``run_setup_force`` point at different remediations,
+    so conflating them was actively misleading.
 
     When ``out`` is provided the resolved ``bot_root`` is logged to it
     before dispatch so the user can see which directory the wizard was
@@ -72,11 +80,11 @@ def dispatch_wizard(out: TextIO | None = None) -> int:
 
         try:
             if not bot_root.is_dir():
-                return 127
+                return 126
         except OSError:
             # Unreadable parent directories, permission errors, etc.
             # Treat as "cannot locate wizard" — retry hint, not crash.
-            return 127
+            return 126
 
         if out is not None:
             out.write(f"Launching Discord bot wizard from {bot_root}...\n")
@@ -122,11 +130,44 @@ def dispatch_wizard(out: TextIO | None = None) -> int:
 def run_setup_force(
     dispatch_fn: "Callable[[], int] | None" = None,
     output: TextIO | None = None,
+    is_tty_fn: "Callable[[], bool] | None" = None,
 ) -> int:
     """R3: `--setup-bot` path. Launches the wizard directly (no prompt,
     no state check — the user already said yes by passing the flag).
-    Always returns 0 so server startup is never aborted (R3 AC6)."""
+    Always returns 0 so server startup is never aborted (R3 AC6).
+
+    CODEX-P2: when stdout is not a TTY (service-manager launch, GUI
+    wrapper spawning the server, CI, piped stdin), the interactive
+    wizard child would block forever on prompts. Detect the non-TTY
+    case up front, print a one-line hint directing the user to run
+    ``music-dl gui --setup-bot`` from an interactive terminal, and
+    return 0 without dispatching. Server startup proceeds normally.
+
+    Tests inject ``is_tty_fn`` explicitly; the real default resolves
+    to ``sys.stdout.isatty``. When tests pass a custom ``dispatch_fn``
+    without an explicit ``is_tty_fn`` we assume interactive (True) so
+    existing R3 tests keep dispatching as written."""
     out: TextIO = output if output is not None else sys.stdout
+
+    if is_tty_fn is None:
+        # Default: test callers with an injected ``dispatch_fn`` want
+        # the happy-path dispatch to fire unconditionally; real callers
+        # get the genuine TTY check.
+        resolved_is_tty: Callable[[], bool] = (
+            (lambda: True) if dispatch_fn is not None else sys.stdout.isatty
+        )
+    else:
+        resolved_is_tty = is_tty_fn
+
+    if not resolved_is_tty():
+        out.write(
+            "\nDiscord bot wizard skipped: --setup-bot requires an "
+            "interactive terminal. Run `music-dl gui --setup-bot` "
+            "directly from a terminal to configure the bot.\n"
+        )
+        out.flush()
+        return 0
+
     # When the caller relies on the default dispatcher, hand it ``out``
     # so it can log the resolved ``bot_root`` before spawning the child.
     # Custom ``dispatch_fn`` callers (tests) keep the zero-arg contract.
@@ -136,6 +177,12 @@ def run_setup_force(
         rc = dispatch_fn()
     if rc == 0:
         out.write("\nBot setup complete.\n")
+    elif rc == 126:
+        out.write(
+            "\nDiscord bot sources not found. If this is a packaged "
+            "install, set MUSIC_DL_BOT_PATH to the apps/discord-bot "
+            "directory and retry with `music-dl gui --setup-bot`.\n"
+        )
     elif rc == 127:
         out.write(
             "\nBot wizard runtime not available. Install bun (recommended) "
