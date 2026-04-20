@@ -51,14 +51,13 @@ describe("wizard R1 — entry points and header", () => {
   it("AC3: prints the header line on start", async () => {
     const stdout = new Capture();
     const stderr = new Capture();
-    // Feed enough blank answers so the prompt sequence reaches EOF
-    // quickly; the test only cares that the header prints. Required
-    // fields reject blanks and re-prompt up to 10 times per field,
-    // after which they fall back to "" and the wizard returns 75.
-    const blankAnswers = "\n".repeat(120);
+    // Feed blanks so required-field retries exhaust and the prompt loop
+    // cancels; the test only cares that the header prints.
+    const blankAnswers = "\n".repeat(20);
     const stdin = Readable.from([blankAnswers]);
     const result = await runWizard({ stdout, stderr, stdin });
-    expect(result.exitCode).toBe(75);
+    // fresh install, required field never satisfied → cancel (130)
+    expect(result.exitCode).toBe(130);
     expect(stdout.text.split("\n")[0]).toBe(WIZARD_HEADER);
   });
 
@@ -70,9 +69,10 @@ describe("wizard R1 — entry points and header", () => {
     });
     expect(result.stdout.split("\n")[0]).toBe(WIZARD_HEADER);
     // AC1 + AC2 care that invocation works and produces the header. The
-    // exit code reflects current build state (75 on fresh while T-004
-    // pending); both values are acceptable per R1 (not an exit-code spec).
+    // exit code reflects current build state (75 fresh-incomplete or 130
+    // cancel-on-EOF depending on how stdin is wired); R1 does not pin a
+    // specific code.
     expect(result.status).not.toBeNull();
-    expect([0, 75]).toContain(result.status as number);
+    expect([0, 75, 130]).toContain(result.status as number);
   });
 });

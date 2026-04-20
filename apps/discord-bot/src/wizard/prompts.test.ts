@@ -5,7 +5,11 @@
 import { describe, expect, it } from "bun:test";
 import { Readable, Writable } from "node:stream";
 
-import { collectBotValues, USER_SUPPLIED_FIELDS } from "./prompts";
+import {
+  PromptCancelError,
+  collectBotValues,
+  USER_SUPPLIED_FIELDS,
+} from "./prompts";
 import type { BotEnvShape } from "./returningUser";
 import { makeLineReader } from "./returningUser";
 
@@ -26,7 +30,7 @@ function ioFor(answers: string[]) {
     stdin,
     stdout: new Capture(),
     stderr: new Capture(),
-    readLine: makeLineReader(stdin),
+    readLine: makeLineReader(stdin).read,
   };
 }
 
@@ -53,8 +57,8 @@ describe("wizard R3 — prompt sequence", () => {
       { stdin: plainStdin, stdout, stderr },
       {
         mode: "fresh",
-        readLine: makeLineReader(plainStdin),
-        readMaskedLine: makeLineReader(maskedStdin),
+        readLine: makeLineReader(plainStdin).read,
+        readMaskedLine: makeLineReader(maskedStdin).read,
       },
     );
 
@@ -118,6 +122,64 @@ describe("wizard R3 — prompt sequence", () => {
     );
     expect(result.fields.DISCORD_TOKEN).toBe("valid-token");
     expect(stderr.text).toContain("Discord bot token is required");
+  });
+
+  it("regression: shared stdin + single reader does NOT shift field values across piped input", async () => {
+    // Reproduces the Codex P1 finding: with a single shared reader
+    // (masked reader delegates to the shared reader on non-TTY), feeding
+    // six lines on one stdin must land each value in its own field.
+    const stdin = Readable.from(
+      [
+        "token-LINE-1",
+        "app-LINE-2",
+        "guild-LINE-3",
+        "channel-LINE-4",
+        "user-LINE-5",
+        "", // default URL
+      ]
+        .map((v) => v + "\n")
+        .join(""),
+    );
+    const stdout = new Capture();
+    const stderr = new Capture();
+    const sharedReader = makeLineReader(stdin).read;
+    const result = await collectBotValues(
+      { stdin, stdout, stderr },
+      {
+        mode: "fresh",
+        readLine: sharedReader,
+        readMaskedLine: sharedReader, // non-TTY case — must share
+      },
+    );
+    expect(result.fields.DISCORD_TOKEN).toBe("token-LINE-1");
+    expect(result.fields.DISCORD_APPLICATION_ID).toBe("app-LINE-2");
+    expect(result.fields.ALLOWED_GUILD_ID).toBe("guild-LINE-3");
+    expect(result.fields.ALLOWED_CHANNEL_ID).toBe("channel-LINE-4");
+    expect(result.fields.ALLOWED_USER_ID).toBe("user-LINE-5");
+  });
+
+  it("regression: EOF on a required field raises PromptCancelError", async () => {
+    // No data — stream ends immediately. Required token field must
+    // cancel rather than silently persist an empty value.
+    const stdin = Readable.from([""]);
+    const stdout = new Capture();
+    const stderr = new Capture();
+    const sharedReader = makeLineReader(stdin).read;
+
+    let error: unknown;
+    try {
+      await collectBotValues(
+        { stdin, stdout, stderr },
+        {
+          mode: "fresh",
+          readLine: sharedReader,
+          readMaskedLine: sharedReader,
+        },
+      );
+    } catch (err) {
+      error = err;
+    }
+    expect(error).toBeInstanceOf(PromptCancelError);
   });
 
   it("allows overriding MUSIC_DL_BASE_URL with a custom value", async () => {

@@ -16,6 +16,18 @@
 import type { BotEnvKey, BotEnvShape, PromptIO } from "./returningUser";
 import { BOT_ENV_KEYS, makeLineReader, type LineReader } from "./returningUser";
 
+/**
+ * Raised when the user cancels a prompt (Ctrl+C in masked read, EOF on
+ * stdin, or closed pipe before a required field has a value). The wizard
+ * catches this and exits non-zero with no files changed.
+ */
+export class PromptCancelError extends Error {
+  constructor(message = "Prompt cancelled") {
+    super(message);
+    this.name = "PromptCancelError";
+  }
+}
+
 export interface PromptOptions {
   mode: "fresh" | "reconfigure";
   defaults?: BotEnvShape;
@@ -99,7 +111,7 @@ export async function collectBotValues(
   io: PromptIO,
   opts: PromptOptions,
 ): Promise<CollectedValues> {
-  const readLine = opts.readLine ?? makeLineReader(io.stdin);
+  const readLine = opts.readLine ?? makeLineReader(io.stdin).read;
   const readMaskedLine = opts.readMaskedLine ?? readLine;
   const defaults = opts.defaults ?? ({} as Partial<BotEnvShape>);
 
@@ -154,13 +166,16 @@ async function promptOne(
     ? ` [${field.masked ? maskForDisplay(defaultValue) : defaultValue}]`
     : "";
 
-  // Re-prompt until we have a non-empty value or the stream ends. An EOF
-  // on a required field with no default propagates as empty string; the
-  // caller handles that by treating the result as cancelled.
   for (let attempt = 0; attempt < 10; attempt++) {
     io.stdout.write(`${field.label}${defaultHint}: `);
     const raw = await readLine();
-    if (raw === null) return defaultValue ?? "";
+    if (raw === null) {
+      // EOF / Ctrl+C — propagate as cancel. Empty required fields must
+      // not silently become "" (that would let the wizard finish and
+      // later persist a broken config).
+      if (defaultValue) return defaultValue;
+      throw new PromptCancelError(`Cancelled at "${field.label}"`);
+    }
     const trimmed = raw.trim();
     if (trimmed !== "") return trimmed;
     if (defaultValue) return defaultValue;
@@ -168,7 +183,11 @@ async function promptOne(
       `${field.label} is required — please enter a value or press Ctrl+C to cancel.\n`,
     );
   }
-  return defaultValue ?? "";
+  // Exhausted retries — treat as cancel rather than writing empty.
+  if (defaultValue) return defaultValue;
+  throw new PromptCancelError(
+    `Cancelled after 10 empty attempts at "${field.label}"`,
+  );
 }
 
 function maskForDisplay(value: string): string {

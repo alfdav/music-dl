@@ -90,7 +90,7 @@ export async function sharedTokenPresent(
  */
 export async function resolveEntryDecision(
   io: PromptIO,
-  opts: DetectOptions = {},
+  opts: DetectOptions & { readLine?: LineReader } = {},
 ): Promise<EntryDecision> {
   const envPath = opts.envPath ?? getBotEnvPath();
   const tokenPath = opts.tokenPath ?? getSharedTokenPath();
@@ -102,8 +102,8 @@ export async function resolveEntryDecision(
 
   if (!env || !hasToken) return { mode: "fresh" };
 
-  const lines = makeLineReader(io.stdin);
-  const choice = await promptKeepReconfigureCancel(io, lines);
+  const readLine = opts.readLine ?? makeLineReader(io.stdin).read;
+  const choice = await promptKeepReconfigureCancel(io, readLine);
   if (choice === "keep") return { mode: "keep" };
   if (choice === "reconfigure") return { mode: "reconfigure", defaults: env };
   return { mode: "cancel" };
@@ -142,34 +142,63 @@ function classify(input: string): KeepReconfigureCancel | null {
   return null;
 }
 
+export interface LineReaderHandle {
+  read: LineReader;
+  pause: () => void;
+  resume: () => void;
+}
+
 /**
  * Build a reusable line reader over a Readable stream. Accumulates data and
  * hands out one line per call. Returns null on EOF. Avoids readline's
  * single-shot behavior and its quirks with in-memory test streams.
+ *
+ * Returns a handle that exposes pause()/resume() so a masked reader can
+ * temporarily take over stdin without dropping data into the shared buffer
+ * (and, critically, without duplicating consumption across competing
+ * readers — that was a deterministic bug when two listeners ran side by
+ * side on the same stdin).
  */
-export function makeLineReader(input: NodeJS.ReadableStream): LineReader {
+export function makeLineReader(input: NodeJS.ReadableStream): LineReaderHandle {
   let buffer = "";
   let ended = false;
+  let attached = false;
   const pending: Array<() => void> = [];
 
   input.setEncoding?.("utf8");
-  input.on("data", (chunk: string | Buffer) => {
+
+  const onData = (chunk: string | Buffer): void => {
     buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
     drain();
-  });
-  input.on("end", () => {
+  };
+  const onEnd = (): void => {
     ended = true;
     drain();
-  });
+  };
 
-  function drain() {
+  const attach = (): void => {
+    if (attached) return;
+    input.on("data", onData);
+    input.on("end", onEnd);
+    attached = true;
+  };
+  const detach = (): void => {
+    if (!attached) return;
+    input.off("data", onData);
+    input.off("end", onEnd);
+    attached = false;
+  };
+
+  attach();
+
+  function drain(): void {
     while (pending.length > 0 && (buffer.includes("\n") || ended)) {
       const waiter = pending.shift();
       waiter?.();
     }
   }
 
-  return () =>
+  const read: LineReader = () =>
     new Promise<string | null>((resolve) => {
       const tryRead = () => {
         const nl = buffer.indexOf("\n");
@@ -193,6 +222,8 @@ export function makeLineReader(input: NodeJS.ReadableStream): LineReader {
       };
       if (!tryRead()) pending.push(tryRead);
     });
+
+  return { read, pause: detach, resume: attach };
 }
 
 /**

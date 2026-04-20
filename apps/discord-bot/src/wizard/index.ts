@@ -8,7 +8,7 @@
  */
 
 import { makeMaskedLineReader } from "./maskedInput";
-import { collectBotValues } from "./prompts";
+import { PromptCancelError, collectBotValues } from "./prompts";
 import { makeLineReader, resolveEntryDecision } from "./returningUser";
 
 export const WIZARD_HEADER = "music-dl Discord bot setup";
@@ -40,7 +40,16 @@ export async function runWizard(
 ): Promise<WizardResult> {
   io.stdout.write(`${WIZARD_HEADER}\n`);
 
-  const decision = await resolveEntryDecision(io);
+  // Single shared reader — never build two readers on the same stdin or
+  // chunks get duplicated across their buffers (the token line would then
+  // bleed into the next plain prompt).
+  const lineReader = makeLineReader(io.stdin);
+  const readLine = lineReader.read;
+  const readMaskedLine = makeMaskedLineReader(io.stdin, lineReader, {
+    outputStream: io.stdout,
+  });
+
+  const decision = await resolveEntryDecision(io, { readLine });
 
   if (decision.mode === "keep") {
     io.stdout.write("Keeping existing configuration.\n");
@@ -52,14 +61,21 @@ export async function runWizard(
   }
 
   // decision.mode === "fresh" or "reconfigure" — run the prompt sequence.
-  const readLine = makeLineReader(io.stdin);
-  const readMaskedLine = makeMaskedLineReader(io.stdin);
-  const values = await collectBotValues(io, {
-    mode: decision.mode,
-    defaults: decision.mode === "reconfigure" ? decision.defaults : undefined,
-    readLine,
-    readMaskedLine,
-  });
+  let values;
+  try {
+    values = await collectBotValues(io, {
+      mode: decision.mode,
+      defaults: decision.mode === "reconfigure" ? decision.defaults : undefined,
+      readLine,
+      readMaskedLine,
+    });
+  } catch (err) {
+    if (err instanceof PromptCancelError) {
+      io.stdout.write("\nCancelled. No changes made.\n");
+      return { exitCode: 130 };
+    }
+    throw err;
+  }
 
   // T-006 (preflight) + T-008 (env write) + T-012 (atomic two-file commit)
   // consume `values`. Until those land, surface a non-zero exit so the
@@ -67,6 +83,6 @@ export async function runWizard(
   io.stdout.write(
     "\nCollected values. Preflight/persistence not yet implemented; no configuration written.\n",
   );
-  void values; // keep the collected values visible to the linter until T-008 consumes them
+  void values;
   return { exitCode: 75 };
 }
