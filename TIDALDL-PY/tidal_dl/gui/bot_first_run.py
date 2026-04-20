@@ -17,7 +17,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, TextIO
 
-from tidal_dl.gui.bot_onboarding import OnboardingState, detect_state
+from tidal_dl.gui.bot_onboarding import (
+    OnboardingState,
+    detect_state,
+    dismissal_flag_path,
+)
 
 
 class PromptAnswer(str, Enum):
@@ -114,3 +118,17 @@ def decide_startup_action(
     if answer is PromptAnswer.NEVER:
         return DISMISS
     return SKIP
+
+
+def write_dismissal_flag() -> None:
+    """Write the canonical dismissal flag file (onboarding-backend R3 AC3).
+
+    The flag file is intentionally empty — its presence is the signal.
+    Parent directories are created if missing. Idempotent: a repeat call
+    succeeds even when the flag already exists.
+    """
+    path = dismissal_flag_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Open in create-or-truncate mode so a repeat invocation is idempotent.
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("")
