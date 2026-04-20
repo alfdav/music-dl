@@ -10,6 +10,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 function configDir(env: NodeJS.ProcessEnv = process.env): string {
+  // Match the backend's path_config_base() precedence exactly so the
+  // wizard and the backend always read/write the same files. Docker and
+  // custom-config deployments rely on MUSIC_DL_CONFIG_DIR winning over XDG.
+  const custom = env.MUSIC_DL_CONFIG_DIR?.trim();
+  if (custom) return custom;
   const xdg = env.XDG_CONFIG_HOME?.trim();
   const base = xdg || join(env.HOME || homedir(), ".config");
   return join(base, "music-dl");

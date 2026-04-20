@@ -92,6 +92,12 @@ async function writeTokenAtomic(final: string, token: string): Promise<void> {
     }
     await rename(tmp, final);
     cleanup = false;
+    // Durability: without fsync'ing the parent directory, a sudden power
+    // loss after rename can leave the directory entry missing even though
+    // the file blocks are on disk. Best-effort — Windows/non-POSIX dirs
+    // cannot be opened for fsync and that's ok (the platform handles
+    // metadata differently).
+    await fsyncDir(dir);
   } finally {
     if (cleanup) {
       try {
@@ -100,6 +106,19 @@ async function writeTokenAtomic(final: string, token: string): Promise<void> {
         // best-effort
       }
     }
+  }
+}
+
+async function fsyncDir(dir: string): Promise<void> {
+  try {
+    const dh = await open(dir, "r");
+    try {
+      await dh.sync();
+    } finally {
+      await dh.close();
+    }
+  } catch {
+    // best-effort — not all platforms support directory fsync
   }
 }
 
