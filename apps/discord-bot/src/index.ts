@@ -13,6 +13,8 @@ import {
   type ChatInputCommandInteraction,
 } from "discord.js";
 
+import { generateDependencyReport } from "@discordjs/voice";
+
 import { parseConfig } from "./config";
 import { MusicDlClient } from "./musicDlClient";
 import { QueueState } from "./queue";
@@ -21,6 +23,10 @@ import { buildCommands, handleInteraction } from "./commands";
 
 async function main(): Promise<void> {
   const config = parseConfig();
+
+  console.log("=== voice dependency report ===");
+  console.log(generateDependencyReport());
+  console.log("================================");
 
   const client = new Client({
     intents: [

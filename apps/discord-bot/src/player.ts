@@ -81,6 +81,7 @@ export class VoiceManager {
       channelId: voiceChannel.id,
       guildId: voiceChannel.guild.id,
       adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+      debug: true,
     });
 
     this.connection = connection;
@@ -96,6 +97,9 @@ export class VoiceManager {
     });
     connection.on("error" as any, (err: Error) => {
       console.error("[voice] connection error:", err);
+    });
+    connection.on("debug" as any, (msg: string) => {
+      console.error("[voice:debug]", msg);
     });
 
     try {
