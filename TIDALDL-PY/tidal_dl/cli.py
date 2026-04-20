@@ -1643,18 +1643,21 @@ def gui(
     setup_bot: bool = typer.Option(
         False,
         "--setup-bot",
-        help="Force the Discord bot onboarding prompt regardless of saved state.",
+        help="Launch the Discord bot setup wizard before starting the server.",
     ),
 ) -> None:
     """Launch the music-dl web interface."""
-    from tidal_dl.gui.bot_first_run import run_first_run_flow
+    from tidal_dl.gui.bot_first_run import print_setup_hint, run_setup_force
     from tidal_dl.gui.server import run
 
-    # R2 / R4 / R5: TTY-aware bot-onboarding prompt before the HTTP
-    # server begins accepting requests. Always non-fatal for server
-    # startup (R4 AC5). The --setup-bot flag (R5) bypasses state
-    # detection without touching the dismissal flag.
-    run_first_run_flow(force=setup_bot)
+    # onboarding-backend R3: explicit wizard launch via --setup-bot.
+    # Blocks until the wizard exits; never aborts server startup.
+    if setup_bot:
+        run_setup_force()
+    else:
+        # onboarding-backend R2: one-line non-blocking hint when the bot
+        # has not been configured yet. No prompt, no pause.
+        print_setup_hint()
 
     run(port=port, open_browser=not no_browser)
 

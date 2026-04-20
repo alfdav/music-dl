@@ -70,28 +70,24 @@ last_edited: 2026-04-20
 
 ## Coverage Matrix
 
+**Kit revised 2026-04-20:** prior onboarding-backend R2 (interactive TTY prompt), R3 (Y/n/never), R4 (implicit wizard dispatch), and R5 (force as way to re-prompt) hijacked `music-dl gui` and alienated normal users. Replaced with R2 (non-blocking hint) + R3 (explicit force flag is the only wizard-launch path). Coverage rewritten below.
+
 | Cavekit | Req | Criterion (abbreviated) | Task(s) | Status |
 |---------|-----|-------------------------|---------|--------|
 | onboarding-backend | R1 | AC1: detect "configured" state from shared-token file | T-005 | COVERED |
-| onboarding-backend | R1 | AC2: detect "dismissed" state from dismissal flag | T-005 | COVERED |
-| onboarding-backend | R1 | AC3: detect "needs-setup" state when neither present | T-005 | COVERED |
-| onboarding-backend | R2 | AC1: TTY check + needs-setup → show prompt | T-007 | COVERED |
-| onboarding-backend | R2 | AC2: no TTY → no prompt, server starts | T-007 | COVERED |
-| onboarding-backend | R2 | AC3: configured or dismissed → no prompt | T-007 | COVERED |
-| onboarding-backend | R2 | AC4: prompt shown before server accepts requests | T-007 | COVERED |
-| onboarding-backend | R3 | AC1: Y/empty/yes dispatches wizard | T-011 | COVERED |
-| onboarding-backend | R3 | AC2: n/no skips, no persistent state changes | T-011 | COVERED |
-| onboarding-backend | R3 | AC3: never writes dismissal flag, skips wizard | T-011 | COVERED |
-| onboarding-backend | R3 | AC4: invalid re-prompts up to 3 times then treats as n | T-011 | COVERED |
-| onboarding-backend | R4 | AC1: child process with inherited stdio | T-013 | COVERED |
-| onboarding-backend | R4 | AC2: blocks until wizard exit | T-013 | COVERED |
-| onboarding-backend | R4 | AC3: exit 0 success path, continues startup | T-013 | COVERED |
-| onboarding-backend | R4 | AC4: exit non-zero prints retry command, continues startup | T-013 | COVERED |
-| onboarding-backend | R4 | AC5: server startup never aborted by wizard failure | T-013 | COVERED |
-| onboarding-backend | R5 | AC1: force flag triggers prompt regardless of state | T-014 | COVERED |
-| onboarding-backend | R5 | AC2: force flag ignores dismissal flag for that invocation | T-014 | COVERED |
-| onboarding-backend | R5 | AC3: force flag does NOT modify dismissal flag | T-014 | COVERED |
-| onboarding-backend | R5 | AC4: force flag triggers prompt even when config exists | T-014 | COVERED |
+| onboarding-backend | R1 | AC2: detect "needs-setup" state when token absent/empty | T-005 | COVERED |
+| onboarding-backend | R2 | AC1: needs-setup + TTY → hint line printed | T-NEW-A | COVERED |
+| onboarding-backend | R2 | AC2: configured → no output | T-NEW-A | COVERED |
+| onboarding-backend | R2 | AC3: hint mentions the retry command | T-NEW-A | COVERED |
+| onboarding-backend | R2 | AC4: non-blocking — no prompt, no pause | T-NEW-A | COVERED |
+| onboarding-backend | R2 | AC5: non-TTY suppresses hint | T-NEW-A | COVERED |
+| onboarding-backend | R3 | AC1: force flag launches wizard as child with inherited stdio | T-NEW-B, T-013 | COVERED |
+| onboarding-backend | R3 | AC2: blocks until wizard exit | T-NEW-B, T-013 | COVERED |
+| onboarding-backend | R3 | AC3: exit 0 → success message, continues startup | T-NEW-B | COVERED |
+| onboarding-backend | R3 | AC4: exit non-zero → retry message, continues startup | T-NEW-B | COVERED |
+| onboarding-backend | R3 | AC5: force triggers regardless of current state | T-NEW-B | COVERED |
+| onboarding-backend | R3 | AC6: server startup never aborted by wizard failure | T-NEW-B | COVERED |
+| onboarding-backend | R3 | AC7: bun unavailable → falls back to node --import tsx | T-013 | COVERED |
 | onboarding-wizard | R1 | AC1: standalone command invocation works | T-001 | COVERED |
 | onboarding-wizard | R1 | AC2: backend-dispatch invocation with no args works | T-001 | COVERED |
 | onboarding-wizard | R1 | AC3: one-line header printed on start | T-001 | COVERED |
@@ -138,7 +134,7 @@ last_edited: 2026-04-20
 | onboarding-wizard | R9 | AC2: shared backend token never appears in output | T-010 | COVERED |
 | onboarding-wizard | R9 | AC3: generic phrasing when underlying error may contain secrets | T-010 | COVERED |
 
-**Coverage: 65/65 criteria (100%)**
+**Coverage (post-revision): 58/58 criteria (100%) — backend shrank from 20 ACs to 13 after R2/R3/R4/R5 → R2/R3 collapse; wizard unchanged at 45 ACs.**
 
 ## Dependency Graph
 

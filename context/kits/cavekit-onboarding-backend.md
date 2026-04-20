@@ -1,66 +1,52 @@
 ---
 created: 2026-04-19
-last_edited: 2026-04-19
+last_edited: 2026-04-20
 ---
 
 # Cavekit: Onboarding Backend
 
 ## Scope
 
-This kit owns the backend's first-run detection and bot-wizard dispatch behavior at startup: determining whether Discord bot integration is configured, dismissed, or needs setup; prompting the user on an interactive terminal before the HTTP server begins accepting requests; and invoking the bot-side wizard as a child process. It does not own the wizard itself — its prompt copy, preflight checks, masked input, token generation, or environment file format all live in cavekit-onboarding-wizard.md. This kit's only contract with the wizard is existence-and-non-emptiness of the canonical shared-token file and the child-process invocation interface.
+This kit owns the backend's awareness of the Discord bot integration state and the CLI surface for launching the bot-side wizard. It deliberately does NOT hijack the `music-dl gui` startup path with an interactive prompt — normal users running `music-dl gui` get the web UI they asked for. Discord-bot setup is an opt-in action triggered by an explicit CLI flag. It does not own the wizard itself — its prompt copy, preflight checks, masked input, token generation, and environment file format all live in cavekit-onboarding-wizard.md. This kit's only contract with the wizard is existence-and-non-emptiness of the canonical shared-token file and the child-process invocation interface.
 
 ## Requirements
 
 ### R1: Configuration status detection
-**Description:** At startup the backend determines one of three states for the Discord bot integration: configured, dismissed, or needs-setup.
+**Description:** At startup the backend determines whether the Discord bot integration is configured or not.
 **Acceptance Criteria:**
 - [ ] State is "configured" when the shared bot-token file exists and is non-empty
-- [ ] State is "dismissed" when a user-set dismissal flag file exists at a canonical location
-- [ ] State is "needs-setup" when neither of the above holds
+- [ ] State is "needs-setup" when the shared bot-token file is absent or empty
 **Dependencies:** shared-token file contract with cavekit-onboarding-wizard.md
 
-### R2: TTY-aware first-run prompt
-**Description:** When state is "needs-setup" AND the backend's standard output is attached to an interactive terminal, the backend prompts the user before the HTTP server accepts requests.
+### R2: Non-blocking startup hint
+**Description:** When state is "needs-setup" the backend prints a one-line hint pointing users at the setup command. The hint never blocks startup, never asks a question, and never pauses for user input.
 **Acceptance Criteria:**
-- [ ] With an interactive terminal + state "needs-setup" → prompt is shown
-- [ ] Without an interactive terminal (daemon, piped, nohup, GUI-launched) → no prompt, server starts normally
-- [ ] State "configured" or "dismissed" → no prompt, server starts normally
-- [ ] Prompt is shown before the server begins accepting requests
+- [ ] State "needs-setup" → a single hint line is printed to stdout before the HTTP server starts listening
+- [ ] State "configured" → no hint, no output
+- [ ] The hint mentions the exact command the user can run to launch the wizard (e.g. "run `music-dl gui --setup-bot` to set it up")
+- [ ] The hint never waits for user input — server startup proceeds immediately regardless of terminal, state, or environment
+- [ ] The hint is suppressed on non-TTY startups (daemon, piped, nohup, systemd) so logs are not cluttered with interactive copy
 **Dependencies:** R1
 
-### R3: Response handling
-**Description:** The prompt accepts three answers: yes (default), no, or never. Each drives a specific behavior.
+### R3: Force-run via CLI flag
+**Description:** The backend CLI accepts a force flag that launches the bot-side wizard as a child process. The flag is the only path that ever triggers the wizard from the backend — there is no implicit prompt on normal startup.
 **Acceptance Criteria:**
-- [ ] "Y" / empty / "yes" answer → wizard is dispatched (R4)
-- [ ] "n" / "no" answer → backend proceeds to server startup with no persistent state changes
-- [ ] "never" answer → dismissal flag is written, backend proceeds to server startup, wizard is NOT run
-- [ ] Unrecognized input → re-prompt up to 3 times, then treat as "n"
-**Dependencies:** R2
-
-### R4: Wizard dispatch
-**Description:** Backend invokes the bot-side wizard as a child process, waits for it, and never aborts its own startup on wizard failure.
-**Acceptance Criteria:**
-- [ ] The wizard runs as a child process that inherits the backend's stdio so the user can interact with it directly
-- [ ] Backend blocks until the wizard exits
+- [ ] A force flag (exact name an implementation detail, suggestion: `--setup-bot`) launches the wizard as a child process that inherits the backend's stdio so the user can interact with it directly
+- [ ] The backend blocks until the wizard exits
 - [ ] Wizard exit 0 → backend prints a brief success message, proceeds to server startup
-- [ ] Wizard exit non-zero → backend prints the failure and the command to retry later, proceeds to server startup
+- [ ] Wizard exit non-zero → backend prints the failure and the retry command, proceeds to server startup
+- [ ] The force flag triggers the wizard regardless of current state (including "configured") — the wizard itself (cavekit-onboarding-wizard.md R2) decides whether to overwrite
 - [ ] Backend server startup is never aborted by wizard failure
-**Dependencies:** R3, cavekit-onboarding-wizard.md R1
-
-### R5: Force re-run via CLI flag
-**Description:** The backend CLI accepts a force flag that triggers the wizard prompt regardless of the detected state.
-**Acceptance Criteria:**
-- [ ] A force flag (exact name an implementation detail) triggers the prompt regardless of current state
-- [ ] When forced, the dismissal flag is ignored for that invocation
-- [ ] The force flag does NOT modify the dismissal flag — a previously-dismissed user is not permanently re-enrolled just because they ran the force flag once
-- [ ] The force flag triggers the prompt even when configuration already exists — the wizard itself (cavekit-onboarding-wizard.md R2) decides whether to overwrite
-**Dependencies:** R2, R3
+- [ ] When bun is unavailable the backend falls back to a runnable Node interpreter (e.g. `node --import tsx`) so the force flag works in deployments that only have Node
+**Dependencies:** R1, cavekit-onboarding-wizard.md R1
 
 ## Out of Scope
 
+- Any interactive prompt on normal `music-dl gui` startup (was R2/R3 in prior kit revision; deleted after normie-UX feedback)
+- Dismissal flag and "never" answer handling (dead weight without an interactive prompt)
 - The wizard's prompt copy, breadcrumbs, masked input, and preflight checks
 - Token generation and the shared-token file format
-- GUI invocation (deferred)
+- GUI invocation path (deferred to a later version; will replace the startup hint with a dismissable GUI card)
 
 ## Cross-References
 
@@ -69,3 +55,5 @@ This kit owns the backend's first-run detection and bot-wizard dispatch behavior
 - Canonical shared-token path is defined by cavekit-onboarding-wizard.md R4; this kit only checks existence+non-empty
 
 ## Changelog
+
+- 2026-04-20: Removed prior R2 (interactive TTY prompt), R3 (Y/n/never handling), and R4 (wizard dispatch as a result of interactive prompt). These hijacked `music-dl gui` with a terminal questionnaire and alienated normal users. Replaced with R2 (one-line non-blocking hint) and R3 (explicit force flag is the only wizard-launch path). Dismissal state removed from R1 (no prompt → no dismissal semantics needed).
