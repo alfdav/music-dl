@@ -6,8 +6,15 @@
  * re-entry of that single field instead of restarting the whole sequence.
  *
  * Every check is dependency-injectable so tests can cover the orchestrator
- * without hitting Discord or the backend, and so T-010 (secret logging
- * audit) can verify no check output leaks tokens.
+ * without hitting Discord, and so T-010 (secret logging audit) can
+ * verify no check output leaks tokens.
+ *
+ * Note: there is intentionally NO "backend reachable" check here. The
+ * wizard must run standalone (one terminal, one command) without a
+ * separately-running backend. The backend does its own handshake sanity
+ * check at server startup (see TIDALDL-PY/tidal_dl/gui/server.py), and
+ * the shared-token plumbing (security._resolve_bot_shared_token) reads
+ * the wizard's file directly — no runtime HTTP probe is required.
  */
 
 import { execFile } from "node:child_process";
@@ -16,14 +23,15 @@ import { fileURLToPath } from "node:url";
 
 import type { BotEnvKey, BotEnvShape } from "./returningUser";
 
-export type PreflightFieldRef = BotEnvKey | "env" | "backend";
+export type PreflightFieldRef = BotEnvKey | "env";
 
 export interface CheckResult {
   id: string;
   label: string;
   passed: boolean;
-  /** Which field (if any) the user should re-enter on failure. "env" /
-   *  "backend" mean the failure is not tied to a user-supplied field. */
+  /** Which field (if any) the user should re-enter on failure.
+   *  ``"env"`` means the failure is not tied to a user-supplied
+   *  field (e.g. missing ffmpeg). */
   field: PreflightFieldRef;
   errorMessage?: string;
   remediation?: string;
@@ -34,6 +42,8 @@ export interface PreflightDeps {
   hasLibsodium?: () => Promise<boolean>;
   hasFfmpeg?: () => Promise<boolean>;
   hasOpus?: () => Promise<boolean>;
+  /** Used by Discord REST checks (not the backend — the backend is
+   *  intentionally not probed; see module-level note). */
   fetchImpl?: typeof fetch;
 }
 
@@ -75,14 +85,6 @@ export async function runPreflight(
       results.push(await checkVoicePermissions(token, guildId, fetchFn));
     }
   }
-
-  results.push(
-    await checkBackendReachable(
-      values.MUSIC_DL_BASE_URL,
-      values.MUSIC_DL_BOT_TOKEN,
-      fetchFn,
-    ),
-  );
 
   return results;
 }
@@ -498,67 +500,6 @@ async function checkVoicePermissions(
     field: "ALLOWED_GUILD_ID",
     passed: true,
   };
-}
-
-// ----------------------------------------------------------------------
-// Backend reachability
-// ----------------------------------------------------------------------
-
-async function checkBackendReachable(
-  baseUrl: string,
-  botToken: string,
-  fetchFn: typeof fetch,
-): Promise<CheckResult> {
-  const label = "music-dl backend reachable + shared token accepted";
-  try {
-    // A bearer-authenticated probe against a bot route. An empty query
-    // body is expected to yield 400 — that is PROOF the token was
-    // accepted. 401/403 means the backend has not picked up the shared
-    // token yet.
-    const res = await fetchFn(
-      new URL("/api/bot/play/resolve", baseUrl).toString(),
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${botToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ query: "" }),
-      },
-    );
-    if (res.status === 401 || res.status === 403) {
-      return {
-        id: "backend-reachable",
-        label,
-        field: "backend",
-        passed: false,
-        errorMessage:
-          "backend rejected the shared token (has it started with this config?)",
-        remediation:
-          "Restart the music-dl backend so it picks up the new shared token, then retry.",
-      };
-    }
-    if (res.status >= 500) {
-      return {
-        id: "backend-reachable",
-        label,
-        field: "backend",
-        passed: false,
-        errorMessage: `backend returned HTTP ${res.status}`,
-        remediation: "Check the backend logs for errors, then retry.",
-      };
-    }
-    return { id: "backend-reachable", label, field: "backend", passed: true };
-  } catch {
-    return {
-      id: "backend-reachable",
-      label,
-      field: "backend",
-      passed: false,
-      errorMessage: "backend unreachable",
-      remediation: `Start the music-dl backend (\`music-dl gui\`), then retry. Base URL: ${baseUrl}`,
-    };
-  }
 }
 
 // ----------------------------------------------------------------------

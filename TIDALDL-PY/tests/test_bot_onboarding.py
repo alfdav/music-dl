@@ -9,6 +9,8 @@ import pytest
 from tidal_dl.gui.bot_onboarding import (
     SHARED_TOKEN_FILENAME,
     OnboardingState,
+    TokenSource,
+    bot_token_source,
     detect_state,
     shared_token_path,
 )
@@ -52,3 +54,39 @@ def test_explicit_path_win_over_env(tmp_path: Path) -> None:
     token = tmp_path / "t"
     token.write_text("x")
     assert detect_state(token_path=token) == OnboardingState.CONFIGURED
+
+
+# ── bot_token_source (startup canary replacing wizard R10 probe) ──────────────
+
+
+def test_token_source_env_when_env_set(
+    token: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", "env-wins")
+    # Even if the file exists, env takes precedence.
+    token.write_text("file-token")
+    assert bot_token_source() is TokenSource.ENV
+
+
+def test_token_source_file_when_env_blank(
+    token: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", "   ")
+    token.write_text("from-file\n")
+    assert bot_token_source() is TokenSource.FILE
+
+
+def test_token_source_none_when_nothing_configured(
+    token: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MUSIC_DL_BOT_TOKEN", raising=False)
+    # token file intentionally not written
+    assert bot_token_source() is TokenSource.NONE
+
+
+def test_token_source_none_when_file_empty(
+    token: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MUSIC_DL_BOT_TOKEN", raising=False)
+    token.write_text("")
+    assert bot_token_source() is TokenSource.NONE

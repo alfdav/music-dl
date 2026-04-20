@@ -213,14 +213,40 @@ def validate_stream_url(url: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_bot_shared_token() -> str:
+    """Resolve the expected bot shared secret.
+
+    Priority:
+    1. ``MUSIC_DL_BOT_TOKEN`` env var — takes precedence so Docker/CI
+       deployments can inject the secret without relying on a disk file.
+    2. Shared-token file the onboarding wizard writes (per
+       ``tidal_dl.gui.bot_onboarding.shared_token_path()``). This closes
+       the loop: wizard writes → backend reads → bot authenticates.
+
+    Returns an empty string when neither source yields a non-empty value;
+    callers fail-closed on empty.
+    """
+    env_token = os.environ.get("MUSIC_DL_BOT_TOKEN", "").strip()
+    if env_token:
+        return env_token
+    # Deferred import avoids a circular dependency on module load.
+    from tidal_dl.gui.bot_onboarding import shared_token_path
+
+    try:
+        return shared_token_path().read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def validate_bot_bearer(authorization: str | None) -> bool:
     """Validate a bot bearer token from the Authorization header.
 
-    Reads the expected token from MUSIC_DL_BOT_TOKEN env var. Returns False
-    (fail-closed) when the env var is empty, whitespace-only, or unset.
-    Uses constant-time comparison to prevent timing attacks.
+    Resolves the expected token via ``_resolve_bot_shared_token`` (env
+    first, then the wizard's shared-token file). Returns False
+    (fail-closed) when no token is available. Uses constant-time
+    comparison to prevent timing attacks.
     """
-    token = os.environ.get("MUSIC_DL_BOT_TOKEN", "").strip()
+    token = _resolve_bot_shared_token()
     if not token or not authorization:
         return False
     scheme, _, supplied = authorization.partition(" ")
@@ -238,17 +264,20 @@ class _StreamKeyError(Exception):
 
 
 def _get_stream_key() -> bytes:
-    """Derive a deterministic AES-256 key from MUSIC_DL_BOT_TOKEN.
+    """Derive a deterministic AES-256 key from the bot shared secret.
 
     The key is stable across process restarts (no random per-process
     component), so tokens issued before a restart remain verifiable
-    after. F-015: fail closed when MUSIC_DL_BOT_TOKEN is blank — a
+    after. F-015: fail closed when no shared secret is available — a
     fallback constant would let anyone with the source code mint valid
     stream tokens in misconfigured deployments.
+
+    Resolution: env var first, then the wizard's shared-token file (see
+    ``_resolve_bot_shared_token``).
     """
-    bot_token = os.environ.get("MUSIC_DL_BOT_TOKEN", "").strip()
+    bot_token = _resolve_bot_shared_token()
     if not bot_token:
-        raise _StreamKeyError("MUSIC_DL_BOT_TOKEN is not configured")
+        raise _StreamKeyError("bot shared token is not configured")
     domain = b"music-dl/bot/stream-token/v1"
     return hashlib.sha256(bot_token.encode() + b"\x00" + domain).digest()
 

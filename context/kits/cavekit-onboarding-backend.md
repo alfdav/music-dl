@@ -40,6 +40,16 @@ This kit owns the backend's awareness of the Discord bot integration state and t
 - [ ] When bun is unavailable the backend falls back to a runnable Node interpreter (e.g. `node --import tsx`) so the force flag works in deployments that only have Node
 **Dependencies:** R1, cavekit-onboarding-wizard.md R1
 
+### R4: Shared-token pickup and startup canary
+**Description:** The backend reads the shared bot secret the wizard writes, and logs at startup where that secret was resolved from. Replaces the wizard's prior R6 "backend reachable" probe — since the backend reads the wizard's file directly, no round-trip HTTP check is required to verify the plumbing is connected.
+**Acceptance Criteria:**
+- [ ] Bot bearer-token validation resolves the expected secret from the ``MUSIC_DL_BOT_TOKEN`` environment variable if set and non-empty, otherwise from the canonical shared-token file written by the wizard
+- [ ] Environment variable takes precedence so container/CI deployments can inject the secret without relying on disk
+- [ ] When neither source yields a non-empty value the auth path fails closed (returns 401 for every bot request)
+- [ ] Startup prints one line naming the resolution source (env var / file path) without disclosing the secret itself
+- [ ] When both sources are empty, startup emits no misleading "loaded" line (the R2 hint already covers the needs-setup case)
+**Dependencies:** R1, cavekit-onboarding-wizard.md R4
+
 ## Out of Scope
 
 - Any interactive prompt on normal `music-dl gui` startup (was R2/R3 in prior kit revision; deleted after normie-UX feedback)
@@ -57,3 +67,4 @@ This kit owns the backend's awareness of the Discord bot integration state and t
 ## Changelog
 
 - 2026-04-20: Removed prior R2 (interactive TTY prompt), R3 (Y/n/never handling), and R4 (wizard dispatch as a result of interactive prompt). These hijacked `music-dl gui` with a terminal questionnaire and alienated normal users. Replaced with R2 (one-line non-blocking hint) and R3 (explicit force flag is the only wizard-launch path). Dismissal state removed from R1 (no prompt → no dismissal semantics needed).
+- 2026-04-20 (later): Added R4 (shared-token pickup + startup canary) in response to a real architectural gap surfaced during first live wizard test — the wizard wrote a token to disk but the backend read ``MUSIC_DL_BOT_TOKEN`` only from env, so every authenticated bot request returned 401 after a "successful" wizard run. Moved the wizard's prior R6 "backend reachable" AC here; the backend now reads the file directly and a runtime HTTP probe is no longer needed. This unblocks the single-terminal, one-command setup flow.

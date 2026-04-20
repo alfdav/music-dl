@@ -67,10 +67,14 @@ class TestBotAuthAcceptsValid:
 
 
 class TestBotAuthEmptyEnv:
-    """R1: Empty/whitespace env var causes all bot requests to return 401."""
+    """R1: When env is empty AND no shared-token file exists, all bot
+    requests return 401. Tests isolate MUSIC_DL_BOT_TOKEN_PATH so a real
+    file at ``~/.config/music-dl/bot-shared-token`` on the host machine
+    does not silently satisfy the fallback."""
 
-    def test_empty_token(self, monkeypatch):
+    def test_empty_token(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", "")
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(tmp_path / "missing"))
         from tidal_dl.gui import create_app
         c = TestClient(create_app(port=8765))
         resp = c.post("/api/bot/play/resolve",
@@ -78,13 +82,69 @@ class TestBotAuthEmptyEnv:
                       json={"query": "test"})
         assert resp.status_code == 401
 
-    def test_whitespace_token(self, monkeypatch):
+    def test_whitespace_token(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", "   ")
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(tmp_path / "missing"))
         from tidal_dl.gui import create_app
         c = TestClient(create_app(port=8765))
         resp = c.post("/api/bot/play/resolve",
                       headers={"host": "localhost:8765", "authorization": "Bearer   "},
                       json={"query": "test"})
+        assert resp.status_code == 401
+
+
+class TestBotAuthFileFallback:
+    """Wizard-written shared-token file is picked up when env is unset.
+
+    This closes the Plan B plumbing gap: the onboarding wizard writes a
+    token to ``shared_token_path()``; the backend must read it when
+    MUSIC_DL_BOT_TOKEN is not in the env. Without this, a green wizard
+    run produced a non-functional bot (every handshake returned 401)."""
+
+    def test_file_accepted_when_env_unset(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MUSIC_DL_BOT_TOKEN", raising=False)
+        token_path = tmp_path / "bot-shared-token"
+        token_path.write_text(TEST_TOKEN + "\n")
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(token_path))
+
+        from tidal_dl.gui import create_app
+        c = TestClient(create_app(port=8765))
+        resp = c.post("/api/bot/play/resolve",
+                      headers={"host": "localhost:8765",
+                               "authorization": f"Bearer {TEST_TOKEN}"},
+                      json={"query": ""})
+        assert resp.status_code != 401, (
+            "file-fallback broken: backend rejected the wizard-written token"
+        )
+        assert resp.status_code == 400  # empty query → body validator
+
+    def test_env_takes_precedence_over_file(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+        token_path = tmp_path / "bot-shared-token"
+        token_path.write_text("DIFFERENT-TOKEN-FROM-FILE\n")
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(token_path))
+
+        from tidal_dl.gui import create_app
+        c = TestClient(create_app(port=8765))
+        # Env token wins; file token must be rejected.
+        resp = c.post("/api/bot/play/resolve",
+                      headers={"host": "localhost:8765",
+                               "authorization": "Bearer DIFFERENT-TOKEN-FROM-FILE"},
+                      json={"query": ""})
+        assert resp.status_code == 401
+
+    def test_empty_file_does_not_satisfy(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MUSIC_DL_BOT_TOKEN", raising=False)
+        token_path = tmp_path / "bot-shared-token"
+        token_path.write_text("   \n")  # whitespace-only
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(token_path))
+
+        from tidal_dl.gui import create_app
+        c = TestClient(create_app(port=8765))
+        resp = c.post("/api/bot/play/resolve",
+                      headers={"host": "localhost:8765",
+                               "authorization": "Bearer anything"},
+                      json={"query": ""})
         assert resp.status_code == 401
 
 
@@ -196,11 +256,16 @@ class TestStreamTokens:
         assert sec.verify_bot_stream_token("not-a-token") is None
         assert sec.verify_bot_stream_token("short") is None
 
-    def test_fail_closed_when_token_blank(self, monkeypatch):
-        """F-015: Signing and verifying fail closed when bot token blank."""
+    def test_fail_closed_when_token_blank(self, monkeypatch, tmp_path):
+        """F-015: Signing and verifying fail closed when bot token blank.
+
+        Both sources (env + shared-token file) must be empty — the file
+        fallback added in the Plan B plumbing fix could otherwise hide
+        the failure behind a token written on the host machine."""
         import tidal_dl.gui.security as sec
 
         monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", "")
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(tmp_path / "missing"))
         import pytest
         with pytest.raises(sec._StreamKeyError):
             sec.sign_bot_stream_token({"track_id": "123"})
@@ -209,11 +274,12 @@ class TestStreamTokens:
         # another install would not verify because the key can't be derived.
         assert sec.verify_bot_stream_token("anytoken") is None
 
-    def test_fail_closed_when_token_whitespace(self, monkeypatch):
+    def test_fail_closed_when_token_whitespace(self, monkeypatch, tmp_path):
         """F-015: Whitespace-only token treated as blank (fail closed)."""
         import tidal_dl.gui.security as sec
 
         monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", "   ")
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(tmp_path / "missing"))
         import pytest
         with pytest.raises(sec._StreamKeyError):
             sec.sign_bot_stream_token({"track_id": "123"})

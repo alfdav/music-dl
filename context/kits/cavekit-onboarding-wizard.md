@@ -71,9 +71,10 @@ This kit owns the interactive CLI wizard a user runs (or is dropped into) to con
 - [ ] Allowed text channel exists, is a text channel, is in the allowed guild, and the bot can view+send messages in it
 - [ ] Allowed user identifier belongs to a member of the allowed guild
 - [ ] The bot's role has both Connect and Speak in the guild's voice permissions
-- [ ] Backend is reachable at the configured base URL
-- [ ] Backend has picked up the shared token — a bearer-authenticated probe against the backend's bot API returns a non-auth response code
 - [ ] Each failure reports: which check failed, the underlying error summary, and a single remediation hint
+
+**2026-04-20 revision:** The previous "backend reachable" and "backend accepted the shared token" criteria were moved out of this kit. Rationale: those checks required the backend to be running concurrently with the wizard — two-terminal UX, exactly the "seamless" failure we already revised away for the Y/n/never prompt. The plumbing is now closed directly: the backend's ``validate_bot_bearer`` reads the wizard-written shared-token file (``MUSIC_DL_BOT_TOKEN`` env var takes precedence), so no runtime HTTP probe is required. The corresponding startup canary moved to cavekit-onboarding-backend.md R4.
+
 **Dependencies:** R3
 
 ### R7: Retry-single-field on preflight failure

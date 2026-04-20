@@ -77,9 +77,12 @@ describe("wizard R6 — preflight orchestrator", () => {
   it("all checks pass on a healthy stack", async () => {
     const results = await runPreflight(GOOD_VALUES, GOOD_DEPS);
     expect(failedChecks(results)).toEqual([]);
-    // 10 checks total (node/libsodium/ffmpeg/opus + token/app/guild/channel/user/voice + backend = 11).
-    // AC5 + AC6 tokencheck cascade: we got all 10 because token passed.
-    expect(results.length).toBeGreaterThanOrEqual(10);
+    // 10 env+Discord checks total: node/libsodium/ffmpeg/opus +
+    // token/app/guild/channel/user/voice. No backend-reachable check —
+    // the wizard runs standalone; backend handshake is verified by the
+    // backend itself on startup (see server.py).
+    expect(results.length).toBe(10);
+    expect(results.find((r) => r.id === "backend-reachable")).toBeUndefined();
   });
 
   it("AC1: Node version below minimum reports env failure with remediation", async () => {
@@ -268,74 +271,12 @@ describe("wizard R6 — preflight orchestrator", () => {
     expect(fail?.errorMessage).toContain("Connect");
   });
 
-  it("AC10: backend unreachable → backend failure", async () => {
-    const results = await runPreflight(GOOD_VALUES, {
-      ...GOOD_DEPS,
-      fetchImpl: makeFetch((url) => {
-        if (url.includes("discord.com")) {
-          // Let Discord checks pass so we isolate the backend failure
-          if (url.includes("/users/@me"))
-            return new Response('{"id":"bot"}', { status: 200 });
-          if (url.includes("/oauth2/applications/@me"))
-            return new Response('{"id":"1234567890"}', { status: 200 });
-          if (url.endsWith("/guilds/guild-1/roles"))
-            return new Response('[{"permissions":"3145728"}]', { status: 200 });
-          if (url.endsWith("/guilds/guild-1"))
-            return new Response('{"id":"guild-1"}', { status: 200 });
-          if (url.includes("/channels/channel-1"))
-            return new Response('{"type":0,"guild_id":"guild-1"}', {
-              status: 200,
-            });
-          if (url.includes("/guilds/guild-1/members/user-1"))
-            return new Response('{"user":{}}', { status: 200 });
-          return new Response("", { status: 404 });
-        }
-        if (url.includes("/api/bot/play/resolve")) {
-          throw new Error("ECONNREFUSED");
-        }
-        return new Response("", { status: 404 });
-      }),
-    });
-    const fail = results.find((r) => r.id === "backend-reachable");
-    expect(fail?.passed).toBe(false);
-    expect(fail?.field).toBe("backend");
-    expect(fail?.remediation).toContain("backend");
-  });
+  // Plan B (2026-04-20): R10 "backend reachable" removed from wizard.
+  // Wizard runs standalone; backend handshake plumbing is closed by
+  // security._resolve_bot_shared_token reading the wizard's shared-token
+  // file. Backend startup logs confirm pickup (server.py).
 
-  it("AC10: backend 401 → shared token not accepted", async () => {
-    const results = await runPreflight(GOOD_VALUES, {
-      ...GOOD_DEPS,
-      fetchImpl: makeFetch((url) => {
-        if (url.includes("discord.com")) {
-          if (url.includes("/users/@me"))
-            return new Response('{"id":"bot"}', { status: 200 });
-          if (url.includes("/oauth2/applications/@me"))
-            return new Response('{"id":"1234567890"}', { status: 200 });
-          if (url.endsWith("/guilds/guild-1/roles"))
-            return new Response('[{"permissions":"3145728"}]', { status: 200 });
-          if (url.endsWith("/guilds/guild-1"))
-            return new Response('{"id":"guild-1"}', { status: 200 });
-          if (url.includes("/channels/channel-1"))
-            return new Response('{"type":0,"guild_id":"guild-1"}', {
-              status: 200,
-            });
-          if (url.includes("/guilds/guild-1/members/user-1"))
-            return new Response('{"user":{}}', { status: 200 });
-          return new Response("", { status: 404 });
-        }
-        if (url.includes("/api/bot/play/resolve"))
-          return new Response('{"detail":"Unauthorized bot client"}', {
-            status: 401,
-          });
-        return new Response("", { status: 404 });
-      }),
-    });
-    const fail = results.find((r) => r.id === "backend-reachable");
-    expect(fail?.passed).toBe(false);
-    expect(fail?.errorMessage).toContain("shared token");
-  });
-
-  it("AC10: each failure records label, errorMessage, remediation", async () => {
+  it("all failures record label, errorMessage, remediation", async () => {
     const results = await runPreflight(GOOD_VALUES, {
       ...GOOD_DEPS,
       hasFfmpeg: async () => false,

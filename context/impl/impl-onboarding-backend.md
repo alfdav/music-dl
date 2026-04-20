@@ -22,3 +22,4 @@ Revised tasks (replacing old R2-R5):
 |----------|--------|-------|
 | T-NEW-A | DONE | print_setup_hint() — one-line output on needs-setup + TTY; silent when configured or non-TTY. 4 tests (ACs 1-5 of revised R2). |
 | T-NEW-B | DONE | run_setup_force() — explicit wizard launch on --setup-bot flag. 3 tests (dispatch + wizard-fail + runtime-missing). |
+| T-NEW-C | DONE | R4 shared-token pickup + startup canary. `security._resolve_bot_shared_token` reads `MUSIC_DL_BOT_TOKEN` env first, falls back to the wizard's shared-token file; `validate_bot_bearer` and `_get_stream_key` both use it. `bot_onboarding.bot_token_source` + `cli.gui` one-line startup log names the resolution source without leaking the secret. 4 unit tests on source detection + 3 API-level tests on file fallback / env precedence / whitespace-only file. Closes the gap where a green wizard run produced a non-functional bot (every handshake returned 401 because env was empty). |

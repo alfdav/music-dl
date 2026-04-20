@@ -88,6 +88,11 @@ last_edited: 2026-04-20
 | onboarding-backend | R3 | AC5: force triggers regardless of current state | T-NEW-B | COVERED |
 | onboarding-backend | R3 | AC6: server startup never aborted by wizard failure | T-NEW-B | COVERED |
 | onboarding-backend | R3 | AC7: bun unavailable → falls back to node --import tsx | T-013 | COVERED |
+| onboarding-backend | R4 | AC1: bearer auth resolves secret from env, falls back to wizard file | T-NEW-C | COVERED |
+| onboarding-backend | R4 | AC2: env precedence over file | T-NEW-C | COVERED |
+| onboarding-backend | R4 | AC3: neither source → fail-closed 401 | T-NEW-C | COVERED |
+| onboarding-backend | R4 | AC4: startup prints one line naming the resolution source | T-NEW-C | COVERED |
+| onboarding-backend | R4 | AC5: both empty → no misleading "loaded" line | T-NEW-C | COVERED |
 | onboarding-wizard | R1 | AC1: standalone command invocation works | T-001 | COVERED |
 | onboarding-wizard | R1 | AC2: backend-dispatch invocation with no args works | T-001 | COVERED |
 | onboarding-wizard | R1 | AC3: one-line header printed on start | T-001 | COVERED |
@@ -122,7 +127,7 @@ last_edited: 2026-04-20
 | onboarding-wizard | R6 | AC7: guild reachable by bot check | T-006 | COVERED |
 | onboarding-wizard | R6 | AC8: channel exists/is-text/visible/sendable check | T-006 | COVERED |
 | onboarding-wizard | R6 | AC9: user is guild member + bot Connect+Speak perms | T-006 | COVERED |
-| onboarding-wizard | R6 | AC10: backend reachable + picked up shared token + per-failure hints | T-006 | COVERED |
+| onboarding-wizard | R6 | AC10: ~~backend reachable + picked up shared token~~ MOVED to onboarding-backend R4 (2026-04-20: the wizard runs standalone, no HTTP probe; plumbing closed by security._resolve_bot_shared_token reading the wizard's file directly) | T-NEW-C | MOVED |
 | onboarding-wizard | R7 | AC1: field-identifiable failure → re-enter that field only | T-009 | COVERED |
 | onboarding-wizard | R7 | AC2: field-unidentifiable failure → remediation + retry/abort | T-009 | COVERED |
 | onboarding-wizard | R7 | AC3: user abort → exit non-zero, no config written | T-009 | COVERED |
@@ -134,7 +139,7 @@ last_edited: 2026-04-20
 | onboarding-wizard | R9 | AC2: shared backend token never appears in output | T-010 | COVERED |
 | onboarding-wizard | R9 | AC3: generic phrasing when underlying error may contain secrets | T-010 | COVERED |
 
-**Coverage (post-revision): 58/58 criteria (100%) — backend shrank from 20 ACs to 13 after R2/R3/R4/R5 → R2/R3 collapse; wizard unchanged at 45 ACs.**
+**Coverage (post-revision): 62/62 criteria (100%) — backend R4 added (5 new ACs); wizard R6 AC10 moved to backend R4 (0 net on wizard count, –1 for moved-out, but moved, not removed). Backend 13 → 18 ACs; wizard 45 → 44 ACs.**
 
 ## Dependency Graph
 

@@ -43,6 +43,30 @@ def detect_state(token_path: Path | None = None) -> OnboardingState:
     return OnboardingState.NEEDS_SETUP
 
 
+class TokenSource(str, Enum):
+    """Where the backend will resolve the bot shared secret from."""
+    ENV = "env"
+    FILE = "file"
+    NONE = "none"
+
+
+def bot_token_source() -> TokenSource:
+    """Report where :func:`tidal_dl.gui.security._resolve_bot_shared_token`
+    will actually pull the bot shared secret from, without disclosing the
+    secret itself. Used as the startup canary that replaces the wizard's
+    old R10 "backend reachable" HTTP probe.
+
+    Priority mirrors ``_resolve_bot_shared_token``: env var first, then
+    the wizard-written file.
+    """
+    if os.environ.get("MUSIC_DL_BOT_TOKEN", "").strip():
+        return TokenSource.ENV
+    path = shared_token_path()
+    if _file_non_empty(path):
+        return TokenSource.FILE
+    return TokenSource.NONE
+
+
 def _file_non_empty(path: Path) -> bool:
     try:
         stat = path.stat()
