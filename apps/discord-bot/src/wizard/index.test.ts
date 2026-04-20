@@ -26,12 +26,12 @@ describe("wizard R1 — entry points and header", () => {
   it("AC3: prints the header line on start", async () => {
     const stdout = new Capture();
     const stderr = new Capture();
-    const exit = await runWizard({
+    const result = await runWizard({
       stdout,
       stderr,
       stdin: new Readable({ read() {} }),
     });
-    expect(exit).toBe(0);
+    expect(result.exitCode).toBe(0);
     expect(stdout.text.split("\n")[0]).toBe(WIZARD_HEADER);
   });
 

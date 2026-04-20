@@ -7,7 +7,7 @@
 import { runWizard } from "./index";
 
 runWizard().then(
-  (code) => process.exit(code),
+  (result) => process.exit(result.exitCode),
   (err) => {
     console.error("wizard failed:", err);
     process.exit(1);
