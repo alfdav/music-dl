@@ -1451,6 +1451,8 @@ body {
 
 .queue-toggle:hover { color: var(--text); }
 .queue-toggle svg { width: 16px; height: 16px; stroke-width: 1.5; }
+.queue-toggle:disabled { opacity: 0.3; cursor: not-allowed; }
+.queue-toggle:disabled:hover { color: var(--text-muted); }
 
 .sleep-btn { margin-right: 4px; }
 .sleep-btn svg { width: 16px; height: 16px; stroke-width: 1.5; }
@@ -2461,7 +2463,7 @@ body {
   position: absolute;
   top: 20px;
   right: 20px;
-  z-index: 1;
+  z-index: 2;  /* above lyrics-body (z:1) so clicks aren't intercepted */
   width: 36px;
   height: 36px;
   border: 1px solid var(--glass-border);

@@ -5998,18 +5998,17 @@ function updateNowPlaying(track) {
 
     nowArt.classList.remove('idle-art');
     nowArt.classList.add('now-link-art');
-    if (track.is_local && (track.local_path || track.path)) {
-      nowArt.setAttribute('aria-label', 'Toggle lyrics');
-      nowArt.onclick = () => toggleLyricsPanel();
-    } else {
-      nowArt.setAttribute('aria-label', 'Open album');
-      nowArt.onclick = () => {
-        if (track.album_id) {
-          navigateAlbum(track.album_id);
-        } else if (track.album && track.artist) {
-          navigate('localalbum:' + encodeURIComponent(track.artist) + ':' + encodeURIComponent(track.album));
-        }
-      };
+    nowArt.setAttribute('aria-label', 'Open album');
+    nowArt.onclick = () => {
+      if (track.album_id) {
+        navigateAlbum(track.album_id);
+      } else if (track.album && track.artist) {
+        navigate('localalbum:' + encodeURIComponent(track.artist) + ':' + encodeURIComponent(track.album));
+      }
+    };
+    const btnLyrics = document.getElementById('btn-lyrics');
+    if (btnLyrics) {
+      btnLyrics.disabled = !(track.is_local && (track.local_path || track.path));
     }
     while (nowArt.firstChild) nowArt.removeChild(nowArt.firstChild);
     if (track.cover_url) {
@@ -6634,6 +6633,18 @@ function renderQueue() {
 
 document.getElementById('btn-queue').addEventListener('click', toggleQueue);
 btnQueueClose.addEventListener('click', toggleQueue);
+
+const btnLyricsToggle = document.getElementById('btn-lyrics');
+if (btnLyricsToggle) {
+  btnLyricsToggle.addEventListener('click', () => {
+    if (btnLyricsToggle.disabled) return;
+    if (_lyricsOpen()) {
+      closeLyricsPanel({ restoreFocus: true });
+    } else {
+      openLyricsPanel({ focusReturnEl: btnLyricsToggle });
+    }
+  });
+}
 
 // Close queue panel on click outside
 document.addEventListener('click', (e) => {
