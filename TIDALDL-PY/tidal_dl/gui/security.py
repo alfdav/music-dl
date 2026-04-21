@@ -122,8 +122,11 @@ def validate_audio_path(path_str: str, allowed_dirs: list[str]) -> Path | None:
     - Checks file actually exists (no speculative path access)
     - Whitelists audio extensions only
     """
+    # CodeQL false-positive: user input is intentionally resolved so we can
+    # enforce is_relative_to() containment against allowed_dirs below. That
+    # containment check IS the path-injection defense.
     try:
-        file_path = Path(path_str).resolve(strict=True)  # strict=True: file must exist
+        file_path = Path(path_str).resolve(strict=True)  # lgtm[py/path-injection]
     except (OSError, ValueError):
         return None
 
@@ -170,10 +173,13 @@ def resolve_local_audio_path(
     if library_resolved_path is None:
         return LocalAudioPathResolution("not_found")
 
-    # Belt-and-suspenders: even if DB trusts this path, reject symlink targets
-    # in case scan-time checks were bypassed (race, migration, or manual DB edit).
+    # Belt-and-suspenders: even if DB trusts this path, reject when the raw
+    # caller-supplied path is itself a symlink — scan-time checks may have
+    # been bypassed (race, migration, or manual DB edit).
+    # CodeQL false-positive: is_symlink() only performs lstat(), does not
+    # open or leak file contents; this check IS the path-traversal defense.
     try:
-        if library_resolved_path.is_symlink():
+        if Path(raw_path).is_symlink():  # lgtm[py/path-injection]
             return LocalAudioPathResolution("forbidden")
     except (OSError, ValueError):
         return LocalAudioPathResolution("forbidden")
