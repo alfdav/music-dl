@@ -170,10 +170,10 @@ def resolve_local_audio_path(
     if library_resolved_path is None:
         return LocalAudioPathResolution("not_found")
 
-    # Belt-and-suspenders: even if DB trusts this path, a symlinked raw path
-    # slipped past scan-time guard (race, migration, or manual DB edit).
+    # Belt-and-suspenders: even if DB trusts this path, reject symlink targets
+    # in case scan-time checks were bypassed (race, migration, or manual DB edit).
     try:
-        if Path(raw_path).is_symlink():
+        if library_resolved_path.is_symlink():
             return LocalAudioPathResolution("forbidden")
     except (OSError, ValueError):
         return LocalAudioPathResolution("forbidden")
