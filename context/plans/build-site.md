@@ -127,7 +127,7 @@ last_edited: 2026-04-20
 | onboarding-wizard | R6 | AC7: guild reachable by bot check | T-006 | COVERED |
 | onboarding-wizard | R6 | AC8: channel exists/is-text/visible/sendable check | T-006 | COVERED |
 | onboarding-wizard | R6 | AC9: user is guild member + bot Connect+Speak perms | T-006 | COVERED |
-| onboarding-wizard | R6 | AC10: ~~backend reachable + picked up shared token~~ MOVED to onboarding-backend R4 (2026-04-20: the wizard runs standalone, no HTTP probe; plumbing closed by security._resolve_bot_shared_token reading the wizard's file directly) | T-NEW-C | MOVED |
+| onboarding-wizard | R6 | AC10: ~~backend reachable + picked up shared token~~ MOVED to onboarding-backend R4 (2026-04-20: the wizard runs standalone, no HTTP probe; plumbing closed by security.resolve_bot_shared_token reading the wizard's file directly) | T-NEW-C | MOVED |
 | onboarding-wizard | R7 | AC1: field-identifiable failure → re-enter that field only | T-009 | COVERED |
 | onboarding-wizard | R7 | AC2: field-unidentifiable failure → remediation + retry/abort | T-009 | COVERED |
 | onboarding-wizard | R7 | AC3: user abort → exit non-zero, no config written | T-009 | COVERED |

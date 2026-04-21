@@ -273,7 +273,7 @@ describe("wizard R6 — preflight orchestrator", () => {
 
   // Plan B (2026-04-20): R10 "backend reachable" removed from wizard.
   // Wizard runs standalone; backend handshake plumbing is closed by
-  // security._resolve_bot_shared_token reading the wizard's shared-token
+  // security.resolve_bot_shared_token reading the wizard's shared-token
   // file. Backend startup logs confirm pickup (server.py).
 
   it("all failures record label, errorMessage, remediation", async () => {

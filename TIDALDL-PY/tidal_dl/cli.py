@@ -1662,7 +1662,7 @@ def gui(
 
     # Startup canary: report where the backend will resolve the bot
     # shared secret from. Replaces the wizard's old R10 "backend
-    # reachable" probe — now that security._resolve_bot_shared_token
+    # reachable" probe — now that security.resolve_bot_shared_token
     # reads the wizard's file directly, there is no HTTP round-trip to
     # verify. One visible line here confirms the plumbing is wired.
     source = bot_token_source()

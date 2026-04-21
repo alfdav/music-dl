@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 from enum import Enum
 from pathlib import Path
+from typing import Callable, Optional
 
 from tidal_dl.helper.path import path_config_base
 
@@ -50,19 +51,26 @@ class TokenSource(str, Enum):
     NONE = "none"
 
 
-def bot_token_source() -> TokenSource:
-    """Report where :func:`tidal_dl.gui.security._resolve_bot_shared_token`
+def bot_token_source(
+    env_getter: Optional[Callable[[str, str], str]] = None,
+    path_resolver: Optional[Callable[[], Path]] = None,
+) -> TokenSource:
+    """Report where :func:`tidal_dl.gui.security.resolve_bot_shared_token`
     will actually pull the bot shared secret from, without disclosing the
     secret itself. Used as the startup canary that replaces the wizard's
     old R10 "backend reachable" HTTP probe.
 
-    Priority mirrors ``_resolve_bot_shared_token``: env var first, then
-    the wizard-written file.
+    Priority mirrors ``resolve_bot_shared_token``: env var first, then
+    the wizard-written file. The optional ``env_getter`` and
+    ``path_resolver`` parameters let unit tests exercise every source
+    branch via dependency injection — no ``os.environ`` or disk
+    manipulation required.
     """
-    if os.environ.get("MUSIC_DL_BOT_TOKEN", "").strip():
+    get_env = env_getter or (lambda key, default: os.environ.get(key, default))
+    if (get_env("MUSIC_DL_BOT_TOKEN", "") or "").strip():
         return TokenSource.ENV
-    path = shared_token_path()
-    if _file_non_empty(path):
+    resolve_path = path_resolver or shared_token_path
+    if _file_non_empty(resolve_path()):
         return TokenSource.FILE
     return TokenSource.NONE
 

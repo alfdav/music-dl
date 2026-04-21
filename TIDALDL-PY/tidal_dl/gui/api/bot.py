@@ -16,8 +16,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from tidal_dl.gui.security import (
+    bearer_matches,
+    resolve_bot_shared_token,
     sign_bot_stream_token,
-    validate_bot_bearer,
 )
 from tidal_dl.helper.local_playlist_resolver import (
     parse_playlist_file,
@@ -29,9 +30,17 @@ router = APIRouter(prefix="/bot")
 # --- Auth dependency -------------------------------------------------------
 
 
-def require_bot_auth(authorization: str | None = Header(default=None)) -> None:
-    """FastAPI dependency that enforces bot bearer-token auth."""
-    if not validate_bot_bearer(authorization):
+def require_bot_auth(
+    authorization: str | None = Header(default=None),
+    expected_token: str = Depends(resolve_bot_shared_token),
+) -> None:
+    """FastAPI dependency that enforces bot bearer-token auth.
+
+    The expected shared secret is injected via ``Depends(resolve_bot_shared_token)``
+    so tests can override it with ``app.dependency_overrides[resolve_bot_shared_token]``
+    — no env-var or disk manipulation required.
+    """
+    if not bearer_matches(expected_token, authorization):
         raise HTTPException(status_code=401, detail="Unauthorized bot client")
 
 
