@@ -422,3 +422,61 @@ def test_top_album_from_play_events(db):
     stats = db.home_stats()
     assert stats["top_album"]["album"] == "Discovery"
     assert stats["top_album"]["play_count"] == 10
+
+
+def test_volume_available_cache_returns_cached_result_without_probing(monkeypatch):
+    """Second call within TTL must not re-invoke _scan_directories.
+
+    Regression guard for /home latency: a cold NAS probe takes seconds,
+    and the Home render was blanking because a second navigate() fired
+    while the first /home was still awaiting. Caching the probe means
+    the second navigate never pays the cost.
+    """
+    import tidal_dl.gui.api.home as home_api
+
+    monkeypatch.setattr(home_api, "_volume_cache", {"ts": 0.0, "ok": False})
+
+    probes = {"n": 0}
+
+    def fake_scan_directories():
+        probes["n"] += 1
+        from pathlib import Path
+        return [Path("/virtual/music")]
+
+    import tidal_dl.gui.api.library as library_api
+    monkeypatch.setattr(library_api, "_scan_directories", fake_scan_directories)
+
+    first = home_api._volume_available_cached()
+    second = home_api._volume_available_cached()
+    third = home_api._volume_available_cached()
+
+    assert first is True
+    assert second is True
+    assert third is True
+    assert probes["n"] == 1, "cache miss — probe ran more than once inside TTL"
+
+
+def test_volume_available_cache_expires_after_ttl(monkeypatch):
+    """After TTL elapses, the next call re-probes and refreshes the cache."""
+    import tidal_dl.gui.api.home as home_api
+
+    monkeypatch.setattr(home_api, "_volume_cache", {"ts": 0.0, "ok": False})
+    monkeypatch.setattr(home_api, "_VOLUME_CACHE_TTL_S", 0.05)
+
+    probes = {"n": 0}
+
+    def fake_scan_directories():
+        probes["n"] += 1
+        from pathlib import Path
+        return [Path("/virtual/music")] if probes["n"] == 1 else []
+
+    import tidal_dl.gui.api.library as library_api
+    monkeypatch.setattr(library_api, "_scan_directories", fake_scan_directories)
+
+    first = home_api._volume_available_cached()
+    time.sleep(0.08)
+    second = home_api._volume_available_cached()
+
+    assert first is True
+    assert second is False
+    assert probes["n"] == 2

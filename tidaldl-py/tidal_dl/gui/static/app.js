@@ -760,7 +760,23 @@ if (navSyncBtn) {
 
 // ---- HOME VIEW ----
 async function renderHome(container) {
-  const wrap = h('div', { className: 'home-wrap' });
+  const wrap = h('div', { className: 'home-wrap home-loading' });
+
+  // Paint the header + a loading hint synchronously so the view is never
+  // blank while /home is in flight. On a cold sidecar (Tauri first launch,
+  // NAS volume probe) /home can take several seconds; without this
+  // skeleton the user sees a blank view and a second navigate() can
+  // orphan the in-progress render.
+  const header = h('div', { className: 'home-header' });
+  const title = h('h1', { className: 'home-title' });
+  title.appendChild(document.createTextNode(_greeting() + ' welcome to '));
+  title.appendChild(h('em', { className: 'home-your' }, 'your'));
+  title.appendChild(document.createTextNode(' library'));
+  header.appendChild(title);
+  wrap.appendChild(header);
+  const loadingHint = textEl('p', 'Loading your library…', 'home-loading-hint');
+  wrap.appendChild(loadingHint);
+  container.appendChild(wrap);
 
   let data;
   try {
@@ -768,6 +784,14 @@ async function renderHome(container) {
   } catch (_) {
     data = { total_plays: 0, weekly_activity: [0,0,0,0,0,0,0] };
   }
+
+  // If the user navigated away (and maybe back) while we were awaiting,
+  // this wrap was torn out of the DOM by navigate()'s cleanup. Bail out
+  // silently so the newer render owns the view.
+  if (!wrap.isConnected) return;
+
+  wrap.classList.remove('home-loading');
+  loadingHint.remove();
 
   const totalPlays = data.total_plays || 0;
 
@@ -786,14 +810,6 @@ async function renderHome(container) {
   const density = tileCount <= 4 ? 'sparse' : tileCount <= 6 ? 'moderate' : 'dense';
   wrap.classList.add('home-' + density);
 
-  const header = h('div', { className: 'home-header' });
-  const title = h('h1', { className: 'home-title' });
-  title.appendChild(document.createTextNode(_greeting() + ' welcome to '));
-  title.appendChild(h('em', { className: 'home-your' }, 'your'));
-  title.appendChild(document.createTextNode(' library'));
-  header.appendChild(title);
-  wrap.appendChild(header);
-
   if (data.volume_available === false) {
     const banner = h('div', { className: 'volume-offline-banner' });
     banner.textContent = 'Your music drive is offline — showing what we remember';
@@ -809,8 +825,6 @@ async function renderHome(container) {
   if (recentlyPlayed.length > 0) {
     _renderRecentStrip(wrap);
   }
-
-  container.appendChild(wrap);
 }
 
 function _renderHomeCold(container) {
