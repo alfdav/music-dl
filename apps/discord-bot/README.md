@@ -189,7 +189,3 @@ a real filesystem, or the real user config directory.
 ## Related docs
 
 - [`../../TIDALDL-PY/docs/bot-onboarding.md`](../../TIDALDL-PY/docs/bot-onboarding.md) — wizard flow, GUI ↔ bot token handoff, `--setup-bot`
-- `context/kits/cavekit-discord-bot.md` — bot requirements (R1–R9)
-- `context/kits/cavekit-onboarding-wizard.md` — wizard requirements
-- `context/kits/cavekit-onboarding-backend.md` — backend integration
-- `context/kits/cavekit-bot-api.md` — backend HTTP surface the bot calls

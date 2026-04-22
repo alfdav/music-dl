@@ -258,5 +258,3 @@ Where `<config-dir>` resolves to the first non-empty of
 
 - [`apps/discord-bot/README.md`](../../apps/discord-bot/README.md) —
   bot runtime, commands, architecture
-- `context/kits/cavekit-onboarding-wizard.md` — wizard requirements (R1–R9)
-- `context/kits/cavekit-onboarding-backend.md` — backend integration (R1–R4)

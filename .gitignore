@@ -28,6 +28,9 @@ TIDALDL-PY/exe/
 # Local-only documentation (not for public repo)
 .docs/
 
+# Internal methodology artifacts — not for public repo
+context/
+
 # Config / data (local)
 *.ini
 *.db
