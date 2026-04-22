@@ -1,3 +1,12 @@
+<!--
+  Canonical install block.
+
+  Injected into every GitHub release body by .github/workflows/build-desktop.yml
+  (publish-manifest job). Also surfaced from README.md Option 1b.
+
+  Edit this file only — both release notes and README reference it.
+-->
+
 ---
 
 ## Install
