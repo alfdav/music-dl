@@ -27,7 +27,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: TIDALDL-PY
+        working-directory: tidaldl-py
 
     steps:
       - name: Checkout
@@ -92,7 +92,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: TIDALDL-PY/src-tauri -> target
+          workspaces: tidaldl-py/src-tauri -> target
 
       - name: Install Tauri CLI
         run: npm install
@@ -109,9 +109,9 @@ jobs:
         with:
           name: music-dl-${{ matrix.label }}
           path: |
-            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
-            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
-            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
           if-no-files-found: warn
 
       # ── Attach to release if tagged ──────────────────────────────
@@ -120,9 +120,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
-            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
-            TIDALDL-PY/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
 
   publish-manifest:
     if: startsWith(github.ref, 'refs/tags/')

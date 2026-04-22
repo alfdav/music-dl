@@ -13,8 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl \
 RUN groupadd -g 1000 musicdl \
     && useradd -u 1000 -g musicdl -m -s /bin/sh musicdl
 
-COPY . /app/TIDALDL-PY
-WORKDIR /app/TIDALDL-PY
+COPY . /app/tidaldl-py
+WORKDIR /app/tidaldl-py
 
 RUN pip install --no-cache-dir .
 

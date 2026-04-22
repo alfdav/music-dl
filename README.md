@@ -24,7 +24,7 @@
     curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash
 
   DEV SETUP:
-    cd TIDALDL-PY && uv sync && music-dl gui   # opens http://localhost:8765
+    cd tidaldl-py && uv sync && music-dl gui   # opens http://localhost:8765
 
   Repository: https://github.com/alfdav/music-dl
   License: MIT
@@ -43,12 +43,12 @@ macOS + Linux. Free and open-source.
 INSTALL (macOS):
   curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash
 
-DEV:   cd TIDALDL-PY && uv sync && music-dl gui     # http://localhost:8765
-TEST:  cd TIDALDL-PY && uv run pytest
-BUILD: cd TIDALDL-PY && uv sync && uv pip install pyinstaller && npm install && npx tauri build --bundles dmg
+DEV:   cd tidaldl-py && uv sync && music-dl gui     # http://localhost:8765
+TEST:  cd tidaldl-py && uv run pytest
+BUILD: cd tidaldl-py && uv sync && uv pip install pyinstaller && npm install && npx tauri build --bundles dmg
 
 STACK: Python 3.12+, FastAPI, vanilla JS, Tauri v2.
-REPO:  monorepo — all code under TIDALDL-PY/.
+REPO:  monorepo — all code under tidaldl-py/.
 
 KEY PATHS:
   tidal_dl/gui/static/{app.js,style.css,index.html} — frontend (no framework)
@@ -121,7 +121,7 @@ If the installer stops because a dependency is missing, fix the reported issue a
 If you want full control over the build:
 
 ```shell
-cd TIDALDL-PY
+cd tidaldl-py
 uv sync && uv pip install pyinstaller
 npm install
 npx tauri build --bundles dmg
@@ -150,7 +150,7 @@ MUSIC_DL_CONFIG=~/.my-config MUSIC_DL_DOWNLOADS=/mnt/nas/music \
 Requires Python 3.12+ and [ffmpeg](https://ffmpeg.org/).
 
 ```shell
-uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=TIDALDL-PY music-dl
+uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=tidaldl-py music-dl
 music-dl gui
 ```
 
@@ -184,9 +184,9 @@ Your browser opens automatically. The wizard handles the rest.
 - **Waveform visualizer** — pre-computed amplitude data drives a ripple animation from the playhead, zero audio post-processing
 - **Playlist sync** — point it at a Tidal playlist and it downloads only the tracks you don't have
 - **Favorites** — mark tracks you love, access them from one place
-- **Local lyrics** — synced `.lrc` sidecars and embedded tag fallback, rendered in the player with no network lookups. See [`TIDALDL-PY/docs/local-lyrics.md`](TIDALDL-PY/docs/local-lyrics.md).
+- **Local lyrics** — synced `.lrc` sidecars and embedded tag fallback, rendered in the player with no network lookups. See [`tidaldl-py/docs/local-lyrics.md`](tidaldl-py/docs/local-lyrics.md).
 - **Setup wizard** — first-run experience that walks you through Tidal login and library paths
-- **Discord bot (optional)** — single-user, single-guild companion that streams and downloads from your library over Discord voice. Set up in one command: `music-dl gui --setup-bot`. See [`apps/discord-bot/README.md`](apps/discord-bot/README.md) and [`TIDALDL-PY/docs/bot-onboarding.md`](TIDALDL-PY/docs/bot-onboarding.md).
+- **Discord bot (optional)** — single-user, single-guild companion that streams and downloads from your library over Discord voice. Set up in one command: `music-dl gui --setup-bot`. See [`apps/discord-bot/README.md`](apps/discord-bot/README.md) and [`tidaldl-py/docs/bot-onboarding.md`](tidaldl-py/docs/bot-onboarding.md).
 
 ## CLI
 
@@ -233,8 +233,8 @@ Three entry points, one shared core. CLI and GUI use the same singletons (`Setti
 
 For deep dives, see:
 
-- **[Backend Reference](TIDALDL-PY/docs/backend-guide.md)** — API routes, DB schema, download pipeline, middleware, security model
-- **[Design System](TIDALDL-PY/docs/design-system.md)** — UI tokens, components, layout, animation
+- **[Backend Reference](tidaldl-py/docs/backend-guide.md)** — API routes, DB schema, download pipeline, middleware, security model
+- **[Design System](tidaldl-py/docs/design-system.md)** — UI tokens, components, layout, animation
 - **[Docker Guide](docker/README.md)** — detailed Docker usage, mounts, CLI commands, headless/cron
 
 ## Environment Variables
@@ -252,7 +252,7 @@ For deep dives, see:
 
 ```shell
 git clone git@github.com:alfdav/music-dl.git
-cd music-dl/TIDALDL-PY
+cd music-dl/tidaldl-py
 uv sync
 music-dl gui
 ```
@@ -266,14 +266,14 @@ pytest
 Run the release smoke coverage from the repository root:
 
 ```shell
-uv run --project TIDALDL-PY pytest \
-  TIDALDL-PY/tests/test_gui_command.py \
-  TIDALDL-PY/tests/test_gui_api.py \
-  TIDALDL-PY/tests/test_setup.py \
-  TIDALDL-PY/tests/test_token_refresh.py \
-  TIDALDL-PY/tests/test_public_branding.py \
-  TIDALDL-PY/tests/test_packaging.py
-uv build --project TIDALDL-PY
+uv run --project tidaldl-py pytest \
+  tidaldl-py/tests/test_gui_command.py \
+  tidaldl-py/tests/test_gui_api.py \
+  tidaldl-py/tests/test_setup.py \
+  tidaldl-py/tests/test_token_refresh.py \
+  tidaldl-py/tests/test_public_branding.py \
+  tidaldl-py/tests/test_packaging.py
+uv build --project tidaldl-py
 docker build -f docker/Dockerfile -t music-dl .
 ```
 
@@ -295,7 +295,7 @@ sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
 
 **Build:**
 ```shell
-cd TIDALDL-PY
+cd tidaldl-py
 uv sync && uv pip install pyinstaller
 npm install              # or: bun install
 # Linux:

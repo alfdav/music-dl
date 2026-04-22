@@ -15,7 +15,7 @@ Migration details:
 Recommended install command:
 
 ```shell
-uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=TIDALDL-PY music-dl
+uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=tidaldl-py music-dl
 ```
 
 ---
