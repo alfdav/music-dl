@@ -1,6 +1,6 @@
 services:
   music-dl:
-    build: ./TIDALDL-PY
+    build: ./tidaldl-py
     ports:
       - "8765:8765"
     volumes:

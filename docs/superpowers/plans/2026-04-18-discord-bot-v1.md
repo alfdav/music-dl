@@ -14,19 +14,19 @@
 
 ### Backend (`music-dl`)
 
-- Create: `TIDALDL-PY/tidal_dl/gui/api/bot.py`
+- Create: `tidaldl-py/tidal_dl/gui/api/bot.py`
   Purpose: bot-facing endpoints for resolve, playable source, download trigger, and download polling.
-- Create: `TIDALDL-PY/tidal_dl/helper/local_playlist_resolver.py`
+- Create: `tidaldl-py/tidal_dl/helper/local_playlist_resolver.py`
   Purpose: find and parse local `.m3u` / `.m3u8` playlist files by name without mixing filesystem logic into HTTP routes.
-- Modify: `TIDALDL-PY/tidal_dl/gui/api/__init__.py`
+- Modify: `tidaldl-py/tidal_dl/gui/api/__init__.py`
   Purpose: register the new `/api/bot` router.
-- Modify: `TIDALDL-PY/tidal_dl/gui/security.py`
+- Modify: `tidaldl-py/tidal_dl/gui/security.py`
   Purpose: add dedicated bearer-token validation and short-lived bot stream token helpers.
-- Modify: `TIDALDL-PY/tidal_dl/gui/api/playback.py`
+- Modify: `tidaldl-py/tidal_dl/gui/api/playback.py`
   Purpose: reuse or extract stream-building helpers so `/api/bot/playable` can hand the bot a short-lived local or Tidal-backed playable URL.
-- Test: `TIDALDL-PY/tests/test_bot_api.py`
+- Test: `tidaldl-py/tests/test_bot_api.py`
   Purpose: API coverage for bearer auth, input resolution, playable source responses, and download status.
-- Test: `TIDALDL-PY/tests/test_local_playlist_resolver.py`
+- Test: `tidaldl-py/tests/test_local_playlist_resolver.py`
   Purpose: local playlist name lookup and playlist file parsing coverage.
 
 ### Discord bot (`apps/discord-bot`)
@@ -76,10 +76,10 @@
 ### Task 1: Add backend bot auth and router skeleton
 
 **Files:**
-- Create: `TIDALDL-PY/tidal_dl/gui/api/bot.py`
-- Modify: `TIDALDL-PY/tidal_dl/gui/api/__init__.py`
-- Modify: `TIDALDL-PY/tidal_dl/gui/security.py`
-- Test: `TIDALDL-PY/tests/test_bot_api.py`
+- Create: `tidaldl-py/tidal_dl/gui/api/bot.py`
+- Modify: `tidaldl-py/tidal_dl/gui/api/__init__.py`
+- Modify: `tidaldl-py/tidal_dl/gui/security.py`
+- Test: `tidaldl-py/tests/test_bot_api.py`
 
 - [ ] **Step 1: Write the failing auth test**
 
@@ -94,14 +94,14 @@ def test_bot_route_rejects_missing_bearer_token(client: TestClient):
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cd TIDALDL-PY && uv run pytest tests/test_bot_api.py::test_bot_route_rejects_missing_bearer_token -v`
+Run: `cd tidaldl-py && uv run pytest tests/test_bot_api.py::test_bot_route_rejects_missing_bearer_token -v`
 
 Expected: FAIL because `/api/bot/play/resolve` does not exist yet.
 
 - [ ] **Step 3: Write the minimal router and auth helper**
 
 ```python
-# TIDALDL-PY/tidal_dl/gui/api/bot.py
+# tidaldl-py/tidal_dl/gui/api/bot.py
 from fastapi import APIRouter, Header, HTTPException
 
 from tidal_dl.gui.security import validate_bot_bearer
@@ -120,7 +120,7 @@ def resolve_placeholder(_: None = Depends(require_bot_auth)) -> dict:
 ```
 
 ```python
-# TIDALDL-PY/tidal_dl/gui/security.py
+# tidaldl-py/tidal_dl/gui/security.py
 def validate_bot_bearer(header_value: str | None) -> bool:
     token = os.getenv("MUSIC_DL_BOT_TOKEN", "").strip()
     if not token or not header_value:
@@ -132,7 +132,7 @@ def validate_bot_bearer(header_value: str | None) -> bool:
 - [ ] **Step 4: Register the router**
 
 ```python
-# TIDALDL-PY/tidal_dl/gui/api/__init__.py
+# tidaldl-py/tidal_dl/gui/api/__init__.py
 from tidal_dl.gui.api.bot import router as bot_router
 
 api_router.include_router(bot_router, tags=["bot"])
@@ -140,7 +140,7 @@ api_router.include_router(bot_router, tags=["bot"])
 
 - [ ] **Step 5: Run the focused test to verify it passes**
 
-Run: `cd TIDALDL-PY && MUSIC_DL_BOT_TOKEN=test-token uv run pytest tests/test_bot_api.py::test_bot_route_rejects_missing_bearer_token -v`
+Run: `cd tidaldl-py && MUSIC_DL_BOT_TOKEN=test-token uv run pytest tests/test_bot_api.py::test_bot_route_rejects_missing_bearer_token -v`
 
 Expected: PASS
 
@@ -159,25 +159,25 @@ def test_bot_route_accepts_valid_bearer_token(client: TestClient):
     assert response.status_code == 200
 ```
 
-Run: `cd TIDALDL-PY && MUSIC_DL_BOT_TOKEN=test-token uv run pytest tests/test_bot_api.py -v`
+Run: `cd tidaldl-py && MUSIC_DL_BOT_TOKEN=test-token uv run pytest tests/test_bot_api.py -v`
 
 Expected: PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add TIDALDL-PY/tidal_dl/gui/api/bot.py \
-        TIDALDL-PY/tidal_dl/gui/api/__init__.py \
-        TIDALDL-PY/tidal_dl/gui/security.py \
-        TIDALDL-PY/tests/test_bot_api.py
+git add tidaldl-py/tidal_dl/gui/api/bot.py \
+        tidaldl-py/tidal_dl/gui/api/__init__.py \
+        tidaldl-py/tidal_dl/gui/security.py \
+        tidaldl-py/tests/test_bot_api.py
 git commit -m "feat(bot): add backend auth scaffold"
 ```
 
 ### Task 2: Implement local playlist resolution in the backend
 
 **Files:**
-- Create: `TIDALDL-PY/tidal_dl/helper/local_playlist_resolver.py`
-- Test: `TIDALDL-PY/tests/test_local_playlist_resolver.py`
+- Create: `tidaldl-py/tidal_dl/helper/local_playlist_resolver.py`
+- Test: `tidaldl-py/tests/test_local_playlist_resolver.py`
 
 - [ ] **Step 1: Write the failing local playlist resolver test**
 
@@ -200,7 +200,7 @@ def test_resolve_playlist_name_prefers_casefolded_exact_match(tmp_path: Path):
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cd TIDALDL-PY && uv run pytest tests/test_local_playlist_resolver.py::test_resolve_playlist_name_prefers_casefolded_exact_match -v`
+Run: `cd tidaldl-py && uv run pytest tests/test_local_playlist_resolver.py::test_resolve_playlist_name_prefers_casefolded_exact_match -v`
 
 Expected: FAIL because the module does not exist yet.
 
@@ -238,28 +238,28 @@ def test_parse_playlist_file_skips_comments_and_blank_lines(tmp_path: Path):
     assert paths == ["track-a.flac", "track-b.flac"]
 ```
 
-Run: `cd TIDALDL-PY && uv run pytest tests/test_local_playlist_resolver.py -v`
+Run: `cd tidaldl-py && uv run pytest tests/test_local_playlist_resolver.py -v`
 
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add TIDALDL-PY/tidal_dl/helper/local_playlist_resolver.py \
-        TIDALDL-PY/tests/test_local_playlist_resolver.py
+git add tidaldl-py/tidal_dl/helper/local_playlist_resolver.py \
+        tidaldl-py/tests/test_local_playlist_resolver.py
 git commit -m "feat(bot): add local playlist resolver"
 ```
 
 ### Task 3: Implement bot resolve and playable endpoints
 
 **Files:**
-- Modify: `TIDALDL-PY/tidal_dl/gui/api/bot.py`
-- Modify: `TIDALDL-PY/tidal_dl/gui/security.py`
-- Modify: `TIDALDL-PY/tidal_dl/gui/api/playback.py`
-- Modify: `TIDALDL-PY/tidal_dl/gui/api/downloads.py`
-- Modify: `TIDALDL-PY/tidal_dl/gui/api/playlists.py`
-- Modify: `TIDALDL-PY/tidal_dl/gui/api/search.py`
-- Test: `TIDALDL-PY/tests/test_bot_api.py`
+- Modify: `tidaldl-py/tidal_dl/gui/api/bot.py`
+- Modify: `tidaldl-py/tidal_dl/gui/security.py`
+- Modify: `tidaldl-py/tidal_dl/gui/api/playback.py`
+- Modify: `tidaldl-py/tidal_dl/gui/api/downloads.py`
+- Modify: `tidaldl-py/tidal_dl/gui/api/playlists.py`
+- Modify: `tidaldl-py/tidal_dl/gui/api/search.py`
+- Test: `tidaldl-py/tests/test_bot_api.py`
 
 - [ ] **Step 1: Write the failing resolve-by-text test**
 
@@ -284,7 +284,7 @@ def test_bot_resolve_returns_five_text_choices(client):
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cd TIDALDL-PY && MUSIC_DL_BOT_TOKEN=test-token uv run pytest tests/test_bot_api.py::test_bot_resolve_returns_five_text_choices -v`
+Run: `cd tidaldl-py && MUSIC_DL_BOT_TOKEN=test-token uv run pytest tests/test_bot_api.py::test_bot_resolve_returns_five_text_choices -v`
 
 Expected: FAIL because the route still returns the placeholder payload.
 
@@ -332,7 +332,7 @@ def test_bot_playable_returns_short_lived_stream_url(client):
 - [ ] **Step 5: Implement short-lived playback handles**
 
 ```python
-# TIDALDL-PY/tidal_dl/gui/security.py
+# tidaldl-py/tidal_dl/gui/security.py
 def sign_bot_stream_token(payload: dict[str, str], ttl_seconds: int = 120) -> str:
     ...
 
@@ -342,7 +342,7 @@ def verify_bot_stream_token(token: str) -> dict[str, str] | None:
 ```
 
 ```python
-# TIDALDL-PY/tidal_dl/gui/api/playback.py
+# tidaldl-py/tidal_dl/gui/api/playback.py
 @router.get("/bot-stream/{token}")
 def serve_bot_stream(token: str):
     payload = verify_bot_stream_token(token)
@@ -365,27 +365,27 @@ def bot_download_status(track_id: int, _: None = Depends(require_bot_auth)) -> d
 
 - [ ] **Step 7: Run backend tests**
 
-Run: `cd TIDALDL-PY && MUSIC_DL_BOT_TOKEN=test-token uv run pytest tests/test_bot_api.py tests/test_local_playlist_resolver.py -v`
+Run: `cd tidaldl-py && MUSIC_DL_BOT_TOKEN=test-token uv run pytest tests/test_bot_api.py tests/test_local_playlist_resolver.py -v`
 
 Expected: PASS
 
 - [ ] **Step 8: Run broader regression tests around existing API behavior**
 
-Run: `cd TIDALDL-PY && MUSIC_DL_BOT_TOKEN=test-token uv run pytest tests/test_gui_api.py tests/test_downloads.py tests/test_gui_security.py -v`
+Run: `cd tidaldl-py && MUSIC_DL_BOT_TOKEN=test-token uv run pytest tests/test_gui_api.py tests/test_downloads.py tests/test_gui_security.py -v`
 
 Expected: PASS
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add TIDALDL-PY/tidal_dl/gui/api/bot.py \
-        TIDALDL-PY/tidal_dl/gui/security.py \
-        TIDALDL-PY/tidal_dl/gui/api/playback.py \
-        TIDALDL-PY/tidal_dl/gui/api/downloads.py \
-        TIDALDL-PY/tidal_dl/gui/api/playlists.py \
-        TIDALDL-PY/tidal_dl/gui/api/search.py \
-        TIDALDL-PY/tests/test_bot_api.py \
-        TIDALDL-PY/tests/test_local_playlist_resolver.py
+git add tidaldl-py/tidal_dl/gui/api/bot.py \
+        tidaldl-py/tidal_dl/gui/security.py \
+        tidaldl-py/tidal_dl/gui/api/playback.py \
+        tidaldl-py/tidal_dl/gui/api/downloads.py \
+        tidaldl-py/tidal_dl/gui/api/playlists.py \
+        tidaldl-py/tidal_dl/gui/api/search.py \
+        tidaldl-py/tests/test_bot_api.py \
+        tidaldl-py/tests/test_local_playlist_resolver.py
 git commit -m "feat(bot): add resolve and playable APIs"
 ```
 
@@ -683,7 +683,7 @@ Add a short section linking to the Discord bot docs and clearly label the featur
 
 - [ ] **Step 3: Verify backend tests**
 
-Run: `cd TIDALDL-PY && MUSIC_DL_BOT_TOKEN=test-token uv run pytest tests/test_bot_api.py tests/test_local_playlist_resolver.py tests/test_gui_api.py tests/test_downloads.py tests/test_gui_security.py -v`
+Run: `cd tidaldl-py && MUSIC_DL_BOT_TOKEN=test-token uv run pytest tests/test_bot_api.py tests/test_local_playlist_resolver.py tests/test_gui_api.py tests/test_downloads.py tests/test_gui_security.py -v`
 
 Expected: PASS
 

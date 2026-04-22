@@ -2,7 +2,7 @@
 
 ### RQ1: Directory Structure, Module Boundaries, Entry Points
 
-- Finding: Monorepo — Python package under `TIDALDL-PY/`, Rust/Tauri shell in `src-tauri/`, installer scripts at repo root `scripts/`.
+- Finding: Monorepo — Python package under `tidaldl-py/`, Rust/Tauri shell in `src-tauri/`, installer scripts at repo root `scripts/`.
 - Evidence: `tidal_dl/{cli.py, api.py, config.py, download.py, hifi_api.py, metadata.py, gui/, helper/, model/}`, 11 route modules under `gui/api/`
 - Implication: New files added to `tidal_dl/gui/api/` must be manually listed in PyInstaller spec's `tidal_hidden` array.
 - Confidence: HIGH
@@ -99,7 +99,7 @@
 - Implication: macOS installs always get latest master. By design but no reproducible release.
 - Confidence: HIGH
 
-- Finding: Shell test harness `tests/test_macos_local_installer.sh` at repo root — NOT picked up by pytest in TIDALDL-PY/.
+- Finding: Shell test harness `tests/test_macos_local_installer.sh` at repo root — NOT picked up by pytest in tidaldl-py/.
 - Implication: Must be run explicitly as `bash tests/test_macos_local_installer.sh`.
 - Confidence: HIGH
 

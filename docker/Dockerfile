@@ -33,8 +33,8 @@ RUN groupadd -g 1000 musicdl \
     && useradd -u 1000 -g musicdl -m -s /bin/sh musicdl
 
 # Copy only the package source
-COPY TIDALDL-PY /app/TIDALDL-PY
-WORKDIR /app/TIDALDL-PY
+COPY tidaldl-py /app/tidaldl-py
+WORKDIR /app/tidaldl-py
 
 # Install music-dl and its Python dependencies
 RUN pip install --no-cache-dir .

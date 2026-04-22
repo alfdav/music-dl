@@ -6,7 +6,7 @@
 ## Wave 1 Results (4 agents complete)
 
 ### Codebase: Architecture & Dependencies
-- Monorepo: TIDALDL-PY/ (Python), src-tauri/ (Rust/Tauri), scripts/ (installer)
+- Monorepo: tidaldl-py/ (Python), src-tauri/ (Rust/Tauri), scripts/ (installer)
 - Build pipeline: PyInstaller onefile → Tauri externalBin sidecar → .app/.dmg
 - Tauri polls sidecar TCP on port 8765, 200ms interval, 30s timeout, loading page until ready
 - frontendDist = ./loading (splash), actual UI served by FastAPI sidecar at localhost:8765

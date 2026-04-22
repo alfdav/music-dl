@@ -46,7 +46,7 @@ music-dl gui --setup-bot
 
 That launches the wizard as a child of the backend, blocks until it's
 done, then starts the web server. See
-[`../../TIDALDL-PY/docs/bot-onboarding.md`](../../TIDALDL-PY/docs/bot-onboarding.md)
+[`../../tidaldl-py/docs/bot-onboarding.md`](../../tidaldl-py/docs/bot-onboarding.md)
 for the full flow.
 
 **Standalone wizard (bot repo only):**
@@ -188,4 +188,4 @@ a real filesystem, or the real user config directory.
 
 ## Related docs
 
-- [`../../TIDALDL-PY/docs/bot-onboarding.md`](../../TIDALDL-PY/docs/bot-onboarding.md) — wizard flow, GUI ↔ bot token handoff, `--setup-bot`
+- [`../../tidaldl-py/docs/bot-onboarding.md`](../../tidaldl-py/docs/bot-onboarding.md) — wizard flow, GUI ↔ bot token handoff, `--setup-bot`

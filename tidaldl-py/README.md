@@ -7,7 +7,7 @@ The main user documentation lives in the repository root at `README.md`.
 ## Install
 
 ```shell
-uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=TIDALDL-PY music-dl
+uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=tidaldl-py music-dl
 ```
 
 ## Run
@@ -40,8 +40,8 @@ bot itself.
 From the repository root:
 
 ```shell
-uv run --project TIDALDL-PY pytest
-uv build --project TIDALDL-PY
+uv run --project tidaldl-py pytest
+uv build --project tidaldl-py
 ```
 
 For full project usage, Docker instructions, and screenshots, use the root `README.md`.

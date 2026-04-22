@@ -4,7 +4,7 @@
 
 ```shell
 git clone git@github.com:alfdav/music-dl.git
-cd music-dl/TIDALDL-PY
+cd music-dl/tidaldl-py
 uv sync
 music-dl gui          # launches at http://localhost:8765
 ```
@@ -41,7 +41,7 @@ Create a branch, make your changes, open a PR against `master`.
 - **bun** over npm — always
 - **No build step** — `app.js`, `style.css`, and `index.html` are served directly
 - **No Web Audio API** — the `<audio>` element plays files from source, untouched. Quality is non-negotiable.
-- **CSS variables** for theming — see [design-system.md](TIDALDL-PY/docs/design-system.md)
+- **CSS variables** for theming — see [design-system.md](tidaldl-py/docs/design-system.md)
 
 ### Packaging
 
@@ -53,20 +53,20 @@ Create a branch, make your changes, open a PR against `master`.
 
 ```shell
 # Quick smoke
-cd TIDALDL-PY
+cd tidaldl-py
 uv run pytest tests/test_gui_api.py tests/test_gui_security.py -q
 
 # Full suite
 uv run pytest
 
 # Release smoke (from repo root)
-uv run --project TIDALDL-PY pytest \
-  TIDALDL-PY/tests/test_gui_command.py \
-  TIDALDL-PY/tests/test_gui_api.py \
-  TIDALDL-PY/tests/test_setup.py \
-  TIDALDL-PY/tests/test_token_refresh.py \
-  TIDALDL-PY/tests/test_public_branding.py \
-  TIDALDL-PY/tests/test_packaging.py
+uv run --project tidaldl-py pytest \
+  tidaldl-py/tests/test_gui_command.py \
+  tidaldl-py/tests/test_gui_api.py \
+  tidaldl-py/tests/test_setup.py \
+  tidaldl-py/tests/test_token_refresh.py \
+  tidaldl-py/tests/test_public_branding.py \
+  tidaldl-py/tests/test_packaging.py
 ```
 
 ## Releasing Desktop Binaries
@@ -98,7 +98,7 @@ macOS desktop usage is manual/local-build only. Build with Tauri locally and rep
 
 ## Architecture
 
-See [backend-guide.md](TIDALDL-PY/docs/backend-guide.md) for the full architecture, API routes, DB schema, and download pipeline.
+See [backend-guide.md](tidaldl-py/docs/backend-guide.md) for the full architecture, API routes, DB schema, and download pipeline.
 
 ## Questions?
 

@@ -12,7 +12,7 @@ The current build pipeline (PyInstaller onefile + Tauri sidecar) has a critical 
 
 ### Architecture & Patterns
 
-- **Monorepo with three build layers:** `TIDALDL-PY/` (Python backend), `src-tauri/` (Rust/Tauri shell), `scripts/` (installer). Build order is rigid: PyInstaller first, copy sidecar to `binaries/`, then `tauri build`. [confidence: HIGH] [sources: 2]
+- **Monorepo with three build layers:** `tidaldl-py/` (Python backend), `src-tauri/` (Rust/Tauri shell), `scripts/` (installer). Build order is rigid: PyInstaller first, copy sidecar to `binaries/`, then `tauri build`. [confidence: HIGH] [sources: 2]
 - **Sidecar TCP polling:** Tauri polls localhost:8765 with 200ms interval, 30s timeout. No built-in readiness API in Tauri. Loading splash shown until sidecar responds. [confidence: HIGH] [sources: 3]
 - **Hidden imports manually maintained:** 66 explicit hidden imports in PyInstaller spec. New route modules under `gui/api/` must be manually added. [confidence: HIGH] [sources: 1]
 - **Stale sidecar binary with space in filename** in `src-tauri/binaries/` — build confusion risk. [confidence: HIGH] [sources: 1]

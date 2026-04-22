@@ -121,7 +121,7 @@ sync_repo() {
 build_app() {
   local app_dir tauri_local_config
   say "Building music-dl.app"
-  app_dir="$(repo_dir)/TIDALDL-PY"
+  app_dir="$(repo_dir)/tidaldl-py"
   tauri_local_config='{"bundle":{"createUpdaterArtifacts":false}}'
   [ -d "$app_dir" ] || die "Could not enter $app_dir. Delete $(installer_cache_dir) and rerun this installer."
 
@@ -139,7 +139,7 @@ built_app_path() {
   if [ "${MUSIC_DL_TEST_BUILT_APP_PATH+set}" = "set" ]; then
     printf '%s\n' "$MUSIC_DL_TEST_BUILT_APP_PATH"
   else
-    bundle_dir="$(repo_dir)/TIDALDL-PY/src-tauri/target/release/bundle/macos"
+    bundle_dir="$(repo_dir)/tidaldl-py/src-tauri/target/release/bundle/macos"
     find "$bundle_dir" -maxdepth 1 -name 'music-dl.app' 2>/dev/null | head -1 || true
   fi
 }

@@ -206,14 +206,14 @@ unset MUSIC_DL_TEST_BUILT_APP_PATH
 
 TMP_BUILD_ROOT="$(mktemp -d)"
 export MUSIC_DL_INSTALLER_CACHE_DIR="$TMP_BUILD_ROOT/cache"
-mkdir -p "$TMP_BUILD_ROOT/cache/repo/TIDALDL-PY/src-tauri/target/release/bundle/macos/music-dl.app"
-assert_eq "$(built_app_path)" "$TMP_BUILD_ROOT/cache/repo/TIDALDL-PY/src-tauri/target/release/bundle/macos/music-dl.app" "built_app_path locates bundled app under bundle/macos"
+mkdir -p "$TMP_BUILD_ROOT/cache/repo/tidaldl-py/src-tauri/target/release/bundle/macos/music-dl.app"
+assert_eq "$(built_app_path)" "$TMP_BUILD_ROOT/cache/repo/tidaldl-py/src-tauri/target/release/bundle/macos/music-dl.app" "built_app_path locates bundled app under bundle/macos"
 unset MUSIC_DL_INSTALLER_CACHE_DIR
 rm -rf "$TMP_BUILD_ROOT"
 
 TMP_BUILD_ROOT="$(mktemp -d)"
 TMP_BUILD_BIN="$(mktemp -d)"
-mkdir -p "$TMP_BUILD_ROOT/TIDALDL-PY"
+mkdir -p "$TMP_BUILD_ROOT/tidaldl-py"
 BUILD_LOG="$TMP_BUILD_ROOT/build.log"
 cat > "$TMP_BUILD_BIN/uv" <<EOF
 #!/usr/bin/env bash
@@ -242,7 +242,7 @@ rm -rf "$TMP_BUILD_ROOT" "$TMP_BUILD_BIN"
 
 TMP_BUILD_ROOT="$(mktemp -d)"
 TMP_BUILD_BIN="$(mktemp -d)"
-mkdir -p "$TMP_BUILD_ROOT/TIDALDL-PY"
+mkdir -p "$TMP_BUILD_ROOT/tidaldl-py"
 cat > "$TMP_BUILD_BIN/uv" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -269,7 +269,7 @@ TMP_BUILD_ROOT="$(mktemp -d)"
 repo_dir() { printf '%s\n' "$TMP_BUILD_ROOT"; }
 run_and_capture build_cd_output build_cd_status build_app
 assert_nonzero "$build_cd_status" "build_app exits non-zero when app source dir missing"
-assert_contains "$build_cd_output" "Could not enter $TMP_BUILD_ROOT/TIDALDL-PY" "build_app prints cache reset guidance when app dir missing"
+assert_contains "$build_cd_output" "Could not enter $TMP_BUILD_ROOT/tidaldl-py" "build_app prints cache reset guidance when app dir missing"
 rm -rf "$TMP_BUILD_ROOT"
 
 TMP_INSTALL_ROOT="$(mktemp -d)"

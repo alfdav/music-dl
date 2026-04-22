@@ -74,7 +74,7 @@ def dispatch_wizard(out: TextIO | None = None) -> int:
             bot_root = Path(bot_root_env)
         else:
             # Repo-relative fallback:
-            # …/TIDALDL-PY/tidal_dl/gui/ → …/apps/discord-bot
+            # …/tidaldl-py/tidal_dl/gui/ → …/apps/discord-bot
             here = Path(__file__).resolve()
             bot_root = here.parents[3] / "apps" / "discord-bot"
 

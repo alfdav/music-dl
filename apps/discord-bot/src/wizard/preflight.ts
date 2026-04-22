@@ -12,7 +12,7 @@
  * Note: there is intentionally NO "backend reachable" check here. The
  * wizard must run standalone (one terminal, one command) without a
  * separately-running backend. The backend does its own handshake sanity
- * check at server startup (see TIDALDL-PY/tidal_dl/gui/server.py), and
+ * check at server startup (see tidaldl-py/tidal_dl/gui/server.py), and
  * the shared-token plumbing (security.resolve_bot_shared_token) reads
  * the wizard's file directly — no runtime HTTP probe is required.
  */

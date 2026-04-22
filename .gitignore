@@ -23,7 +23,7 @@ build/
 MANIFEST.in
 
 # Compiled binaries
-TIDALDL-PY/exe/
+tidaldl-py/exe/
 
 # Local-only documentation (not for public repo)
 .docs/
@@ -41,16 +41,16 @@ usersettings.json
 
 # Downloads (test artifacts)
 download/
-TIDALDL-PY/download/
-TIDALDL-PY/downloadd/
-TIDALDL-PY/exe/tidal_dl_win.tar.gz
+tidaldl-py/download/
+tidaldl-py/downloadd/
+tidaldl-py/exe/tidal_dl_win.tar.gz
 .github/workflows/continuous-integration-workflow copy.yml
-TIDALDL-PY/tidal-gui.spec
+tidaldl-py/tidal-gui.spec
 .history/
 .gitignore
-/TIDALDL-PY/tidal_dl_old
-/TIDALDL-PY/tidal_gui_old
-/TIDALDL-PY/tidal_gui
+/tidaldl-py/tidal_dl_old
+/tidaldl-py/tidal_gui_old
+/tidaldl-py/tidal_gui
 
 # Claude Code
 .claude/
@@ -69,7 +69,7 @@ output/
 
 # Local-only helper scripts
 /scripts/
-/TIDALDL-PY/scripts/
+/tidaldl-py/scripts/
 
 # Local MCP config
 .mcp.json
