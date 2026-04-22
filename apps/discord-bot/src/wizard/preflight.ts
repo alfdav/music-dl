@@ -47,7 +47,11 @@ export interface PreflightDeps {
   fetchImpl?: typeof fetch;
 }
 
-const MIN_NODE_MAJOR = 18;
+// boot.ts uses process.loadEnvFile, which was added to Node in 20.12.
+// Lower versions pass preflight but crash the bot at startup, so the
+// floor here must match the runtime requirement exactly.
+const MIN_NODE_MAJOR = 20;
+const MIN_NODE_MINOR_ON_MAJOR = 12;
 
 /**
  * Run all preflight checks in dependency order. Short-circuits none — all
@@ -95,18 +99,22 @@ export async function runPreflight(
 
 function checkNodeVersion(provider?: () => string): CheckResult {
   const version = (provider ?? (() => process.version))();
-  const m = /^v(\d+)\./.exec(version);
-  const major = m ? Number(m[1]) : 0;
-  const passed = major >= MIN_NODE_MAJOR;
+  const match = /^v(\d+)\.(\d+)/.exec(version);
+  const major = match ? Number(match[1]) : 0;
+  const minor = match ? Number(match[2]) : 0;
+  const passed =
+    major > MIN_NODE_MAJOR ||
+    (major === MIN_NODE_MAJOR && minor >= MIN_NODE_MINOR_ON_MAJOR);
+  const required = `${MIN_NODE_MAJOR}.${MIN_NODE_MINOR_ON_MAJOR}`;
   return {
     id: "node-version",
-    label: `Node.js runtime ≥ ${MIN_NODE_MAJOR}`,
+    label: `Node.js runtime ≥ ${required}`,
     field: "env",
     passed,
     errorMessage: passed ? undefined : `Found ${version}`,
     remediation: passed
       ? undefined
-      : `Install Node.js ${MIN_NODE_MAJOR}+ (e.g. via nvm, fnm, or asdf).`,
+      : `Install Node.js ${required}+ (e.g. via nvm, fnm, or asdf).`,
   };
 }
 
