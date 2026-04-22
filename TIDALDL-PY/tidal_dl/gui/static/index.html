@@ -109,6 +109,17 @@
   <div class="queue-list" id="queue-list"></div>
 </aside>
 
+<!-- LYRICS PANEL -->
+<aside class="lyrics-panel" id="lyrics-panel" aria-hidden="true">
+  <div class="lyrics-panel-inner" id="lyrics-panel-inner">
+    <div class="lyrics-artwork-bg" id="lyrics-artwork-bg" aria-hidden="true"></div>
+    <button class="lyrics-close" id="lyrics-close" aria-label="Close lyrics">&times;</button>
+    <div class="lyrics-body" id="lyrics-body">
+      <div class="lyrics-shell lyrics-shell-loading">Loading lyrics…</div>
+    </div>
+  </div>
+</aside>
+
 <!-- PLAYER BAR -->
 <footer class="player" role="region" aria-label="Audio player">
   <div class="now-playing" id="now-playing">
@@ -162,6 +173,9 @@
     </div>
     <button class="ctrl sleep-btn" id="btn-sleep" title="Sleep timer" aria-label="Sleep timer">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+    <button class="queue-toggle" id="btn-lyrics" title="Lyrics" aria-label="Toggle lyrics" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><line x1="6" y1="7" x2="18" y2="7"/><line x1="6" y1="12" x2="15" y2="12"/><line x1="6" y1="17" x2="12" y2="17"/></svg>
     </button>
     <button class="queue-toggle" id="btn-queue" title="Queue" aria-label="Queue">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>

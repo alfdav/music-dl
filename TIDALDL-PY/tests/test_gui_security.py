@@ -1,6 +1,7 @@
 """Security tests for the GUI server."""
 
 import secrets
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -166,6 +167,111 @@ class TestPathValidation:
         assert validate_download_path("/usr/bin") is False
         # Nonexistent should be rejected
         assert validate_download_path("/nonexistent/path") is False
+
+
+class TestLocalAudioResolution:
+    def test_rejects_blank_input(self, tmp_path):
+        from tidal_dl.gui.security import resolve_local_audio_path
+
+        result = resolve_local_audio_path("   ", [str(tmp_path)])
+
+        assert result.kind == "bad_request"
+        assert result.path is None
+
+    def test_reports_forbidden_for_untrusted_path(self, tmp_path):
+        from tidal_dl.gui.security import resolve_local_audio_path
+
+        result = resolve_local_audio_path("/etc/passwd", [str(tmp_path)])
+
+        assert result.kind == "forbidden"
+        assert result.path is None
+
+    def test_reports_not_found_for_db_trusted_missing_path(self, tmp_path):
+        from tidal_dl.gui.security import resolve_local_audio_path
+
+        result = resolve_local_audio_path(
+            str(tmp_path / "missing.flac"),
+            [str(tmp_path)],
+            library_trusts_raw_path=True,
+            library_resolved_path=None,
+        )
+
+        assert result.kind == "not_found"
+        assert result.path is None
+
+    def test_reports_not_audio_for_db_trusted_non_audio(self, tmp_path):
+        from tidal_dl.gui.security import resolve_local_audio_path
+
+        bad = tmp_path / "notes.txt"
+        bad.write_text("x")
+
+        result = resolve_local_audio_path(
+            str(bad),
+            [str(tmp_path)],
+            library_trusts_raw_path=True,
+            library_resolved_path=bad.resolve(),
+        )
+
+        assert result.kind == "not_audio"
+        assert result.path is None
+
+    def test_returns_ok_for_allowed_audio(self, tmp_path):
+        from tidal_dl.gui.security import resolve_local_audio_path
+
+        audio = tmp_path / "track.flac"
+        audio.write_bytes(b"fake")
+
+        result = resolve_local_audio_path(str(audio), [str(tmp_path)])
+
+        assert result.kind == "ok"
+        assert result.path == audio.resolve()
+
+    def test_rejects_symlink_raw_path_in_db_fallback(self, tmp_path):
+        """Even if the DB trusts a path, a symlink raw path must never resolve —
+        guards against race conditions or stale DB entries past the scan-time skip.
+        """
+        from tidal_dl.gui.security import resolve_local_audio_path
+
+        # Normalize tmp_path so outer-directory symlinks (e.g. GHA runner's
+        # /tmp mount layout) don't leak into containment checks.
+        tmp_path = tmp_path.resolve()
+
+        # Real file OUTSIDE allowed_dirs (so primary validate_audio_path fails)
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        real_file = outside_dir / "track.flac"
+        real_file.write_bytes(b"fake")
+
+        # Symlink INSIDE allowed_dir pointing at the outside real file
+        allowed_dir = tmp_path / "allowed"
+        allowed_dir.mkdir()
+        symlink_path = allowed_dir / "track.flac"
+        symlink_path.symlink_to(real_file)
+
+        # Sanity — if any of these fail, the diagnostic tells us why
+        # the resolver's logic would diverge on this host.
+        assert symlink_path.is_symlink(), f"symlink creation failed at {symlink_path}"
+        assert symlink_path.resolve(strict=True) == real_file.resolve(), (
+            f"resolve mismatch: {symlink_path.resolve(strict=True)} != {real_file.resolve()}"
+        )
+        assert not symlink_path.resolve(strict=True).is_relative_to(allowed_dir.resolve()), (
+            f"resolved target unexpectedly inside allowed_dir: "
+            f"target={symlink_path.resolve(strict=True)} allowed={allowed_dir.resolve()}"
+        )
+
+        # Without the symlink guard, DB fallback would return "ok" here
+        result = resolve_local_audio_path(
+            str(symlink_path),
+            [str(allowed_dir)],
+            library_trusts_raw_path=True,
+            library_resolved_path=real_file.resolve(),
+        )
+
+        assert result.kind == "forbidden", (
+            f"expected forbidden, got kind={result.kind} path={result.path}; "
+            f"raw is_symlink={Path(str(symlink_path)).is_symlink()}"
+        )
+        assert result.path is None
 
 
 class TestStreamUrlValidation:

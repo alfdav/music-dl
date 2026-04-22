@@ -385,6 +385,8 @@ def _background_scan(rescan: bool) -> None:
             # Phase 1: Walk filesystem — fast, just collect paths
             for scan_dir in scan_dirs:
                 for f in scan_dir.rglob("*"):
+                    if f.is_symlink():  # symlink → arbitrary target recorded as trusted path (DB poisoning)
+                        continue
                     if f.suffix.lower() not in _AUDIO_EXTENSIONS:
                         continue
                     disk_paths.add(str(f))
@@ -624,7 +626,7 @@ def library_art(path: str = Query(..., description="Absolute path to audio file"
     from fastapi import HTTPException
     from fastapi.responses import FileResponse, Response
 
-    from tidal_dl.gui.security import resolve_library_audio_path
+    from tidal_dl.gui.security import resolve_local_audio_path
 
     # Check disk cache first — instant response
     cache_dir = _art_cache_dir()
@@ -640,9 +642,15 @@ def library_art(path: str = Query(..., description="Absolute path to audio file"
     if settings.data.scan_paths:
         allowed.extend(str(Path(p.strip()).expanduser()) for p in settings.data.scan_paths.split(",") if p.strip())
 
-    validated = resolve_library_audio_path(path, allowed, trusted_library_path=_trusted_library_path(path))
-    if validated is None:
+    resolution = resolve_local_audio_path(
+        path,
+        allowed,
+        library_trusts_raw_path=_path_in_library(path),
+        library_resolved_path=_trusted_library_path(path),
+    )
+    if resolution.kind != "ok" or resolution.path is None:
         raise HTTPException(status_code=403, detail="Access denied")
+    validated = resolution.path
 
     art_data = None
     art_mime = "image/jpeg"
