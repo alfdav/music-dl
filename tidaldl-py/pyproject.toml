@@ -61,6 +61,10 @@ line-length = 120
 
 [project.optional-dependencies]
 test = ["pytest>=9.0.3", "httpx>=0.27"]
+# Desktop-app bundling (PyInstaller sidecar for Tauri). Isolated so
+# `uv sync` doesn't install it for every dev; install with
+# `uv pip install -e ".[build]"` or `uv sync --extra build`.
+build = ["pyinstaller>=6.19,<7"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -127,8 +127,7 @@ build_app() {
 
   (
     cd "$app_dir" || die "Could not enter $app_dir. Delete $(installer_cache_dir) and rerun this installer."
-    uv sync || die "Python dependency sync failed. Fix the reported problem, then rerun this installer."
-    uv pip install pyinstaller || die "PyInstaller install failed. Fix the reported problem, then rerun this installer."
+    uv sync --extra build || die "Python dependency sync failed. Fix the reported problem, then rerun this installer."
     npm install || die "Node dependency install failed. Fix the reported problem, then rerun this installer."
     npx tauri build --config "$tauri_local_config" || die "Local Tauri build failed. Fix the reported problem, then rerun this installer."
   )
