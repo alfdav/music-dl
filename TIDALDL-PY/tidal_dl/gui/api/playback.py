@@ -24,13 +24,18 @@ def get_download_paths() -> list[str]:
 @router.get("/local")
 def serve_local_file(path: str = Query(..., description="Absolute path to audio file")):
     """Serve a local audio file. Path must be within a configured download directory."""
-    from tidal_dl.gui.api.library import _trusted_library_path
-    from tidal_dl.gui.security import resolve_library_audio_path
+    from tidal_dl.gui.api.library import _path_in_library, _trusted_library_path
+    from tidal_dl.gui.security import resolve_local_audio_path
 
-    allowed = get_download_paths()
-    validated_path = resolve_library_audio_path(path, allowed, trusted_library_path=_trusted_library_path(path))
-    if validated_path is None:
+    resolution = resolve_local_audio_path(
+        path,
+        get_download_paths(),
+        library_trusts_raw_path=_path_in_library(path),
+        library_resolved_path=_trusted_library_path(path),
+    )
+    if resolution.kind != "ok" or resolution.path is None:
         raise HTTPException(status_code=403, detail="Access denied")
+    validated_path = resolution.path
 
     media_types = {
         ".flac": "audio/flac",
@@ -186,17 +191,21 @@ def get_waveform(path: str = Query(..., description="Absolute path to audio file
     Hires peaks (~10/sec) drive per-frame animation during playback.
     Both are extracted at scan time and cached in the library DB.
     """
-    from tidal_dl.gui.security import resolve_library_audio_path
+    from tidal_dl.gui.api.library import _path_in_library, _trusted_library_path
+    from tidal_dl.gui.security import resolve_local_audio_path
     from tidal_dl.helper.library_db import LibraryDB
     from tidal_dl.helper.path import path_config_base
     from tidal_dl.helper.waveform import extract_both, peaks_from_json, peaks_to_json
 
-    allowed = get_download_paths()
-    from tidal_dl.gui.api.library import _trusted_library_path
-
-    validated_path = resolve_library_audio_path(path, allowed, trusted_library_path=_trusted_library_path(path))
-    if validated_path is None:
+    resolution = resolve_local_audio_path(
+        path,
+        get_download_paths(),
+        library_trusts_raw_path=_path_in_library(path),
+        library_resolved_path=_trusted_library_path(path),
+    )
+    if resolution.kind != "ok" or resolution.path is None:
         raise HTTPException(status_code=400, detail="Invalid path")
+    validated_path = resolution.path
 
     db = LibraryDB(Path(path_config_base()) / "library.db")
     db.open()

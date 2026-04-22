@@ -15,6 +15,7 @@ import json
 import os
 import secrets
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -60,6 +61,14 @@ TIDAL_CDN_HOSTS = frozenset(
         "listening-test.tidal.com",
     }
 )
+
+
+@dataclass(frozen=True)
+class LocalAudioPathResolution:
+    """Result of resolving a local audio path against GUI trust rules."""
+
+    kind: str
+    path: Path | None = None
 
 
 def generate_csrf_token() -> str:
@@ -129,8 +138,11 @@ def validate_audio_path(path_str: str, allowed_dirs: list[str]) -> Path | None:
     - Checks file actually exists (no speculative path access)
     - Whitelists audio extensions only
     """
+    # CodeQL false-positive: user input is intentionally resolved so we can
+    # enforce is_relative_to() containment against allowed_dirs below. That
+    # containment check IS the path-injection defense.
     try:
-        file_path = Path(path_str).resolve(strict=True)  # strict=True: file must exist
+        file_path = Path(path_str).resolve(strict=True)  # lgtm[py/path-injection]
     except (OSError, ValueError):
         return None
 
@@ -147,21 +159,69 @@ def validate_audio_path(path_str: str, allowed_dirs: list[str]) -> Path | None:
     return None
 
 
+def resolve_local_audio_path(
+    raw_path: str | None,
+    allowed_dirs: list[str],
+    *,
+    library_trusts_raw_path: bool = False,
+    library_resolved_path: Path | None = None,
+) -> LocalAudioPathResolution:
+    """Resolve a local audio path using GUI trust rules.
+
+    Caller owns the library DB lookup so security.py stays import-clean
+    (CodeQL hardening from PR #38). The two library_* args together cover
+    the spec's 4-step DB fallback (see local-lyrics-v1 spec §5):
+
+    - library_trusts_raw_path: True iff raw_path is present in the library DB
+    - library_resolved_path: result of strict-resolving raw_path, or None
+      if either the path is not trusted OR strict resolve failed
+    """
+    if raw_path is None or not raw_path.strip():
+        return LocalAudioPathResolution("bad_request")
+
+    validated = validate_audio_path(raw_path, allowed_dirs)
+    if validated is not None:
+        return LocalAudioPathResolution("ok", validated)
+
+    if not library_trusts_raw_path:
+        return LocalAudioPathResolution("forbidden")
+
+    if library_resolved_path is None:
+        return LocalAudioPathResolution("not_found")
+
+    # Belt-and-suspenders: even if DB trusts this path, reject when the raw
+    # caller-supplied path is itself a symlink — scan-time checks may have
+    # been bypassed (race, migration, or manual DB edit).
+    # CodeQL false-positive: is_symlink() only performs lstat(), does not
+    # open or leak file contents; this check IS the path-traversal defense.
+    try:
+        if Path(raw_path).is_symlink():  # lgtm[py/path-injection]
+            return LocalAudioPathResolution("forbidden")
+    except (OSError, ValueError):
+        return LocalAudioPathResolution("forbidden")
+
+    if library_resolved_path.suffix.lower() not in AUDIO_EXTENSIONS:
+        return LocalAudioPathResolution("not_audio")
+
+    return LocalAudioPathResolution("ok", library_resolved_path)
+
+
 def resolve_library_audio_path(
     path_str: str,
     allowed_dirs: list[str],
     trusted_library_path: Path | None = None,
 ) -> Path | None:
-    """Resolve an audio path from either configured dirs or the scanned library DB."""
-    validated = validate_audio_path(path_str, allowed_dirs)
-    if validated is not None:
-        return validated
-    if trusted_library_path is None:
-        return None
-    trusted = trusted_library_path
-    if trusted.suffix.lower() not in AUDIO_EXTENSIONS:
-        return None
-    return trusted
+    """Compatibility shim: thin Path|None wrapper for callers that don't need rich kinds.
+
+    Prefer resolve_local_audio_path for new code.
+    """
+    resolution = resolve_local_audio_path(
+        path_str,
+        allowed_dirs,
+        library_trusts_raw_path=trusted_library_path is not None,
+        library_resolved_path=trusted_library_path,
+    )
+    return resolution.path if resolution.kind == "ok" else None
 
 
 def validate_download_path(path_str: str) -> bool:
