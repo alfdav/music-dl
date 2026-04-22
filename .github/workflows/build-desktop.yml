@@ -161,6 +161,16 @@ jobs:
 
           jq -r '.body' release-notes.json > RELEASE_NOTES.md
 
+          # Always append the install instructions so every release
+          # tells users how to get music-dl on macOS and Linux.
+          INSTALL_BLOCK="${GITHUB_WORKSPACE}/docs/release/install-instructions.md"
+          if [ ! -f "$INSTALL_BLOCK" ]; then
+            echo "::error::Install instructions missing at $INSTALL_BLOCK"
+            exit 1
+          fi
+          printf '\n' >> RELEASE_NOTES.md
+          cat "$INSTALL_BLOCK" >> RELEASE_NOTES.md
+
           TRIMMED_NOTES=$(tr -d '[:space:]' < RELEASE_NOTES.md)
           if [ -z "$TRIMMED_NOTES" ] || [ "$TRIMMED_NOTES" = "null" ]; then
             echo "::error::Generated release notes were empty"
