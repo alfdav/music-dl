@@ -45,7 +45,7 @@ INSTALL (macOS):
 
 DEV:   cd tidaldl-py && uv sync && music-dl gui     # http://localhost:8765
 TEST:  cd tidaldl-py && uv run pytest
-BUILD: cd tidaldl-py && uv sync && uv pip install pyinstaller && npm install && npx tauri build --bundles dmg
+BUILD: cd tidaldl-py && uv sync && uv pip install pyinstaller && bun install && bunx tauri build --bundles dmg
 
 STACK: Python 3.12+, FastAPI, vanilla JS, Tauri v2.
 REPO:  monorepo — all code under tidaldl-py/.
@@ -118,15 +118,17 @@ If the installer stops because a dependency is missing, fix the reported issue a
 
 #### Manual build
 
-If you want full control over the build:
+See [Building the Desktop App](#building-the-desktop-app) for the full prerequisite list and platform-specific commands. The short version for macOS:
 
 ```shell
 cd tidaldl-py
 uv sync && uv pip install pyinstaller
-npm install
-npx tauri build --bundles dmg
+bun install
+bunx tauri build --bundles dmg
 # Output: src-tauri/target/release/bundle/dmg/
 ```
+
+> These same install one-liners appear in every [release's notes](https://github.com/alfdav/music-dl/releases). Canonical source: [`docs/release/install-instructions.md`](docs/release/install-instructions.md) — edit there and both README and release notes stay in sync.
 
 ### Option 2: Docker Compose (Linux / headless / NAS)
 
@@ -297,17 +299,17 @@ sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
 ```shell
 cd tidaldl-py
 uv sync && uv pip install pyinstaller
-npm install              # or: bun install
+bun install              # or: npm install
 # Linux:
-npx tauri build          # outputs .AppImage + .deb
+bunx tauri build          # outputs .AppImage + .deb
 # macOS (produces .app + .dmg):
-npx tauri build --bundles dmg
+bunx tauri build --bundles dmg
 # Output: src-tauri/target/release/bundle/
 ```
 
 The build process: PyInstaller compiles the Python backend into a standalone sidecar binary → Tauri wraps it with a native window → outputs `.app`/`.dmg` (macOS), `.AppImage`/`.deb` (Linux).
 
-Linux releases are published via GitHub Actions. macOS DMGs can be built locally and attached to releases manually. The app is not notarized (no Apple Developer ID), so macOS users need a one-time right-click → Open bypass on first launch.
+Linux releases are published via GitHub Actions. macOS DMGs are built locally and attached to releases manually — the app is not notarized (no Apple Developer ID). The `scripts/install.sh` one-liner strips the quarantine xattr so Gatekeeper doesn't fire. If you download a DMG through Safari instead, macOS will set the quarantine bit and you'll need a one-time right-click → Open bypass on first launch.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
 
