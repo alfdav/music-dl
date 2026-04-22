@@ -15,6 +15,32 @@ from tidal_dl.helper.path import path_config_base
 
 router = APIRouter()
 
+# First-call latency on /home is dominated by the NAS probe in
+# _scan_directories() (stat() on a cold-mounted remote volume). Cache the
+# boolean outcome for a short window so navigating away and back — or the
+# Tauri webview's race between initial /home and a second navigate() —
+# doesn't pay the probe cost twice. 2s is short enough that legitimate
+# mount/unmount events surface quickly.
+_VOLUME_CACHE_TTL_S = 2.0
+_volume_cache = {"ts": 0.0, "ok": False}
+_volume_cache_lock = threading.Lock()
+
+
+def _volume_available_cached() -> bool:
+    """Return whether any scan directory exists, cached for _VOLUME_CACHE_TTL_S."""
+    from tidal_dl.gui.api.library import _scan_directories
+
+    now = time.monotonic()
+    with _volume_cache_lock:
+        if now - _volume_cache["ts"] < _VOLUME_CACHE_TTL_S:
+            return _volume_cache["ok"]
+    ok = len(_scan_directories()) > 0
+    with _volume_cache_lock:
+        _volume_cache["ts"] = now
+        _volume_cache["ok"] = ok
+    return ok
+
+
 _db: LibraryDB | None = None  # Compatibility alias for tests/debugging.
 _db_local = threading.local()
 _db_generation = 0
@@ -151,9 +177,9 @@ def home_stats():
     db = _get_db()
     stats = db.home_stats()
 
-    # Signal whether the music volume is currently reachable
-    from tidal_dl.gui.api.library import _scan_directories
-    stats["volume_available"] = len(_scan_directories()) > 0
+    # Signal whether the music volume is currently reachable. Cached so a
+    # cold NAS stat() call doesn't stall every /home request.
+    stats["volume_available"] = _volume_available_cached()
 
     # Convert cover_path to cover_url for artist tiles
     from urllib.parse import quote

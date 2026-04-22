@@ -1629,6 +1629,19 @@ body {
   line-height: 1.6;
 }
 
+.home-loading-hint {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin: 24px auto;
+  opacity: 0.7;
+  animation: home-loading-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes home-loading-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.75; }
+}
+
 /* ---- BENTO GRID ---- */
 .home-wrap {
   display: flex;
