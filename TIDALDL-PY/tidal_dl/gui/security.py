@@ -8,9 +8,21 @@ SSRF attacks.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
+import os
 import secrets
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Optional
+
+# Type alias: a resolver returns the currently-expected bot shared secret
+# (empty string when unconfigured). Exposed as a type so tests and FastAPI
+# dependency overrides have a single, documented injection contract.
+BotTokenResolver = Callable[[], str]
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -103,6 +115,10 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         if request.method in self.SAFE_METHODS:
+            return await call_next(request)
+
+        # Bot API uses bearer tokens, not CSRF — skip CSRF check
+        if request.url.path.startswith("/api/bot/"):
             return await call_next(request)
 
         token = request.headers.get("X-CSRF-Token", "")
@@ -256,3 +272,182 @@ def validate_stream_url(url: str) -> bool:
 
     host = parsed.hostname or ""
     return host.endswith(".tidal.com") or host == "tidal.com"
+
+
+# ---------------------------------------------------------------------------
+# Bot bearer-token authentication (R1)
+# ---------------------------------------------------------------------------
+
+
+def resolve_bot_shared_token(
+    env_getter: Optional[Callable[[str, str], str]] = None,
+    path_resolver: Optional[Callable[[], Path]] = None,
+) -> str:
+    """Resolve the expected bot shared secret.
+
+    Priority:
+    1. ``MUSIC_DL_BOT_TOKEN`` env var — takes precedence so Docker/CI
+       deployments can inject the secret without relying on a disk file.
+    2. Shared-token file the onboarding wizard writes (per
+       ``tidal_dl.gui.bot_onboarding.shared_token_path()``). This closes
+       the loop: wizard writes → backend reads → bot authenticates.
+
+    Returns an empty string when neither source yields a non-empty value;
+    callers fail-closed on empty.
+
+    Exposed as a FastAPI-compatible dependency (zero required args) so
+    ``api/bot.require_bot_auth`` can ``Depends(resolve_bot_shared_token)``
+    and tests can override it with ``app.dependency_overrides``. The
+    optional ``env_getter`` / ``path_resolver`` parameters let unit tests
+    exercise both branches without touching ``os.environ`` or disk.
+    """
+    get_env = env_getter or (lambda key, default: os.environ.get(key, default))
+    env_token = (get_env("MUSIC_DL_BOT_TOKEN", "") or "").strip()
+    if env_token:
+        return env_token
+
+    if path_resolver is None:
+        # Deferred import avoids a circular dependency on module load.
+        from tidal_dl.gui.bot_onboarding import shared_token_path
+
+        resolve_path = shared_token_path
+    else:
+        resolve_path = path_resolver
+
+    try:
+        return resolve_path().read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def bearer_matches(expected_token: str, authorization: str | None) -> bool:
+    """Pure comparator for a bearer header against an expected secret.
+
+    No environment, no disk, no resolution — separable so tests can
+    verify comparator semantics without also exercising resolution, and
+    so ``api/bot.require_bot_auth`` can combine a ``Depends``-resolved
+    token with the comparator. Uses constant-time comparison to prevent
+    timing attacks. Returns False for any missing/mis-shaped input.
+    """
+    if not expected_token or not authorization:
+        return False
+    scheme, _, supplied = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not supplied.strip():
+        return False
+    return secrets.compare_digest(supplied.strip(), expected_token)
+
+
+def validate_bot_bearer(
+    authorization: str | None, resolver: BotTokenResolver | None = None
+) -> bool:
+    """Resolve + compare in one call. Retained for callers that want a
+    drop-in boolean check; ``api/bot.require_bot_auth`` prefers splitting
+    ``Depends(resolve_bot_shared_token)`` + :func:`bearer_matches` so the
+    resolver is overridable per-test."""
+    expected = (resolver or resolve_bot_shared_token)()
+    return bearer_matches(expected, authorization)
+
+
+# ---------------------------------------------------------------------------
+# Stream token signing / verification (R4)
+# ---------------------------------------------------------------------------
+
+class _StreamKeyError(Exception):
+    """Raised when the stream-token key cannot be derived (bot token blank)."""
+
+
+def _get_stream_key(resolver: BotTokenResolver | None = None) -> bytes:
+    """Derive a deterministic AES-256 key from the bot shared secret.
+
+    The key is stable across process restarts (no random per-process
+    component), so tokens issued before a restart remain verifiable
+    after. F-015: fail closed when no shared secret is available — a
+    fallback constant would let anyone with the source code mint valid
+    stream tokens in misconfigured deployments.
+
+    Resolution: env var first, then the wizard's shared-token file (see
+    :func:`resolve_bot_shared_token`). The ``resolver`` kwarg exists so
+    tests can exercise both happy-path and fail-closed paths by passing
+    a stub, without touching ``os.environ`` or disk.
+    """
+    bot_token = (resolver or resolve_bot_shared_token)()
+    if not bot_token:
+        raise _StreamKeyError("bot shared token is not configured")
+    domain = b"music-dl/bot/stream-token/v1"
+    return hashlib.sha256(bot_token.encode() + b"\x00" + domain).digest()
+
+
+def sign_bot_stream_token(
+    payload: dict[str, str],
+    ttl_seconds: int = 120,
+    *,
+    resolver: BotTokenResolver | None = None,
+) -> str:
+    """Create an AES-GCM encrypted stream token.
+
+    The token is self-contained (restart-safe) and encrypted, so the
+    URL itself does not expose the payload (e.g. filesystem paths).
+    AES-GCM provides both confidentiality and authentication — tampered
+    tokens fail the auth tag check.
+
+    Raises _StreamKeyError when no shared secret is available. The
+    ``resolver`` kwarg is plumbed through to :func:`_get_stream_key`
+    so tests can inject a stub.
+
+    Returns URL-safe base64 of: nonce(12) || ciphertext || tag(16)
+    """
+    from Crypto.Cipher import AES  # pycryptodome
+
+    key = _get_stream_key(resolver=resolver)  # fail-closed if blank
+
+    data = {**payload, "exp": int(time.time()) + ttl_seconds}
+    raw = json.dumps(data, separators=(",", ":")).encode()
+
+    nonce = secrets.token_bytes(12)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(raw)
+
+    return base64.urlsafe_b64encode(nonce + ciphertext + tag).decode()
+
+
+def verify_bot_stream_token(
+    token: str, *, resolver: BotTokenResolver | None = None
+) -> dict[str, str] | None:
+    """Verify and decrypt a stream token. Returns payload dict or None on failure."""
+    from Crypto.Cipher import AES
+
+    try:
+        key = _get_stream_key(resolver=resolver)  # fail-closed: None for everyone
+    except _StreamKeyError:
+        return None
+
+    try:
+        blob = base64.urlsafe_b64decode(token)
+    except Exception:
+        return None
+
+    # Minimum length: 12-byte nonce + 16-byte tag + 1 byte ciphertext
+    if len(blob) < 29:
+        return None
+
+    nonce = blob[:12]
+    tag = blob[-16:]
+    ciphertext = blob[12:-16]
+
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    try:
+        raw = cipher.decrypt_and_verify(ciphertext, tag)
+    except Exception:
+        return None
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+
+    # F-025: reject non-dict payloads (e.g. arrays, null) before accessing keys
+    if not isinstance(data, dict):
+        return None
+    if not isinstance(data.get("exp"), (int, float)) or time.time() > data["exp"]:
+        return None
+    return data

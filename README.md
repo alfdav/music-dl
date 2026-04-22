@@ -184,7 +184,9 @@ Your browser opens automatically. The wizard handles the rest.
 - **Waveform visualizer** — pre-computed amplitude data drives a ripple animation from the playhead, zero audio post-processing
 - **Playlist sync** — point it at a Tidal playlist and it downloads only the tracks you don't have
 - **Favorites** — mark tracks you love, access them from one place
+- **Local lyrics** — synced `.lrc` sidecars and embedded tag fallback, rendered in the player with no network lookups. See [`TIDALDL-PY/docs/local-lyrics.md`](TIDALDL-PY/docs/local-lyrics.md).
 - **Setup wizard** — first-run experience that walks you through Tidal login and library paths
+- **Discord bot (optional)** — single-user, single-guild companion that streams and downloads from your library over Discord voice. Set up in one command: `music-dl gui --setup-bot`. See [`apps/discord-bot/README.md`](apps/discord-bot/README.md) and [`TIDALDL-PY/docs/bot-onboarding.md`](TIDALDL-PY/docs/bot-onboarding.md).
 
 ## CLI
 

@@ -1640,9 +1640,38 @@ def isrc_tag(
 def gui(
     port: int = typer.Option(8765, help="Port to serve on."),
     no_browser: bool = typer.Option(False, "--no-browser", help="Don't auto-open browser."),
+    setup_bot: bool = typer.Option(
+        False,
+        "--setup-bot",
+        help="Launch the Discord bot setup wizard before starting the server.",
+    ),
 ) -> None:
     """Launch the music-dl web interface."""
+    from tidal_dl.gui.bot_first_run import print_setup_hint, run_setup_force
+    from tidal_dl.gui.bot_onboarding import TokenSource, bot_token_source, shared_token_path
     from tidal_dl.gui.server import run
+
+    # onboarding-backend R3: explicit wizard launch via --setup-bot.
+    # Blocks until the wizard exits; never aborts server startup.
+    if setup_bot:
+        run_setup_force()
+    else:
+        # onboarding-backend R2: one-line non-blocking hint when the bot
+        # has not been configured yet. No prompt, no pause.
+        print_setup_hint()
+
+    # Startup canary: report where the backend will resolve the bot
+    # shared secret from. Replaces the wizard's old R10 "backend
+    # reachable" probe — now that security.resolve_bot_shared_token
+    # reads the wizard's file directly, there is no HTTP round-trip to
+    # verify. One visible line here confirms the plumbing is wired.
+    source = bot_token_source()
+    if source is TokenSource.ENV:
+        typer.echo("Discord bot: shared token loaded from MUSIC_DL_BOT_TOKEN env var.")
+    elif source is TokenSource.FILE:
+        typer.echo(f"Discord bot: shared token loaded from {shared_token_path()}.")
+    # TokenSource.NONE → silent; print_setup_hint already directed the
+    # user to run the wizard.
 
     run(port=port, open_browser=not no_browser)
 

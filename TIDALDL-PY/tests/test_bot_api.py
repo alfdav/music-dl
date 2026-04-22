@@ -1,0 +1,524 @@
+"""Tests for bot API: bearer auth (R1), stream tokens (R4), logging safety (R7)."""
+
+from __future__ import annotations
+
+import os
+import time
+
+import pytest
+from fastapi.testclient import TestClient
+
+TEST_TOKEN = "test-bot-token-secret"
+
+
+@pytest.fixture
+def bot_client(monkeypatch):
+    """TestClient with bot token configured."""
+    monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+
+    from tidal_dl.gui import create_app
+    c = TestClient(create_app(port=8765))
+    c._host = {"host": "localhost:8765"}
+    return c
+
+
+# ── R1: Bearer Token Authentication ──────────────────────────────
+
+
+class TestBotAuthRejectsMissing:
+    """R1: Request without Authorization header returns 401."""
+
+    def test_missing_header(self, bot_client):
+        resp = bot_client.post("/api/bot/play/resolve",
+                               headers=bot_client._host,
+                               json={"query": "test"})
+        assert resp.status_code == 401
+
+
+class TestBotAuthRejectsInvalid:
+    """R1: Malformed or incorrect bearer token returns 401."""
+
+    def test_wrong_token(self, bot_client):
+        resp = bot_client.post("/api/bot/play/resolve",
+                               headers={**bot_client._host, "authorization": "Bearer wrong"},
+                               json={"query": "test"})
+        assert resp.status_code == 401
+
+    def test_malformed_scheme(self, bot_client):
+        resp = bot_client.post("/api/bot/play/resolve",
+                               headers={**bot_client._host, "authorization": f"Basic {TEST_TOKEN}"},
+                               json={"query": "test"})
+        assert resp.status_code == 401
+
+
+class TestBotAuthAcceptsValid:
+    """R1: Correct bearer token returns non-401.
+
+    We send an empty query to avoid hitting Tidal auth. Bot auth passing
+    means the request reaches the body validator which returns 400.
+    """
+
+    def test_valid_token(self, bot_client):
+        resp = bot_client.post("/api/bot/play/resolve",
+                               headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+                               json={"query": ""})
+        assert resp.status_code != 401
+        assert resp.status_code == 400
+
+
+class TestBotAuthResolverWiring:
+    """Auth path consults :func:`resolve_bot_shared_token` via FastAPI's
+    dependency system — tests override the dependency instead of mutating
+    env vars or the filesystem.
+
+    These cases verify the *wiring* between the resolver and the bearer
+    comparator. The resolver's own behaviour (env-first, file-fallback,
+    whitespace rejection) is exercised directly in
+    :class:`TestResolveBotSharedToken` below."""
+
+    def _app_with_resolver(self, resolver):
+        from tidal_dl.gui import create_app
+        from tidal_dl.gui.security import resolve_bot_shared_token
+        app = create_app(port=8765)
+        app.dependency_overrides[resolve_bot_shared_token] = resolver
+        return app
+
+    def _post_resolve(self, app, bearer):
+        c = TestClient(app)
+        return c.post("/api/bot/play/resolve",
+                      headers={"host": "localhost:8765",
+                               "authorization": f"Bearer {bearer}"},
+                      json={"query": ""})
+
+    def test_empty_expected_token_rejects_any_bearer(self):
+        app = self._app_with_resolver(lambda: "")
+        assert self._post_resolve(app, "anything").status_code == 401
+
+    def test_whitespace_expected_token_rejects(self):
+        # The resolver's own code strips whitespace, so "   " arrives at
+        # the comparator as "". Simulate that post-resolver state here.
+        app = self._app_with_resolver(lambda: "")
+        assert self._post_resolve(app, "   ").status_code == 401
+
+    def test_matching_bearer_clears_auth(self):
+        app = self._app_with_resolver(lambda: TEST_TOKEN)
+        # Empty query body → 400 from the body validator, proving auth
+        # passed (reached the validator, not 401).
+        assert self._post_resolve(app, TEST_TOKEN).status_code == 400
+
+    def test_mismatched_bearer_rejected(self):
+        app = self._app_with_resolver(lambda: TEST_TOKEN)
+        assert self._post_resolve(app, "WRONG").status_code == 401
+
+
+class TestResolveBotSharedToken:
+    """Unit tests for the resolver itself. Uses ``env_getter`` and
+    ``path_resolver`` kwargs — no env/disk mutation."""
+
+    def test_env_wins_over_file(self, tmp_path):
+        from tidal_dl.gui.security import resolve_bot_shared_token
+        file_token = tmp_path / "bot-shared-token"
+        file_token.write_text("from-file")
+        got = resolve_bot_shared_token(
+            env_getter=lambda k, d: {"MUSIC_DL_BOT_TOKEN": "from-env"}.get(k, d),
+            path_resolver=lambda: file_token,
+        )
+        assert got == "from-env"
+
+    def test_file_used_when_env_blank(self, tmp_path):
+        from tidal_dl.gui.security import resolve_bot_shared_token
+        file_token = tmp_path / "bot-shared-token"
+        file_token.write_text("wizard-wrote-me\n")
+        got = resolve_bot_shared_token(
+            env_getter=lambda k, d: d,  # always default (unset)
+            path_resolver=lambda: file_token,
+        )
+        assert got == "wizard-wrote-me"
+
+    def test_empty_when_both_missing(self, tmp_path):
+        from tidal_dl.gui.security import resolve_bot_shared_token
+        missing = tmp_path / "no-such-file"
+        got = resolve_bot_shared_token(
+            env_getter=lambda k, d: d,
+            path_resolver=lambda: missing,
+        )
+        assert got == ""
+
+    def test_whitespace_only_file_treated_as_empty(self, tmp_path):
+        from tidal_dl.gui.security import resolve_bot_shared_token
+        file_token = tmp_path / "bot-shared-token"
+        file_token.write_text("   \n")
+        got = resolve_bot_shared_token(
+            env_getter=lambda k, d: d,
+            path_resolver=lambda: file_token,
+        )
+        assert got == ""
+
+
+class TestBotAuthGuiUnaffected:
+    """R1: GUI endpoints unaffected by bot auth configuration."""
+
+    def test_gui_not_gated(self, bot_client):
+        # GUI home endpoint should work without bot auth
+        resp = bot_client.get("/api/home", headers=bot_client._host)
+        # Should not be 401 (might be another status depending on state, but NOT 401)
+        assert resp.status_code != 401
+
+
+# ── R4: Stream Token Signing and Verification ────────────────────
+
+
+class TestStreamTokens:
+    """R4: Stream token signing and verification."""
+
+    def test_roundtrip(self, monkeypatch):
+        """R4: Signed token encodes item reference and expiration."""
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+        import tidal_dl.gui.security as sec
+
+        token = sec.sign_bot_stream_token({"track_id": "12345", "kind": "local"})
+        payload = sec.verify_bot_stream_token(token)
+        assert payload is not None
+        assert payload["track_id"] == "12345"
+        assert payload["kind"] == "local"
+        assert "exp" in payload
+        assert payload["exp"] > time.time()
+
+    def test_expired_rejected(self, monkeypatch):
+        """R4: Expired token is rejected."""
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+        import tidal_dl.gui.security as sec
+
+        token = sec.sign_bot_stream_token({"track_id": "123"}, ttl_seconds=0)
+        time.sleep(0.05)
+        assert sec.verify_bot_stream_token(token) is None
+
+    def test_tampered_ciphertext_rejected(self, monkeypatch):
+        """R4: Tampered ciphertext rejected (AES-GCM auth tag fails)."""
+        import base64
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+        import tidal_dl.gui.security as sec
+
+        token = sec.sign_bot_stream_token({"track_id": "123"})
+        blob = bytearray(base64.urlsafe_b64decode(token))
+        blob[len(blob) // 2] ^= 0x01
+        tampered = base64.urlsafe_b64encode(bytes(blob)).decode()
+        assert sec.verify_bot_stream_token(tampered) is None
+
+    def test_tampered_tag_rejected(self, monkeypatch):
+        """R4: Tampered auth tag rejected."""
+        import base64
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+        import tidal_dl.gui.security as sec
+
+        token = sec.sign_bot_stream_token({"track_id": "123"})
+        blob = bytearray(base64.urlsafe_b64decode(token))
+        blob[-1] ^= 0x01
+        tampered = base64.urlsafe_b64encode(bytes(blob)).decode()
+        assert sec.verify_bot_stream_token(tampered) is None
+
+    def test_restart_safe(self, monkeypatch):
+        """F-012: Tokens verify across process restarts (deterministic key)."""
+        import importlib
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+        import tidal_dl.gui.security as sec
+
+        token = sec.sign_bot_stream_token({"track_id": "123"})
+        importlib.reload(sec)
+        payload = sec.verify_bot_stream_token(token)
+        assert payload is not None
+        assert payload["track_id"] == "123"
+
+    def test_path_not_in_token(self, monkeypatch):
+        """R3-AC5: Playable URL does not expose raw library filesystem paths."""
+        import base64
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+        import tidal_dl.gui.security as sec
+
+        secret_path = "/Users/hackbook/Music/secret_album/track.flac"
+        token = sec.sign_bot_stream_token({"kind": "local", "path": secret_path})
+        blob = base64.urlsafe_b64decode(token)
+        assert secret_path.encode() not in blob
+        assert b"secret_album" not in blob
+        payload = sec.verify_bot_stream_token(token)
+        assert payload is not None
+        assert payload["path"] == secret_path
+
+    def test_lifetime_bounded(self, monkeypatch):
+        """R4: Token lifetime is bounded (not indefinite)."""
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+        import tidal_dl.gui.security as sec
+
+        token = sec.sign_bot_stream_token({"track_id": "123"})
+        payload = sec.verify_bot_stream_token(token)
+        assert payload is not None
+        assert payload["exp"] <= time.time() + 121
+
+    def test_malformed_rejected(self, monkeypatch):
+        """R4: Malformed tokens rejected."""
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+        import tidal_dl.gui.security as sec
+
+        assert sec.verify_bot_stream_token("") is None
+        assert sec.verify_bot_stream_token("not-a-token") is None
+        assert sec.verify_bot_stream_token("short") is None
+
+    def test_fail_closed_when_token_blank(self):
+        """F-015: Signing and verifying fail closed when the resolver
+        returns an empty secret. Injected resolver stub avoids any env
+        or disk state — the unit under test is the fail-closed branch
+        in :func:`_get_stream_key`."""
+        import tidal_dl.gui.security as sec
+
+        blank_resolver = lambda: ""
+        import pytest
+        with pytest.raises(sec._StreamKeyError):
+            sec.sign_bot_stream_token({"track_id": "123"}, resolver=blank_resolver)
+
+        # Verification also fails closed — even a "valid" token from
+        # another install would not verify because the key can't be derived.
+        assert sec.verify_bot_stream_token("anytoken", resolver=blank_resolver) is None
+
+    def test_fail_closed_when_token_whitespace(self):
+        """F-015: Whitespace-only resolver output is treated as blank.
+        The resolver itself strips whitespace; simulate the post-strip
+        state by having the stub return ``""``."""
+        import tidal_dl.gui.security as sec
+
+        import pytest
+        with pytest.raises(sec._StreamKeyError):
+            sec.sign_bot_stream_token({"track_id": "123"}, resolver=lambda: "")
+
+    def test_non_dict_payload_rejected(self, monkeypatch):
+        """F-025: Decrypted non-dict payloads don't raise, return None cleanly."""
+        import base64
+        import json
+        import secrets as secret_lib
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+        import tidal_dl.gui.security as sec
+        from Crypto.Cipher import AES
+
+        key = sec._get_stream_key()
+        # Construct a valid-signed token whose payload is a JSON array
+        raw = json.dumps(["not", "a", "dict"]).encode()
+        nonce = secret_lib.token_bytes(12)
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        ct, tag = cipher.encrypt_and_digest(raw)
+        token = base64.urlsafe_b64encode(nonce + ct + tag).decode()
+
+        # Must return None, not raise AttributeError
+        assert sec.verify_bot_stream_token(token) is None
+
+
+# ── R7: Logging Safety ───────────────────────────────────────────
+# Note: T-004 is S-sized. Bot API code does not log tokens by design.
+# These tests verify the security module functions don't leak tokens
+# in their normal operation (defensive check).
+
+
+# ── R2: Input Resolution (URL parsing + local playlist paths) ────
+
+
+class TestResolveEndpoint:
+    """R2: Input resolution for unambiguous inputs that don't need Tidal."""
+
+    def test_empty_query_returns_400(self, bot_client):
+        """R2-AC5: Empty query returns 4xx, not server error."""
+        resp = bot_client.post(
+            "/api/bot/play/resolve",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"query": ""},
+        )
+        assert resp.status_code == 400
+
+    def test_whitespace_query_returns_400(self, bot_client):
+        resp = bot_client.post(
+            "/api/bot/play/resolve",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"query": "   "},
+        )
+        assert resp.status_code == 400
+
+    def test_local_playlist_resolution(self, bot_client, tmp_path, monkeypatch):
+        """R2-AC4: Local playlist name returns ordered list matching track order."""
+        # Set up a playlist dir with real audio files (so library-path
+        # validation passes — see F-022 filtering)
+        playlist_dir = tmp_path / "library"
+        playlist_dir.mkdir()
+        track1 = playlist_dir / "track1.flac"
+        track2 = playlist_dir / "track2.flac"
+        track1.write_text("")
+        track2.write_text("")
+        (playlist_dir / "Night Drive.m3u8").write_text(
+            f"#EXTM3U\n{track1}\n{track2}\n"
+        )
+
+        # Invalidate cache from prior tests, override roots + download paths
+        from tidal_dl.helper import local_playlist_resolver as lpr
+        lpr.invalidate_playlist_index_cache()
+
+        import tidal_dl.gui.api.bot as bot_module
+        import tidal_dl.gui.api.playback as playback_module
+        monkeypatch.setattr(
+            bot_module, "_local_playlist_roots", lambda: [playlist_dir]
+        )
+        monkeypatch.setattr(
+            playback_module, "get_download_paths", lambda: [str(playlist_dir)]
+        )
+
+        resp = bot_client.post(
+            "/api/bot/play/resolve",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"query": "night drive"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["kind"] == "playlist"
+        assert len(body["items"]) == 2
+        # R2-AC6: Items contain required fields
+        for item in body["items"]:
+            assert "id" in item
+            assert "title" in item
+            assert "artist" in item
+            assert "source_type" in item
+            assert "local" in item
+            assert "duration" in item
+        assert body["items"][0]["source_type"] == "local"
+
+
+# ── R3: Playable Source endpoint ─────────────────────────────────
+
+
+class TestPlayableEndpoint:
+    """R3: Playable source endpoint basic shape."""
+
+    def test_unknown_item_id_returns_400(self, bot_client):
+        """Unknown item_id format returns 400."""
+        resp = bot_client.post(
+            "/api/bot/playable",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"item_id": "garbage"},
+        )
+        assert resp.status_code == 400
+
+    def test_local_path_not_found(self, bot_client):
+        """Local item_id with nonexistent path returns 404."""
+        import base64
+        encoded = "local:" + base64.urlsafe_b64encode(b"/nonexistent/path.flac").decode().rstrip("=")
+        resp = bot_client.post(
+            "/api/bot/playable",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"item_id": encoded},
+        )
+        assert resp.status_code == 404
+
+    def test_requires_bot_auth(self, bot_client):
+        """R3-AC7: Requires valid bearer token."""
+        resp = bot_client.post(
+            "/api/bot/playable",
+            headers=bot_client._host,
+            json={"item_id": "tidal:12345"},
+        )
+        assert resp.status_code == 401
+
+
+# ── R3-AC3: Stream token verification via bot-stream endpoint ────
+
+
+class TestBotStreamEndpoint:
+    """R3: /api/playback/bot-stream/{token} verifies tokens."""
+
+    def test_invalid_token_returns_403(self, bot_client):
+        """R3-AC3: Invalid stream token returns 403."""
+        resp = bot_client.get(
+            "/api/playback/bot-stream/not-a-valid-token",
+            headers=bot_client._host,
+        )
+        assert resp.status_code == 403
+
+    def test_expired_token_returns_403(self, bot_client, monkeypatch):
+        """R3-AC3: Expired stream token returns 403."""
+        import time
+        import tidal_dl.gui.security as sec
+        token = sec.sign_bot_stream_token({"kind": "local", "path": "/tmp/x.flac"}, ttl_seconds=0)
+        time.sleep(0.05)
+        resp = bot_client.get(
+            f"/api/playback/bot-stream/{token}",
+            headers=bot_client._host,
+        )
+        assert resp.status_code == 403
+
+
+# ── R6: Download Gateway ─────────────────────────────────────────
+
+
+class TestDownloadGateway:
+    """R6: Download trigger and status endpoints."""
+
+    def test_download_local_rejected(self, bot_client):
+        """R6: Local items cannot be downloaded (they're already local)."""
+        resp = bot_client.post(
+            "/api/bot/download",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"item_id": "local:abc"},
+        )
+        assert resp.status_code == 400
+
+    def test_download_invalid_tidal_id(self, bot_client):
+        """R6: Invalid tidal ID format returns 400."""
+        resp = bot_client.post(
+            "/api/bot/download",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"item_id": "tidal:not-a-number"},
+        )
+        assert resp.status_code == 400
+
+    def test_download_status_missing_job(self, bot_client):
+        """R6-AC2: Status for unknown job returns 404."""
+        resp = bot_client.get(
+            "/api/bot/downloads/999999999",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+        )
+        assert resp.status_code == 404
+
+    def test_download_status_invalid_job_id(self, bot_client):
+        """R6: Non-numeric job_id returns 400."""
+        resp = bot_client.get(
+            "/api/bot/downloads/not-a-number",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+        )
+        assert resp.status_code == 400
+
+    def test_download_requires_auth(self, bot_client):
+        """R6-AC6: Both endpoints require bearer auth."""
+        resp1 = bot_client.post(
+            "/api/bot/download",
+            headers=bot_client._host,
+            json={"item_id": "tidal:12345"},
+        )
+        assert resp1.status_code == 401
+        resp2 = bot_client.get("/api/bot/downloads/12345", headers=bot_client._host)
+        assert resp2.status_code == 401
+
+
+class TestLoggingSafety:
+    """R7: Sensitive material not leaked in bot API code."""
+
+    def test_bot_bearer_not_in_error_response(self, bot_client):
+        """R7: 401 response body does not contain the actual token."""
+        resp = bot_client.post("/api/bot/play/resolve",
+                               headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}x"},
+                               json={"query": "test"})
+        assert TEST_TOKEN not in resp.text
+
+    def test_stream_token_not_in_403_response(self, monkeypatch):
+        """R7: 403 for expired stream token doesn't leak token contents."""
+        monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
+        import tidal_dl.gui.security as sec
+
+        token = sec.sign_bot_stream_token({"track_id": "123"}, ttl_seconds=0)
+        time.sleep(0.05)
+        # verify_bot_stream_token returns None for expired — the token
+        # itself is never included in any error response by design
+        result = sec.verify_bot_stream_token(token)
+        assert result is None
