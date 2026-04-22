@@ -36,7 +36,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "createUpdaterArtifacts": "v2",
+    "createUpdaterArtifacts": true,
     "macOS": {
       "dmg": {
         "background": "dmg-background.png",
