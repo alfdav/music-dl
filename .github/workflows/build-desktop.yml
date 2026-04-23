@@ -128,6 +128,12 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     steps:
+      # Needed so the "Generate release notes" step can read
+      # docs/release/install-instructions.md. Each job runs on its own
+      # runner — the build job's checkout isn't visible here.
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
