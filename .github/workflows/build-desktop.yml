@@ -59,8 +59,7 @@ jobs:
       - name: Create venv and install deps
         run: |
           uv venv .venv
-          uv pip install --python .venv/bin/python -e ".[test]"
-          uv pip install --python .venv/bin/python pyinstaller
+          uv pip install --python .venv/bin/python -e ".[test,build]"
 
       - name: Build PyInstaller sidecar
         run: |
