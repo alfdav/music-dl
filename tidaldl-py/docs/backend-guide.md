@@ -45,6 +45,7 @@
 | `gui/server.py` | Uvicorn launcher. Binds `127.0.0.1` only |
 | `gui/security.py` | CSRF, host validation, path validation, stream URL validation |
 | `gui/api/` | API routers: home, search, library, downloads, playlists, settings, setup, duplicates, upgrade, albums, playback |
+| `gui/services/` | Planned persisted download/upgrade job service layer |
 | `helper/library_db.py` | SQLite wrapper: schema, migrations, CRUD, WAL mode |
 | `helper/path.py` | Config paths, download path templates, filename sanitization |
 | `helper/cache.py` | `TTLCache` — thread-safe in-memory cache with TTL expiry |
@@ -221,6 +222,36 @@ Index: `idx_play_events_at`
 | `finished_at` | REAL | |
 | `cover_url` | TEXT | Album art URL |
 | `quality` | TEXT | Download quality |
+
+**`download_jobs`** — planned persisted queue for normal downloads and quality upgrades
+
+Design source: `docs/superpowers/specs/2026-04-23-persisted-download-jobs-design.md`.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment job ID |
+| `kind` | TEXT NOT NULL | `download` or `upgrade` |
+| `status` | TEXT NOT NULL | `queued`, `running`, `retrying`, `paused`, `done`, `error`, `cancelled`, `interrupted` |
+| `track_id` | INTEGER NOT NULL | Tidal track ID |
+| `name` | TEXT | Display title |
+| `artist` | TEXT | Display artist |
+| `album` | TEXT | Display album |
+| `cover_url` | TEXT | Album art URL |
+| `quality` | TEXT | Requested or resolved quality |
+| `progress` | REAL | Percent progress, default `0` |
+| `error` | TEXT | Terminal error message |
+| `old_path` | TEXT | Upgrade source path |
+| `new_path` | TEXT | Upgrade replacement path |
+| `metadata_json` | TEXT | Narrow upgrade execution context |
+| `created_at` | REAL NOT NULL | Unix timestamp |
+| `started_at` | REAL | Unix timestamp |
+| `finished_at` | REAL | Unix timestamp |
+
+Indexes: `idx_download_jobs_status_created`, `idx_download_jobs_track_id`
+
+Startup recovery rule: queued jobs stay queued. `running`, `retrying`, and `paused` jobs become `interrupted`. Terminal jobs stay terminal.
+
+Pause rule: global queue pause does not rewrite queued backlog rows to `paused`; queued jobs remain `queued` so they can resume after restart.
 
 **`favorites`** — user-starred tracks
 
