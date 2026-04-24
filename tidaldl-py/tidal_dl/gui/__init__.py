@@ -32,14 +32,12 @@ def create_app(port: int = 8765, job_db_path: Path | None = None) -> FastAPI:
         import asyncio
 
         loop = asyncio.get_running_loop()
-        from tidal_dl.gui.api.downloads import set_event_loop
         from tidal_dl.gui.api.upgrade import set_scan_event_loop
         from tidal_dl.gui.services.download_job_service import DownloadJobService
 
         service = DownloadJobService(db_path=job_db_path)
         service.events.set_event_loop(loop)
         app.state.download_jobs = service
-        set_event_loop(loop)
         set_scan_event_loop(loop)
 
         try:

@@ -255,7 +255,7 @@ Pause rule: global queue pause does not rewrite queued backlog rows to `paused`;
 
 FastAPI lifespan creates `DownloadJobService`, stores it on `app.state.download_jobs`, registers the service event hub with the running event loop, starts the persisted-job worker, and stops that worker during lifespan shutdown. Tests pass `job_db_path` to `create_app()` so API smoke tests use an isolated temporary job database instead of the user's real `library.db`.
 
-Normal downloads and upgrade requests both enqueue through `DownloadJobService`, so active duplicate suppression is shared across job kinds and enforced by the `download_jobs` table instead of route-local in-memory state. The worker claims both normal download jobs and upgrade jobs. Upgrade cleanup, quality ranking, album resolution, and trash helpers live in `tidal_dl.gui.services.upgrade_jobs`; route modules do not own upgrade execution.
+Normal downloads, playlist sync, bot download requests, and upgrade requests all enqueue through `DownloadJobService`, so active duplicate suppression is shared across job kinds and enforced by the `download_jobs` table instead of route-local in-memory state. The worker claims both normal download jobs and upgrade jobs. Upgrade cleanup, quality ranking, album resolution, and trash helpers live in `tidal_dl.gui.services.upgrade_jobs`; route modules do not own download or upgrade execution.
 
 **`favorites`** — user-starred tracks
 
@@ -359,7 +359,7 @@ The worker lazy-loads Tidal config/download dependencies only when it actually e
 - Each client gets an `asyncio.Queue`
 - On connect, `DownloadJobService.initial_events()` emits running job `progress` events and one `batch_queued` summary
 - Worker/service broadcasts push events through the hub; disconnect unsubscribes the queue
-- Legacy module-global SSE helpers remain only for callers that have not yet moved to `DownloadJobService`
+- Route modules do not keep their own download SSE client lists or in-memory active-download maps
 
 ### Rate Limiting
 
@@ -483,7 +483,6 @@ class BaseConfig(Generic[ConfigModelT]):
 
 | Resource | Guard | Pattern |
 |----------|-------|---------|
-| Download state (`_active` dict) | `threading.Lock` | Acquired on read/write of active downloads |
 | JobEventHub client list | `threading.Lock` | Acquired on add/remove/iterate |
 | Rate limit counters | `threading.Lock` | Acquired on backoff decisions |
 | LibraryDB | SQLite WAL + `busy_timeout=5000` | Concurrent reads, serialized writes with 5s retry |

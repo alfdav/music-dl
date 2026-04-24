@@ -295,6 +295,53 @@ class DownloadJobService:
         finally:
             db.close()
 
+    def job_status_for_track(self, track_id: int) -> dict | None:
+        db = self._open_db()
+        try:
+            assert db._conn
+            row = db._conn.execute(
+                """SELECT * FROM download_jobs
+                   WHERE track_id = ?
+                     AND status IN ('queued', 'running', 'retrying', 'paused')
+                   ORDER BY created_at DESC, id DESC
+                   LIMIT 1""",
+                (track_id,),
+            ).fetchone()
+            if row is not None:
+                job = DownloadJob.from_row(dict(row))
+                return {
+                    "job_id": str(track_id),
+                    "status": job.status.value,
+                    "progress": job.progress,
+                    "title": job.name,
+                    "artist": job.artist,
+                    "started_at": job.started_at,
+                    "finished_at": job.finished_at,
+                }
+
+            row = db._conn.execute(
+                """SELECT track_id, name, artist, status, error, started_at, finished_at
+                   FROM download_history
+                   WHERE track_id = ?
+                   ORDER BY finished_at DESC
+                   LIMIT 1""",
+                (track_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "job_id": str(track_id),
+                "status": row["status"],
+                "progress": 100.0 if row["status"] == "done" else 0.0,
+                "title": row["name"],
+                "artist": row["artist"],
+                "started_at": row["started_at"],
+                "finished_at": row["finished_at"],
+                "error": row["error"],
+            }
+        finally:
+            db.close()
+
     def is_cancelled_for_test(self, track_id: int) -> bool:
         return track_id in self._cancelled_ids
 
