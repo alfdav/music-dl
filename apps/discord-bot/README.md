@@ -24,8 +24,10 @@ resolve, playable URL, and download job goes through the backend's
 
 ## Requirements
 
-- **Node.js 20.12+** (`boot.ts` uses `process.loadEnvFile`) or
-  **Bun 1.2+**. The wizard's preflight enforces this minimum.
+- **Bun 1.2+** for install, tests, and the wizard.
+- **Node.js 20.12+** for `bun run start` (`boot.ts` uses
+  `process.loadEnvFile`). `bun run start:bun` is available for local
+  Bun-only runs.
 - **ffmpeg** on `PATH` (voice resampling)
 - A **Discord application + bot token** with `Connect` and `Speak`
   voice permissions in your guild
@@ -53,8 +55,8 @@ for the full flow.
 
 ```bash
 cd apps/discord-bot
-bun install       # or: npm install
-bun run wizard    # or: node --import tsx src/wizard/cli.ts
+bun install
+bun run wizard
 ```
 
 The wizard writes two files. The config directory is resolved in this
@@ -75,6 +77,12 @@ Override individual paths with `MUSIC_DL_BOT_ENV_PATH` and
 ```bash
 cd apps/discord-bot
 bun run start     # runs src/boot.ts, which loads the env file and imports src/index.ts
+```
+
+For a Bun-only local run:
+
+```bash
+bun run start:bun
 ```
 
 `boot.ts` reads the env file from the **same canonical path** the wizard
@@ -166,25 +174,29 @@ a real filesystem, or the real user config directory.
 
 ## Troubleshooting
 
-<!-- TODO(you) — human voice, from your actual Codex-review pain points.
-     These entries shaped the current code; a generic list won't help future-you.
-
-     Keep it short (5–8 entries). One-line symptom → one-line cause → one-line fix.
-     Good candidates from the commit log:
-
-       - "Missing required configuration: ..." on startup
-       - Commands don't appear in the server (registration timing, wrong guild id)
-       - `/summon` fails with "Failed to connect to the voice channel"
-         (ghost session from a dead process, 30s entersState timeout)
-       - DAVE protocol errors on voice (requires @snazzah/davey)
-       - Voice UDP handshake failure on Bun (use Node, per commit 10aa2c4)
-       - Wizard exits 75: preflight kept failing
-       - Wizard exits 126: bot sources not found → set MUSIC_DL_BOT_PATH
-       - Wizard exits 127: no bun/tsx → install bun or run `bun install`
-       - Backend returns 401 on every bot request
-         (shared-token mismatch — env var MUSIC_DL_BOT_TOKEN takes precedence over file)
-
-     Write these the way you'd explain them to yourself at 2am. -->
+- **`Missing required configuration: ...` on startup** — the bot did
+  not load a complete `discord-bot.env`. Run `music-dl gui --setup-bot`
+  again, or check the file resolved by `MUSIC_DL_BOT_ENV_PATH`.
+- **Commands do not appear in Discord** — commands are registered to
+  `ALLOWED_GUILD_ID`, not globally. Confirm the guild ID and restart the
+  bot; guild commands should appear immediately.
+- **`/summon` cannot connect** — the bot needs `Connect` and `Speak`
+  in the target voice channel. If permissions are correct, restart the
+  bot to clear any stale Discord voice session from a previous process.
+- **Voice protocol or encryption errors** — run `bun install` in
+  `apps/discord-bot` so `@discordjs/opus`, `libsodium-wrappers`, and
+  `@snazzah/davey` dependencies are present.
+- **Wizard exits `75`** — preflight failed too many times and wrote
+  nothing. Fix the reported token, guild/channel/user, voice permission,
+  or local dependency issue and rerun `music-dl gui --setup-bot`.
+- **Wizard exits `126`** — the backend could not find the bot sources.
+  Set `MUSIC_DL_BOT_PATH=/path/to/apps/discord-bot`.
+- **Wizard exits `127`** — Bun or the Node/tsx fallback is unavailable.
+  Install Bun, then run `bun install` in `apps/discord-bot`.
+- **Backend returns `401` to every bot request** — the bot and backend
+  are using different shared tokens. `MUSIC_DL_BOT_TOKEN` takes
+  precedence over the shared-token file; unset it or restart
+  `music-dl gui` after rotating the wizard token.
 
 ## Related docs
 
