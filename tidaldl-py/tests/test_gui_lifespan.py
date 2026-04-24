@@ -61,3 +61,5 @@ def test_health_returns_structured_daemon_state():
     assert data["status"] == "ready"
     assert data["host"] == "127.0.0.1"
     assert data["port"] == 8765
+    assert data["base_url"] == "http://127.0.0.1:8765"
+    assert data["health_url"] == "http://127.0.0.1:8765/api/server/health"

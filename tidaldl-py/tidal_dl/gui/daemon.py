@@ -135,7 +135,7 @@ def clean_stale_metadata(
     meta = read_metadata(config_dir=config_dir)
     if meta is None:
         return True
-    if pid_checker(meta.pid) and ready_checker(meta):
+    if pid_checker(meta.pid):
         return True
     try:
         metadata_path(config_dir=config_dir).unlink()

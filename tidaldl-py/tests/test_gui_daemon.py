@@ -27,17 +27,17 @@ def test_cleanup_removes_dead_pid_metadata(tmp_path):
     assert read_metadata(config_dir=tmp_path) is None
 
 
-def test_cleanup_removes_unhealthy_live_metadata_without_killing(tmp_path):
+def test_cleanup_preserves_live_starting_metadata(tmp_path):
     meta = DaemonMetadata.for_current_process(port=8765, mode="browser")
-    stale = DaemonMetadata(**{**meta.__dict__, "pid": 12345})
-    write_metadata(stale, config_dir=tmp_path)
+    starting = DaemonMetadata(**{**meta.__dict__, "pid": 12345, "status": "starting"})
+    write_metadata(starting, config_dir=tmp_path)
 
     assert daemon.clean_stale_metadata(
         config_dir=tmp_path,
         pid_checker=lambda pid: True,
         ready_checker=lambda meta: False,
     ) is True
-    assert read_metadata(config_dir=tmp_path) is None
+    assert read_metadata(config_dir=tmp_path) == starting
 
 
 def test_select_port_prefers_default():

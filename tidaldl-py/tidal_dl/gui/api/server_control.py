@@ -21,6 +21,8 @@ async def health(request: Request):
         "pid": meta.pid,
         "host": meta.host,
         "port": meta.port,
+        "base_url": meta.base_url,
+        "health_url": meta.health_url,
         "mode": meta.mode,
         "started_at": meta.started_at,
     }
