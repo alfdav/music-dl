@@ -1487,3 +1487,77 @@ class LibraryDB:
         )
         self._conn.commit()
         return int(cur.rowcount)
+
+    def has_active_download_job(self, track_id: int) -> bool:
+        """Return True if a track has active queued/running work."""
+        assert self._conn
+        row = self._conn.execute(
+            """SELECT 1 FROM download_jobs
+               WHERE track_id = ?
+                 AND status IN ('queued', 'running', 'retrying', 'paused')
+               LIMIT 1""",
+            (track_id,),
+        ).fetchone()
+        return row is not None
+
+    def active_download_job_count(self) -> int:
+        """Return count of queued or in-progress jobs."""
+        assert self._conn
+        row = self._conn.execute(
+            """SELECT COUNT(*) FROM download_jobs
+               WHERE status IN ('queued', 'running', 'retrying', 'paused')"""
+        ).fetchone()
+        return int(row[0])
+
+    def cancel_queued_download_jobs(self, track_ids: list[int]) -> int:
+        """Cancel queued jobs for specific track IDs."""
+        assert self._conn
+        if not track_ids:
+            return 0
+        placeholders = ",".join("?" for _ in track_ids)
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self._conn.execute(
+                f"""UPDATE download_jobs
+                    SET status = 'cancelled', finished_at = ?
+                    WHERE status = 'queued' AND track_id IN ({placeholders})""",
+                (time.time(), *track_ids),
+            )
+            self._conn.commit()
+            return int(cur.rowcount)
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def cancel_all_queued_download_jobs(self) -> int:
+        """Cancel all queued jobs."""
+        assert self._conn
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self._conn.execute(
+                """UPDATE download_jobs
+                   SET status = 'cancelled', finished_at = ?
+                   WHERE status = 'queued'""",
+                (time.time(),),
+            )
+            self._conn.commit()
+            return int(cur.rowcount)
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def download_jobs_snapshot(self) -> dict:
+        """Return current running jobs and queued count for API snapshots."""
+        assert self._conn
+        rows = self._conn.execute(
+            """SELECT * FROM download_jobs
+               WHERE status IN ('running', 'retrying', 'paused')
+               ORDER BY created_at, id"""
+        ).fetchall()
+        queued = self._conn.execute(
+            "SELECT COUNT(*) FROM download_jobs WHERE status = 'queued'"
+        ).fetchone()[0]
+        return {
+            "active": [dict(row) for row in rows],
+            "queued_count": int(queued),
+        }

@@ -1,4 +1,11 @@
 import asyncio
+from pathlib import Path
+
+
+def _service(tmp_path):
+    from tidal_dl.gui.services.download_job_service import DownloadJobService
+
+    return DownloadJobService(db_path=Path(tmp_path) / "library.db", autostart=False)
 
 
 def test_job_models_normalize_db_row():
@@ -43,3 +50,50 @@ def test_event_hub_broadcasts_to_subscribers():
         hub.unsubscribe(queue)
 
     asyncio.run(run())
+
+
+def test_service_enqueue_suppresses_duplicate_active_jobs(tmp_path):
+    service = _service(tmp_path)
+
+    result = service.enqueue_download([10, 10])
+    duplicate = service.enqueue_download([10])
+
+    assert result == {"status": "queued", "count": 1}
+    assert duplicate == {"status": "already_queued", "count": 0}
+    assert service.queue_state()["active_count"] == 1
+
+
+def test_service_startup_recovery_keeps_queued_and_interrupts_running(tmp_path):
+    service = _service(tmp_path)
+    service.enqueue_download([1, 2])
+    claimed = service.claim_next_for_test()
+    assert claimed is not None
+
+    recovered = service.recover_on_startup()
+
+    assert recovered == 1
+    snapshot = service.snapshot()
+    assert snapshot["queued_count"] == 1
+
+
+def test_service_pause_resume_and_cancel_queued(tmp_path):
+    service = _service(tmp_path)
+    service.enqueue_download([1, 2])
+
+    assert service.pause() == {"status": "paused"}
+    assert service.queue_state()["paused"] is True
+    assert service.resume() == {"status": "running"}
+
+    result = service.cancel([1])
+    assert result == {"status": "cancelled", "count": 1}
+
+
+def test_service_cancels_claimed_job_at_safe_checkpoint(tmp_path):
+    service = _service(tmp_path)
+    service.enqueue_download([1])
+    job = service.claim_next_for_test()
+
+    result = service.cancel([1])
+
+    assert result == {"status": "cancelled", "count": 0}
+    assert service.is_cancelled_for_test(job.track_id) is True

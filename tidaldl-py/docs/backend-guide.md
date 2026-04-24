@@ -45,7 +45,7 @@
 | `gui/server.py` | Uvicorn launcher. Binds `127.0.0.1` only |
 | `gui/security.py` | CSRF, host validation, path validation, stream URL validation |
 | `gui/api/` | API routers: home, search, library, downloads, playlists, settings, setup, duplicates, upgrade, albums, playback |
-| `gui/services/` | Persisted download/upgrade job lifecycle services (planned worker layer) |
+| `gui/services/` | Persisted download/upgrade job lifecycle primitives and worker service |
 | `helper/library_db.py` | SQLite wrapper: schema, migrations, CRUD, WAL mode |
 | `helper/path.py` | Config paths, download path templates, filename sanitization |
 | `helper/cache.py` | `TTLCache` — thread-safe in-memory cache with TTL expiry |
