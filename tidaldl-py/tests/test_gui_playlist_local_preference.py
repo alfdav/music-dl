@@ -101,7 +101,7 @@ def test_playlist_sync_uses_same_local_match_logic_as_playlist_view(monkeypatch,
             all_rows=[{"path": "/music/mas-de-ti.flac", "artist": "Don Moen", "title": "Mas De Ti", "album": "Más De Ti"}],
         ),
     )
-    monkeypatch.setattr("tidal_dl.gui.api.downloads.trigger_download", lambda track_ids: queued.extend(track_ids))
+    monkeypatch.setattr(playlists_api, "_enqueue_playlist_downloads", lambda track_ids, request=None: queued.extend(track_ids))
 
     playlists_api._playlist_tracks_cache.clear()
     result = playlists_api.sync_playlist("pl-local-fallback")
@@ -127,7 +127,7 @@ def test_playlist_sync_skips_local_track_when_isrc_index_is_stale(monkeypatch, c
         "_get_playlist_db",
         lambda: _FakePlaylistDB({"ISRC123": [{"path": "/music/local.flac", "artist": "Artist", "title": "Song", "album": "Album"}]}),
     )
-    monkeypatch.setattr("tidal_dl.gui.api.downloads.trigger_download", lambda track_ids: queued.extend(track_ids))
+    monkeypatch.setattr(playlists_api, "_enqueue_playlist_downloads", lambda track_ids, request=None: queued.extend(track_ids))
 
     playlists_api._playlist_tracks_cache.clear()
     result = playlists_api.sync_playlist("pl-stale-index")
@@ -159,7 +159,7 @@ def test_playlist_sync_downloads_when_title_artist_match_is_ambiguous(monkeypatc
             ],
         ),
     )
-    monkeypatch.setattr("tidal_dl.gui.api.downloads.trigger_download", lambda track_ids: queued.extend(track_ids))
+    monkeypatch.setattr(playlists_api, "_enqueue_playlist_downloads", lambda track_ids, request=None: queued.extend(track_ids))
 
     playlists_api._playlist_tracks_cache.clear()
     result = playlists_api.sync_playlist("pl-ambiguous")

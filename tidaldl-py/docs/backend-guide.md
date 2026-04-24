@@ -42,11 +42,13 @@
 | `metadata.py` | Mutagen-based metadata writer for FLAC, MP3, and MP4 |
 | `constants.py` | Enums (`DownloadSource`, `MediaType`), quality maps, API keys, chunk sizes |
 | `gui/__init__.py` | FastAPI app factory: middleware stack, static files, CSRF injection |
+| `gui/daemon.py` | Local daemon metadata, port selection, stale metadata cleanup, structured readiness |
 | `gui/server.py` | Uvicorn launcher. Binds `127.0.0.1` only |
 | `gui/security.py` | CSRF, host validation, path validation, stream URL validation, bot bearer auth, signed bot stream tokens |
 | `gui/api/` | API routers: home, search, library, downloads, playlists, settings, setup, duplicates, upgrade, albums, playback, bot |
 | `gui/bot_onboarding.py` | Canonical Discord bot config paths and shared-token discovery |
 | `gui/bot_first_run.py` | `music-dl gui --setup-bot` dispatch and first-run hint |
+| `gui/services/` | Persisted download/upgrade job lifecycle primitives and worker service |
 | `helper/library_db.py` | SQLite wrapper: schema, migrations, CRUD, WAL mode |
 | `helper/path.py` | Config paths, download path templates, filename sanitization |
 | `helper/cache.py` | `TTLCache` — thread-safe in-memory cache with TTL expiry |
@@ -113,7 +115,24 @@ t.stream_lock          # Lock — serializes stream ops during Atmos switching
 
 ---
 
-## 4. Middleware Stack
+## 4. Daemon Runtime
+
+`gui/daemon.py` owns local daemon metadata, port selection, stale metadata cleanup,
+and structured readiness. The canonical runtime file is
+`~/.config/music-dl/daemon.json`.
+
+Only one daemon is canonical per user config directory. Browser mode and the
+Tauri sidecar both discover that daemon through `daemon.json` and confirm
+readiness through `/api/server/health`.
+
+`daemon.json` includes `base_url`, `health_url`, `pid`, `mode`, and `status`.
+Tauri never assumes port `8765`; it reuses a ready browser daemon when the
+metadata health check passes, otherwise it starts its own sidecar and waits
+for metadata from that exact child process.
+
+---
+
+## 5. Middleware Stack
 
 Middleware executes in **reverse registration order** — last added runs first.
 
@@ -136,7 +155,7 @@ app.add_middleware(TokenRefreshMiddleware)             # 4th registered → runs
 
 ---
 
-## 5. Security Model
+## 6. Security Model
 
 All security logic in `gui/security.py`.
 
@@ -177,7 +196,7 @@ TIDAL_CDN_HOSTS  = {"audio.tidal.com", "sp-ad-cf.audio.tidal.com", ...}
 
 ---
 
-## 6. Database Schema
+## 7. Database Schema
 
 SQLite at `~/.config/music-dl/library.db`. WAL mode. 5-second busy timeout.
 
@@ -232,6 +251,40 @@ Index: `idx_play_events_at`
 | `cover_url` | TEXT | Album art URL |
 | `quality` | TEXT | Download quality |
 
+**`download_jobs`** — persisted queue for normal downloads and quality upgrades
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment job ID |
+| `kind` | TEXT NOT NULL | `download` or `upgrade` |
+| `status` | TEXT NOT NULL | `queued`, `running`, `retrying`, `paused`, `done`, `error`, `cancelled`, `interrupted` |
+| `track_id` | INTEGER NOT NULL | Tidal track ID |
+| `name` | TEXT | Display title |
+| `artist` | TEXT | Display artist |
+| `album` | TEXT | Display album |
+| `cover_url` | TEXT | Album art URL |
+| `quality` | TEXT | Requested or resolved quality |
+| `progress` | REAL | Percent progress, default `0` |
+| `error` | TEXT | Terminal error message |
+| `old_path` | TEXT | Upgrade source path |
+| `new_path` | TEXT | Upgrade replacement path |
+| `metadata_json` | TEXT | Narrow upgrade execution context |
+| `created_at` | REAL NOT NULL | Unix timestamp |
+| `started_at` | REAL | Unix timestamp |
+| `finished_at` | REAL | Unix timestamp |
+
+Indexes: `idx_download_jobs_status_created`, `idx_download_jobs_track_id`
+
+Job creation uses an atomic `BEGIN IMMEDIATE` transaction so two requests cannot enqueue active duplicate work for the same `track_id`. Queue claiming also uses `BEGIN IMMEDIATE` and updates only a still-queued row before returning it to the worker.
+
+Startup recovery rule: queued jobs stay queued. `running`, `retrying`, and `paused` jobs become `interrupted`. Terminal jobs stay terminal.
+
+Pause rule: global queue pause does not rewrite queued backlog rows to `paused`; queued jobs remain `queued` so they can resume after restart.
+
+FastAPI lifespan creates `DownloadJobService`, stores it on `app.state.download_jobs`, registers the service event hub with the running event loop, starts the persisted-job worker, and stops that worker during lifespan shutdown. Tests pass `job_db_path` to `create_app()` so API smoke tests use an isolated temporary job database instead of the user's real `library.db`.
+
+Normal downloads, playlist sync, bot download requests, and upgrade requests all enqueue through `DownloadJobService`, so active duplicate suppression is shared across job kinds and enforced by the `download_jobs` table instead of route-local in-memory state. The worker claims both normal download jobs and upgrade jobs. Upgrade cleanup, quality ranking, album resolution, and trash helpers live in `tidal_dl.gui.services.upgrade_jobs`; route modules do not own download or upgrade execution.
+
 **`favorites`** — user-starred tracks
 
 | Column | Type | Notes |
@@ -259,6 +312,7 @@ Additive only. Runs on every `open()`:
 1. **v1 → v2**: Add `album`, `duration`, `quality`, `format` columns to `scanned`
 2. **v2 → v3**: Add `play_count`, `last_played`, `genre` to `scanned`
 3. **Late additions**: `cover_url`, `quality` columns on `download_history`
+4. **Download jobs**: Add `download_jobs` table and job lookup indexes
 
 Pattern: check `PRAGMA table_info()`, `ALTER TABLE ADD COLUMN` if missing. Never destructive.
 
@@ -286,43 +340,54 @@ def _get_db() -> LibraryDB:
 
 ---
 
-## 7. Download Pipeline
+## 8. Download Pipeline
 
 ### End-to-End Flow
 
 ```
-POST /api/downloads/trigger {track_ids: [123, 456]}
+POST /api/download {track_ids: [123, 456]}
   │
-  ├─ Create DownloadEntry per track (status: "queued")
-  ├─ Broadcast SSE: {"type": "queued", ...}
-  ├─ Spawn daemon thread
+  ├─ DownloadJobService.enqueue_download()
+  ├─ Create `download_jobs` rows with status "queued"
+  ├─ Broadcast SSE: {"type": "batch_queued", ...}
+  ├─ Worker thread claims oldest queued job atomically
   │
-  │  [Background Thread]
-  │  For each track_id:
+  │  [DownloadJobService worker]
+  │  For each claimed job:
+  │    ├─ Check cancellation at safe checkpoints
   │    ├─ Fetch track metadata from Tidal
-  │    ├─ Broadcast SSE: {"type": "downloading", "progress": 0}
+  │    ├─ Update job display fields
+  │    ├─ Broadcast SSE: {"type": "progress", "status": "downloading"}
   │    ├─ Get stream manifest (Hi-Fi API or OAuth)
   │    ├─ Download segments (parallel, up to N)
   │    ├─ Merge segments → single file
   │    ├─ Decrypt if encrypted
   │    ├─ Write metadata via mutagen (tags, cover, lyrics)
-  │    ├─ Register in LibraryDB (immediate visibility)
+  │    ├─ Scan new downloads into LibraryDB
   │    ├─ Record in download_history
-  │    └─ Broadcast SSE: {"type": "completed", "progress": 100}
+  │    ├─ Mark job "done"
+  │    └─ Broadcast SSE: {"type": "complete", "status": "done"}
   │
   │  On error:
   │    ├─ Log exception
   │    ├─ Record error in download_history (nested try/except — never breaks broadcast)
+  │    ├─ Mark job "error"
   │    └─ Broadcast SSE: {"type": "error", "message": "..."}
 ```
 
+Upgrade jobs follow the same persisted lifecycle. `/api/upgrade/start` writes `kind='upgrade'` jobs with `old_path` and target quality, the worker downloads with `duplicate_action_override='redownload'`, applies the artist-mismatch safety gate before cleanup, removes stale same-album copies through `upgrade_jobs.cleanup_replaced_track_files()`, records `new_path`, and broadcasts `complete` plus `upgrade_complete`.
+
+The worker lazy-loads Tidal config/download dependencies only when it actually executes a claimed job. That keeps API startup and service tests from triggering network-backed API-key refresh work.
+
 ### SSE Broadcasting
 
-- Client connects: `GET /api/downloads/events` → `text/event-stream`
-- Max 5 simultaneous clients (`_MAX_SSE_CLIENTS`)
+- Client connects: `GET /api/downloads/active` → `text/event-stream`
+- `DownloadJobService.events` owns the `JobEventHub`
+- Max 5 simultaneous clients by default
 - Each client gets an `asyncio.Queue`
-- `_broadcast(event)` pushes to all queues
-- Client disconnect removes queue from list
+- On connect, `DownloadJobService.initial_events()` emits running job `progress` events and one `batch_queued` summary
+- Worker/service broadcasts push events through the hub; disconnect unsubscribes the queue
+- Route modules do not keep their own download SSE client lists or in-memory active-download maps
 
 ### Rate Limiting
 
@@ -348,7 +413,7 @@ POST /api/downloads/trigger {track_ids: [123, 456]}
 
 ---
 
-## 8. API Routes
+## 9. API Routes
 
 All routes prefixed `/api`.
 
@@ -376,8 +441,9 @@ All routes prefixed `/api`.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/search` | Search Tidal catalog, cross-ref local ISRCs |
-| `POST` | `/downloads/trigger` | Queue track downloads |
-| `GET` | `/downloads/events` | SSE stream for progress |
+| `POST` | `/download` | Queue track downloads |
+| `GET` | `/downloads/active` | SSE stream for progress |
+| `GET` | `/downloads/active/snapshot` | Current active jobs and queued count |
 | `GET` | `/downloads/history` | Past downloads |
 | `DELETE` | `/downloads/history` | Clear history |
 
@@ -401,6 +467,7 @@ All routes prefixed `/api`.
 | `GET` | `/duplicates/preview` | Find ISRC-based duplicates |
 | `POST` | `/duplicates/clean` | Remove duplicate files |
 | `GET` | `/upgrade/scan` | Find tracks upgradable to higher quality |
+| `POST` | `/upgrade/start` | Queue upgrade jobs through the persisted job service |
 
 ### Bot
 
@@ -413,7 +480,7 @@ All routes prefixed `/api`.
 
 ---
 
-## 9. Config System
+## 10. Config System
 
 ### File Locations
 
@@ -454,12 +521,11 @@ class BaseConfig(Generic[ConfigModelT]):
 
 ---
 
-## 10. Thread Safety
+## 11. Thread Safety
 
 | Resource | Guard | Pattern |
 |----------|-------|---------|
-| Download state (`_active` dict) | `threading.Lock` | Acquired on read/write of active downloads |
-| SSE client list | `threading.Lock` | Acquired on add/remove/iterate |
+| JobEventHub client list | `threading.Lock` | Acquired on add/remove/iterate |
 | Rate limit counters | `threading.Lock` | Acquired on backoff decisions |
 | LibraryDB | SQLite WAL + `busy_timeout=5000` | Concurrent reads, serialized writes with 5s retry |
 | TTLCache | `threading.Lock` | Acquired on get/set/invalidate |
@@ -468,7 +534,7 @@ class BaseConfig(Generic[ConfigModelT]):
 
 ---
 
-## 11. Error Handling Patterns
+## 12. Error Handling Patterns
 
 ### Download Errors
 
@@ -512,7 +578,7 @@ except (json.JSONDecodeError, KeyError):
 
 ---
 
-## 12. Sacred Rules
+## 13. Sacred Rules
 
 1. **Singletons are the API.** `Settings()`, `Tidal()`, `HandlingApp()` — call the class, get the instance. No dependency injection, no factories.
 2. **SQLite is the cache, not the source.** The filesystem is truth. The DB is a fast index over it. If the DB is lost, a scan rebuilds it.

@@ -40,18 +40,25 @@ def main() -> None:
 
     import asyncio
 
+    from tidal_dl.gui.daemon import DaemonMetadata, make_uvicorn_config, remove_metadata, select_port, write_metadata
+
+    requested_port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+    port = select_port(requested_port)
+    meta = DaemonMetadata.for_current_process(port=port, mode="tauri-sidecar")
+    write_metadata(meta.with_status("starting"))
+    try:
+        config = make_uvicorn_config(meta)
+        server = asyncio.run(_serve(config))
+    finally:
+        remove_metadata(meta)
+
+
+async def _serve(config):
     import uvicorn
 
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
-    config = uvicorn.Config(
-        "tidal_dl.gui:create_app",
-        factory=True,
-        host="127.0.0.1",
-        port=port,
-        log_level="warning",
-    )
     server = uvicorn.Server(config)
-    asyncio.run(server.serve())
+    await server.serve()
+    return server
 
 
 if __name__ == "__main__":
