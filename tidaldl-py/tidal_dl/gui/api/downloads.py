@@ -8,11 +8,15 @@ import threading
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 router = APIRouter()
+
+
+def _job_service(request: Request):
+    return request.app.state.download_jobs
 
 
 class DownloadRequest(BaseModel):
@@ -322,7 +326,7 @@ def trigger_download(track_ids: list[int]) -> dict:
 
 
 @router.post("/download")
-def download(req: DownloadRequest) -> dict:
+def download(req: DownloadRequest, request: Request) -> dict:
     """Trigger download of one or more tracks."""
     if not req.track_ids:
         raise HTTPException(status_code=400, detail="Provide track_ids")
@@ -337,23 +341,19 @@ def download(req: DownloadRequest) -> dict:
     if not logged_in:
         raise HTTPException(status_code=401, detail="Not logged in to Tidal")
 
-    return trigger_download(req.track_ids)
+    return _job_service(request).enqueue_download(req.track_ids)
 
 
 @router.post("/downloads/pause")
-def pause_downloads() -> dict:
+def pause_downloads(request: Request) -> dict:
     """Pause the download queue. Current track finishes, then queue waits."""
-    _dl_running.clear()
-    _broadcast({"type": "queue_paused"})
-    return {"status": "paused"}
+    return _job_service(request).pause()
 
 
 @router.post("/downloads/resume")
-def resume_downloads() -> dict:
+def resume_downloads(request: Request) -> dict:
     """Resume the download queue."""
-    _dl_running.set()
-    _broadcast({"type": "queue_resumed"})
-    return {"status": "running"}
+    return _job_service(request).resume()
 
 
 class CancelRequest(BaseModel):
@@ -361,61 +361,25 @@ class CancelRequest(BaseModel):
 
 
 @router.post("/downloads/cancel")
-def cancel_downloads(req: CancelRequest | None = None) -> dict:
+def cancel_downloads(request: Request, req: CancelRequest | None = None) -> dict:
     """Cancel downloads. If track_ids given, cancel those; otherwise cancel all."""
-    global _dl_cancel_all
-    if req and req.track_ids:
-        _dl_cancelled_ids.update(req.track_ids)
-        count = len(req.track_ids)
-        # Also remove them from active immediately
-        with _lock:
-            for tid in req.track_ids:
-                entry = _active.pop(tid, None)
-                if entry:
-                    _broadcast({"type": "cancelled", "track_id": tid, "name": entry.name})
-    else:
-        _dl_cancel_all = True
-        with _lock:
-            count = len(_active)
-            for tid, entry in list(_active.items()):
-                entry.status = "cancelled"
-            _active.clear()
-        _broadcast({"type": "queue_cancelled", "count": count})
-        # Also resume so the worker thread can exit its loop cleanly
-        _dl_running.set()
-    return {"status": "cancelled", "count": count}
+    return _job_service(request).cancel(req.track_ids if req else None)
 
 
 @router.get("/downloads/queue-state")
-def queue_state() -> dict:
+def queue_state(request: Request) -> dict:
     """Return the current queue control state."""
-    return {
-        "paused": not _dl_running.is_set(),
-        "cancelled": _dl_cancel_all,
-        "active_count": len(_active),
-    }
+    return _job_service(request).queue_state()
 
 
 @router.get("/downloads/active/snapshot")
-def downloads_snapshot() -> dict:
+def downloads_snapshot(request: Request) -> dict:
     """Return current in-progress downloads (non-SSE).
 
     Only returns actively-downloading items individually; queued items
     are summarised as a count to keep payloads small for large queues.
     """
-    with _lock:
-        downloading = []
-        queued_count = 0
-        for e in _active.values():
-            if e.status == "downloading":
-                downloading.append(
-                    {"track_id": e.track_id, "name": e.name, "artist": e.artist,
-                     "album": e.album, "cover_url": e.cover_url, "quality": e.quality,
-                     "status": e.status, "progress": e.progress}
-                )
-            else:
-                queued_count += 1
-    return {"active": downloading, "queued_count": queued_count}
+    return _job_service(request).snapshot()
 
 
 @router.get("/downloads/active")

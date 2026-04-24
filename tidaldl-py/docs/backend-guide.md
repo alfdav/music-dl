@@ -253,6 +253,8 @@ Startup recovery rule: queued jobs stay queued. `running`, `retrying`, and `paus
 
 Pause rule: global queue pause does not rewrite queued backlog rows to `paused`; queued jobs remain `queued` so they can resume after restart.
 
+FastAPI lifespan creates `DownloadJobService`, stores it on `app.state.download_jobs`, and stops its worker during lifespan shutdown. Tests pass `job_db_path` to `create_app()` so API smoke tests use an isolated temporary job database instead of the user's real `library.db`.
+
 **`favorites`** — user-starred tracks
 
 | Column | Type | Notes |

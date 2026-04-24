@@ -25,7 +25,7 @@ else:
     _STATIC_DIR = Path(__file__).parent / "static"
 
 
-def create_app(port: int = 8765) -> FastAPI:
+def create_app(port: int = 8765, job_db_path: Path | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Restore Tidal OAuth session and capture event loop on server start."""
@@ -34,7 +34,11 @@ def create_app(port: int = 8765) -> FastAPI:
         loop = asyncio.get_running_loop()
         from tidal_dl.gui.api.downloads import set_event_loop
         from tidal_dl.gui.api.upgrade import set_scan_event_loop
+        from tidal_dl.gui.services.download_job_service import DownloadJobService
 
+        service = DownloadJobService(db_path=job_db_path)
+        service.events.set_event_loop(loop)
+        app.state.download_jobs = service
         set_event_loop(loop)
         set_scan_event_loop(loop)
 
@@ -45,7 +49,10 @@ def create_app(port: int = 8765) -> FastAPI:
             tidal.login_token(quiet=True)
         except Exception:
             pass
-        yield
+        try:
+            yield
+        finally:
+            service.stop_worker()
 
     app = FastAPI(title="music-dl", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
     csrf_token = generate_csrf_token()

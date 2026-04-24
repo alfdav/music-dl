@@ -133,6 +133,12 @@ class TestHome:
 
 
 class TestDownloadsSnapshot:
+    def test_uses_app_job_service(self, client):
+        assert hasattr(client.app.state, "download_jobs")
+        resp = client.get("/api/downloads/active/snapshot", headers=client._host_header)
+        assert resp.status_code == 200
+        assert resp.json() == {"active": [], "queued_count": 0}
+
     def test_returns_200(self, client):
         resp = client.get("/api/downloads/active/snapshot", headers=client._host_header)
         assert resp.status_code == 200
