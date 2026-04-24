@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from tidal_dl.gui.security import (
@@ -420,7 +420,7 @@ def get_playable_source(
 
 @router.post("/download")
 def trigger_bot_download(
-    payload: DownloadRequest, _: None = Depends(require_bot_auth)
+    payload: DownloadRequest, request: Request, _: None = Depends(require_bot_auth)
 ) -> dict:
     """Trigger an explicit download for a resolved item."""
     item_id = payload.item_id
@@ -433,7 +433,6 @@ def trigger_bot_download(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid Tidal item_id")
 
-    from tidal_dl.gui.api.downloads import _active, _lock, trigger_download
     from tidal_dl.gui.api.search import get_tidal_session
 
     session = get_tidal_session()
@@ -445,13 +444,10 @@ def trigger_bot_download(
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Tidal track lookup failed: {exc}") from exc
 
-    # Delegate to existing download subsystem — trigger_download() spawns
-    # the worker thread that actually processes _active entries.
-    trigger_download([track_id])
-
-    with _lock:
-        entry = _active.get(track_id)
-        status = _normalize_status(entry.status) if entry else "queued"
+    queued = request.app.state.download_jobs.enqueue_download([track_id])
+    status = queued["status"]
+    if status == "already_queued":
+        status = "queued"
 
     return {"job_id": str(track_id), "status": status}
 
@@ -462,11 +458,14 @@ def trigger_bot_download(
 # states like "downloading", "retrying", "done", "error".
 _STATUS_NORMALIZE = {
     "queued": "queued",
+    "running": "in-progress",
     "downloading": "in-progress",
     "retrying": "in-progress",
+    "paused": "queued",
     "done": "completed",
     "error": "failed",
     "cancelled": "failed",
+    "interrupted": "failed",
 }
 
 
@@ -476,66 +475,22 @@ def _normalize_status(internal: str) -> str:
 
 @router.get("/downloads/{job_id}")
 def get_bot_download_status(
-    job_id: str, _: None = Depends(require_bot_auth)
+    job_id: str, request: Request, _: None = Depends(require_bot_auth)
 ) -> dict:
     """Poll the status of a bot-triggered download.
 
-    Checks the in-memory _active map first (for in-progress jobs), then
-    falls back to download_history so the bot can observe terminal
-    done/error states — the worker removes entries from _active as soon
-    as they finish.
+    Reads the persisted job table first, then falls back to download_history
+    so the bot can observe terminal done/error states.
     """
     try:
         track_id = int(job_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid job_id")
 
-    from tidal_dl.gui.api.downloads import _active, _lock
-
-    with _lock:
-        entry = _active.get(track_id)
-        if entry is not None:
-            return {
-                "job_id": job_id,
-                "status": _normalize_status(entry.status),
-                "progress": entry.progress,
-                "title": entry.name,
-                "artist": entry.artist,
-                "started_at": entry.started_at,
-                "finished_at": entry.finished_at,
-            }
-
-    # Fall back to download_history for completed/failed jobs
-    from tidal_dl.helper.library_db import LibraryDB
-    from tidal_dl.helper.path import path_config_base
-
-    db = LibraryDB(Path(path_config_base()) / "library.db")
-    try:
-        db.open()
-        row = db._conn.execute(
-            "SELECT track_id, name, artist, status, error, started_at, finished_at "
-            "FROM download_history WHERE track_id = ? "
-            "ORDER BY finished_at DESC LIMIT 1",
-            (track_id,),
-        ).fetchone()
-    except Exception:
-        row = None
-    finally:
-        try:
-            db.close()
-        except Exception:
-            pass
-
-    if row is None:
+    status = request.app.state.download_jobs.job_status_for_track(track_id)
+    if status is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    return {
-        "job_id": job_id,
-        "status": _normalize_status(row["status"]),
-        "progress": 100.0 if row["status"] == "done" else 0.0,
-        "title": row["name"],
-        "artist": row["artist"],
-        "started_at": row["started_at"],
-        "finished_at": row["finished_at"],
-        "error": row["error"],
-    }
+    status["job_id"] = job_id
+    status["status"] = _normalize_status(status["status"])
+    return {key: value for key, value in status.items() if key != "error" or value}

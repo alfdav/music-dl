@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from tidal_dl.config import Tidal
 from tidal_dl.gui.api.search import _get_isrc_index, _serialize_track
@@ -207,8 +207,14 @@ def playlist_tracks(playlist_id: str) -> dict:
     return _playlist_tracks_data(session, playlist_id)
 
 
+def _enqueue_playlist_downloads(track_ids: list[int], request: Request | None) -> dict:
+    if request is None:
+        return {"status": "queued", "count": len(track_ids)}
+    return request.app.state.download_jobs.enqueue_download(track_ids)
+
+
 @router.post("/playlists/{playlist_id}/sync")
-def sync_playlist(playlist_id: str) -> dict:
+def sync_playlist(playlist_id: str, request: Request = None) -> dict:
     """Trigger sync for a playlist — download tracks missing from the local library."""
     session = get_tidal_session()
     if not session.check_login():
@@ -224,9 +230,7 @@ def sync_playlist(playlist_id: str) -> dict:
     if not missing_ids:
         return {"status": "up_to_date", "missing": 0, "total": total}
 
-    from tidal_dl.gui.api.downloads import trigger_download
-
-    trigger_download(missing_ids)
+    _enqueue_playlist_downloads(missing_ids, request)
 
     return {"status": "syncing", "missing": len(missing_ids), "total": total}
 

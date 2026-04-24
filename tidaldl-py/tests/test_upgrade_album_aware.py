@@ -46,8 +46,8 @@ class TestResolveTidalAlbum:
     """Test _resolve_tidal_album helper."""
 
     def _import_func(self):
-        from tidal_dl.gui.api.upgrade import _resolve_tidal_album
-        return _resolve_tidal_album
+        from tidal_dl.gui.services.upgrade_jobs import resolve_tidal_album
+        return resolve_tidal_album
 
     def test_returns_album_with_matching_isrcs(self):
         """When Tidal search returns an album with matching ISRCs, return it."""

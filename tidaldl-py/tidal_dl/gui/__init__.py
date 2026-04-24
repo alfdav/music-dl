@@ -28,6 +28,7 @@ else:
 
 def create_app(
     port: int = 8765,
+    job_db_path: Path | None = None,
     daemon_meta: DaemonMetadata | None = None,
     write_daemon_metadata: bool = False,
 ) -> FastAPI:
@@ -37,10 +38,12 @@ def create_app(
         import asyncio
 
         loop = asyncio.get_running_loop()
-        from tidal_dl.gui.api.downloads import set_event_loop
         from tidal_dl.gui.api.upgrade import set_scan_event_loop
+        from tidal_dl.gui.services.download_job_service import DownloadJobService
 
-        set_event_loop(loop)
+        service = DownloadJobService(db_path=job_db_path)
+        service.events.set_event_loop(loop)
+        app.state.download_jobs = service
         set_scan_event_loop(loop)
 
         try:
@@ -53,7 +56,10 @@ def create_app(
         app.state.daemon_meta = app.state.daemon_meta.with_status("ready")
         if app.state.write_daemon_metadata:
             write_metadata(app.state.daemon_meta)
-        yield
+        try:
+            yield
+        finally:
+            service.stop_worker()
 
     app = FastAPI(title="music-dl", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
     app.state.daemon_meta = daemon_meta or DaemonMetadata.for_current_process(

@@ -1,6 +1,6 @@
 import os
 
-from tidal_dl.gui.api.upgrade import _cleanup_replaced_track_files
+from tidal_dl.gui.services.upgrade_jobs import cleanup_replaced_track_files
 from tidal_dl.helper.library_db import LibraryDB
 
 
@@ -57,9 +57,9 @@ def test_cleanup_replaced_track_files_removes_stale_same_isrc_rows_and_files(tmp
         if os.path.exists(path):
             os.remove(path)
 
-    monkeypatch.setattr("tidal_dl.gui.api.upgrade._trash_file", _fake_trash)
+    monkeypatch.setattr("tidal_dl.gui.services.upgrade_jobs.trash_file", _fake_trash)
 
-    removed = _cleanup_replaced_track_files(db, old_path=str(old_path), new_path=str(new_path))
+    removed = cleanup_replaced_track_files(db, old_path=str(old_path), new_path=str(new_path))
     db.commit()
 
     assert set(removed) == {str(old_path), str(existing_upgrade)}
@@ -119,9 +119,9 @@ def test_cleanup_preserves_same_isrc_in_different_albums(tmp_path, monkeypatch):
         if os.path.exists(path):
             os.remove(path)
 
-    monkeypatch.setattr("tidal_dl.gui.api.upgrade._trash_file", _fake_trash)
+    monkeypatch.setattr("tidal_dl.gui.services.upgrade_jobs.trash_file", _fake_trash)
 
-    removed = _cleanup_replaced_track_files(db, old_path=str(old_path), new_path=str(new_path))
+    removed = cleanup_replaced_track_files(db, old_path=str(old_path), new_path=str(new_path))
     db.commit()
 
     # Only the old compilation file should be removed
@@ -166,10 +166,10 @@ def test_cleanup_preserves_same_album_name_in_different_directory(tmp_path, monk
     db.commit()
 
     trashed = []
-    monkeypatch.setattr("tidal_dl.gui.api.upgrade._trash_file",
+    monkeypatch.setattr("tidal_dl.gui.services.upgrade_jobs.trash_file",
                         lambda p: trashed.append(p) or (os.remove(p) if os.path.exists(p) else None))
 
-    removed = _cleanup_replaced_track_files(db, old_path=str(old_path), new_path=str(new_path))
+    removed = cleanup_replaced_track_files(db, old_path=str(old_path), new_path=str(new_path))
     db.commit()
 
     # Only old_path removed — other_path has same album name but different dir

@@ -12,14 +12,14 @@ TEST_TOKEN = "test-bot-token-secret"
 
 
 @pytest.fixture
-def bot_client(monkeypatch):
+def bot_client(monkeypatch, tmp_path):
     """TestClient with bot token configured."""
     monkeypatch.setenv("MUSIC_DL_BOT_TOKEN", TEST_TOKEN)
 
     from tidal_dl.gui import create_app
-    c = TestClient(create_app(port=8765))
-    c._host = {"host": "localhost:8765"}
-    return c
+    with TestClient(create_app(port=8765, job_db_path=tmp_path / "jobs.db")) as c:
+        c._host = {"host": "localhost:8765"}
+        yield c
 
 
 # ── R1: Bearer Token Authentication ──────────────────────────────
@@ -499,6 +499,42 @@ class TestDownloadGateway:
         assert resp1.status_code == 401
         resp2 = bot_client.get("/api/bot/downloads/12345", headers=bot_client._host)
         assert resp2.status_code == 401
+
+    def test_download_enqueues_and_reads_persisted_job(self, bot_client, monkeypatch):
+        """R6: Bot downloads use the persisted job service, not route globals."""
+
+        class FakeSession:
+            def check_login(self):
+                return True
+
+            def track(self, track_id):
+                assert track_id == 123
+                return object()
+
+        monkeypatch.setattr(
+            "tidal_dl.gui.api.search.get_tidal_session",
+            lambda: FakeSession(),
+        )
+        bot_client.app.state.download_jobs.pause()
+
+        resp = bot_client.post(
+            "/api/bot/download",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+            json={"item_id": "tidal:123"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"job_id": "123", "status": "queued"}
+        assert bot_client.app.state.download_jobs.snapshot()["queued_count"] == 1
+
+        status = bot_client.get(
+            "/api/bot/downloads/123",
+            headers={**bot_client._host, "authorization": f"Bearer {TEST_TOKEN}"},
+        )
+
+        assert status.status_code == 200
+        assert status.json()["status"] == "queued"
+        assert status.json()["title"] == "Track 123"
 
 
 class TestLoggingSafety:

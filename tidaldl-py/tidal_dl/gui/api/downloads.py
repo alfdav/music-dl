@@ -4,325 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
-import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 router = APIRouter()
 
 
+def _job_service(request: Request):
+    return request.app.state.download_jobs
+
+
 class DownloadRequest(BaseModel):
     track_ids: list[int] = []
 
 
-class DownloadEntry:
-    def __init__(self, track_id: int, name: str) -> None:
-        self.track_id = track_id
-        self.name = name
-        self.artist: str = ""
-        self.album: str = ""
-        self.cover_url: str = ""
-        self.quality: str = ""
-        self.progress: float = 0.0
-        self.status: str = "queued"
-        self.started_at: float = time.time()
-        self.finished_at: float | None = None
-
-
-# In-memory state (guarded by _lock for thread-safety between bg download thread and request handlers)
-_lock = threading.Lock()
-_active: dict[int, DownloadEntry] = {}
-_sse_clients: list[asyncio.Queue] = []
-_MAX_SSE_CLIENTS = 5
-_event_loop: asyncio.AbstractEventLoop | None = None
-
-# Download queue controls (shared with upgrade.py)
-_dl_running = threading.Event()  # clear = paused, set = running
-_dl_running.set()
-_dl_cancel_all = False
-_dl_cancelled_ids: set[int] = set()
-
-
-def set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
-    global _event_loop
-    _event_loop = loop
-
-
-def _broadcast(event: dict) -> None:
-    """Send event to all connected SSE clients (thread-safe)."""
-    if _event_loop is None or _event_loop.is_closed():
-        return
-    for q in _sse_clients[:]:
-        try:
-            _event_loop.call_soon_threadsafe(q.put_nowait, event)
-        except Exception:
-            pass
-
-
-def _scan_new_downloads(db, settings) -> None:
-    """Quick scan of download dir for files not yet in library DB."""
-    from pathlib import Path
-
-    from tidal_dl.gui.api.library import _AUDIO_EXTENSIONS, _read_metadata
-
-    dl_path = Path(settings.data.download_base_path).expanduser()
-    if not dl_path.is_dir():
-        return
-
-    known = db.known_paths()
-    batch = 0
-    for f in dl_path.rglob("*"):
-        if f.suffix.lower() not in _AUDIO_EXTENSIONS:
-            continue
-        path_str = str(f)
-        if path_str in known:
-            continue
-        meta = _read_metadata(f)
-        if meta:
-            db.record(
-                path_str,
-                status="tagged" if meta["isrc"] else "needs_isrc",
-                isrc=meta["isrc"] or None,
-                artist=meta["artist"],
-                title=meta["name"],
-                album=meta["album"],
-                duration=meta["duration"],
-                genre=meta.get("genre"),
-                quality=meta["quality"],
-                fmt=meta["format"],
-            )
-        else:
-            db.record(path_str, status="unreadable")
-        batch += 1
-        if batch >= 50:
-            db.commit()
-            batch = 0
-
-    if batch > 0:
-        db.commit()
-
-    # Invalidate cached request-thread DB handles so next request reopens.
-    import tidal_dl.gui.api.library as lib_mod
-    lib_mod._invalidate_db_cache()
-
-
-def trigger_download(track_ids: list[int]) -> dict:
-    """Trigger downloads using the existing Download pipeline in a background thread."""
-    global _dl_cancel_all
-    _dl_cancel_all = False
-    _dl_cancelled_ids.clear()
-    _dl_running.set()
-
-    with _lock:
-        # Skip tracks already in the queue to prevent duplicates
-        track_ids = [tid for tid in track_ids if tid not in _active]
-        if not track_ids:
-            return {"status": "already_queued", "count": 0}
-        for tid in track_ids:
-            _active[tid] = DownloadEntry(tid, f"Track {tid}")
-
-    # Single batch event so the UI knows how many items were queued
-    # (individual progress events fire as each track starts downloading)
-    _broadcast({"type": "batch_queued", "count": len(track_ids)})
-
-    def _run() -> None:
-        import logging
-        from pathlib import Path
-
-        from tidal_dl.config import Settings, Tidal
-        from tidal_dl.download import Download
-        from tidal_dl.helper.library_db import LibraryDB
-        from tidal_dl.helper.path import path_config_base
-
-        tidal = Tidal()
-        settings = Settings()
-        logger = logging.getLogger("music-dl.gui")
-        dl = Download(
-            tidal_obj=tidal,
-            path_base=settings.data.download_base_path,
-            fn_logger=logger,
-            skip_existing=settings.data.skip_existing,
-        )
-
-        # Own DB connection for this thread
-        db = LibraryDB(Path(path_config_base()) / "library.db")
-        db.open()
-
-        for tid in track_ids:
-            # Pause gate — blocks here until resumed
-            _dl_running.wait()
-
-            # Cancel check
-            if _dl_cancel_all or tid in _dl_cancelled_ids:
-                with _lock:
-                    entry = _active.pop(tid, None)
-                if entry:
-                    entry.status = "cancelled"
-                    _broadcast({"type": "cancelled", "track_id": tid, "name": entry.name})
-                _dl_cancelled_ids.discard(tid)
-                continue
-
-            track = None
-            try:
-                track = tidal.session.track(tid)
-            except Exception:
-                pass
-
-            with _lock:
-                entry = _active.get(tid)
-                if entry:
-                    if track:
-                        entry.name = track.full_name or track.name or entry.name
-                        if track.artists:
-                            entry.artist = ", ".join(a.name for a in track.artists if a.name)
-                        if track.album:
-                            entry.album = track.album.name or ""
-                            # Try 320px, fall back to 160px
-                            for size in (320, 160):
-                                try:
-                                    url = track.album.image(size)
-                                    if url:
-                                        entry.cover_url = url
-                                        break
-                                except Exception:
-                                    continue
-                    # Set quality early so it's available in SSE and history
-                    _q = settings.data.quality_audio
-                    entry.quality = _q.value if hasattr(_q, "value") else str(_q or "LOSSLESS")
-                    entry.status = "downloading"
-                    _broadcast({"type": "progress", "track_id": tid, "name": entry.name, "artist": entry.artist, "album": entry.album, "cover_url": entry.cover_url, "quality": entry.quality, "status": "downloading", "progress": 0})
-
-            try:
-                if not track:
-                    raise ValueError(f"Could not resolve track {tid}")
-
-                # Retry with exponential backoff for transient errors
-                import requests
-
-                _RETRYABLE = (
-                    requests.exceptions.ConnectionError,
-                    requests.exceptions.Timeout,
-                    requests.exceptions.ChunkedEncodingError,
-                    ConnectionError,
-                    OSError,
-                )
-                _MAX_RETRIES = 3
-                _last_exc: Exception | None = None
-
-                for _attempt in range(_MAX_RETRIES + 1):
-                    try:
-                        dl.item(
-                            file_template=settings.data.format_track,
-                            media=track,
-                            quality_audio=settings.data.quality_audio,
-                        )
-                        _last_exc = None
-                        break  # success
-                    except requests.exceptions.HTTPError as http_exc:
-                        # Retry on 429 Too Many Requests (must be before OSError catch)
-                        if hasattr(http_exc, "response") and http_exc.response is not None and http_exc.response.status_code == 429:
-                            _last_exc = http_exc
-                            if _attempt < _MAX_RETRIES:
-                                backoff = 2 ** (_attempt + 1)
-                                with _lock:
-                                    entry = _active.get(tid)
-                                if entry:
-                                    entry.status = "retrying"
-                                    _broadcast({"type": "progress", "track_id": tid, "name": entry.name, "artist": entry.artist, "album": entry.album, "cover_url": entry.cover_url, "quality": entry.quality, "status": "retrying", "progress": 0, "retry": _attempt + 1, "max_retries": _MAX_RETRIES})
-                                time.sleep(backoff)
-                        else:
-                            raise  # permanent HTTP error
-                    except _RETRYABLE as retry_exc:
-                        _last_exc = retry_exc
-                        if _attempt < _MAX_RETRIES:
-                            backoff = 2 ** (_attempt + 1)  # 2s, 4s, 8s
-                            with _lock:
-                                entry = _active.get(tid)
-                            if entry:
-                                entry.status = "retrying"
-                                _broadcast({"type": "progress", "track_id": tid, "name": entry.name, "artist": entry.artist, "album": entry.album, "cover_url": entry.cover_url, "quality": entry.quality, "status": "retrying", "progress": 0, "retry": _attempt + 1, "max_retries": _MAX_RETRIES})
-                            time.sleep(backoff)
-
-                if _last_exc is not None:
-                    raise _last_exc
-
-                with _lock:
-                    entry = _active.pop(tid, None)
-                if entry:
-                    entry.status = "done"
-                    entry.progress = 100
-                    entry.finished_at = time.time()
-                    # quality already set before dl.item(); keep as fallback
-                    if not entry.quality:
-                        _q = settings.data.quality_audio
-                        entry.quality = _q.value if hasattr(_q, "value") else str(_q or "LOSSLESS")
-
-                    # Persist to DB
-                    artist_name = entry.artist
-                    album_name = entry.album
-                    if not artist_name and track.artists:
-                        artist_name = ", ".join(a.name for a in track.artists if a.name)
-                    if not album_name and track.album:
-                        album_name = track.album.name or ""
-
-                    db.record_download(
-                        track_id=tid,
-                        name=entry.name,
-                        artist=artist_name,
-                        album=album_name,
-                        status="done",
-                        started_at=entry.started_at,
-                        finished_at=entry.finished_at,
-                        cover_url=entry.cover_url,
-                        quality=entry.quality,
-                    )
-                    db.commit()
-
-                    _broadcast({"type": "complete", "track_id": tid, "name": entry.name, "artist": entry.artist, "album": album_name, "cover_url": entry.cover_url, "quality": entry.quality, "status": "done"})
-
-            except Exception as exc:
-                with _lock:
-                    entry = _active.pop(tid, None)
-                if entry:
-                    entry.status = "error"
-                    entry.finished_at = time.time()
-
-                    # Persist error to DB — wrapped so broadcast always fires
-                    try:
-                        db.record_download(
-                            track_id=tid,
-                            name=entry.name,
-                            artist=entry.artist,
-                            album=entry.album,
-                            status="error",
-                            error=str(exc),
-                            started_at=entry.started_at,
-                            finished_at=entry.finished_at,
-                            cover_url=entry.cover_url,
-                            quality=entry.quality,
-                        )
-                        db.commit()
-                    except Exception:
-                        logger.exception("Failed to persist download error for track %s", tid)
-
-                    _broadcast({"type": "error", "track_id": tid, "name": entry.name, "artist": entry.artist, "album": entry.album, "cover_url": entry.cover_url, "error": str(exc)})
-
-        # After all downloads complete, scan download dir for new files
-        _scan_new_downloads(db, settings)
-        db.close()
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-
-    return {"status": "queued", "count": len(track_ids)}
-
-
 @router.post("/download")
-def download(req: DownloadRequest) -> dict:
+def download(req: DownloadRequest, request: Request) -> dict:
     """Trigger download of one or more tracks."""
     if not req.track_ids:
         raise HTTPException(status_code=400, detail="Provide track_ids")
@@ -337,23 +37,19 @@ def download(req: DownloadRequest) -> dict:
     if not logged_in:
         raise HTTPException(status_code=401, detail="Not logged in to Tidal")
 
-    return trigger_download(req.track_ids)
+    return _job_service(request).enqueue_download(req.track_ids)
 
 
 @router.post("/downloads/pause")
-def pause_downloads() -> dict:
+def pause_downloads(request: Request) -> dict:
     """Pause the download queue. Current track finishes, then queue waits."""
-    _dl_running.clear()
-    _broadcast({"type": "queue_paused"})
-    return {"status": "paused"}
+    return _job_service(request).pause()
 
 
 @router.post("/downloads/resume")
-def resume_downloads() -> dict:
+def resume_downloads(request: Request) -> dict:
     """Resume the download queue."""
-    _dl_running.set()
-    _broadcast({"type": "queue_resumed"})
-    return {"status": "running"}
+    return _job_service(request).resume()
 
 
 class CancelRequest(BaseModel):
@@ -361,100 +57,48 @@ class CancelRequest(BaseModel):
 
 
 @router.post("/downloads/cancel")
-def cancel_downloads(req: CancelRequest | None = None) -> dict:
+def cancel_downloads(request: Request, req: CancelRequest | None = None) -> dict:
     """Cancel downloads. If track_ids given, cancel those; otherwise cancel all."""
-    global _dl_cancel_all
-    if req and req.track_ids:
-        _dl_cancelled_ids.update(req.track_ids)
-        count = len(req.track_ids)
-        # Also remove them from active immediately
-        with _lock:
-            for tid in req.track_ids:
-                entry = _active.pop(tid, None)
-                if entry:
-                    _broadcast({"type": "cancelled", "track_id": tid, "name": entry.name})
-    else:
-        _dl_cancel_all = True
-        with _lock:
-            count = len(_active)
-            for tid, entry in list(_active.items()):
-                entry.status = "cancelled"
-            _active.clear()
-        _broadcast({"type": "queue_cancelled", "count": count})
-        # Also resume so the worker thread can exit its loop cleanly
-        _dl_running.set()
-    return {"status": "cancelled", "count": count}
+    return _job_service(request).cancel(req.track_ids if req else None)
 
 
 @router.get("/downloads/queue-state")
-def queue_state() -> dict:
+def queue_state(request: Request) -> dict:
     """Return the current queue control state."""
-    return {
-        "paused": not _dl_running.is_set(),
-        "cancelled": _dl_cancel_all,
-        "active_count": len(_active),
-    }
+    return _job_service(request).queue_state()
 
 
 @router.get("/downloads/active/snapshot")
-def downloads_snapshot() -> dict:
+def downloads_snapshot(request: Request) -> dict:
     """Return current in-progress downloads (non-SSE).
 
     Only returns actively-downloading items individually; queued items
     are summarised as a count to keep payloads small for large queues.
     """
-    with _lock:
-        downloading = []
-        queued_count = 0
-        for e in _active.values():
-            if e.status == "downloading":
-                downloading.append(
-                    {"track_id": e.track_id, "name": e.name, "artist": e.artist,
-                     "album": e.album, "cover_url": e.cover_url, "quality": e.quality,
-                     "status": e.status, "progress": e.progress}
-                )
-            else:
-                queued_count += 1
-    return {"active": downloading, "queued_count": queued_count}
+    return _job_service(request).snapshot()
 
 
 @router.get("/downloads/active")
-async def downloads_sse() -> StreamingResponse:
+async def downloads_sse(request: Request) -> StreamingResponse:
     """Server-Sent Events stream for download progress."""
-    if len(_sse_clients) >= _MAX_SSE_CLIENTS:
+    service = _job_service(request)
+    try:
+        queue = service.events.subscribe()
+    except RuntimeError:
         raise HTTPException(status_code=429, detail="Too many SSE connections")
-
-    queue: asyncio.Queue = asyncio.Queue()
-    _sse_clients.append(queue)
 
     async def event_stream():
         try:
-            # Only send individual events for actively downloading items;
-            # queued items are represented by a batch summary to avoid
-            # flooding the client with 1600+ events on connect.
-            downloading = []
-            queued_count = 0
-            for entry in _active.values():
-                if entry.status == "downloading":
-                    downloading.append(entry)
-                else:
-                    queued_count += 1
-            for entry in downloading:
-                yield f"data: {_json({'type': 'progress', 'track_id': entry.track_id, 'name': entry.name, 'artist': entry.artist, 'album': entry.album, 'cover_url': entry.cover_url, 'quality': entry.quality, 'status': entry.status, 'progress': entry.progress})}\n\n"
-            if queued_count > 0:
-                yield f"data: {_json({'type': 'batch_queued', 'count': queued_count})}\n\n"
-
+            for event in service.initial_events():
+                yield f"data: {_json(event)}\n\n"
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=30)
                     yield f"data: {_json(event)}\n\n"
                 except asyncio.TimeoutError:
                     yield f"data: {_json({'type': 'ping'})}\n\n"
-        except Exception:
-            pass
         finally:
-            if queue in _sse_clients:
-                _sse_clients.remove(queue)
+            service.events.unsubscribe(queue)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
