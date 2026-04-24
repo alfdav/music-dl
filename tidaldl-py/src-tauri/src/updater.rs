@@ -55,7 +55,11 @@ pub struct StagedUpdate(pub Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)
 // ---------------------------------------------------------------------------
 
 fn set_state(app: &AppHandle, shared: &UpdaterSharedState, new: UpdaterState) {
-    info!("updater: {:?} -> {:?}", shared.0.lock().unwrap().phase, new.phase);
+    info!(
+        "updater: {:?} -> {:?}",
+        shared.0.lock().unwrap().phase,
+        new.phase
+    );
     *shared.0.lock().unwrap() = new.clone();
     let _ = app.emit("updater-state-changed", new);
 }
@@ -86,8 +90,8 @@ fn check_install_context() -> Result<(), String> {
         }
 
         // Must be under /Applications or ~/Applications
-        let in_applications = path_str.starts_with("/Applications/")
-            || path_str.contains("/Applications/");
+        let in_applications =
+            path_str.starts_with("/Applications/") || path_str.contains("/Applications/");
 
         if !in_applications {
             return Err(format!(
@@ -139,7 +143,16 @@ pub async fn install_update(
     info!("updater: shutting down sidecar before install");
     {
         let mut guard = sidecar.0.lock().unwrap();
-        if let Some(child) = guard.take() {
+        let child = if guard.owns_child {
+            guard.base_url = None;
+            guard.health_url = None;
+            guard.owns_child = false;
+            guard.child.take()
+        } else {
+            None
+        };
+
+        if let Some(child) = child {
             let _ = child.kill();
         }
     }

@@ -42,6 +42,7 @@
 | `metadata.py` | Mutagen-based metadata writer for FLAC, MP3, and MP4 |
 | `constants.py` | Enums (`DownloadSource`, `MediaType`), quality maps, API keys, chunk sizes |
 | `gui/__init__.py` | FastAPI app factory: middleware stack, static files, CSRF injection |
+| `gui/daemon.py` | Local daemon metadata, port selection, stale metadata cleanup, structured readiness |
 | `gui/server.py` | Uvicorn launcher. Binds `127.0.0.1` only |
 | `gui/security.py` | CSRF, host validation, path validation, stream URL validation |
 | `gui/api/` | API routers: home, search, library, downloads, playlists, settings, setup, duplicates, upgrade, albums, playback |
@@ -111,7 +112,24 @@ t.stream_lock          # Lock — serializes stream ops during Atmos switching
 
 ---
 
-## 4. Middleware Stack
+## 4. Daemon Runtime
+
+`gui/daemon.py` owns local daemon metadata, port selection, stale metadata cleanup,
+and structured readiness. The canonical runtime file is
+`~/.config/music-dl/daemon.json`.
+
+Only one daemon is canonical per user config directory. Browser mode and the
+Tauri sidecar both discover that daemon through `daemon.json` and confirm
+readiness through `/api/server/health`.
+
+`daemon.json` includes `base_url`, `health_url`, `pid`, `mode`, and `status`.
+Tauri never assumes port `8765`; it reuses a ready browser daemon when the
+metadata health check passes, otherwise it starts its own sidecar and waits
+for metadata from that exact child process.
+
+---
+
+## 5. Middleware Stack
 
 Middleware executes in **reverse registration order** — last added runs first.
 
@@ -134,7 +152,7 @@ app.add_middleware(TokenRefreshMiddleware)             # 4th registered → runs
 
 ---
 
-## 5. Security Model
+## 6. Security Model
 
 All security logic in `gui/security.py`.
 
@@ -167,7 +185,7 @@ TIDAL_CDN_HOSTS  = {"audio.tidal.com", "sp-ad-cf.audio.tidal.com", ...}
 
 ---
 
-## 6. Database Schema
+## 7. Database Schema
 
 SQLite at `~/.config/music-dl/library.db`. WAL mode. 5-second busy timeout.
 
@@ -276,7 +294,7 @@ def _get_db() -> LibraryDB:
 
 ---
 
-## 7. Download Pipeline
+## 8. Download Pipeline
 
 ### End-to-End Flow
 
@@ -338,7 +356,7 @@ POST /api/downloads/trigger {track_ids: [123, 456]}
 
 ---
 
-## 8. API Routes
+## 9. API Routes
 
 All routes prefixed `/api`.
 
@@ -391,7 +409,7 @@ All routes prefixed `/api`.
 
 ---
 
-## 9. Config System
+## 10. Config System
 
 ### File Locations
 
@@ -430,7 +448,7 @@ class BaseConfig(Generic[ConfigModelT]):
 
 ---
 
-## 10. Thread Safety
+## 11. Thread Safety
 
 | Resource | Guard | Pattern |
 |----------|-------|---------|
@@ -444,7 +462,7 @@ class BaseConfig(Generic[ConfigModelT]):
 
 ---
 
-## 11. Error Handling Patterns
+## 12. Error Handling Patterns
 
 ### Download Errors
 
@@ -488,7 +506,7 @@ except (json.JSONDecodeError, KeyError):
 
 ---
 
-## 12. Sacred Rules
+## 13. Sacred Rules
 
 1. **Singletons are the API.** `Settings()`, `Tidal()`, `HandlingApp()` — call the class, get the instance. No dependency injection, no factories.
 2. **SQLite is the cache, not the source.** The filesystem is truth. The DB is a fast index over it. If the DB is lost, a scan rebuilds it.

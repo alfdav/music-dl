@@ -12,6 +12,8 @@ import pytest
 from typer.testing import CliRunner
 
 from tidal_dl.cli import app
+from tidal_dl.gui.daemon import DaemonMetadata
+from tidal_dl.gui.server import run as run_gui_server
 
 
 runner = CliRunner()
@@ -64,3 +66,25 @@ class TestGuiCommandInvocation:
             result = runner.invoke(app, ["gui", "--port", "9999", "--no-browser"])
         assert result.exit_code == 0
         mock_run.assert_called_once_with(port=9999, open_browser=False)
+
+
+class TestGuiServerRun:
+    def test_reuses_ready_daemon_without_starting_server(self):
+        meta = DaemonMetadata.for_current_process(port=8766, mode="browser", status="ready")
+        opened: list[str] = []
+        server_created = False
+
+        def fake_server_factory(config):
+            nonlocal server_created
+            server_created = True
+            raise AssertionError("server should not start when daemon is reusable")
+
+        run_gui_server(
+            open_browser=True,
+            discoverer=lambda: meta,
+            browser_open=opened.append,
+            server_factory=fake_server_factory,
+        )
+
+        assert opened == [meta.base_url]
+        assert server_created is False
