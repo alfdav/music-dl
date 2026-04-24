@@ -383,42 +383,26 @@ def downloads_snapshot(request: Request) -> dict:
 
 
 @router.get("/downloads/active")
-async def downloads_sse() -> StreamingResponse:
+async def downloads_sse(request: Request) -> StreamingResponse:
     """Server-Sent Events stream for download progress."""
-    if len(_sse_clients) >= _MAX_SSE_CLIENTS:
+    service = _job_service(request)
+    try:
+        queue = service.events.subscribe()
+    except RuntimeError:
         raise HTTPException(status_code=429, detail="Too many SSE connections")
-
-    queue: asyncio.Queue = asyncio.Queue()
-    _sse_clients.append(queue)
 
     async def event_stream():
         try:
-            # Only send individual events for actively downloading items;
-            # queued items are represented by a batch summary to avoid
-            # flooding the client with 1600+ events on connect.
-            downloading = []
-            queued_count = 0
-            for entry in _active.values():
-                if entry.status == "downloading":
-                    downloading.append(entry)
-                else:
-                    queued_count += 1
-            for entry in downloading:
-                yield f"data: {_json({'type': 'progress', 'track_id': entry.track_id, 'name': entry.name, 'artist': entry.artist, 'album': entry.album, 'cover_url': entry.cover_url, 'quality': entry.quality, 'status': entry.status, 'progress': entry.progress})}\n\n"
-            if queued_count > 0:
-                yield f"data: {_json({'type': 'batch_queued', 'count': queued_count})}\n\n"
-
+            for event in service.initial_events():
+                yield f"data: {_json(event)}\n\n"
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=30)
                     yield f"data: {_json(event)}\n\n"
                 except asyncio.TimeoutError:
                     yield f"data: {_json({'type': 'ping'})}\n\n"
-        except Exception:
-            pass
         finally:
-            if queue in _sse_clients:
-                _sse_clients.remove(queue)
+            service.events.unsubscribe(queue)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

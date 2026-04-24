@@ -156,6 +156,20 @@ class TestDownloadsSnapshot:
         assert "active" in data
 
 
+class TestDownloadsSSE:
+    def test_rejects_too_many_clients(self, client):
+        hub = client.app.state.download_jobs.events
+        queues = [hub.subscribe() for _ in range(hub.max_clients)]
+        try:
+            resp = client.get("/api/downloads/active", headers=client._host_header)
+        finally:
+            for queue in queues:
+                hub.unsubscribe(queue)
+
+        assert resp.status_code == 429
+        assert resp.json()["detail"] == "Too many SSE connections"
+
+
 class TestDownloadsHistory:
     def test_returns_200(self, client):
         resp = client.get("/api/downloads/history", headers=client._host_header)

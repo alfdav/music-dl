@@ -253,7 +253,7 @@ Startup recovery rule: queued jobs stay queued. `running`, `retrying`, and `paus
 
 Pause rule: global queue pause does not rewrite queued backlog rows to `paused`; queued jobs remain `queued` so they can resume after restart.
 
-FastAPI lifespan creates `DownloadJobService`, stores it on `app.state.download_jobs`, and stops its worker during lifespan shutdown. Tests pass `job_db_path` to `create_app()` so API smoke tests use an isolated temporary job database instead of the user's real `library.db`.
+FastAPI lifespan creates `DownloadJobService`, stores it on `app.state.download_jobs`, registers the service event hub with the running event loop, and stops its worker during lifespan shutdown. Tests pass `job_db_path` to `create_app()` so API smoke tests use an isolated temporary job database instead of the user's real `library.db`.
 
 **`favorites`** — user-starred tracks
 
@@ -342,11 +342,13 @@ POST /api/downloads/trigger {track_ids: [123, 456]}
 
 ### SSE Broadcasting
 
-- Client connects: `GET /api/downloads/events` → `text/event-stream`
-- Max 5 simultaneous clients (`_MAX_SSE_CLIENTS`)
+- Client connects: `GET /api/downloads/active` → `text/event-stream`
+- `DownloadJobService.events` owns the `JobEventHub`
+- Max 5 simultaneous clients by default
 - Each client gets an `asyncio.Queue`
-- `_broadcast(event)` pushes to all queues
-- Client disconnect removes queue from list
+- On connect, `DownloadJobService.initial_events()` emits running job `progress` events and one `batch_queued` summary
+- Worker/service broadcasts push events through the hub; disconnect unsubscribes the queue
+- Legacy module-global SSE helpers remain only for callers that have not yet moved to `DownloadJobService`
 
 ### Rate Limiting
 
@@ -469,7 +471,7 @@ class BaseConfig(Generic[ConfigModelT]):
 | Resource | Guard | Pattern |
 |----------|-------|---------|
 | Download state (`_active` dict) | `threading.Lock` | Acquired on read/write of active downloads |
-| SSE client list | `threading.Lock` | Acquired on add/remove/iterate |
+| JobEventHub client list | `threading.Lock` | Acquired on add/remove/iterate |
 | Rate limit counters | `threading.Lock` | Acquired on backoff decisions |
 | LibraryDB | SQLite WAL + `busy_timeout=5000` | Concurrent reads, serialized writes with 5s retry |
 | TTLCache | `threading.Lock` | Acquired on get/set/invalidate |

@@ -52,6 +52,22 @@ def test_event_hub_broadcasts_to_subscribers():
     asyncio.run(run())
 
 
+def test_event_hub_rejects_too_many_clients():
+    from tidal_dl.gui.services.job_events import JobEventHub
+
+    hub = JobEventHub(max_clients=1)
+    first = hub.subscribe()
+    try:
+        try:
+            hub.subscribe()
+        except RuntimeError as exc:
+            assert str(exc) == "too_many_clients"
+        else:
+            raise AssertionError("expected too_many_clients")
+    finally:
+        hub.unsubscribe(first)
+
+
 def test_service_enqueue_suppresses_duplicate_active_jobs(tmp_path):
     service = _service(tmp_path)
 
@@ -97,3 +113,29 @@ def test_service_cancels_claimed_job_at_safe_checkpoint(tmp_path):
 
     assert result == {"status": "cancelled", "count": 0}
     assert service.is_cancelled_for_test(job.track_id) is True
+
+
+def test_service_initial_events_include_running_jobs_and_queue_summary(tmp_path):
+    service = _service(tmp_path)
+    service.enqueue_download([1, 2])
+    running = service.claim_next_for_test()
+    assert running is not None
+
+    events = service.initial_events()
+
+    assert events == [
+        {
+            "type": "progress",
+            "track_id": 1,
+            "name": "Track 1",
+            "artist": "",
+            "album": "",
+            "cover_url": "",
+            "quality": "",
+            "status": "running",
+            "progress": 0.0,
+            "job_id": running.id,
+            "kind": "download",
+        },
+        {"type": "batch_queued", "count": 1},
+    ]

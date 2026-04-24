@@ -128,6 +128,31 @@ class DownloadJobService:
         finally:
             db.close()
 
+    def initial_events(self) -> list[dict]:
+        snapshot = self.snapshot()
+        events = []
+        for row in snapshot["active"]:
+            job = DownloadJob.from_row(row)
+            events.append(
+                {
+                    "type": "progress",
+                    "track_id": job.track_id,
+                    "name": job.name,
+                    "artist": job.artist,
+                    "album": job.album,
+                    "cover_url": job.cover_url,
+                    "quality": job.quality,
+                    "status": job.status.value,
+                    "progress": job.progress,
+                    "job_id": job.id,
+                    "kind": job.kind.value,
+                }
+            )
+        queued_count = snapshot["queued_count"]
+        if queued_count > 0:
+            events.append({"type": "batch_queued", "count": queued_count})
+        return events
+
     def claim_next_for_test(self) -> DownloadJob | None:
         db = self._open_db()
         try:
