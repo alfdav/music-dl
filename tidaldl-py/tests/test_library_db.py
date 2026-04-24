@@ -192,6 +192,23 @@ class TestDownloadJobs:
         remaining = db.get_download_job(second)
         assert remaining["status"] == "queued"
 
+    def test_claim_download_job_can_filter_by_kind(self, db):
+        upgrade = db.create_download_job_if_not_active(
+            kind="upgrade",
+            track_id=11,
+            name="Upgrade",
+            old_path="/tmp/old.flac",
+        )
+        download = db.create_download_job_if_not_active(
+            kind="download", track_id=12, name="Download"
+        )
+
+        claimed = db.claim_next_download_job(kind="download")
+
+        assert claimed is not None
+        assert claimed["id"] == download
+        assert db.get_download_job(upgrade)["status"] == "queued"
+
     def test_download_job_recovery_marks_active_jobs_interrupted(self, db):
         queued = db.create_download_job_if_not_active(kind="download", track_id=1)
         running = db.create_download_job_if_not_active(kind="download", track_id=2)

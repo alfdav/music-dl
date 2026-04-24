@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -23,6 +23,7 @@ from tidal_dl.gui.api.downloads import (
     DownloadEntry, _active, _broadcast, _lock,
     _dl_running, _dl_cancel_all, _dl_cancelled_ids,
 )
+from tidal_dl.gui.services.job_models import UpgradeJobInput
 from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.path import format_path_media, path_config_base
 
@@ -548,7 +549,7 @@ def purge_probes() -> dict:
 
 
 @router.post("/upgrade/start")
-def start_upgrade(req: UpgradeStartRequest) -> dict:
+def start_upgrade(req: UpgradeStartRequest, request: Request) -> dict:
     """Trigger upgrade downloads for the given local track paths."""
     # Build unified list from both track_paths (simple) and tracks (rich)
     all_items: list[tuple[str, int | None]] = []
@@ -573,17 +574,10 @@ def start_upgrade(req: UpgradeStartRequest) -> dict:
         skipped = 0
         errors: list[str] = []
 
-        # Snapshot currently-active track IDs to avoid double-queuing
-        with _lock:
-            already_queued = set(_active.keys())
-
         for path, direct_tid in all_items:
             # If tidal_track_id provided directly (from meta probe), use it
             # No need to validate path — we already have the Tidal track ID
             if direct_tid:
-                if direct_tid in already_queued:
-                    skipped += 1
-                    continue
                 track_ids.append(direct_tid)
                 upgrade_map[direct_tid] = path
                 continue
@@ -616,24 +610,29 @@ def start_upgrade(req: UpgradeStartRequest) -> dict:
                 continue
 
             tid = probe["tidal_track_id"]
-            if tid and tid not in upgrade_map and tid not in already_queued:
+            if tid and tid not in upgrade_map:
                 track_ids.append(tid)
                 upgrade_map[tid] = path
     finally:
         db.close()
 
     if track_ids:
-        thread = threading.Thread(
-            target=_trigger_upgrade_downloads,
-            args=(track_ids, upgrade_map, settings),
-            daemon=True,
-        )
-        thread.start()
+        items = [
+            UpgradeJobInput(
+                track_id=tid,
+                old_path=upgrade_map[tid],
+                quality=target_quality,
+            )
+            for tid in track_ids
+        ]
+        queued = request.app.state.download_jobs.enqueue_upgrade(items)
+    else:
+        queued = {"count": 0, "skipped": 0}
 
     return {
         "status": "queued",
-        "count": len(track_ids),
-        "skipped": skipped,
+        "count": queued["count"],
+        "skipped": skipped + queued.get("skipped", 0),
         "errors": errors,
     }
 

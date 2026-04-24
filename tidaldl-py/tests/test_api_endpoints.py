@@ -6,6 +6,8 @@ Uses the shared `client` fixture from conftest.py which provides:
 - Convenience `_headers` dict (host + CSRF) for mutating requests
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -184,6 +186,36 @@ class TestDownloadsHistory:
     def test_limit_param_accepted(self, client):
         resp = client.get("/api/downloads/history?limit=5", headers=client._host_header)
         assert resp.status_code == 200
+
+
+class TestUpgradeStart:
+    def test_direct_track_enqueues_persisted_upgrade_job(self, client, monkeypatch):
+        class FakeSettings:
+            data = SimpleNamespace(upgrade_target_quality="HI_RES_LOSSLESS")
+
+        monkeypatch.setattr("tidal_dl.config.Settings", FakeSettings)
+
+        resp = client.post(
+            "/api/upgrade/start",
+            json={
+                "tracks": [
+                    {
+                        "path": "/music/old.flac",
+                        "tidal_track_id": 456,
+                    }
+                ]
+            },
+            headers=client._headers,
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "status": "queued",
+            "count": 1,
+            "skipped": 0,
+            "errors": [],
+        }
+        assert client.app.state.download_jobs.snapshot()["queued_count"] == 1
 
 
 class TestDownloadTrigger:

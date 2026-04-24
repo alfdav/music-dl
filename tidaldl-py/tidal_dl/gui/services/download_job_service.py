@@ -10,7 +10,7 @@ from typing import Any
 import requests
 
 from tidal_dl.gui.services.job_events import JobEventHub
-from tidal_dl.gui.services.job_models import DownloadJob, JobKind, JobStatus
+from tidal_dl.gui.services.job_models import DownloadJob, JobKind, JobStatus, UpgradeJobInput
 from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.path import path_config_base
 
@@ -139,6 +139,31 @@ class DownloadJobService:
         self.events.broadcast({"type": "batch_queued", "count": queued})
         return {"status": "queued", "count": queued}
 
+    def enqueue_upgrade(self, items: list[UpgradeJobInput]) -> dict:
+        queued = 0
+        skipped = 0
+        for item in items:
+            db = self._open_db()
+            try:
+                job_id = db.create_download_job_if_not_active(
+                    kind=JobKind.UPGRADE.value,
+                    track_id=item.track_id,
+                    name=f"Track {item.track_id}",
+                    quality=item.quality,
+                    old_path=item.old_path,
+                    metadata_json=json.dumps(item.metadata or {}),
+                )
+            finally:
+                db.close()
+            if job_id is None:
+                skipped += 1
+            else:
+                queued += 1
+
+        if queued > 0:
+            self.events.broadcast({"type": "batch_queued", "count": queued})
+        return {"status": "queued", "count": queued, "skipped": skipped}
+
     def pause(self) -> dict:
         self._running.clear()
         self.events.broadcast({"type": "queue_paused"})
@@ -266,7 +291,7 @@ class DownloadJobService:
 
             db = self._open_db()
             try:
-                row = db.claim_next_download_job()
+                row = db.claim_next_download_job(kind=JobKind.DOWNLOAD.value)
             finally:
                 db.close()
             if row is None:

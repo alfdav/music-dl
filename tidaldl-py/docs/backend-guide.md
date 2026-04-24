@@ -255,6 +255,8 @@ Pause rule: global queue pause does not rewrite queued backlog rows to `paused`;
 
 FastAPI lifespan creates `DownloadJobService`, stores it on `app.state.download_jobs`, registers the service event hub with the running event loop, starts the persisted-job worker, and stops that worker during lifespan shutdown. Tests pass `job_db_path` to `create_app()` so API smoke tests use an isolated temporary job database instead of the user's real `library.db`.
 
+Normal downloads and upgrade requests both enqueue through `DownloadJobService`, so active duplicate suppression is shared across job kinds and enforced by the `download_jobs` table instead of route-local in-memory state. The worker currently claims only `kind='download'`; upgrade jobs remain queued until the upgrade worker path is moved into the service.
+
 **`favorites`** — user-starred tracks
 
 | Column | Type | Notes |
@@ -409,8 +411,9 @@ All routes prefixed `/api`.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/search` | Search Tidal catalog, cross-ref local ISRCs |
-| `POST` | `/downloads/trigger` | Queue track downloads |
-| `GET` | `/downloads/events` | SSE stream for progress |
+| `POST` | `/download` | Queue track downloads |
+| `GET` | `/downloads/active` | SSE stream for progress |
+| `GET` | `/downloads/active/snapshot` | Current active jobs and queued count |
 | `GET` | `/downloads/history` | Past downloads |
 | `DELETE` | `/downloads/history` | Clear history |
 
@@ -431,6 +434,7 @@ All routes prefixed `/api`.
 | `GET` | `/duplicates/preview` | Find ISRC-based duplicates |
 | `POST` | `/duplicates/clean` | Remove duplicate files |
 | `GET` | `/upgrade/scan` | Find tracks upgradable to higher quality |
+| `POST` | `/upgrade/start` | Queue upgrade jobs through the persisted job service |
 
 ---
 

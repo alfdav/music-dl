@@ -217,3 +217,27 @@ def test_worker_terminalizes_cancelled_claimed_job_without_success_history(tmp_p
     assert history == []
     assert any(event["type"] == "cancelled" for event in events)
     assert not any(event["type"] == "complete" for event in events)
+
+
+def test_service_enqueue_upgrade_uses_shared_active_suppression(tmp_path):
+    from tidal_dl.gui.services.job_models import UpgradeJobInput
+
+    service = _service(tmp_path)
+    service.enqueue_download([123])
+
+    result = service.enqueue_upgrade(
+        [
+            UpgradeJobInput(
+                track_id=123,
+                old_path="/music/old.flac",
+                quality="HI_RES_LOSSLESS",
+            ),
+            UpgradeJobInput(
+                track_id=456,
+                old_path="/music/other.flac",
+                quality="HI_RES_LOSSLESS",
+            ),
+        ]
+    )
+
+    assert result == {"status": "queued", "count": 1, "skipped": 1}

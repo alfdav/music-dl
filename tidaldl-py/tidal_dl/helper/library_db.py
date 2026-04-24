@@ -1438,17 +1438,23 @@ class LibraryDB:
         )
         self._conn.commit()
 
-    def claim_next_download_job(self) -> dict | None:
+    def claim_next_download_job(self, *, kind: str | None = None) -> dict | None:
         """Atomically claim the oldest queued job."""
         assert self._conn
         now = time.time()
+        where = "status = 'queued'"
+        params: list = []
+        if kind is not None:
+            where += " AND kind = ?"
+            params.append(kind)
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             row = self._conn.execute(
-                """SELECT id FROM download_jobs
-                   WHERE status = 'queued'
+                f"""SELECT id FROM download_jobs
+                   WHERE {where}
                    ORDER BY created_at, id
-                   LIMIT 1"""
+                   LIMIT 1""",
+                params,
             ).fetchone()
             if not row:
                 self._conn.commit()
