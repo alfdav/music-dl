@@ -3,7 +3,7 @@
 import sys
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from starlette.background import BackgroundTask
 from starlette.responses import JSONResponse
 
@@ -11,9 +11,19 @@ router = APIRouter(prefix="/server", tags=["server"])
 
 
 @router.get("/health")
-async def health():
-    """Lightweight liveness probe — returns 200 if the server is up."""
-    return {"status": "running"}
+async def health(request: Request):
+    """Structured readiness probe for daemon clients."""
+    meta = request.app.state.daemon_meta
+    return {
+        "app": meta.app,
+        "version": meta.version,
+        "status": meta.status,
+        "pid": meta.pid,
+        "host": meta.host,
+        "port": meta.port,
+        "mode": meta.mode,
+        "started_at": meta.started_at,
+    }
 
 
 @router.post("/restart")

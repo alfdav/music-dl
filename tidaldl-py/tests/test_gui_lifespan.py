@@ -49,3 +49,15 @@ def test_create_app_ignores_tidal_restore_failures_on_startup(monkeypatch):
 
     with TestClient(create_app(port=8765)):
         pass
+
+
+def test_health_returns_structured_daemon_state():
+    with TestClient(create_app(port=8765)) as client:
+        resp = client.get("/api/server/health", headers={"host": "localhost:8765"})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["app"] == "music-dl"
+    assert data["status"] == "ready"
+    assert data["host"] == "127.0.0.1"
+    assert data["port"] == 8765
