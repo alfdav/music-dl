@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from tidal_dl.gui.api import api_router
+from tidal_dl.gui.daemon import DaemonMetadata, write_metadata
 from tidal_dl.gui.security import CSRFMiddleware, HostValidationMiddleware, generate_csrf_token
 
 try:
@@ -25,7 +26,12 @@ else:
     _STATIC_DIR = Path(__file__).parent / "static"
 
 
-def create_app(port: int = 8765, job_db_path: Path | None = None) -> FastAPI:
+def create_app(
+    port: int = 8765,
+    job_db_path: Path | None = None,
+    daemon_meta: DaemonMetadata | None = None,
+    write_daemon_metadata: bool = False,
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Restore Tidal OAuth session and capture event loop on server start."""
@@ -47,12 +53,21 @@ def create_app(port: int = 8765, job_db_path: Path | None = None) -> FastAPI:
             tidal.login_token(quiet=True)
         except Exception:
             pass
+        app.state.daemon_meta = app.state.daemon_meta.with_status("ready")
+        if app.state.write_daemon_metadata:
+            write_metadata(app.state.daemon_meta)
         try:
             yield
         finally:
             service.stop_worker()
 
     app = FastAPI(title="music-dl", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
+    app.state.daemon_meta = daemon_meta or DaemonMetadata.for_current_process(
+        port=port,
+        mode="browser",
+        status="starting",
+    )
+    app.state.write_daemon_metadata = write_daemon_metadata
     csrf_token = generate_csrf_token()
     app.state.csrf_token = csrf_token
 
