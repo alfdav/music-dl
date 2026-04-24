@@ -6,9 +6,28 @@ dependencies that PyInstaller cannot discover via static analysis
 (uvicorn factory import, FastAPI/Starlette internals, tidalapi, etc.).
 """
 import os
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_submodules
 
 PROJECT_DIR = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
+
+EXCLUDED_IMPORT_PREFIXES = (
+    "anyio.pytest_plugin",
+    "Crypto.SelfTest",
+    "fastapi.testclient",
+    "pydantic.v1._hypothesis_plugin",
+    "pydantic.mypy",
+    "pydantic.v1.mypy",
+    "rich.diagnose",
+    "starlette.testclient",
+    "typer.testing",
+)
+
+
+def runtime_submodules(package):
+    return collect_submodules(
+        package,
+        filter=lambda name: not name.startswith(EXCLUDED_IMPORT_PREFIXES),
+    )
 
 # ── tidal_dl is a local source package (not pip-installed).             ──
 # ── Python modules are pulled in via hiddenimports below.               ──
@@ -72,45 +91,53 @@ tidal_hidden = [
 # ── Third-party hidden imports: dynamically loaded at runtime ────────
 dep_hidden = [
     # --- FastAPI / Starlette ---
-    *collect_submodules("fastapi"),
-    *collect_submodules("starlette"),
+    *runtime_submodules("fastapi"),
+    *runtime_submodules("starlette"),
 
     # --- Uvicorn internals ---
-    *collect_submodules("uvicorn"),
+    *runtime_submodules("uvicorn"),
 
     # --- Pydantic (FastAPI depends on it) ---
-    *collect_submodules("pydantic"),
-    *collect_submodules("pydantic_core"),
+    *runtime_submodules("pydantic"),
+    *runtime_submodules("pydantic_core"),
 
     # --- HTTP / networking ---
     "requests",
     "requests.adapters",
-    *collect_submodules("urllib3"),
+    *runtime_submodules("urllib3"),
 
     # --- Tidal API client ---
-    *collect_submodules("tidalapi"),
+    *runtime_submodules("tidalapi"),
 
     # --- Audio metadata ---
-    *collect_submodules("mutagen"),
+    *runtime_submodules("mutagen"),
 
     # --- Crypto (decryption pipeline) ---
-    *collect_submodules("Crypto"),
+    "Crypto",
+    "Crypto.Cipher",
+    "Crypto.Cipher.AES",
+    "Crypto.Cipher._raw_aes",
+    "Crypto.Cipher._raw_cbc",
+    "Crypto.Cipher._raw_ctr",
+    "Crypto.Util",
+    "Crypto.Util.Counter",
+    "Crypto.Util._raw_api",
 
     # --- Data serialization ---
-    *collect_submodules("dataclasses_json"),
-    *collect_submodules("marshmallow"),
+    *runtime_submodules("dataclasses_json"),
+    *runtime_submodules("marshmallow"),
 
     # --- Other deps ---
     "m3u8",
     "toml",
     "pathvalidate",
     "coloredlogs",
-    *collect_submodules("rich"),
-    *collect_submodules("typer"),
-    *collect_submodules("ffmpeg"),
+    *runtime_submodules("rich"),
+    *runtime_submodules("typer"),
+    *runtime_submodules("ffmpeg"),
 
     # --- anyio / sniffio (uvicorn async backend) ---
-    *collect_submodules("anyio"),
+    *runtime_submodules("anyio"),
     "sniffio",
 
     # --- multipart (starlette form parsing) ---
@@ -155,6 +182,10 @@ a = Analysis(
         "IPython",
         "notebook",
         "pytest",
+        "Crypto.SelfTest",
+        "fastapi.testclient",
+        "typer.testing",
+        "anyio.pytest_plugin",
     ],
     noarchive=False,
     optimize=0,
