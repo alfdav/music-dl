@@ -54,16 +54,19 @@ Windows build steps:
 
 1. Check out the repository.
 2. Install Python 3.12 with `uv`.
-3. Install Node tooling, using Bun for package/build commands where practical.
+3. Install Bun and use it for package/build commands.
 4. Install Python test/build dependencies in `tidaldl-py`.
 5. Build the PyInstaller sidecar on Windows.
 6. Rename the sidecar for the Rust host triple, expected to be `music-dl-server-x86_64-pc-windows-msvc.exe`.
 7. Verify bundled static assets.
-8. Build the Tauri MSI with `tauri build --bundles msi`.
-9. Upload the MSI as a workflow artifact.
-10. On tagged releases, attach the MSI to the GitHub release.
+8. Run the built sidecar on Windows and verify `/api/server/health` reaches ready status.
+9. Build the Tauri MSI with `bunx tauri build --bundles msi`.
+10. Upload the MSI as a workflow artifact.
+11. On tagged releases, attach the MSI to the GitHub release.
 
 The current `tauri.conf.json` `beforeBuildCommand` is Bash-based and Unix-shaped. Windows CI should not rely on it unchanged. The implementation should prefer explicit workflow steps for sidecar building and asset verification, then disable or override the Tauri `beforeBuildCommand` for CI builds as needed.
+
+Windows workflow commands must be Windows-safe. Do not copy the existing Unix `.venv/bin/python`, `.venv/bin/pyinstaller`, `mv`, or Bash command shape into the Windows path. Use `uv run`, PowerShell-compatible paths such as `.venv\Scripts\python.exe`, or OS-specific workflow steps. Keep the Linux path unchanged unless a shared command is proven to work on both runners.
 
 ## Release Assets
 
@@ -107,6 +110,7 @@ If the app launches but the UI never loads, inspect sidecar startup:
 - Confirm the sidecar filename includes the Windows target triple and `.exe`.
 - Confirm daemon metadata is written to the expected config directory.
 - Confirm `/api/server/health` returns ready status.
+- Check Windows-only process startup issues in `sidecar_entry.py`, including unsupported signal constants such as `SIGHUP`.
 
 If the app starts but downloads fail, isolate whether the failure is Windows path handling, ffmpeg availability, or Tidal auth.
 
@@ -116,6 +120,7 @@ Automated checks before publishing a Windows artifact:
 
 - Existing Python release-smoke tests from `tidaldl-py`.
 - PyInstaller sidecar build on `windows-latest`.
+- Windows sidecar launch smoke that waits for `/api/server/health` to report ready.
 - Static asset verification.
 - Tauri MSI build artifact exists.
 
