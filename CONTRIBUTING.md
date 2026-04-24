@@ -84,17 +84,26 @@ bun run typecheck
 3. Before tagging, confirm updater signing secrets exist:
    - `TAURI_SIGNING_PRIVATE_KEY`
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-4. After the PR merges, push an annotated tag like `v1.4.2`.
+4. After the PR merges, push an annotated tag like `v1.6.0`.
 5. GitHub Actions runs `.github/workflows/build-desktop.yml`, uploads Linux binaries, updates `latest.json`, and writes release notes onto the GitHub release.
-6. Sanity-check the release before announcing it:
+6. Build the macOS DMG locally when the release should support the quick macOS installer:
+   ```shell
+   cd tidaldl-py
+   uv sync --extra build
+   bun install
+   bunx tauri build --bundles dmg
+   ```
+7. Upload the generated DMG from `tidaldl-py/src-tauri/target/release/bundle/dmg/` to the same GitHub release.
+8. Sanity-check the release before announcing it:
    - release notes are present
-   - expected Linux assets are uploaded
+   - Linux assets are uploaded: `.AppImage`, `.AppImage.sig`, `.deb`
+   - macOS asset is uploaded: `.dmg`
    - `latest.json` points at the new tag
    - `latest.json` only contains `linux-x86_64`
 
 Blank release notes are a release bug.
 
-macOS desktop usage is manual/local-build only. Build with Tauri locally and replace the app bundle yourself when you want to update.
+macOS DMGs are manually built and attached to releases. The updater manifest intentionally remains Linux-only until macOS signing/notarization is handled.
 
 ## Security
 

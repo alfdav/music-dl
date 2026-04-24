@@ -13,7 +13,7 @@
 
 ### macOS (Apple Silicon) — quick install
 
-Downloads the latest DMG, installs to `/Applications`, handles Gatekeeper automatically. No dev tools needed.
+Downloads the `.dmg` attached to the latest GitHub release, installs to `/Applications`, handles Gatekeeper automatically. No dev tools needed.
 
 ```shell
 curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash
@@ -45,6 +45,13 @@ sudo dpkg -i music-dl_*.deb
 ### Updating
 
 Rerun the same `curl` command — the installers replace the old version in place. The app also self-updates on launch when a signed update manifest is published.
+
+### Expected release assets
+
+Each release should include:
+
+- Linux: `.AppImage`, `.AppImage.sig`, `.deb`, and `latest.json`
+- macOS: `.dmg`
 
 ### Full docs
 

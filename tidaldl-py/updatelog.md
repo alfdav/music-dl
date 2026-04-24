@@ -20,6 +20,33 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
+## v1.6.0 (2026)
+
+### Desktop app and daemon reliability
+
+- Added Tauri-side daemon supervision so the desktop app can launch the Python backend, poll health, and report structured startup failures.
+- Added daemon metadata endpoints used by the desktop shell to verify backend readiness.
+- Documented the daemon runtime path and release behavior for local and packaged desktop builds.
+
+### Download pipeline
+
+- Added persistent download job storage for GUI-triggered work.
+- Routed GUI downloads and quality upgrades through the job service instead of transient in-memory handling.
+- Added job event publishing and status reads so the frontend and bot can observe real download progress.
+
+### Discord bot
+
+- Documented the private Discord bot command surface, setup flow, and verification commands.
+- Documented the bot onboarding wizard, shared-token handoff, and `music-dl gui --setup-bot` flow.
+- Clarified that `/play` queues only and `/download` is the explicit download action.
+
+### Release and packaging
+
+- Declared PyInstaller as an optional build extra for desktop packaging.
+- Fixed the release manifest publishing job so it checks out the repository before updating release assets.
+
+---
+
 ## v3.1.0 (2026)
 
 ### Behavior changes
