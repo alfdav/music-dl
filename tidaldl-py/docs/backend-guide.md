@@ -42,6 +42,7 @@
 | `metadata.py` | Mutagen-based metadata writer for FLAC, MP3, and MP4 |
 | `constants.py` | Enums (`DownloadSource`, `MediaType`), quality maps, API keys, chunk sizes |
 | `gui/__init__.py` | FastAPI app factory: middleware stack, static files, CSRF injection |
+| `gui/daemon.py` | Local daemon metadata, port selection, stale metadata cleanup, structured readiness |
 | `gui/server.py` | Uvicorn launcher. Binds `127.0.0.1` only |
 | `gui/security.py` | CSRF, host validation, path validation, stream URL validation |
 | `gui/api/` | API routers: home, search, library, downloads, playlists, settings, setup, duplicates, upgrade, albums, playback |
@@ -111,7 +112,19 @@ t.stream_lock          # Lock — serializes stream ops during Atmos switching
 
 ---
 
-## 4. Middleware Stack
+## 4. Daemon Runtime
+
+`gui/daemon.py` owns local daemon metadata, port selection, stale metadata cleanup,
+and structured readiness. The canonical runtime file is
+`~/.config/music-dl/daemon.json`.
+
+Only one daemon is canonical per user config directory. Browser mode and the
+Tauri sidecar both discover that daemon through `daemon.json` and confirm
+readiness through `/api/server/health`.
+
+---
+
+## 5. Middleware Stack
 
 Middleware executes in **reverse registration order** — last added runs first.
 
