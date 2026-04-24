@@ -33,7 +33,7 @@
 
 | File | Purpose |
 |------|---------|
-| `cli.py` | Typer CLI — subcommands: `gui`, `dl`, `cfg`, `login`, `logout`, `sync`, `import`, `isrc-tag` |
+| `cli.py` | Typer CLI — subcommands: `gui`, `dl`, `cfg`, `login`, `logout`, `sync`, `import`, `isrc-tag`, `source`, `scan`, `dl_fav` |
 | `config.py` | Singleton config: `Settings`, `Tidal`, `HandlingApp`. Token management, key rotation |
 | `download.py` | Download orchestrator: stream fetch → segment merge → decrypt → tag → register |
 | `api.py` | TIDAL API key management with remote gist fallback |
@@ -43,8 +43,10 @@
 | `constants.py` | Enums (`DownloadSource`, `MediaType`), quality maps, API keys, chunk sizes |
 | `gui/__init__.py` | FastAPI app factory: middleware stack, static files, CSRF injection |
 | `gui/server.py` | Uvicorn launcher. Binds `127.0.0.1` only |
-| `gui/security.py` | CSRF, host validation, path validation, stream URL validation |
-| `gui/api/` | API routers: home, search, library, downloads, playlists, settings, setup, duplicates, upgrade, albums, playback |
+| `gui/security.py` | CSRF, host validation, path validation, stream URL validation, bot bearer auth, signed bot stream tokens |
+| `gui/api/` | API routers: home, search, library, downloads, playlists, settings, setup, duplicates, upgrade, albums, playback, bot |
+| `gui/bot_onboarding.py` | Canonical Discord bot config paths and shared-token discovery |
+| `gui/bot_first_run.py` | `music-dl gui --setup-bot` dispatch and first-run hint |
 | `helper/library_db.py` | SQLite wrapper: schema, migrations, CRUD, WAL mode |
 | `helper/path.py` | Config paths, download path templates, filename sanitization |
 | `helper/cache.py` | `TTLCache` — thread-safe in-memory cache with TTL expiry |
@@ -144,6 +146,7 @@ All security logic in `gui/security.py`.
 - Injected into `index.html` via `<meta name="csrf-token" content="__CSRF_TOKEN__">` replacement
 - Frontend sends as `X-CSRF-Token` header on all mutations
 - Timing-safe comparison via `secrets.compare_digest()`
+- `/api/bot/*` is exempt from browser CSRF and instead requires bearer auth.
 
 ### Host Validation
 
@@ -164,6 +167,13 @@ AUDIO_EXTENSIONS = {".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma"}
 FORBIDDEN_PATHS  = {"/etc", "/usr", "/bin", "/sbin", "/var", "/System", ...}
 TIDAL_CDN_HOSTS  = {"audio.tidal.com", "sp-ad-cf.audio.tidal.com", ...}
 ```
+
+### Discord Bot Auth
+
+- Bot endpoints live under `/api/bot/*`.
+- Every route requires `Authorization: Bearer <shared-token>`.
+- Token resolution order: non-empty `MUSIC_DL_BOT_TOKEN`, then the wizard-written `bot-shared-token` file.
+- `POST /api/bot/playable` returns a short-lived signed stream handle; it does not expose raw filesystem paths or raw Tidal stream URLs.
 
 ---
 
@@ -375,7 +385,10 @@ All routes prefixed `/api`.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/playback/stream` | Stream audio file to browser |
+| `GET` | `/playback/local` | Stream a local audio file to browser |
+| `GET` | `/playback/stream/{track_id}` | Proxy a Tidal stream to browser |
+| `GET` | `/playback/bot-stream/{token}` | Stream a signed bot playback handle |
+| `GET` | `/playback/waveform` | Return cached or generated waveform peaks |
 | `POST` | `/home/play` | Record play event |
 
 ### Collections
@@ -389,6 +402,15 @@ All routes prefixed `/api`.
 | `POST` | `/duplicates/clean` | Remove duplicate files |
 | `GET` | `/upgrade/scan` | Find tracks upgradable to higher quality |
 
+### Bot
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/bot/play/resolve` | Resolve a Tidal track URL, Tidal playlist URL, local playlist name, or search text |
+| `POST` | `/bot/playable` | Convert a resolved item ID into a signed playable URL |
+| `POST` | `/bot/download` | Start an explicit download job for one resolved item |
+| `GET` | `/bot/downloads/{job_id}` | Poll bot-triggered download status |
+
 ---
 
 ## 9. Config System
@@ -400,6 +422,8 @@ All routes prefixed `/api`.
 | `settings.json` | `$MUSIC_DL_CONFIG_DIR/settings.json` | `~/.config/music-dl/settings.json` |
 | `token.json` | `$MUSIC_DL_CONFIG_DIR/token.json` | `~/.config/music-dl/token.json` |
 | `library.db` | `$MUSIC_DL_CONFIG_DIR/library.db` | `~/.config/music-dl/library.db` |
+| `discord-bot.env` | `$MUSIC_DL_BOT_ENV_PATH` or config dir | `~/.config/music-dl/discord-bot.env` |
+| `bot-shared-token` | `$MUSIC_DL_BOT_TOKEN_PATH` or config dir | `~/.config/music-dl/bot-shared-token` |
 
 `MUSIC_DL_CONFIG_DIR` is checked first in `path_config_base()`. This is how Docker overrides config location to `/config`.
 

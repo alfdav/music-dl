@@ -54,19 +54,27 @@ Create a branch, make your changes, open a PR against `master`.
 ```shell
 # Quick smoke
 cd tidaldl-py
-uv run pytest tests/test_gui_api.py tests/test_gui_security.py -q
+uv run --extra test pytest tests/test_gui_api.py tests/test_gui_security.py -q
 
 # Full suite
-uv run pytest
+uv run --extra test pytest
 
 # Release smoke (from repo root)
-uv run --project tidaldl-py pytest \
+uv run --project tidaldl-py --extra test pytest \
   tidaldl-py/tests/test_gui_command.py \
   tidaldl-py/tests/test_gui_api.py \
   tidaldl-py/tests/test_setup.py \
   tidaldl-py/tests/test_token_refresh.py \
   tidaldl-py/tests/test_public_branding.py \
   tidaldl-py/tests/test_packaging.py
+```
+
+Discord bot checks:
+
+```shell
+cd apps/discord-bot
+bun test
+bun run typecheck
 ```
 
 ## Releasing Desktop Binaries

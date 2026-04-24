@@ -44,11 +44,11 @@ INSTALL (macOS):
   curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash
 
 DEV:   cd tidaldl-py && uv sync && music-dl gui     # http://localhost:8765
-TEST:  cd tidaldl-py && uv run pytest
+TEST:  cd tidaldl-py && uv run --extra test pytest
 BUILD: cd tidaldl-py && uv sync && uv pip install pyinstaller && bun install && bunx tauri build --bundles dmg
 
-STACK: Python 3.12+, FastAPI, vanilla JS, Tauri v2.
-REPO:  monorepo — all code under tidaldl-py/.
+STACK: Python 3.12+, FastAPI, vanilla JS, Tauri v2, Bun/discord.js for the optional bot.
+REPO:  monorepo — Python app under tidaldl-py/, Discord bot under apps/discord-bot/.
 
 KEY PATHS:
   tidal_dl/gui/static/{app.js,style.css,index.html} — frontend (no framework)
@@ -56,6 +56,7 @@ KEY PATHS:
   tidal_dl/gui/api/           — all API routes
   tidal_dl/gui/security.py    — CSRF, path validation, host validation
   src-tauri/src/lib.rs        — Tauri sidecar spawn + health poll
+  apps/discord-bot/           — optional private Discord voice bot
 
 RULES:
   - Audio: direct <audio src="..."> only. NO Web Audio API. Non-negotiable.
@@ -179,6 +180,7 @@ Your browser opens automatically. The wizard handles the rest.
 ## Features
 
 - **Library browser** — your local collection organized by artist, with album art, quality badges (24-bit, lossless, MQA), and instant search
+- **Home dashboard** — recent additions, recently played, top artists, genres, and repeat listening stats
 - **Tidal search & download** — search the full Tidal catalog, see which tracks you already own, download what you're missing
 - **Quality upgrades** — re-download existing tracks at higher quality without duplicates
 - **Duplicate cleanup** — ISRC-based deduplication finds exact copies across your collection
@@ -198,12 +200,18 @@ The GUI is the main experience, but everything works from the terminal too:
 music-dl gui                    # launch the web UI
 music-dl dl <URL>               # download a track, album, or playlist
 music-dl dl <URL> <URL> ...     # download multiple URLs
+music-dl dl --list urls.txt     # download URLs from a file, one per line
+music-dl dl <URL> --output ~/x  # one-off output directory override
 music-dl cfg                    # view/edit settings
 music-dl login                  # authenticate with Tidal from the terminal
 music-dl logout                 # clear stored Tidal credentials
 music-dl sync                   # sync library database
 music-dl import <file>          # import a playlist from CSV/JSON
 music-dl isrc-tag <path>        # write ISRC tags to local audio files
+music-dl source show            # inspect Hi-Fi API/OAuth download source settings
+music-dl scan add <PATH>        # add and scan a local library directory
+music-dl dl_fav tracks --since 2026-01-01  # download favorite tracks incrementally
+music-dl gui --setup-bot        # run Discord bot onboarding, then start the GUI
 ```
 
 Run `music-dl --help` for the full list.
@@ -215,9 +223,12 @@ Settings are managed from the in-app **Settings** page. The config file lives at
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `download_base_path` | `~/download` | Where downloaded files go |
+| `scan_paths` | `""` | Comma-separated local library roots |
 | `quality_audio` | `HI_RES_LOSSLESS` | Preferred audio quality |
 | `skip_existing` | `true` | Skip tracks you already have |
 | `skip_duplicate_isrc` | `true` | Skip tracks with matching ISRC codes |
+| `download_source` | `hifi_api` | Preferred stream source |
+| `download_source_fallback` | `true` | Fall back to OAuth when the preferred source fails |
 
 ## Architecture
 
@@ -225,13 +236,15 @@ Settings are managed from the in-app **Settings** page. The config file lives at
 graph TD
     CLI["CLI · Typer<br/><code>cli.py</code>"] --> Core
     GUI["GUI · FastAPI<br/><code>gui/</code>"] --> Core
+    Bot["Discord bot · Bun/discord.js<br/><code>apps/discord-bot</code>"] --> BotAPI["Bot API<br/><code>/api/bot/*</code>"]
+    BotAPI --> Core
     Core["config.py<br/>Settings · Tidal"] --> DB["library_db.py<br/>SQLite + WAL"]
     Core --> DL["download.py<br/>Download class"]
     Tidal["Tidal API<br/>tidalapi"] --> DL
     DL --> Tag["mutagen<br/>tagging"]
 ```
 
-Three entry points, one shared core. CLI and GUI use the same singletons (`Settings`, `Tidal`, `LibraryDB`). The download pipeline is identical regardless of entry point. The `<audio>` element plays files directly from source — no Web Audio API, no processing.
+CLI, GUI, and the optional bot share the same backend core. CLI and GUI use the same singletons (`Settings`, `Tidal`, `LibraryDB`). The Discord bot stays thin: slash commands, queue state, and Discord voice transport live in Bun; source resolution, playable URLs, downloads, and auth stay in `music-dl`. The `<audio>` element plays files directly from source — no Web Audio API, no processing.
 
 For deep dives, see:
 
@@ -249,6 +262,10 @@ For deep dives, see:
 | `MUSIC_DL_PORT` | `8765` | Docker compose port mapping |
 | `MUSIC_DL_CONFIG` | `~/.config/music-dl` | Docker compose config volume source |
 | `MUSIC_DL_DOWNLOADS` | `~/Music` | Docker compose downloads volume source |
+| `MUSIC_DL_BOT_ENV_PATH` | `<config-dir>/discord-bot.env` | Optional Discord bot env-file override |
+| `MUSIC_DL_BOT_TOKEN_PATH` | `<config-dir>/bot-shared-token` | Optional backend shared-token file override |
+| `MUSIC_DL_BOT_PATH` | auto-detected repo path | Optional path to `apps/discord-bot` for `music-dl gui --setup-bot` |
+| `MUSIC_DL_BOT_TOKEN` | _(unset)_ | Optional env override for bot/backend bearer auth |
 
 ## Development
 
@@ -259,16 +276,24 @@ uv sync
 music-dl gui
 ```
 
-Run the test suite:
+Run the Python test suite:
 
 ```shell
-pytest
+uv run --extra test pytest
+```
+
+Run the Discord bot checks:
+
+```shell
+cd apps/discord-bot
+bun test
+bun run typecheck
 ```
 
 Run the release smoke coverage from the repository root:
 
 ```shell
-uv run --project tidaldl-py pytest \
+uv run --project tidaldl-py --extra test pytest \
   tidaldl-py/tests/test_gui_command.py \
   tidaldl-py/tests/test_gui_api.py \
   tidaldl-py/tests/test_setup.py \
@@ -299,7 +324,7 @@ sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
 ```shell
 cd tidaldl-py
 uv sync && uv pip install pyinstaller
-bun install              # or: npm install
+bun install
 # Linux:
 bunx tauri build          # outputs .AppImage + .deb
 # macOS (produces .app + .dmg):
