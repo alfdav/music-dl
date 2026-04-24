@@ -253,7 +253,7 @@ Startup recovery rule: queued jobs stay queued. `running`, `retrying`, and `paus
 
 Pause rule: global queue pause does not rewrite queued backlog rows to `paused`; queued jobs remain `queued` so they can resume after restart.
 
-FastAPI lifespan creates `DownloadJobService`, stores it on `app.state.download_jobs`, registers the service event hub with the running event loop, and stops its worker during lifespan shutdown. Tests pass `job_db_path` to `create_app()` so API smoke tests use an isolated temporary job database instead of the user's real `library.db`.
+FastAPI lifespan creates `DownloadJobService`, stores it on `app.state.download_jobs`, registers the service event hub with the running event loop, starts the persisted-job worker, and stops that worker during lifespan shutdown. Tests pass `job_db_path` to `create_app()` so API smoke tests use an isolated temporary job database instead of the user's real `library.db`.
 
 **`favorites`** — user-starred tracks
 
@@ -315,30 +315,37 @@ def _get_db() -> LibraryDB:
 ### End-to-End Flow
 
 ```
-POST /api/downloads/trigger {track_ids: [123, 456]}
+POST /api/download {track_ids: [123, 456]}
   │
-  ├─ Create DownloadEntry per track (status: "queued")
-  ├─ Broadcast SSE: {"type": "queued", ...}
-  ├─ Spawn daemon thread
+  ├─ DownloadJobService.enqueue_download()
+  ├─ Create `download_jobs` rows with status "queued"
+  ├─ Broadcast SSE: {"type": "batch_queued", ...}
+  ├─ Worker thread claims oldest queued job atomically
   │
-  │  [Background Thread]
-  │  For each track_id:
+  │  [DownloadJobService worker]
+  │  For each claimed job:
+  │    ├─ Check cancellation at safe checkpoints
   │    ├─ Fetch track metadata from Tidal
-  │    ├─ Broadcast SSE: {"type": "downloading", "progress": 0}
+  │    ├─ Update job display fields
+  │    ├─ Broadcast SSE: {"type": "progress", "status": "downloading"}
   │    ├─ Get stream manifest (Hi-Fi API or OAuth)
   │    ├─ Download segments (parallel, up to N)
   │    ├─ Merge segments → single file
   │    ├─ Decrypt if encrypted
   │    ├─ Write metadata via mutagen (tags, cover, lyrics)
-  │    ├─ Register in LibraryDB (immediate visibility)
+  │    ├─ Scan new downloads into LibraryDB
   │    ├─ Record in download_history
-  │    └─ Broadcast SSE: {"type": "completed", "progress": 100}
+  │    ├─ Mark job "done"
+  │    └─ Broadcast SSE: {"type": "complete", "status": "done"}
   │
   │  On error:
   │    ├─ Log exception
   │    ├─ Record error in download_history (nested try/except — never breaks broadcast)
+  │    ├─ Mark job "error"
   │    └─ Broadcast SSE: {"type": "error", "message": "..."}
 ```
+
+The worker lazy-loads Tidal config/download dependencies only when it actually executes a claimed download. That keeps API startup and service tests from triggering network-backed API-key refresh work.
 
 ### SSE Broadcasting
 
