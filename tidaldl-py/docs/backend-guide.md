@@ -45,7 +45,7 @@
 | `gui/server.py` | Uvicorn launcher. Binds `127.0.0.1` only |
 | `gui/security.py` | CSRF, host validation, path validation, stream URL validation |
 | `gui/api/` | API routers: home, search, library, downloads, playlists, settings, setup, duplicates, upgrade, albums, playback |
-| `gui/services/` | Planned persisted download/upgrade job service layer |
+| `gui/services/` | Persisted download/upgrade job lifecycle services (planned worker layer) |
 | `helper/library_db.py` | SQLite wrapper: schema, migrations, CRUD, WAL mode |
 | `helper/path.py` | Config paths, download path templates, filename sanitization |
 | `helper/cache.py` | `TTLCache` — thread-safe in-memory cache with TTL expiry |
@@ -223,9 +223,7 @@ Index: `idx_play_events_at`
 | `cover_url` | TEXT | Album art URL |
 | `quality` | TEXT | Download quality |
 
-**`download_jobs`** — planned persisted queue for normal downloads and quality upgrades
-
-Design source: `docs/superpowers/specs/2026-04-23-persisted-download-jobs-design.md`.
+**`download_jobs`** — persisted queue for normal downloads and quality upgrades
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -248,6 +246,8 @@ Design source: `docs/superpowers/specs/2026-04-23-persisted-download-jobs-design
 | `finished_at` | REAL | Unix timestamp |
 
 Indexes: `idx_download_jobs_status_created`, `idx_download_jobs_track_id`
+
+Job creation uses an atomic `BEGIN IMMEDIATE` transaction so two requests cannot enqueue active duplicate work for the same `track_id`. Queue claiming also uses `BEGIN IMMEDIATE` and updates only a still-queued row before returning it to the worker.
 
 Startup recovery rule: queued jobs stay queued. `running`, `retrying`, and `paused` jobs become `interrupted`. Terminal jobs stay terminal.
 
@@ -280,6 +280,7 @@ Additive only. Runs on every `open()`:
 1. **v1 → v2**: Add `album`, `duration`, `quality`, `format` columns to `scanned`
 2. **v2 → v3**: Add `play_count`, `last_played`, `genre` to `scanned`
 3. **Late additions**: `cover_url`, `quality` columns on `download_history`
+4. **Download jobs**: Add `download_jobs` table and job lookup indexes
 
 Pattern: check `PRAGMA table_info()`, `ALTER TABLE ADD COLUMN` if missing. Never destructive.
 

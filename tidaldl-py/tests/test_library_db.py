@@ -151,6 +151,67 @@ class TestDownloadHistory:
         assert len(db.download_history()) == 1
 
 
+class TestDownloadJobs:
+    def test_download_jobs_table_created(self, db):
+        assert db._conn is not None
+        tables = {
+            row["name"]
+            for row in db._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert "download_jobs" in tables
+
+        indexes = {
+            row["name"]
+            for row in db._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            )
+        }
+        assert "idx_download_jobs_status_created" in indexes
+        assert "idx_download_jobs_track_id" in indexes
+
+    def test_download_job_crud_and_claim_oldest(self, db):
+        first = db.create_download_job_if_not_active(
+            kind="download", track_id=10, name="First"
+        )
+        second = db.create_download_job_if_not_active(
+            kind="upgrade",
+            track_id=11,
+            name="Second",
+            old_path="/tmp/old.flac",
+        )
+
+        claimed = db.claim_next_download_job()
+
+        assert claimed is not None
+        assert claimed["id"] == first
+        assert claimed["status"] == "running"
+        assert claimed["track_id"] == 10
+
+        remaining = db.get_download_job(second)
+        assert remaining["status"] == "queued"
+
+    def test_download_job_recovery_marks_active_jobs_interrupted(self, db):
+        queued = db.create_download_job_if_not_active(kind="download", track_id=1)
+        running = db.create_download_job_if_not_active(kind="download", track_id=2)
+        retrying = db.create_download_job_if_not_active(kind="download", track_id=3)
+        paused = db.create_download_job_if_not_active(kind="download", track_id=4)
+        done = db.create_download_job_if_not_active(kind="download", track_id=5)
+
+        db.update_download_job(running, status="running")
+        db.update_download_job(retrying, status="retrying")
+        db.update_download_job(paused, status="paused")
+        db.update_download_job(done, status="done")
+        db.recover_download_jobs()
+
+        assert db.get_download_job(queued)["status"] == "queued"
+        assert db.get_download_job(running)["status"] == "interrupted"
+        assert db.get_download_job(retrying)["status"] == "interrupted"
+        assert db.get_download_job(paused)["status"] == "interrupted"
+        assert db.get_download_job(done)["status"] == "done"
+
+
 class TestFavorites:
     def test_add_and_check(self, db):
         db.add_favorite(path="/a.flac", artist="X", title="Y")
