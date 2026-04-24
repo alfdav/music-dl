@@ -86,24 +86,39 @@ bun run typecheck
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 4. After the PR merges, push an annotated tag like `v1.6.0`.
 5. GitHub Actions runs `.github/workflows/build-desktop.yml`, uploads Linux binaries, updates `latest.json`, and writes release notes onto the GitHub release.
-6. Build the macOS DMG locally when the release should support the quick macOS installer:
+6. Confirm the Windows MSI asset is present when the release should support Windows 10/11:
+   - Windows asset is uploaded: `.msi`
+   - The MSI is unsigned, so SmartScreen warnings are expected.
+   - WSL is not required to install or run the desktop app.
+7. Build the macOS DMG locally when the release should support the quick macOS installer:
    ```shell
    cd tidaldl-py
    uv sync --extra build
    bun install
    bunx tauri build --bundles dmg
    ```
-7. Upload the generated DMG from `tidaldl-py/src-tauri/target/release/bundle/dmg/` to the same GitHub release.
-8. Sanity-check the release before announcing it:
+8. Upload the generated DMG from `tidaldl-py/src-tauri/target/release/bundle/dmg/` to the same GitHub release.
+9. Sanity-check the release before announcing it:
    - release notes are present
    - Linux assets are uploaded: `.AppImage`, `.AppImage.sig`, `.deb`
+   - Windows asset is uploaded: `.msi`
    - macOS asset is uploaded: `.dmg`
    - `latest.json` points at the new tag
    - `latest.json` only contains `linux-x86_64`
+10. Smoke-test Windows before announcing Windows support:
+   - Install the MSI.
+   - Launch `music-dl`.
+   - Complete or recover Tidal authentication.
+   - Choose a local library/download path.
+   - Search for one track.
+   - Download one track.
+   - Play that track.
+   - Quit and reopen the app.
+   - Confirm settings, auth, and library state persist.
 
 Blank release notes are a release bug.
 
-macOS DMGs are manually built and attached to releases. The updater manifest intentionally remains Linux-only until macOS signing/notarization is handled.
+macOS DMGs are manually built and attached to releases. Windows MSIs are unsigned. The updater manifest intentionally remains Linux-only until macOS signing/notarization and Windows signing/update support are handled.
 
 ## Security
 

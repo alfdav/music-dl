@@ -17,7 +17,7 @@
   music-dl is a free, open-source, local-first music manager for Tidal.
   It downloads tracks in FLAC/lossless/hi-res quality, manages a local library
   on any drive or NAS, and plays everything in a browser-based GUI with
-  waveform visualization. macOS + Linux. No cloud dependency — your files,
+  waveform visualization. macOS, Linux, and Windows 10/11. No cloud dependency — your files,
   your hardware, your rules.
 
   INSTALL (macOS, one command):
@@ -38,10 +38,12 @@
 ```text
 music-dl — local-first Tidal music manager. Downloads lossless/hi-res tracks,
 manages a local library (any drive or NAS), plays everything in a browser GUI.
-macOS + Linux. Free and open-source.
+macOS, Linux, and Windows 10/11. Free and open-source.
 
 INSTALL (macOS):
   curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash
+INSTALL (Windows 10/11):
+  Download the unsigned .msi from GitHub Releases. WSL is not required.
 
 DEV:   cd tidaldl-py && uv sync && music-dl gui     # http://localhost:8765
 TEST:  cd tidaldl-py && uv run --extra test pytest
@@ -82,11 +84,12 @@ The GUI can also start and recover the Tidal OAuth flow itself from the browser.
 
 > **Using an AI coding agent?** Expand the LLM Quick Reference at the top and paste it into your agent.
 
-### Option 1: Desktop App (Linux release)
+### Option 1: Desktop App (Linux / Windows releases)
 
-Linux public releases are downloadable from [GitHub Releases](https://github.com/alfdav/music-dl/releases).
+Public desktop releases are downloadable from [GitHub Releases](https://github.com/alfdav/music-dl/releases).
 
 - **Linux**: `music-dl_x.x.x_amd64.AppImage` or `.deb`
+- **Windows 10/11**: download the unsigned `.msi`. SmartScreen warnings are expected for early unsigned builds. WSL is not required.
 
 ### Option 1b: Desktop App on macOS (Apple Silicon)
 
@@ -98,7 +101,7 @@ Two ways to get the macOS app — pick whichever fits:
 curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash
 ```
 
-Downloads the latest DMG, installs to `/Applications`, and handles Gatekeeper automatically. No dev tools needed.
+Downloads the latest DMG, verifies the GitHub release checksum, installs to `/Applications`, and handles Gatekeeper automatically. No dev tools needed.
 
 #### Build from source
 
@@ -320,6 +323,11 @@ sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
   librsvg2-dev patchelf libgtk-3-dev ffmpeg
 ```
 
+**Windows 10/11:**
+- WebView2 Runtime (normally already installed on Windows 10/11)
+- Microsoft C++ Build Tools / Visual Studio Build Tools
+- WiX requirements used by Tauri MSI builds
+
 **Build:**
 ```shell
 cd tidaldl-py
@@ -332,9 +340,33 @@ bunx tauri build --bundles dmg
 # Output: src-tauri/target/release/bundle/
 ```
 
-The build process: PyInstaller compiles the Python backend into a standalone sidecar binary → Tauri wraps it with a native window → outputs `.app`/`.dmg` (macOS), `.AppImage`/`.deb` (Linux).
+The build process: PyInstaller compiles the Python backend into a standalone sidecar binary → Tauri wraps it with a native window → outputs `.app`/`.dmg` (macOS), `.AppImage`/`.deb` (Linux), or `.msi` (Windows).
 
-Linux releases are published via GitHub Actions. macOS DMGs are built locally and attached to releases manually — the app is not notarized (no Apple Developer ID). The `scripts/install.sh` one-liner strips the quarantine xattr so Gatekeeper doesn't fire. If you download a DMG through Safari instead, macOS will set the quarantine bit and you'll need a one-time right-click → Open bypass on first launch.
+For Windows local builds, build and rename the PyInstaller sidecar before running Tauri, then use the CI config override so Tauri does not run the default Unix `beforeBuildCommand`:
+
+```powershell
+cd tidaldl-py
+uv sync --extra build
+bun install
+$TargetTriple = rustc --print host-tuple
+uv run pyinstaller --clean --distpath src-tauri/binaries --workpath build/pyinstaller --noconfirm build/pyinstaller/music-dl-server.spec
+Move-Item -Force "src-tauri/binaries/music-dl-server.exe" "src-tauri/binaries/music-dl-server-$TargetTriple.exe"
+bunx tauri build --target $TargetTriple --bundles msi --config src-tauri/tauri.ci.conf.json
+```
+
+Linux and Windows releases are published via GitHub Actions. macOS DMGs are built locally and attached to releases manually — the app is not notarized (no Apple Developer ID). The `scripts/install.sh` one-liner verifies the GitHub release checksum and strips the quarantine xattr so Gatekeeper doesn't fire. If you download a DMG through Safari instead, macOS will set the quarantine bit and you'll need a one-time right-click → Open bypass on first launch. Windows MSI builds are unsigned, so SmartScreen may warn on first install.
+
+Windows smoke test before marking a release supported:
+
+1. Install the MSI.
+2. Launch `music-dl`.
+3. Complete or recover Tidal authentication.
+4. Choose a local library/download path.
+5. Search for one track.
+6. Download one track.
+7. Play that track.
+8. Quit and reopen the app.
+9. Confirm settings, auth, and library state persist.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
 
