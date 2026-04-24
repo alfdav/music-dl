@@ -13,6 +13,8 @@ from typing import Literal
 import urllib.error
 import urllib.request
 
+import uvicorn
+
 from tidal_dl.helper.path import path_config_base
 
 APP = "music-dl"
@@ -188,3 +190,24 @@ def discover_ready_daemon(
     ):
         raise RuntimeError("Stale daemon metadata cleanup failed")
     return None
+
+
+def make_uvicorn_config(meta: DaemonMetadata, *, bind_all: bool = False) -> uvicorn.Config:
+    from tidal_dl.gui import create_app
+
+    host = "0.0.0.0" if bind_all else meta.host
+
+    def app_factory():
+        return create_app(
+            port=meta.port,
+            daemon_meta=meta,
+            write_daemon_metadata=True,
+        )
+
+    return uvicorn.Config(
+        app_factory,
+        factory=True,
+        host=host,
+        port=meta.port,
+        log_level="warning",
+    )

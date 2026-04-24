@@ -12,6 +12,15 @@ import webbrowser
 
 import uvicorn
 
+from tidal_dl.gui.daemon import (
+    DaemonMetadata,
+    discover_ready_daemon,
+    make_uvicorn_config,
+    remove_metadata,
+    select_port,
+    write_metadata,
+)
+
 # ── Restart plumbing ──────────────────────────────────────────────────────────
 
 _restart_requested: bool = False
@@ -27,33 +36,47 @@ def request_restart() -> None:
 # ── Public entry point ────────────────────────────────────────────────────────
 
 
-def run(port: int = 8765, open_browser: bool = True) -> None:
+def run(
+    port: int = 8765,
+    open_browser: bool = True,
+    *,
+    discoverer=discover_ready_daemon,
+    browser_open=webbrowser.open,
+    server_factory=uvicorn.Server,
+) -> None:
     global _restart_requested, _server_instance
 
-    url = f"http://localhost:{port}"
-    if open_browser:
-        webbrowser.open(url)
+    existing = discoverer()
+    if existing is not None:
+        if open_browser:
+            browser_open(existing.base_url)
+        print(f"music-dl GUI: {existing.base_url}")
+        return
 
     # Bind 0.0.0.0 inside Docker so the host can reach us;
     # localhost everywhere else for security.
-    host = "0.0.0.0" if os.environ.get("MUSIC_DL_BIND_ALL") else "127.0.0.1"
+    bind_all = bool(os.environ.get("MUSIC_DL_BIND_ALL"))
+    actual_port = select_port(port)
+    meta = DaemonMetadata.for_current_process(port=actual_port, mode="browser")
+    if open_browser:
+        browser_open(meta.base_url)
+    print(f"music-dl GUI: {meta.base_url}")
 
-    while True:
-        _restart_requested = False
+    try:
+        while True:
+            _restart_requested = False
+            write_metadata(meta.with_status("starting"))
 
-        config = uvicorn.Config(
-            "tidal_dl.gui:create_app",
-            factory=True,
-            host=host,
-            port=port,
-            log_level="warning",
-        )
-        server = uvicorn.Server(config)
-        _server_instance = server
+            config = make_uvicorn_config(meta, bind_all=bind_all)
+            server = server_factory(config)
+            _server_instance = server
 
-        asyncio.run(server.serve())
+            asyncio.run(server.serve())
 
+            _server_instance = None
+
+            if not _restart_requested:
+                break
+    finally:
         _server_instance = None
-
-        if not _restart_requested:
-            break
+        remove_metadata(meta)
