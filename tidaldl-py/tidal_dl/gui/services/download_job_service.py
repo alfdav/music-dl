@@ -11,13 +11,21 @@ import requests
 
 from tidal_dl.gui.services.job_events import JobEventHub
 from tidal_dl.gui.services.job_models import DownloadJob, JobKind, JobStatus, UpgradeJobInput
+from tidal_dl.gui.services.upgrade_jobs import (
+    QUALITY_STRING_TO_ENUM,
+    cleanup_replaced_track_files,
+    norm,
+    resolve_tidal_album,
+)
 from tidal_dl.helper.library_db import LibraryDB
-from tidal_dl.helper.path import path_config_base
+from tidal_dl.helper.path import format_path_media, path_config_base
 
 logger = logging.getLogger("music-dl.gui")
 Settings: Any = None
 Tidal: Any = None
 Download: Any = None
+DownloadOutcome: Any = None
+register_downloaded_track: Any = None
 
 
 def _download_dependencies() -> tuple[Any, Any, Any]:
@@ -32,6 +40,20 @@ def _download_dependencies() -> tuple[Any, Any, Any]:
 
         Download = _Download
     return Settings, Tidal, Download
+
+
+def _upgrade_dependencies() -> tuple[Any, Any, Any, Any, Any]:
+    global DownloadOutcome, register_downloaded_track
+    settings_cls, tidal_cls, download_cls = _download_dependencies()
+    if DownloadOutcome is None:
+        from tidal_dl.model.downloader import DownloadOutcome as _DownloadOutcome
+
+        DownloadOutcome = _DownloadOutcome
+    if register_downloaded_track is None:
+        from tidal_dl.download import register_downloaded_track as _register_downloaded_track
+
+        register_downloaded_track = _register_downloaded_track
+    return settings_cls, tidal_cls, download_cls, DownloadOutcome, register_downloaded_track
 
 
 def scan_new_downloads(db, settings) -> None:
@@ -291,7 +313,7 @@ class DownloadJobService:
 
             db = self._open_db()
             try:
-                row = db.claim_next_download_job(kind=JobKind.DOWNLOAD.value)
+                row = db.claim_next_download_job()
             finally:
                 db.close()
             if row is None:
@@ -310,9 +332,13 @@ class DownloadJobService:
         if self._is_cancel_requested(job):
             self._mark_cancelled(job)
             return
-        if job.kind is not JobKind.DOWNLOAD:
-            raise ValueError(f"Unsupported job kind: {job.kind.value}")
-        self._execute_download_job(job)
+        if job.kind is JobKind.DOWNLOAD:
+            self._execute_download_job(job)
+            return
+        if job.kind is JobKind.UPGRADE:
+            self._execute_upgrade_job(job)
+            return
+        raise ValueError(f"Unsupported job kind: {job.kind.value}")
 
     def _execute_download_job(self, job: DownloadJob) -> None:
         settings_cls, tidal_cls, download_cls = _download_dependencies()
@@ -448,6 +474,212 @@ class DownloadJobService:
         finally:
             db.close()
 
+    def _execute_upgrade_job(self, job: DownloadJob) -> None:
+        settings_cls, tidal_cls, download_cls, outcome_cls, register_func = _upgrade_dependencies()
+        settings = settings_cls()
+        started_at = job.started_at or time.time()
+        old_path = job.old_path or ""
+        if not old_path:
+            raise ValueError("Upgrade job missing old_path")
+
+        db = self._open_db()
+        try:
+            row = db.get(old_path)
+            if row is None:
+                raise ValueError(f"Not in library: {old_path}")
+
+            tidal = tidal_cls()
+            track = tidal.session.track(job.track_id)
+            name = track.full_name or track.name or job.name
+            artist = ", ".join(a.name for a in track.artists if a.name) if track.artists else ""
+            album = (track.album.name or "") if track.album else ""
+            cover_url = self._cover_url(track)
+            quality = job.quality or getattr(
+                settings.data, "upgrade_target_quality", "HI_RES_LOSSLESS"
+            )
+            file_template = settings.data.format_track
+
+            local_album = row.get("album") or ""
+            isrc = row.get("isrc") or ""
+            if local_album and isrc and hasattr(settings.data, "format_album"):
+                tidal_album, album_tracks = resolve_tidal_album(
+                    tidal.session,
+                    local_album,
+                    row.get("artist") or "",
+                    [isrc],
+                )
+                album_track = self._track_by_isrc(album_tracks, isrc)
+                if tidal_album and album_track:
+                    track = album_track
+                    name = track.full_name or track.name or name
+                    artist = ", ".join(a.name for a in track.artists if a.name) if track.artists else artist
+                    album = (track.album.name or "") if track.album else album
+                    cover_url = self._cover_url(track)
+                    file_template = format_path_media(
+                        settings.data.format_album,
+                        tidal_album,
+                        delimiter_artist=settings.data.filename_delimiter_artist,
+                        delimiter_album_artist=settings.data.filename_delimiter_album_artist,
+                        use_primary_album_artist=settings.data.use_primary_album_artist,
+                    )
+
+            self._update_job(
+                job,
+                name=name,
+                artist=artist,
+                album=album,
+                cover_url=cover_url,
+                quality=quality,
+                status=JobStatus.RUNNING.value,
+                progress=0,
+            )
+            self.events.broadcast(
+                {
+                    "type": "progress",
+                    "job_id": job.id,
+                    "kind": job.kind.value,
+                    "track_id": job.track_id,
+                    "name": name,
+                    "artist": artist,
+                    "album": album,
+                    "cover_url": cover_url,
+                    "quality": quality,
+                    "status": "downloading",
+                    "progress": 0,
+                }
+            )
+            self.events.broadcast(
+                {
+                    "type": "upgrade_progress",
+                    "job_id": job.id,
+                    "track_id": job.track_id,
+                    "name": name,
+                    "artist": artist,
+                    "status": "upgrading",
+                    "old_path": old_path,
+                }
+            )
+
+            local_artist = norm(row.get("artist", ""))
+            tidal_artist = norm(artist)
+            if local_artist and tidal_artist and local_artist != tidal_artist:
+                raise ValueError(f"Artist mismatch: expected {row.get('artist') or ''}, got {artist}")
+
+            quality_enum = QUALITY_STRING_TO_ENUM.get(quality)
+            if quality_enum is None:
+                quality_enum = QUALITY_STRING_TO_ENUM.get("HI_RES_LOSSLESS")
+
+            dl = download_cls(
+                tidal_obj=tidal,
+                path_base=settings.data.download_base_path,
+                fn_logger=logger,
+                skip_existing=False,
+            )
+            result = dl.item(
+                file_template=file_template,
+                media=track,
+                quality_audio=quality_enum,
+                duplicate_action_override="redownload",
+            )
+            outcome, new_path = result if isinstance(result, tuple) else (None, result)
+            successful = {outcome_cls.DOWNLOADED, outcome_cls.COPIED, None}
+            if outcome not in successful:
+                raise ValueError(f"Download outcome: {outcome}")
+
+            removed_paths = cleanup_replaced_track_files(
+                db,
+                old_path=old_path,
+                new_path=str(new_path),
+            )
+            db.commit()
+            new_path = self._rename_replacement_if_possible(old_path, new_path, removed_paths, db)
+            register_func(new_path)
+            db.commit()
+
+            isrc = row.get("isrc")
+            if isrc:
+                db.delete_probe(isrc)
+                db.commit()
+
+            finished_at = time.time()
+            self._record_history(
+                track_id=job.track_id,
+                name=name,
+                artist=artist,
+                album=album,
+                status="done",
+                started_at=started_at,
+                finished_at=finished_at,
+                cover_url=cover_url,
+                quality=quality,
+            )
+            self._update_job(
+                job,
+                status=JobStatus.DONE.value,
+                progress=100,
+                new_path=str(new_path),
+                finished_at=finished_at,
+            )
+            self.events.broadcast(
+                {
+                    "type": "complete",
+                    "job_id": job.id,
+                    "kind": job.kind.value,
+                    "track_id": job.track_id,
+                    "name": name,
+                    "artist": artist,
+                    "album": album,
+                    "cover_url": cover_url,
+                    "quality": quality,
+                    "status": "done",
+                }
+            )
+            self.events.broadcast(
+                {
+                    "type": "upgrade_complete",
+                    "job_id": job.id,
+                    "track_id": job.track_id,
+                    "name": name,
+                    "artist": artist,
+                    "status": "done",
+                    "old_path": old_path,
+                    "new_path": str(new_path),
+                    "removed_paths": removed_paths,
+                }
+            )
+        finally:
+            db.close()
+
+    def _track_by_isrc(self, tracks: list, isrc: str):
+        target = isrc.upper()
+        for track in tracks:
+            track_isrc = getattr(track, "isrc", None)
+            if track_isrc and track_isrc.upper() == target:
+                return track
+        return None
+
+    def _rename_replacement_if_possible(
+        self,
+        old_path: str,
+        new_path,
+        removed_paths: list[str],
+        db: LibraryDB,
+    ) -> Path:
+        replacement = Path(new_path) if not isinstance(new_path, Path) else new_path
+        if not old_path or old_path not in removed_paths or str(replacement) == old_path:
+            return replacement
+
+        original = Path(old_path)
+        if replacement.parent != original.parent or original.exists():
+            return replacement
+
+        try:
+            replacement.rename(original)
+            db.remove(str(replacement))
+            return original
+        except OSError:
+            return replacement
+
     def _cover_url(self, track) -> str:
         if not track.album:
             return ""
@@ -555,3 +787,15 @@ class DownloadJobService:
                 "error": str(exc),
             }
         )
+        if job.kind is JobKind.UPGRADE:
+            self.events.broadcast(
+                {
+                    "type": "upgrade_error",
+                    "job_id": job.id,
+                    "track_id": job.track_id,
+                    "name": job.name,
+                    "artist": job.artist,
+                    "error": str(exc),
+                    "old_path": job.old_path,
+                }
+            )

@@ -255,7 +255,7 @@ Pause rule: global queue pause does not rewrite queued backlog rows to `paused`;
 
 FastAPI lifespan creates `DownloadJobService`, stores it on `app.state.download_jobs`, registers the service event hub with the running event loop, starts the persisted-job worker, and stops that worker during lifespan shutdown. Tests pass `job_db_path` to `create_app()` so API smoke tests use an isolated temporary job database instead of the user's real `library.db`.
 
-Normal downloads and upgrade requests both enqueue through `DownloadJobService`, so active duplicate suppression is shared across job kinds and enforced by the `download_jobs` table instead of route-local in-memory state. The worker currently claims only `kind='download'`; upgrade jobs remain queued until the upgrade worker path is moved into the service.
+Normal downloads and upgrade requests both enqueue through `DownloadJobService`, so active duplicate suppression is shared across job kinds and enforced by the `download_jobs` table instead of route-local in-memory state. The worker claims both normal download jobs and upgrade jobs. Upgrade cleanup, quality ranking, album resolution, and trash helpers live in `tidal_dl.gui.services.upgrade_jobs`; route modules do not own upgrade execution.
 
 **`favorites`** — user-starred tracks
 
@@ -347,7 +347,9 @@ POST /api/download {track_ids: [123, 456]}
   │    └─ Broadcast SSE: {"type": "error", "message": "..."}
 ```
 
-The worker lazy-loads Tidal config/download dependencies only when it actually executes a claimed download. That keeps API startup and service tests from triggering network-backed API-key refresh work.
+Upgrade jobs follow the same persisted lifecycle. `/api/upgrade/start` writes `kind='upgrade'` jobs with `old_path` and target quality, the worker downloads with `duplicate_action_override='redownload'`, applies the artist-mismatch safety gate before cleanup, removes stale same-album copies through `upgrade_jobs.cleanup_replaced_track_files()`, records `new_path`, and broadcasts `complete` plus `upgrade_complete`.
+
+The worker lazy-loads Tidal config/download dependencies only when it actually executes a claimed job. That keeps API startup and service tests from triggering network-backed API-key refresh work.
 
 ### SSE Broadcasting
 

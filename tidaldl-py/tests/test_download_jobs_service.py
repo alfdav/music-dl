@@ -241,3 +241,116 @@ def test_service_enqueue_upgrade_uses_shared_active_suppression(tmp_path):
     )
 
     assert result == {"status": "queued", "count": 1, "skipped": 1}
+
+
+def test_worker_executes_upgrade_job_and_marks_new_path(tmp_path, monkeypatch):
+    from tidal_dl.gui.services.job_models import UpgradeJobInput
+    from tidal_dl.helper.library_db import LibraryDB
+
+    old_path = tmp_path / "old.flac"
+    old_path.write_bytes(b"old audio")
+    new_path = tmp_path / "new.flac"
+    new_path.write_bytes(b"new audio")
+
+    db = LibraryDB(tmp_path / "library.db")
+    db.open()
+    db.record(
+        str(old_path),
+        status="tagged",
+        isrc="US-TST-00-00001",
+        artist="Test Artist",
+        title="Song",
+        album="Album",
+        quality="44100Hz/16bit",
+        fmt="FLAC",
+    )
+    db.commit()
+    db.close()
+
+    service = _service(tmp_path)
+    service.enqueue_upgrade(
+        [
+            UpgradeJobInput(
+                track_id=123,
+                old_path=str(old_path),
+                quality="HI_RES_LOSSLESS",
+            )
+        ]
+    )
+
+    class FakeArtist:
+        name = "Test Artist"
+
+    class FakeAlbum:
+        name = "Album"
+
+        def image(self, size):
+            return f"https://img.example.com/{size}.jpg"
+
+    class FakeTrack:
+        id = 123
+        name = "Song"
+        full_name = "Song"
+        artists = [FakeArtist()]
+        album = FakeAlbum()
+
+    class FakeSession:
+        def track(self, track_id):
+            assert track_id == 123
+            return FakeTrack()
+
+    class FakeTidal:
+        session = FakeSession()
+
+    class FakeSettingsData:
+        download_base_path = str(tmp_path)
+        skip_existing = True
+        format_track = "{track_title}"
+        quality_audio = "LOSSLESS"
+        upgrade_target_quality = "HI_RES_LOSSLESS"
+
+    class FakeSettings:
+        data = FakeSettingsData()
+
+    class FakeDownload:
+        def __init__(self, **kwargs):
+            pass
+
+        def item(self, **kwargs):
+            assert kwargs["duplicate_action_override"] == "redownload"
+            return "downloaded", new_path
+
+    class FakeDownloadOutcome:
+        DOWNLOADED = "downloaded"
+        COPIED = "copied"
+
+    events = []
+    registered = []
+    monkeypatch.setattr("tidal_dl.gui.services.download_job_service.Tidal", FakeTidal)
+    monkeypatch.setattr("tidal_dl.gui.services.download_job_service.Settings", FakeSettings)
+    monkeypatch.setattr("tidal_dl.gui.services.download_job_service.Download", FakeDownload)
+    monkeypatch.setattr(
+        "tidal_dl.gui.services.download_job_service.DownloadOutcome",
+        FakeDownloadOutcome,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "tidal_dl.gui.services.download_job_service.register_downloaded_track",
+        registered.append,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "tidal_dl.gui.services.download_job_service.cleanup_replaced_track_files",
+        lambda *args, **kwargs: [str(old_path)],
+        raising=False,
+    )
+    service.events.broadcast = events.append
+
+    job = service.claim_next_for_test()
+    service.execute_job_for_test(job)
+
+    stored = service.get_job_for_test(job.id)
+    assert stored.status.value == "done"
+    assert stored.new_path == str(new_path)
+    assert registered == [new_path]
+    assert any(event["type"] == "upgrade_complete" for event in events)
