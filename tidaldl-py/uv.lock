@@ -298,6 +298,7 @@ name = "music-dl"
 version = "1.6.0"
 source = { editable = "." }
 dependencies = [
+    { name = "certifi" },
     { name = "coloredlogs" },
     { name = "dataclasses-json" },
     { name = "fastapi" },
@@ -330,6 +331,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "certifi", specifier = ">=2026.2.25" },
     { name = "coloredlogs", specifier = ">=15.0.1" },
     { name = "dataclasses-json", specifier = ">=0.6.7" },
     { name = "fastapi", specifier = ">=0.115.0" },

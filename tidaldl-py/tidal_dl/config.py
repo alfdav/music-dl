@@ -17,6 +17,7 @@ from pathlib import Path
 from threading import Event, Lock
 from typing import Any, Generic, Protocol, Self, TypeVar
 
+import certifi
 import typer
 from rich.console import Console as RichConsole
 from tidalapi.media import Quality, VideoQuality
@@ -270,6 +271,7 @@ class Tidal(BaseConfig[ModelToken], metaclass=SingletonMeta):
         super().__init__(ModelToken, path_file_token())
         tidal_config = TidalConfig(item_limit=10000)
         self.session = Session(tidal_config)
+        self.session.request_session.verify = certifi.where()
         self.original_client_id = self.session.config.client_id
         self.original_client_secret = self.session.config.client_secret
         # Serialize all stream-fetch operations to prevent race conditions

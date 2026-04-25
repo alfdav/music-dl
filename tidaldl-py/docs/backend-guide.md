@@ -126,9 +126,10 @@ Tauri sidecar both discover that daemon through `daemon.json` and confirm
 readiness through `/api/server/health`.
 
 `daemon.json` includes `base_url`, `health_url`, `pid`, `mode`, and `status`.
-Tauri never assumes port `8765`; it reuses a ready browser daemon when the
-metadata health check passes, otherwise it starts its own sidecar and waits
-for metadata from that exact child process.
+Tauri never assumes port `8765`; it reuses a ready browser or sidecar daemon
+when the metadata health check passes, otherwise it starts its own sidecar and
+waits for healthy metadata from the spawned process or the PyInstaller worker
+child that publishes daemon readiness.
 
 The desktop shell also handles `music-dl://` deep links. It parses the launch
 URL into the same hash-route shapes used by the browser UI, waits for the
