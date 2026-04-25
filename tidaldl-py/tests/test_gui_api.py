@@ -40,6 +40,15 @@ def test_static_js_does_not_force_single_tab_playback():
     assert '_playerChannel.postMessage(\'pause\')' not in resp.text
 
 
+def test_static_js_syncs_recently_played_from_server_memory():
+    client = _make_client()
+    resp = client.get("/app.js", headers=_HOST_HEADER)
+
+    assert resp.status_code == 200
+    assert "async function _syncRecentFromServer()" in resp.text
+    assert "api('/home/recent?limit=' + MAX_RECENT)" in resp.text
+
+
 def test_index_does_not_contain_recently_added_sidebar_entry():
     client = _make_client()
     resp = client.get("/", headers=_HOST_HEADER)

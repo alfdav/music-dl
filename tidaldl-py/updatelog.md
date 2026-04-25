@@ -20,6 +20,20 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
+## v1.6.1 (2026-04-25)
+
+### Desktop app fixes
+
+- Fixed packaged app startup and login handoff problems found after v1.6.0.
+- Added desktop deep-link routing and playback/library quality-of-life fixes from the post-v1.6.0 release branch.
+- Persisted recently played local tracks through the backend so the Home view can recover recent playback after relaunch.
+- Restored local Tauri `cargo test` reliability by creating a debug-only sidecar placeholder when no packaged backend binary exists.
+
+### Release and installer hardening
+
+- Bumped Python and Tauri package metadata to v1.6.1.
+- Hardened the macOS quick installer so it verifies the GitHub release DMG checksum before mounting.
+
 ## v1.6.0 (2026)
 
 ### Desktop app and daemon reliability

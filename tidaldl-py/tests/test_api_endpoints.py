@@ -133,6 +133,13 @@ class TestHome:
         data = resp.json()
         assert "volume_available" in data
 
+    def test_recent_memory_endpoint_shape(self, client):
+        resp = client.get("/api/home/recent?limit=5", headers=client._host_header)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "tracks" in data
+        assert isinstance(data["tracks"], list)
+
 
 class TestDownloadsSnapshot:
     def test_uses_app_job_service(self, client):
