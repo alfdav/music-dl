@@ -5959,6 +5959,32 @@ function _saveRecent() {
   try { localStorage.setItem('recentlyPlayed', JSON.stringify(recentlyPlayed)); } catch (_) {}
 }
 
+async function _syncRecentFromServer() {
+  try {
+    const data = await api('/home/recent?limit=' + MAX_RECENT);
+    const serverTracks = Array.isArray(data.tracks) ? data.tracks : [];
+    if (serverTracks.length === 0) return;
+
+    const merged = [];
+    const seen = new Set();
+    serverTracks.concat(recentlyPlayed)
+      .filter(t => t && _trackKey(t))
+      .sort((a, b) => (b.played_at || 0) - (a.played_at || 0))
+      .forEach(track => {
+        const key = _trackKey(track);
+        if (seen.has(key)) return;
+        seen.add(key);
+        merged.push(track);
+      });
+
+    recentlyPlayed.length = 0;
+    recentlyPlayed.push(...merged.slice(0, MAX_RECENT));
+    _saveRecent();
+  } catch (err) {
+    console.warn('[music-dl] recent memory sync failed:', err);
+  }
+}
+
 function updatePlayerHeart() {
   const current = state.queue[state.queueIndex];
   let heartEl = document.getElementById('now-heart');
@@ -8056,7 +8082,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) _stopKeepalive(); else _startKeepalive();
 });
 
-function _initApp() {
+async function _initApp() {
   // Load settings into state for upgrade quality checks
   api('/settings').then(s => { state.settings = s; }).catch(() => {});
   refreshStatusLights();
@@ -8066,6 +8092,7 @@ function _initApp() {
   initUpdater();
   _checkWebUpdate();
   _startKeepalive();
+  await _syncRecentFromServer();
   navigate(normalizeView(location.hash.slice(1) || 'home'));
 }
 

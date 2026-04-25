@@ -819,6 +819,38 @@ class LibraryDB:
             (path, artist, genre, duration, ts),
         )
 
+    def recent_plays(self, limit: int = 50, offset: int = 0) -> list[dict]:
+        """Return latest unique local tracks from persisted play_events."""
+        assert self._conn
+        safe_limit = max(1, min(int(limit), 100))
+        safe_offset = max(0, int(offset))
+        rows = self._conn.execute(
+            """SELECT s.path, s.isrc, s.artist, s.title, s.album, s.duration,
+                      s.quality, s.format, s.genre, s.play_count, s.last_played,
+                      latest.played_at
+               FROM (
+                   SELECT path, MAX(played_at) AS played_at
+                   FROM play_events
+                   WHERE path IS NOT NULL AND path != ''
+                   GROUP BY path
+               ) latest
+               JOIN scanned s ON s.path = latest.path
+               WHERE s.status != 'unreadable'
+               ORDER BY latest.played_at DESC
+               LIMIT ? OFFSET ?""",
+            (safe_limit, safe_offset),
+        ).fetchall()
+
+        tracks: list[dict] = []
+        for row in rows:
+            d = dict(row)
+            path = d["path"]
+            d["name"] = d.pop("title") or pathlib.Path(path).stem
+            d["local_path"] = path
+            d["is_local"] = True
+            tracks.append(d)
+        return tracks
+
     def _windowed_stats(self, since: int) -> dict:
         """Return play stats for play_events with played_at >= since."""
         assert self._conn

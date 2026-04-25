@@ -13,7 +13,7 @@
 
 ### macOS (Apple Silicon) — quick install
 
-Downloads the `.dmg` attached to the latest GitHub release, installs to `/Applications`, handles Gatekeeper automatically. No dev tools needed.
+Downloads the `.dmg` attached to the latest GitHub release, verifies the GitHub release checksum, installs to `/Applications`, handles Gatekeeper automatically. No dev tools needed.
 
 ```shell
 curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash

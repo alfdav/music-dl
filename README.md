@@ -98,7 +98,7 @@ Two ways to get the macOS app — pick whichever fits:
 curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash
 ```
 
-Downloads the latest DMG, installs to `/Applications`, and handles Gatekeeper automatically. No dev tools needed. Mounting or installing the DMG does not start the local daemon; the daemon starts when you launch `music-dl.app`.
+Downloads the latest DMG, verifies the GitHub release checksum, installs to `/Applications`, and handles Gatekeeper automatically. No dev tools needed. Mounting or installing the DMG does not start the local daemon; the daemon starts when you launch `music-dl.app`.
 
 #### Build from source
 
