@@ -39,10 +39,25 @@ function normalizeView(view) {
   return 'home';
 }
 
+function normalizeLaunchView(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return 'home';
+
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'music-dl:') return 'home';
+    const fromHash = url.hash.startsWith('#') ? url.hash.slice(1) : '';
+    return normalizeView(fromHash || url.searchParams.get('view') || '');
+  } catch (_) {
+    return normalizeView(raw);
+  }
+}
+
 const exported = {
   buildAlbumView,
   buildArtistView,
   buildLocalAlbumView,
+  normalizeLaunchView,
   normalizeView,
 };
 

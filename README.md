@@ -98,7 +98,7 @@ Two ways to get the macOS app — pick whichever fits:
 curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash
 ```
 
-Downloads the latest DMG, installs to `/Applications`, and handles Gatekeeper automatically. No dev tools needed.
+Downloads the latest DMG, installs to `/Applications`, and handles Gatekeeper automatically. No dev tools needed. Mounting or installing the DMG does not start the local daemon; the daemon starts when you launch `music-dl.app`.
 
 #### Build from source
 
@@ -333,6 +333,8 @@ bunx tauri build --bundles dmg
 ```
 
 The build process: PyInstaller compiles the Python backend into a standalone sidecar binary → Tauri wraps it with a native window → outputs `.app`/`.dmg` (macOS), `.AppImage`/`.deb` (Linux).
+
+The desktop app and browser mode share the same local web UI. Tauri starts or reuses the localhost daemon, then opens the same route the browser would use. Desktop protocol links such as `music-dl://open#search` open supported internal views in the app.
 
 Linux releases are published via GitHub Actions. macOS DMGs are built locally and attached to releases manually — the app is not notarized (no Apple Developer ID). The `scripts/install.sh` one-liner strips the quarantine xattr so Gatekeeper doesn't fire. If you download a DMG through Safari instead, macOS will set the quarantine bit and you'll need a one-time right-click → Open bypass on first launch.
 
