@@ -3,6 +3,7 @@ const {
   buildAlbumView,
   buildArtistView,
   buildLocalAlbumView,
+  normalizeLaunchView,
   normalizeView,
 } = require('../tidal_dl/gui/static/routes.js');
 
@@ -26,5 +27,18 @@ describe('routes', () => {
     expect(normalizeView('localalbum:ok:bad/path')).toBe('home');
     expect(normalizeView('album:not-a-number')).toBe('home');
     expect(normalizeView('')).toBe('home');
+  });
+
+  test('normalizes desktop launch URLs into internal views', () => {
+    expect(normalizeLaunchView('music-dl://open#library')).toBe('library');
+    expect(normalizeLaunchView('music-dl://open#artist:AC%2FDC')).toBe('artist:AC%2FDC');
+    expect(normalizeLaunchView('music-dl://open?view=album:12345')).toBe('album:12345');
+  });
+
+  test('rejects unsafe desktop launch URLs', () => {
+    expect(normalizeLaunchView('https://evil.example/#library')).toBe('home');
+    expect(normalizeLaunchView('music-dl://open#artist:../../etc/passwd')).toBe('home');
+    expect(normalizeLaunchView('music-dl://open?view=https://evil.example')).toBe('home');
+    expect(normalizeLaunchView('not a url')).toBe('home');
   });
 });

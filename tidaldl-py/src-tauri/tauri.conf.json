@@ -56,6 +56,11 @@
     }
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["music-dl"]
+      }
+    },
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVGNEY3MzMxNkE0QUZCQ0MKUldUTSswcHFNWE5QN3dWSTFzaTNLeU1PcHlYQnVzTlVPcDVLbmJIMnF4cWh0TU5Uekl1OXgrcGoK",
       "endpoints": [

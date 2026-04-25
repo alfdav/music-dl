@@ -130,6 +130,12 @@ Tauri never assumes port `8765`; it reuses a ready browser daemon when the
 metadata health check passes, otherwise it starts its own sidecar and waits
 for metadata from that exact child process.
 
+The desktop shell also handles `music-dl://` deep links. It parses the launch
+URL into the same hash-route shapes used by the browser UI, waits for the
+daemon to be ready, then navigates the Tauri webview to that route. Mounting or
+installing the macOS DMG does not start the daemon; the daemon starts only when
+the user launches `music-dl.app` or runs `music-dl gui`.
+
 ---
 
 ## 5. Middleware Stack
