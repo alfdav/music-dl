@@ -3592,13 +3592,6 @@ function renderLibrary(container) {
 
   const resultsArea = h('div', { className: 'results' });
   const pills = h('div', { className: 'filter-pills' });
-  const recentAddedPill = textEl('div', 'Recently Added', 'pill' + (recentAddedExpanded ? ' active' : ''));
-  recentAddedPill.style.cursor = 'pointer';
-  recentAddedPill.addEventListener('click', () => {
-    if (state.view !== 'recent-added') navigate('recent-added');
-  });
-  a11yClick(recentAddedPill);
-  pills.appendChild(recentAddedPill);
 
   for (const sort of ['artist', 'album', 'title', 'plays']) {
     const pill = textEl('div', sort.charAt(0).toUpperCase() + sort.slice(1),
@@ -7827,6 +7820,10 @@ function _isTauri() {
   return !!(window.__TAURI__ || window.__TAURI_INTERNALS__);
 }
 
+function _hasTauriApi() {
+  return !!(window.__TAURI__?.core?.invoke && window.__TAURI__?.event?.listen);
+}
+
 function _tauriInvoke(cmd) {
   return window.__TAURI__.core.invoke(cmd);
 }
@@ -7838,7 +7835,7 @@ function _onUpdaterState(us) {
 }
 
 function initUpdater() {
-  if (!_isTauri()) return;
+  if (!_hasTauriApi()) return;
   window.__TAURI__.event.listen('updater-state-changed', ev => {
     _onUpdaterState(ev.payload);
   });
@@ -7846,14 +7843,14 @@ function initUpdater() {
 }
 
 function checkForUpdates() {
-  if (!_isTauri()) return;
+  if (!_hasTauriApi()) return;
   _tauriInvoke('check_for_updates').then(_onUpdaterState).catch(e => {
     toast('Update check failed: ' + e, 'error');
   });
 }
 
 function installUpdate() {
-  if (!_isTauri()) return;
+  if (!_hasTauriApi()) return;
   _tauriInvoke('install_update').then(_onUpdaterState).catch(e => {
     toast('Install failed: ' + e, 'error');
   });

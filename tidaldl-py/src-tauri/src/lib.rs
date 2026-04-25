@@ -96,12 +96,42 @@ fn reusable_metadata(meta: &DaemonMetadata, health_ready: bool) -> bool {
     meta.app == APP_NAME && meta.status == READY_STATUS && health_ready
 }
 
-fn reusable_browser_metadata(meta: &DaemonMetadata, health_ready: bool) -> bool {
-    meta.mode == BROWSER_MODE && reusable_metadata(meta, health_ready)
+fn reusable_local_metadata(meta: &DaemonMetadata, health_ready: bool) -> bool {
+    (meta.mode == BROWSER_MODE || meta.mode == SIDECAR_MODE)
+        && reusable_metadata(meta, health_ready)
+}
+
+fn process_parent_pid(pid: u32) -> Option<u32> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "ppid=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+fn process_has_ancestor(mut pid: u32, ancestor: u32) -> bool {
+    for _ in 0..16 {
+        let Some(parent) = process_parent_pid(pid) else {
+            return false;
+        };
+        if parent == ancestor {
+            return true;
+        }
+        if parent == 0 || parent == 1 || parent == pid {
+            return false;
+        }
+        pid = parent;
+    }
+
+    false
 }
 
 fn sidecar_metadata_matches(meta: &DaemonMetadata, pid: u32) -> bool {
-    meta.mode == SIDECAR_MODE && meta.pid == pid
+    meta.mode == SIDECAR_MODE && (meta.pid == pid || process_has_ancestor(meta.pid, pid))
 }
 
 fn daemon_metadata_path() -> Result<PathBuf, String> {
@@ -136,9 +166,9 @@ fn metadata_is_ready(meta: &DaemonMetadata) -> bool {
         && reusable_metadata(meta, health_url_is_ready(&meta.health_url))
 }
 
-fn browser_metadata_is_ready(meta: &DaemonMetadata) -> bool {
+fn local_metadata_is_ready(meta: &DaemonMetadata) -> bool {
     metadata_base_url(meta).is_ok()
-        && reusable_browser_metadata(meta, health_url_is_ready(&meta.health_url))
+        && reusable_local_metadata(meta, health_url_is_ready(&meta.health_url))
 }
 
 fn read_health(endpoint: &HealthEndpoint) -> Result<HealthResponse, String> {
@@ -398,7 +428,7 @@ fn show_loading_error(handle: &tauri::AppHandle, message: &str) {
 fn launch_initial_sidecar(handle: tauri::AppHandle) {
     thread::spawn(move || {
         if let Some(meta) = read_daemon_metadata() {
-            if browser_metadata_is_ready(&meta) {
+            if local_metadata_is_ready(&meta) {
                 match state_from_external_metadata(meta) {
                     Ok(state) => {
                         let base_url = state.base_url.clone();
@@ -751,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn reusable_browser_metadata_rejects_other_sidecars() {
+    fn reusable_local_metadata_accepts_browser_and_sidecar_modes() {
         let meta = DaemonMetadata {
             app: APP_NAME.to_string(),
             status: READY_STATUS.to_string(),
@@ -761,11 +791,17 @@ mod tests {
             mode: SIDECAR_MODE.to_string(),
         };
 
-        assert!(!reusable_browser_metadata(&meta, true));
+        assert!(reusable_local_metadata(&meta, true));
+
+        let browser_meta = DaemonMetadata {
+            mode: BROWSER_MODE.to_string(),
+            ..meta
+        };
+        assert!(reusable_local_metadata(&browser_meta, true));
     }
 
     #[test]
-    fn sidecar_metadata_must_match_spawned_pid() {
+    fn sidecar_metadata_requires_sidecar_mode_and_matching_pid() {
         let meta = DaemonMetadata {
             app: APP_NAME.to_string(),
             status: READY_STATUS.to_string(),
@@ -777,5 +813,11 @@ mod tests {
 
         assert!(sidecar_metadata_matches(&meta, 123));
         assert!(!sidecar_metadata_matches(&meta, 456));
+
+        let browser_meta = DaemonMetadata {
+            mode: BROWSER_MODE.to_string(),
+            ..meta
+        };
+        assert!(!sidecar_metadata_matches(&browser_meta, 123));
     }
 }

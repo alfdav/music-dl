@@ -135,6 +135,8 @@ class TestAppJsFeatureMarkers:
         js = (STATIC_DIR / "app.js").read_text()
         assert "Recently Added" in js
         assert "loadLibraryRecentAlbumsExpanded" in js
+        assert "recentAddedPill" not in js
+        assert "textEl('div', 'Recently Added', 'pill" not in js
         assert "loadLibraryRecentShelf" not in js
         assert "library-shelf" not in js
 

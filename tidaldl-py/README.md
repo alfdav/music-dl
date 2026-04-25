@@ -26,7 +26,7 @@ Continue Listening ignores finished tracks and near-end positions so completed s
 
 Recently Added is a dedicated Library category instead of a repeated shelf on every Library sort tab.
 
-Desktop builds use the same FastAPI static UI through the Tauri sidecar. The Tauri build now checks these QoL markers before bundling so a stale Mac app cannot be packaged silently.
+Desktop builds use the same FastAPI static UI through the Tauri sidecar. The Tauri build now checks these QoL markers before bundling so a stale Mac app cannot be packaged silently. The macOS shell also accepts the PyInstaller worker PID as the ready sidecar process so packaged apps do not stall on the startup screen.
 
 ## CLI highlights
 
