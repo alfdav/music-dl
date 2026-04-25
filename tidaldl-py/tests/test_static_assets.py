@@ -79,6 +79,8 @@ class TestAppJsFeatureMarkers:
         assert "Continue Listening" in js
         assert "_getContinueListeningState" in js
         assert "_resumeContinueListening" in js
+        assert "_isResumePositionUsable" in js
+        assert "localStorage.removeItem('playerPosition')" in js
 
     def test_has_requested_keyboard_shortcuts(self):
         js = (STATIC_DIR / "app.js").read_text()
@@ -128,6 +130,13 @@ class TestAppJsFeatureMarkers:
         assert "_renderAlbumCardsBatch" in js
         assert "requestAnimationFrame" in js
         assert "_failedAlbumArtUrls" in js
+
+    def test_library_no_longer_renders_recent_shelf(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        assert "Recently Added" in js
+        assert "loadLibraryRecentAlbumsExpanded" in js
+        assert "loadLibraryRecentShelf" not in js
+        assert "library-shelf" not in js
 
     def test_has_sleep_timer(self):
         js = (STATIC_DIR / "app.js").read_text()

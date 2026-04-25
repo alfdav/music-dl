@@ -55,7 +55,8 @@ def test_static_js_contains_recently_added_library_hooks():
     assert resp.status_code == 200
     assert "recent-added" in resp.text
     assert "/library/recent-albums" in resp.text
-    assert "See all" in resp.text
+    assert "loadLibraryRecentAlbumsExpanded" in resp.text
+    assert "See all" not in resp.text
 
 
 def test_static_js_contains_recently_added_expanded_states():

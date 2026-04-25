@@ -842,11 +842,23 @@ function _getContinueListeningState() {
     const raw = localStorage.getItem('playerPosition');
     if (!raw) return null;
     const saved = JSON.parse(raw);
-    if (!saved || saved.key !== _trackKey(current) || !(saved.time > 0)) return null;
+    if (!saved || saved.key !== _trackKey(current)) return null;
+    if (!_isResumePositionUsable(current, saved.time)) {
+      localStorage.removeItem('playerPosition');
+      return null;
+    }
     return { track: current, time: saved.time };
   } catch (_) {
     return null;
   }
+}
+
+function _isResumePositionUsable(track, time, durationOverride) {
+  const resumeAt = Number(time || 0);
+  if (!(resumeAt > 0)) return false;
+  const duration = Number(durationOverride || track.duration || 0);
+  if (!duration) return true;
+  return resumeAt < Math.max(1, duration - 5);
 }
 
 function _continueListeningLabel(track, time) {
@@ -3368,7 +3380,6 @@ let librarySort = 'artist';
 let libraryQuery = '';
 let libraryScanPoll = null;
 const LIBRARY_PAGE_SIZE = 50;
-const LIBRARY_RECENT_SHELF_LIMIT = 12;
 const LIBRARY_ALBUM_BATCH_SIZE = 80;
 let libraryOffset = 0;
 let libraryTotal = 0;
@@ -3431,98 +3442,6 @@ function _renderAlbumCardsBatch(grid, albums, start, reqId) {
   if (end < albums.length) {
     requestAnimationFrame(() => _renderAlbumCardsBatch(grid, albums, end, reqId));
   }
-}
-
-function renderRecentAlbumCard(album) {
-  const card = h('div', { className: 'album-card' });
-  const artWrap = h('div', { className: 'album-card-art-wrap' });
-  if (album.cover_url) {
-    const img = h('img', { className: 'album-card-art', src: album.cover_url, alt: '', loading: 'lazy' });
-    img.onerror = function() {
-      this.style.display = 'none';
-      artWrap.style.background = artGradient(album.name || album.artist);
-    };
-    artWrap.appendChild(img);
-  } else {
-    artWrap.style.background = artGradient(album.name || album.artist);
-  }
-  card.appendChild(artWrap);
-
-  const meta = h('div', { className: 'album-card-meta' });
-  meta.appendChild(textEl('div', album.name || 'Unknown Album', 'album-card-title'));
-  const sub = [album.artist || 'Unknown Artist'];
-  sub.push((album.track_count || 0) + ' track' + ((album.track_count || 0) !== 1 ? 's' : ''));
-  meta.appendChild(textEl('div', sub.join(' · '), 'album-card-sub'));
-  card.appendChild(meta);
-
-  card.addEventListener('click', () => {
-    navigate('localalbum:' + encodeURIComponent(album.artist || 'Unknown Artist') + ':' + encodeURIComponent(album.name || 'Unknown Album'));
-  });
-  a11yClick(card);
-  return card;
-}
-
-function renderRecentAlbumCards(albums, existingGrid) {
-  const grid = existingGrid || h('div', { className: 'album-gallery' });
-  albums.forEach(album => grid.appendChild(renderRecentAlbumCard(album)));
-  return grid;
-}
-
-function renderLibraryRecentShelfState(title, subtitle) {
-  return h('div', { className: 'empty-state library-shelf-empty' },
-    textEl('div', title, 'empty-state-title'),
-    textEl('div', subtitle, 'empty-state-sub')
-  );
-}
-
-async function loadLibraryRecentShelf(shelfArea) {
-  while (shelfArea.firstChild) shelfArea.removeChild(shelfArea.firstChild);
-
-  const heading = h('div', { className: 'library-shelf-heading' },
-    textEl('div', 'Recently Added', 'results-title'),
-    textEl('div', 'Latest albums from your library', 'results-count')
-  );
-  const header = h('div', { className: 'results-header library-shelf-header' }, heading);
-  shelfArea.appendChild(header);
-
-  const MAX_RETRIES = 3;
-  const RETRY_DELAY = 1500; // ms — gives sidecar DB time to initialize on cold start
-  let lastErr = null;
-
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      const data = await loadLibraryRecentAlbumsPage(LIBRARY_RECENT_SHELF_LIMIT, 0);
-      const albums = data.albums || [];
-
-      if (albums.length === 0) {
-        shelfArea.appendChild(renderLibraryRecentShelfState(
-          'No recently added albums yet',
-          'Download music or sync your library to populate this shelf.'
-        ));
-        return;
-      }
-
-      const seeAll = h('button', { className: 'library-shelf-action' }, 'See all');
-      seeAll.addEventListener('click', () => navigate('recent-added'));
-      header.appendChild(seeAll);
-
-      const grid = renderRecentAlbumCards(albums);
-      grid.classList.add('library-shelf-grid');
-      shelfArea.appendChild(grid);
-      return; // success
-    } catch (err) {
-      lastErr = err;
-      if (attempt < MAX_RETRIES - 1) {
-        await new Promise(r => setTimeout(r, RETRY_DELAY));
-      }
-    }
-  }
-
-  console.error('[shelf] Recently added failed after retries:', lastErr);
-  shelfArea.appendChild(renderLibraryRecentShelfState(
-    'Recently added unavailable',
-    'Check your library connection and try again.'
-  ));
 }
 
 function renderRecentAlbumRow(album) {
@@ -3715,13 +3634,6 @@ function renderLibrary(container) {
   searchArea.appendChild(pills);
   container.appendChild(searchArea);
 
-  let shelfArea = null;
-  if (!recentAddedExpanded) {
-    shelfArea = h('section', { className: 'library-shelf' });
-    container.appendChild(shelfArea);
-    loadLibraryRecentShelf(shelfArea);
-  }
-
   container.appendChild(resultsArea);
 
   if (!recentAddedExpanded) {
@@ -3731,7 +3643,6 @@ function renderLibrary(container) {
       _libSearchTimer = setTimeout(() => {
         libraryQuery = libInput.value.trim();
         libraryOffset = 0;
-        shelfArea.style.display = libraryQuery ? 'none' : '';
         if (librarySort === 'album') {
           loadLibraryAlbums(resultsArea, libraryQuery);
         } else if (librarySort === 'artist') {
@@ -6461,6 +6372,7 @@ audio.addEventListener('ended', () => {
     updatePlayButton();
     progressFill.style.width = '0%';
     timeElapsed.textContent = '0:00';
+    try { localStorage.removeItem('playerPosition'); } catch (_) {}
   }
 });
 
@@ -7678,6 +7590,10 @@ function _savePosition() {
   const current = state.queue[state.queueIndex];
   if (!current || !audio.currentTime) return;
   try {
+    if (!_isResumePositionUsable(current, audio.currentTime, audio.duration)) {
+      localStorage.removeItem('playerPosition');
+      return;
+    }
     localStorage.setItem('playerPosition', JSON.stringify({
       time: audio.currentTime,
       key: _trackKey(current),
@@ -7691,7 +7607,7 @@ function _restorePosition() {
     if (!raw) return;
     const data = JSON.parse(raw);
     const current = state.queue[state.queueIndex];
-    if (current && data.key === _trackKey(current) && data.time > 0) {
+    if (current && data.key === _trackKey(current) && _isResumePositionUsable(current, data.time)) {
       // Set source and seek to saved position without auto-playing
       const src = (current.is_local && current.local_path)
         ? '/api/playback/local?path=' + encodeURIComponent(current.local_path)
