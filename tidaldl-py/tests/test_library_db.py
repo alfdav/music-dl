@@ -64,6 +64,33 @@ class TestCRUD:
         assert db.known_paths() == {"/a.flac", "/b.flac"}
 
 
+class TestRecentPlays:
+    def test_recent_plays_returns_latest_unique_scanned_tracks(self, db):
+        db.record("/music/a.flac", status="tagged", artist="A", title="Alpha", album="One", duration=180, quality="LOSSLESS", fmt="FLAC")
+        db.record("/music/b.flac", status="tagged", artist="B", title="Beta", album="Two", duration=240, quality="HI_RES", fmt="FLAC")
+        db.log_play_event("/music/a.flac", artist="A", duration=180, played_at=100)
+        db.log_play_event("/music/b.flac", artist="B", duration=240, played_at=200)
+        db.log_play_event("/music/a.flac", artist="A", duration=180, played_at=300)
+        db.commit()
+
+        recent = db.recent_plays(limit=10)
+
+        assert [track["path"] for track in recent] == ["/music/a.flac", "/music/b.flac"]
+        assert recent[0]["played_at"] == 300
+        assert recent[0]["name"] == "Alpha"
+        assert recent[0]["is_local"] is True
+
+    def test_recent_plays_skips_events_without_scanned_track(self, db):
+        db.record("/music/a.flac", status="tagged", artist="A", title="Alpha")
+        db.log_play_event("/music/missing.flac", artist="Ghost", played_at=500)
+        db.log_play_event("/music/a.flac", artist="A", played_at=400)
+        db.commit()
+
+        recent = db.recent_plays(limit=10)
+
+        assert [track["path"] for track in recent] == ["/music/a.flac"]
+
+
 class TestPagination:
     def _seed(self, db, n=10):
         for i in range(n):

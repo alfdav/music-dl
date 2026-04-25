@@ -1,0 +1,511 @@
+"""test_phase3_duplicate_resolution.py
+
+Unit tests for Phase 3: pre-flight ISRC duplicate resolution.
+
+Covers:
+  - IsrcIndex.get_path() returns stored path without pruning
+  - _preflight_isrc_scan splits hits correctly
+  - Saved preference bypasses prompt
+  - 'copy' action produces COPIED outcome
+  - 'redownload' bypasses ISRC check
+  - Missing-source fallback under saved 'copy' preference
+  - DownloadSummary counts COPIED correctly
+  - duplicate_action config field exists with default 'copy'
+"""
+
+import pathlib
+import shutil
+import types
+import unittest
+from concurrent.futures import Future
+from dataclasses import fields
+from threading import Event
+from unittest.mock import MagicMock, patch
+
+import pytest  # pyright: ignore[reportMissingImports]
+from tidalapi.media import Track, Video
+
+from tidal_dl.helper.checkpoint import STATUS_DOWNLOADED
+from tidal_dl.helper.isrc_index import IsrcIndex
+from tidal_dl.model.cfg import Settings as CfgSettings
+from tidal_dl.model.downloader import DownloadOutcome, DownloadSummary
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_track(track_id: int, isrc: str | None = None) -> MagicMock:
+    """Return a minimal Track-like mock that passes isinstance(x, Track)."""
+    track = MagicMock(spec=Track)
+    track.id = track_id
+    track.isrc = isrc
+    track.name = f"Track {track_id}"
+    return track
+
+
+# ---------------------------------------------------------------------------
+# IsrcIndex.get_path
+# ---------------------------------------------------------------------------
+
+
+class TestIsrcIndexGetPath:
+    """get_path() returns stored value without pruning stale entries."""
+
+    def test_returns_none_for_unknown_isrc(self, tmp_path):
+        idx = IsrcIndex(tmp_path / "idx.json")
+        assert idx.get_path("US-ABC-00-00001") is None
+
+    def test_returns_path_for_known_isrc(self, tmp_path):
+        idx = IsrcIndex(tmp_path / "idx.json")
+        p = tmp_path / "track.flac"
+        p.touch()
+        idx.add("US-ABC-00-00001", p)
+        result = idx.get_path("US-ABC-00-00001")
+        assert result == str(p.absolute())
+
+    def test_does_not_prune_missing_file(self, tmp_path):
+        """get_path must NOT remove entries even if the file is gone."""
+        idx = IsrcIndex(tmp_path / "idx.json")
+        p = tmp_path / "gone.flac"
+        p.touch()
+        idx.add("US-ABC-00-00002", p)
+        p.unlink()  # Delete the file
+
+        # contains() would prune; get_path() must not
+        result = idx.get_path("US-ABC-00-00002")
+        assert result is not None
+        assert "gone.flac" in result
+
+    def test_returns_none_for_empty_isrc(self, tmp_path):
+        idx = IsrcIndex(tmp_path / "idx.json")
+        assert idx.get_path("") is None
+
+    def test_persists_across_load_save(self, tmp_path):
+        idx_path = tmp_path / "idx.json"
+        idx = IsrcIndex(idx_path)
+        p = tmp_path / "track.flac"
+        p.touch()
+        idx.add("US-XYZ-00-00001", p)
+        idx.save()
+
+        idx2 = IsrcIndex(idx_path)
+        idx2.load()
+        assert idx2.get_path("US-XYZ-00-00001") == str(p.absolute())
+
+
+# ---------------------------------------------------------------------------
+# DownloadSummary with COPIED
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadSummaryWithCopied:
+    def test_copied_increments_on_record(self):
+        s = DownloadSummary()
+        s.record(DownloadOutcome.COPIED)
+        assert s.copied == 1
+
+    def test_copied_included_in_total(self):
+        s = DownloadSummary()
+        s.record(DownloadOutcome.DOWNLOADED)
+        s.record(DownloadOutcome.COPIED)
+        s.record(DownloadOutcome.SKIPPED)
+        assert s.total == 3
+
+    def test_downloaded_not_affected_by_copied(self):
+        s = DownloadSummary()
+        s.record(DownloadOutcome.COPIED)
+        assert s.downloaded == 0
+
+    def test_failed_not_affected_by_copied(self):
+        s = DownloadSummary()
+        s.record(DownloadOutcome.COPIED)
+        assert s.failed == 0
+
+
+# ---------------------------------------------------------------------------
+# duplicate_action config field
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateActionConfig:
+    def test_field_exists_in_cfg_settings(self):
+        cfg = CfgSettings()
+        assert hasattr(cfg, "duplicate_action")
+
+    def test_default_value_is_copy(self):
+        cfg = CfgSettings()
+        assert cfg.duplicate_action == "copy"
+
+
+# ---------------------------------------------------------------------------
+# _preflight_isrc_scan
+# ---------------------------------------------------------------------------
+
+
+def _make_download_obj(tmp_path, isrc_data: dict[str, str], duplicate_action: str = "skip"):
+    """Build a minimal Download-like object for testing preflight scan."""
+    from tidal_dl.helper.isrc_index import IsrcIndex
+
+    idx = IsrcIndex(tmp_path / "isrc_index.json")
+    for isrc, path_str in isrc_data.items():
+        fake_path = pathlib.Path(path_str)
+        # add raw without requiring file existence (use internal dict directly)
+        with idx._lock:
+            idx._data[isrc] = path_str
+
+    settings_data = MagicMock()
+    settings_data.skip_duplicate_isrc = True
+    settings_data.duplicate_action = duplicate_action
+
+    settings = MagicMock()
+    settings.data = settings_data
+    settings.save = MagicMock()
+
+    dl = MagicMock()
+    dl._isrc_index = idx
+    dl.settings = settings
+    dl.fn_logger = MagicMock()
+
+    # Bind the real method to our mock object
+    from tidal_dl.download import Download
+
+    dl._preflight_isrc_scan = Download._preflight_isrc_scan.__get__(dl, type(dl))
+    dl._prompt_duplicate_action = Download._prompt_duplicate_action.__get__(dl, type(dl))
+
+    return dl
+
+
+class TestPreflightIsrcScan:
+    def test_returns_empty_when_isrc_dedup_disabled(self, tmp_path):
+        from tidal_dl.download import Download
+
+        dl = _make_download_obj(tmp_path, {})
+        dl.settings.data.skip_duplicate_isrc = False
+
+        track = _make_track(1, "US-ABC-00-00001")
+        result = dl._preflight_isrc_scan([track])
+        assert result == {}
+
+    def test_returns_empty_when_no_hits(self, tmp_path):
+        dl = _make_download_obj(tmp_path, {})
+        track = _make_track(1, "US-ABC-00-00001")
+        result = dl._preflight_isrc_scan([track])
+        assert result == {}
+
+    def test_splits_existing_source_correctly(self, tmp_path):
+        source = tmp_path / "track.flac"
+        source.touch()
+        dl = _make_download_obj(tmp_path, {"US-ABC-00-00001": str(source)}, duplicate_action="skip")
+
+        track = _make_track(1, "US-ABC-00-00001")
+        result = dl._preflight_isrc_scan([track])
+        assert result == {"1": "skip"}
+
+    def test_splits_missing_source_correctly(self, tmp_path):
+        dl = _make_download_obj(
+            tmp_path,
+            {"US-ABC-00-00002": str(tmp_path / "gone.flac")},
+            duplicate_action="skip",
+        )
+        track = _make_track(2, "US-ABC-00-00002")
+        result = dl._preflight_isrc_scan([track])
+        assert result == {"2": "skip"}
+
+    def test_saved_copy_preference_applied_to_existing_source(self, tmp_path):
+        source = tmp_path / "track.flac"
+        source.touch()
+        dl = _make_download_obj(tmp_path, {"US-ABC-00-00003": str(source)}, duplicate_action="copy")
+
+        track = _make_track(3, "US-ABC-00-00003")
+        result = dl._preflight_isrc_scan([track])
+        assert result == {"3": "copy"}
+
+    def test_saved_copy_preference_redownloads_missing_source(self, tmp_path):
+        dl = _make_download_obj(
+            tmp_path,
+            {"US-ABC-00-00004": str(tmp_path / "gone.flac")},
+            duplicate_action="copy",
+        )
+        track = _make_track(4, "US-ABC-00-00004")
+        result = dl._preflight_isrc_scan([track])
+        # Missing source under 'copy' preference → redownload
+        assert result == {"4": "redownload"}
+
+    def test_saved_redownload_preference_applied(self, tmp_path):
+        source = tmp_path / "track.flac"
+        source.touch()
+        dl = _make_download_obj(tmp_path, {"US-ABC-00-00005": str(source)}, duplicate_action="redownload")
+
+        track = _make_track(5, "US-ABC-00-00005")
+        result = dl._preflight_isrc_scan([track])
+        assert result == {"5": "redownload"}
+
+    def test_skips_non_track_items(self, tmp_path):
+        source = tmp_path / "track.flac"
+        source.touch()
+        dl = _make_download_obj(tmp_path, {"US-ABC-00-00006": str(source)}, duplicate_action="skip")
+
+        # Video mock does not pass isinstance(x, Track)
+        video = MagicMock(spec=Video)
+        result = dl._preflight_isrc_scan([video])
+        assert result == {}
+
+    def test_album_copies_existing_source(self, tmp_path):
+        source = tmp_path / "track.flac"
+        source.touch()
+        dl = _make_download_obj(tmp_path, {"US-ABC-00-00010": str(source)}, duplicate_action="skip")
+
+        track = _make_track(10, "US-ABC-00-00010")
+        result = dl._preflight_isrc_scan([track], ensure_complete=True)
+        assert result == {"10": "copy"}
+
+    def test_album_redownloads_missing_source(self, tmp_path):
+        dl = _make_download_obj(
+            tmp_path,
+            {"US-ABC-00-00011": str(tmp_path / "gone.flac")},
+            duplicate_action="skip",
+        )
+        track = _make_track(11, "US-ABC-00-00011")
+        result = dl._preflight_isrc_scan([track], ensure_complete=True)
+        assert result == {"11": "redownload"}
+
+    def test_album_ignores_saved_skip_preference(self, tmp_path):
+        """Even if duplicate_action='skip' is saved, albums always copy/redownload."""
+        source = tmp_path / "track.flac"
+        source.touch()
+        dl = _make_download_obj(tmp_path, {"US-ABC-00-00012": str(source)}, duplicate_action="skip")
+
+        track = _make_track(12, "US-ABC-00-00012")
+        result = dl._preflight_isrc_scan([track], ensure_complete=True)
+        # Must be 'copy', NOT 'skip'
+        assert result == {"12": "copy"}
+
+    def test_skips_checkpoint_downloaded_tracks(self, tmp_path):
+        source = tmp_path / "track.flac"
+        source.touch()
+        dl = _make_download_obj(tmp_path, {"US-ABC-00-00007": str(source)}, duplicate_action="skip")
+
+        track = _make_track(7, "US-ABC-00-00007")
+        checkpoint = MagicMock()
+        from tidal_dl.helper.checkpoint import STATUS_DOWNLOADED
+
+        checkpoint.status_of.return_value = STATUS_DOWNLOADED
+
+        result = dl._preflight_isrc_scan([track], checkpoint=checkpoint)
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# item() copy action
+# ---------------------------------------------------------------------------
+
+
+class TestItemCopyAction:
+    """item() correctly copies source file and returns COPIED outcome."""
+
+    def _build_minimal_download(self, tmp_path):
+        """Build enough of a Download to test item() copy path."""
+        from threading import Event
+
+        from tidal_dl.download import Download
+
+        tidal = MagicMock()
+        tidal.session = MagicMock()
+        tidal.active_source = MagicMock()
+        tidal.hifi_client = None
+        tidal.stream_lock = MagicMock()
+        tidal.stream_lock.__enter__ = MagicMock(return_value=None)
+        tidal.stream_lock.__exit__ = MagicMock(return_value=False)
+        tidal.api_cache = None
+
+        logger = MagicMock()
+        abort = Event()
+        run = Event()
+        run.set()
+
+        with patch("tidal_dl.download.path_config_base", return_value=str(tmp_path)):
+            dl = Download(
+                tidal_obj=tidal,
+                path_base=str(tmp_path / "output"),
+                fn_logger=logger,
+                skip_existing=True,
+                event_abort=abort,
+                event_run=run,
+            )
+        return dl
+
+    def test_copy_copies_file_to_destination(self, tmp_path):
+        src = tmp_path / "src.flac"
+        src.write_bytes(b"audio data")
+
+        dl = self._build_minimal_download(tmp_path)
+        dl._isrc_index.add("US-TST-00-00001", src)
+
+        track = _make_track(99, "US-TST-00-00001")
+        track.isrc = "US-TST-00-00001"
+        track.album = MagicMock()
+        track.allow_streaming = True
+        track.media_metadata_tags = []
+
+        with (
+            patch.object(dl, "_validate_and_prepare_media", return_value=track),
+            patch.object(dl, "_prepare_file_paths_and_skip_logic") as mock_paths,
+        ):
+            dst = tmp_path / "output" / "dest.flac"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            mock_paths.return_value = (dst.with_suffix(".m4a"), ".m4a", False, False)
+
+            outcome, result_path = dl.item(
+                file_template="test/{track_title}",
+                media=track,
+                duplicate_action_override="copy",
+            )
+
+        assert outcome == DownloadOutcome.COPIED
+        # File should exist at destination (with src extension)
+        dest_flac = pathlib.Path(result_path)
+        assert dest_flac.is_file()
+        assert dest_flac.read_bytes() == b"audio data"
+
+    def test_prepare_paths_skip_existing_uses_canonical_path(self, tmp_path):
+        """skip_existing must check the canonical path before any _01 uniquify."""
+        dl = self._build_minimal_download(tmp_path)
+
+        track = _make_track(101, "US-TST-00-01001")
+        track.full_name = "Track 101"
+        track.name = "Track 101"
+        track.media_metadata_tags = []
+        track.album = MagicMock()
+
+        existing = tmp_path / "output" / "Track 101.flac"
+        existing.parent.mkdir(parents=True, exist_ok=True)
+        existing.write_bytes(b"existing")
+
+        with patch.object(dl, "extension_guess", return_value=".flac"):
+            path_media_dst, file_extension_dummy, skip_file, skip_download = dl._prepare_file_paths_and_skip_logic(
+                track,
+                "{track_title}",
+                None,
+                0,
+                0,
+            )
+
+        assert path_media_dst == existing.absolute()
+        assert file_extension_dummy == ".flac"
+        assert skip_file is True
+        assert skip_download is False
+
+    def test_item_returns_and_indexes_final_stream_extension(self, tmp_path):
+        """item() must report the final stream extension, not the dummy guess."""
+        dl = self._build_minimal_download(tmp_path)
+
+        track = _make_track(102, "US-TST-00-01002")
+        track.isrc = "US-TST-00-01002"
+        track.full_name = "Track 102"
+        track.name = "Track 102"
+        track.media_metadata_tags = []
+        track.album = MagicMock()
+        track.allow_streaming = True
+
+        dummy_path = (tmp_path / "output" / "Track 102.flac").absolute()
+        final_path = dummy_path.with_suffix(".m4a")
+
+        with (
+            patch.object(dl, "_validate_and_prepare_media", return_value=track),
+            patch.object(dl, "_prepare_file_paths_and_skip_logic", return_value=(dummy_path, ".flac", False, False)),
+            patch.object(dl, "_adjust_quality_settings", return_value=(None, None)),
+            patch.object(dl, "_get_stream_info", return_value=(MagicMock(), ".m4a", False, None)),
+            patch.object(dl, "_perform_actual_download", return_value=True),
+            patch.object(dl, "_perform_post_processing", return_value=None),
+        ):
+            outcome, result_path = dl.item(
+                file_template="{track_title}",
+                media=track,
+            )
+
+        assert outcome == DownloadOutcome.DOWNLOADED
+        assert result_path == final_path
+        assert dl._isrc_index.get_path(track.isrc) == str(final_path.absolute())
+
+    def test_detect_downloaded_audio_extension_reads_mp4_header(self, tmp_path):
+        from tidal_dl.download import Download
+
+        dl = self._build_minimal_download(tmp_path)
+        detect = Download._detect_downloaded_audio_extension.__get__(dl, Download)
+
+        mp4_path = tmp_path / "download.bin"
+        mp4_path.write_bytes(b"\x00\x00\x00\x18ftypiso8\x00\x00\x00\x00payload")
+
+        assert detect(mp4_path, ".flac") == ".m4a"
+
+    def test_item_uses_corrected_extension_from_downloaded_file(self, tmp_path):
+        """item() must propagate the final extension detected from downloaded bytes."""
+        dl = self._build_minimal_download(tmp_path)
+
+        track = _make_track(103, "US-TST-00-01003")
+        track.isrc = "US-TST-00-01003"
+        track.full_name = "Track 103"
+        track.name = "Track 103"
+        track.media_metadata_tags = []
+        track.album = MagicMock()
+        track.allow_streaming = True
+
+        dummy_path = (tmp_path / "output" / "Track 103.flac").absolute()
+        final_path = dummy_path.with_suffix(".m4a")
+
+        with (
+            patch.object(dl, "_validate_and_prepare_media", return_value=track),
+            patch.object(dl, "_prepare_file_paths_and_skip_logic", return_value=(dummy_path, ".flac", False, False)),
+            patch.object(dl, "_adjust_quality_settings", return_value=(None, None)),
+            patch.object(dl, "_get_stream_info", return_value=(MagicMock(), ".flac", False, None)),
+            patch.object(dl, "_perform_actual_download", return_value=(True, final_path)),
+            patch.object(dl, "_perform_post_processing", return_value=None),
+        ):
+            outcome, result_path = dl.item(
+                file_template="{track_title}",
+                media=track,
+            )
+
+        assert outcome == DownloadOutcome.DOWNLOADED
+        assert result_path == final_path
+        assert dl._isrc_index.get_path(track.isrc) == str(final_path.absolute())
+
+
+class TestCheckpointOutcomeMapping:
+    """COPIED/SKIPPED are terminal successes for checkpoint resume semantics."""
+
+    @staticmethod
+    def _run_process_download_futures(outcome: DownloadOutcome):
+        from tidal_dl.download import Download
+
+        dl = Download.__new__(Download)
+        dl.event_abort = Event()
+        process_fn = Download._process_download_futures.__get__(dl, Download)
+
+        progress = MagicMock()
+        checkpoint = MagicMock()
+        track = _make_track(42, "US-TST-42-00001")
+
+        future = Future()
+        future.set_result((outcome, pathlib.Path("C:/tmp/result.flac")))
+
+        process_fn(
+            [future],
+            progress=progress,
+            progress_task=1,
+            progress_stdout=True,
+            summary=None,
+            checkpoint=checkpoint,
+            future_to_item={future: track},
+        )
+
+        return checkpoint
+
+    def test_copied_marks_checkpoint_downloaded(self):
+        checkpoint = self._run_process_download_futures(DownloadOutcome.COPIED)
+        checkpoint.mark.assert_called_once_with("42", STATUS_DOWNLOADED)
+
+    def test_skipped_marks_checkpoint_downloaded(self):
+        checkpoint = self._run_process_download_futures(DownloadOutcome.SKIPPED)
+        checkpoint.mark.assert_called_once_with("42", STATUS_DOWNLOADED)

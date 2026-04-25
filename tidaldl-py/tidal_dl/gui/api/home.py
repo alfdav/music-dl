@@ -171,6 +171,20 @@ def record_play(event: PlayEvent):
     return Response(status_code=204)
 
 
+@router.get("/home/recent")
+def recent_plays(limit: int = Query(50, ge=1, le=100)):
+    """Return persisted recently played local tracks."""
+    db = _get_db()
+    tracks = db.recent_plays(limit=limit)
+
+    from urllib.parse import quote
+
+    for track in tracks:
+        if track.get("path"):
+            track["cover_url"] = "/api/library/art?path=" + quote(track["path"], safe="")
+    return {"tracks": tracks}
+
+
 @router.get("/home")
 def home_stats():
     """Return aggregated stats for the Home view."""
