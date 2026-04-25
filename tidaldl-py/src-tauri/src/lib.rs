@@ -21,6 +21,7 @@ const HEALTH_PATH: &str = "/api/server/health";
 const DEEP_LINK_SCHEME: &str = "music-dl";
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const POLL_TIMEOUT: Duration = Duration::from_secs(30);
+const RECOVERY_POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -177,9 +178,12 @@ fn read_health(endpoint: &HealthEndpoint) -> Result<HealthResponse, String> {
     serde_json::from_str(body).map_err(|e| e.to_string())
 }
 
-fn wait_for_ready_metadata(expected_pid: Option<u32>) -> Result<DaemonMetadata, String> {
+fn wait_for_ready_metadata_for(
+    expected_pid: Option<u32>,
+    timeout: Duration,
+) -> Result<DaemonMetadata, String> {
     let start = Instant::now();
-    while start.elapsed() < POLL_TIMEOUT {
+    while start.elapsed() < timeout {
         if let Some(meta) = read_daemon_metadata() {
             let pid_matches = expected_pid
                 .map(|pid| sidecar_metadata_matches(&meta, pid))
@@ -193,6 +197,10 @@ fn wait_for_ready_metadata(expected_pid: Option<u32>) -> Result<DaemonMetadata, 
     }
 
     Err("Timed out waiting for daemon readiness".to_string())
+}
+
+fn wait_for_ready_metadata(expected_pid: Option<u32>) -> Result<DaemonMetadata, String> {
+    wait_for_ready_metadata_for(expected_pid, POLL_TIMEOUT)
 }
 
 fn state_from_external_metadata(meta: DaemonMetadata) -> Result<SidecarState, String> {
@@ -395,6 +403,36 @@ fn show_loading_error(handle: &tauri::AppHandle, message: &str) {
     }
 }
 
+fn recover_late_sidecar(handle: tauri::AppHandle, pid: u32) {
+    thread::spawn(move || {
+        let Ok(meta) = wait_for_ready_metadata_for(Some(pid), RECOVERY_POLL_TIMEOUT) else {
+            return;
+        };
+
+        let base_url = match metadata_base_url(&meta) {
+            Ok(base_url) => base_url,
+            Err(_) => return,
+        };
+
+        let mut should_navigate = false;
+        if let Some(sidecar) = handle.try_state::<Sidecar>() {
+            if let Ok(mut guard) = sidecar.0.lock() {
+                let current_pid = guard.child.as_ref().map(|child| child.pid());
+                if guard.owns_child && current_pid == Some(pid) {
+                    guard.base_url = Some(base_url.clone());
+                    guard.health_url = Some(meta.health_url);
+                    should_navigate = true;
+                }
+            }
+        }
+
+        if should_navigate {
+            let view = take_launch_view(&handle);
+            navigate_to_view(&handle, &base_url, view.as_deref());
+        }
+    });
+}
+
 fn launch_initial_sidecar(handle: tauri::AppHandle) {
     thread::spawn(move || {
         if let Some(meta) = read_daemon_metadata() {
@@ -475,16 +513,13 @@ fn launch_initial_sidecar(handle: tauri::AppHandle) {
                     let mut guard = sidecar.0.lock().unwrap();
                     let current_pid = guard.child.as_ref().map(|child| child.pid());
                     if guard.owns_child && current_pid == Some(pid) {
-                        if let Some(child) = guard.child.take() {
-                            let _ = child.kill();
-                        }
                         guard.base_url = None;
                         guard.health_url = None;
-                        guard.owns_child = false;
                     }
                 }
 
-                show_loading_error(&handle, &err);
+                show_loading_error(&handle, &format!("{err}. Still waiting..."));
+                recover_late_sidecar(handle.clone(), pid);
             }
         }
     });
