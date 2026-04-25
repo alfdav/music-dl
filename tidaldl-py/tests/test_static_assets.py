@@ -74,6 +74,70 @@ class TestAppJsFeatureMarkers:
         js = (STATIC_DIR / "app.js").read_text()
         assert "playerQueue" in js, "Queue persistence missing"
 
+    def test_has_continue_listening_home_card(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        assert "Continue Listening" in js
+        assert "_getContinueListeningState" in js
+        assert "_resumeContinueListening" in js
+        assert "_isResumePositionUsable" in js
+        assert "localStorage.removeItem('playerPosition')" in js
+
+    def test_has_requested_keyboard_shortcuts(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        assert "_isTypingTarget" in js
+        assert "metaKey || e.ctrlKey" in js
+        assert "Cmd/Ctrl+K" in js
+        assert "Cmd/Ctrl+L" in js
+        assert "Cmd/Ctrl+Shift+Q" in js
+
+    def test_has_recent_filters_and_clear_old(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        assert "recentPlayedFilter" in js
+        assert "This Week" in js
+        assert "Clear older than 30 days" in js
+        assert "_clearRecentOlderThan30Days" in js
+
+    def test_has_queue_context_actions(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        assert "Play Next" in js
+        assert "Add to Queue" in js
+        assert "_queueTrackNext" in js
+        assert "_queueTrackLast" in js
+
+    def test_has_player_preferences(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        assert "playerPrefs" in js
+        assert "_restorePlayerPrefs" in js
+        assert "_savePlayerPrefs" in js
+        assert "volFill.style.width" in js
+
+    def test_has_smart_shuffle_hooks(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        assert "Smart Shuffle" in js
+        assert "_smartShuffleTracks" in js
+        assert "smartShuffle" in js
+
+    def test_library_artist_view_uses_page_size(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        assert "const LIBRARY_PAGE_SIZE = 50" in js
+        assert "sort=artist&limit=' + LIBRARY_PAGE_SIZE" in js
+        assert "sort=artist&limit=200" not in js
+
+    def test_album_view_caches_and_batches_rendering(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        assert "_libraryAlbumCache" in js
+        assert "_getLibraryAlbums" in js
+        assert "_renderAlbumCardsBatch" in js
+        assert "requestAnimationFrame" in js
+        assert "_failedAlbumArtUrls" in js
+
+    def test_library_no_longer_renders_recent_shelf(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        assert "Recently Added" in js
+        assert "loadLibraryRecentAlbumsExpanded" in js
+        assert "loadLibraryRecentShelf" not in js
+        assert "library-shelf" not in js
+
     def test_has_sleep_timer(self):
         js = (STATIC_DIR / "app.js").read_text()
         assert "_sleepTimerId" in js, "Sleep timer missing"
