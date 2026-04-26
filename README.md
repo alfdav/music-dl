@@ -252,7 +252,8 @@ CLI, GUI, and the optional bot share the same backend core. CLI and GUI use the 
 For deep dives, see:
 
 - **[Backend Reference](tidaldl-py/docs/backend-guide.md)** — API routes, DB schema, download pipeline, middleware, security model
-- **[Design System](tidaldl-py/docs/design-system.md)** — UI tokens, components, layout, animation
+- **[DESIGN.md](DESIGN.md)** — agent-readable design tokens and visual identity contract
+- **[Design System](tidaldl-py/docs/design-system.md)** — detailed UI component patterns, layout, and animation rules
 - **[Docker Guide](docker/README.md)** — detailed Docker usage, mounts, CLI commands, headless/cron
 
 ## Environment Variables
