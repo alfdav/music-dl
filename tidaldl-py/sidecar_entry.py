@@ -33,9 +33,19 @@ def _frozen_env_setup() -> None:
         os.environ["LC_CTYPE"] = "en_US.UTF-8"
 
 
+def _ignore_shutdown_signals(signal_module=signal) -> None:
+    for name in ("SIGINT", "SIGHUP"):
+        sig = getattr(signal_module, name, None)
+        if sig is None:
+            continue
+        try:
+            signal_module.signal(sig, signal_module.SIG_IGN)
+        except (OSError, RuntimeError, ValueError):
+            continue
+
+
 def main() -> None:
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    _ignore_shutdown_signals()
     _frozen_env_setup()
 
     import asyncio
