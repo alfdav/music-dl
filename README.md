@@ -26,6 +26,10 @@
   DEV SETUP:
     cd tidaldl-py && uv sync && music-dl gui   # opens http://localhost:8765
 
+  DESIGN:
+    Read DESIGN.md before UI work. Keep DESIGN.md, tidaldl-py/docs/design-system.md,
+    and tidal_dl/gui/static/style.css aligned.
+
   Repository: https://github.com/alfdav/music-dl
   License: MIT
 -->
@@ -53,6 +57,8 @@ STACK: Python 3.12+, FastAPI, vanilla JS, Tauri v2, Bun/discord.js for the optio
 REPO:  monorepo — Python app under tidaldl-py/, Discord bot under apps/discord-bot/.
 
 KEY PATHS:
+  DESIGN.md                         — agent-readable design tokens and visual identity contract
+  tidaldl-py/docs/design-system.md  — detailed UI component/layout/animation rules
   tidal_dl/gui/static/{app.js,style.css,index.html} — frontend (no framework)
   tidal_dl/gui/__init__.py    — FastAPI app factory
   tidal_dl/gui/api/           — all API routes
@@ -62,6 +68,7 @@ KEY PATHS:
 
 RULES:
   - Audio: direct <audio src="..."> only. NO Web Audio API. Non-negotiable.
+  - Design: read DESIGN.md before UI work; keep it aligned with design-system.md and style.css.
   - Security: localhost-only, CSRF on writes, path validation on file ops.
   - Tooling: uv over pip, bun over npm.
 ```
