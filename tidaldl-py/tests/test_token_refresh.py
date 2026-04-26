@@ -52,6 +52,15 @@ def tidal(tmp_path):
 # ---------------------------------------------------------------------------
 
 class TestEnsureTokenFreshGuards:
+    def test_tidal_session_uses_certifi_ca_bundle(self, clear_singletons):
+        import certifi
+
+        from tidal_dl.config import Tidal
+
+        tidal = Tidal()
+
+        assert tidal.session.request_session.verify == certifi.where()
+
     def test_returns_false_when_expiry_zero(self, tidal):
         tidal.data.expiry_time = 0.0
         tidal.data.refresh_token = "some-refresh-token"

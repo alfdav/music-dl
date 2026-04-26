@@ -20,7 +20,13 @@ The web UI opens in your browser and serves the local music library, search, dow
 
 Tidal sign-in and reconnect can be started directly from the GUI; terminal `music-dl login` remains available for CLI-first use.
 
-The Home view shows recent additions, recently played items, top artists, genre stats, and repeat listening. Library includes a Recently Added shortcut for the newest local albums, preferring successful downloads over plain scan recency.
+The Home view shows recent additions, recently played items, top artists, genre stats, repeat listening, and a Continue Listening card when playback has a saved queue position. Library artist navigation renders page-sized batches, and album navigation uses an in-memory album cache with batched card rendering to keep large collections responsive. Recently Played supports Today, This Week, and Older filters plus clear-old/history controls. The player persists queue, volume, shuffle, repeat, and Smart Shuffle preferences across reloads.
+
+Continue Listening ignores finished tracks and near-end positions so completed songs do not reappear as one-second resume cards.
+
+Recently Added is a dedicated Library category instead of a repeated shelf on every Library sort tab.
+
+Desktop builds use the same FastAPI static UI through the Tauri sidecar. The Tauri build now checks these QoL markers before bundling so a stale Mac app cannot be packaged silently. The macOS shell also accepts the PyInstaller worker PID as the ready sidecar process so packaged apps do not stall on the startup screen.
 
 ## CLI highlights
 

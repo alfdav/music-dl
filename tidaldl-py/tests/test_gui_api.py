@@ -49,12 +49,13 @@ def test_static_js_syncs_recently_played_from_server_memory():
     assert "api('/home/recent?limit=' + MAX_RECENT)" in resp.text
 
 
-def test_index_contains_recently_added_sidebar_entry():
+def test_index_does_not_contain_recently_added_sidebar_entry():
     client = _make_client()
     resp = client.get("/", headers=_HOST_HEADER)
 
     assert resp.status_code == 200
-    assert "Recently Added" in resp.text
+    assert "Recently Added" not in resp.text
+    assert 'data-view="recent-added"' not in resp.text
 
 
 def test_static_js_contains_recently_added_library_hooks():
@@ -64,7 +65,8 @@ def test_static_js_contains_recently_added_library_hooks():
     assert resp.status_code == 200
     assert "recent-added" in resp.text
     assert "/library/recent-albums" in resp.text
-    assert "See all" in resp.text
+    assert "loadLibraryRecentAlbumsExpanded" in resp.text
+    assert "See all" not in resp.text
 
 
 def test_static_js_contains_recently_added_expanded_states():

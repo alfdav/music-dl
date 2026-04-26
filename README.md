@@ -101,7 +101,7 @@ Two ways to get the macOS app — pick whichever fits:
 curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash
 ```
 
-Downloads the latest DMG, verifies the GitHub release checksum, installs to `/Applications`, and handles Gatekeeper automatically. No dev tools needed.
+Downloads the latest DMG, verifies the GitHub release checksum, installs to `/Applications`, and handles Gatekeeper automatically. No dev tools needed. Mounting or installing the DMG does not start the local daemon; the daemon starts when you launch `music-dl.app`.
 
 #### Build from source
 
@@ -182,12 +182,12 @@ Your browser opens automatically. The wizard handles the rest.
 
 ## Features
 
-- **Library browser** — your local collection organized by artist, with album art, quality badges (24-bit, lossless, MQA), and instant search
-- **Home dashboard** — recent additions, recently played, top artists, genres, and repeat listening stats
+- **Library browser** — your local collection organized by artist or album with page-sized/cached loading, a dedicated Recently Added category, album art, quality badges (24-bit, lossless, MQA), and instant search
+- **Home dashboard** — recent additions, recently played, top artists, genres, repeat listening stats, and Continue Listening resume
 - **Tidal search & download** — search the full Tidal catalog, see which tracks you already own, download what you're missing
 - **Quality upgrades** — re-download existing tracks at higher quality without duplicates
 - **Duplicate cleanup** — ISRC-based deduplication finds exact copies across your collection
-- **In-browser playback** — play anything in your library, bit-perfect to your DAC
+- **In-browser playback** — play anything in your library, bit-perfect to your DAC, with persisted queue, volume, repeat/shuffle preferences, keyboard shortcuts, and queue actions
 - **Waveform visualizer** — pre-computed amplitude data drives a ripple animation from the playhead, zero audio post-processing
 - **Playlist sync** — point it at a Tidal playlist and it downloads only the tracks you don't have
 - **Favorites** — mark tracks you love, access them from one place
@@ -353,6 +353,8 @@ uv run pyinstaller --clean --distpath src-tauri/binaries --workpath build/pyinst
 Move-Item -Force "src-tauri/binaries/music-dl-server.exe" "src-tauri/binaries/music-dl-server-$TargetTriple.exe"
 bunx tauri build --target $TargetTriple --bundles msi --config src-tauri/tauri.ci.conf.json
 ```
+
+The desktop app and browser mode share the same local web UI. Tauri starts or reuses the localhost daemon, then opens the same route the browser would use. Desktop protocol links such as `music-dl://open#search` open supported internal views in the app.
 
 Linux and Windows releases are published via GitHub Actions. macOS DMGs are built locally and attached to releases manually — the app is not notarized (no Apple Developer ID). The `scripts/install.sh` one-liner verifies the GitHub release checksum and strips the quarantine xattr so Gatekeeper doesn't fire. If you download a DMG through Safari instead, macOS will set the quarantine bit and you'll need a one-time right-click → Open bypass on first launch. Windows MSI builds are unsigned, so SmartScreen may warn on first install.
 

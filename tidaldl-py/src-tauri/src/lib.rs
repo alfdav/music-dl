@@ -9,6 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use tauri::Manager;
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
@@ -17,6 +18,7 @@ const READY_STATUS: &str = "ready";
 const BROWSER_MODE: &str = "browser";
 const SIDECAR_MODE: &str = "tauri-sidecar";
 const HEALTH_PATH: &str = "/api/server/health";
+const DEEP_LINK_SCHEME: &str = "music-dl";
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const POLL_TIMEOUT: Duration = Duration::from_secs(30);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
@@ -53,6 +55,8 @@ pub(crate) struct SidecarState {
 
 // Wrapper so we can manage CommandChild in Tauri state (needs Send + Sync)
 pub(crate) struct Sidecar(pub(crate) Mutex<SidecarState>);
+
+pub(crate) struct LaunchTarget(pub(crate) Mutex<Option<String>>);
 
 fn parse_health_url(url: &str) -> Result<HealthEndpoint, String> {
     let rest = url
@@ -92,12 +96,42 @@ fn reusable_metadata(meta: &DaemonMetadata, health_ready: bool) -> bool {
     meta.app == APP_NAME && meta.status == READY_STATUS && health_ready
 }
 
-fn reusable_browser_metadata(meta: &DaemonMetadata, health_ready: bool) -> bool {
-    meta.mode == BROWSER_MODE && reusable_metadata(meta, health_ready)
+fn reusable_local_metadata(meta: &DaemonMetadata, health_ready: bool) -> bool {
+    (meta.mode == BROWSER_MODE || meta.mode == SIDECAR_MODE)
+        && reusable_metadata(meta, health_ready)
+}
+
+fn process_parent_pid(pid: u32) -> Option<u32> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "ppid=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+fn process_has_ancestor(mut pid: u32, ancestor: u32) -> bool {
+    for _ in 0..16 {
+        let Some(parent) = process_parent_pid(pid) else {
+            return false;
+        };
+        if parent == ancestor {
+            return true;
+        }
+        if parent == 0 || parent == 1 || parent == pid {
+            return false;
+        }
+        pid = parent;
+    }
+
+    false
 }
 
 fn sidecar_metadata_matches(meta: &DaemonMetadata, pid: u32) -> bool {
-    meta.mode == SIDECAR_MODE && meta.pid == pid
+    meta.mode == SIDECAR_MODE && (meta.pid == pid || process_has_ancestor(meta.pid, pid))
 }
 
 fn daemon_metadata_path() -> Result<PathBuf, String> {
@@ -132,9 +166,9 @@ fn metadata_is_ready(meta: &DaemonMetadata) -> bool {
         && reusable_metadata(meta, health_url_is_ready(&meta.health_url))
 }
 
-fn browser_metadata_is_ready(meta: &DaemonMetadata) -> bool {
+fn local_metadata_is_ready(meta: &DaemonMetadata) -> bool {
     metadata_base_url(meta).is_ok()
-        && reusable_browser_metadata(meta, health_url_is_ready(&meta.health_url))
+        && reusable_local_metadata(meta, health_url_is_ready(&meta.health_url))
 }
 
 fn read_health(endpoint: &HealthEndpoint) -> Result<HealthResponse, String> {
@@ -214,6 +248,127 @@ fn state_from_owned_child(
     })
 }
 
+fn normalize_internal_view(view: &str) -> String {
+    let raw = view.trim();
+    if raw.is_empty() {
+        return "home".to_string();
+    }
+
+    match raw {
+        "home" | "search" | "library" | "recent-added" | "recent" | "playlists" | "favorites"
+        | "downloads" | "settings" | "djai" | "upgrades" => raw.to_string(),
+        _ if raw.starts_with("artist:")
+            && raw.len() > "artist:".len()
+            && !raw["artist:".len()..].contains(&['/', '?', '#'][..]) =>
+        {
+            raw.to_string()
+        }
+        _ if raw.starts_with("album:")
+            && raw["album:".len()..]
+                .chars()
+                .all(|char| char.is_ascii_digit())
+            && raw.len() > "album:".len() =>
+        {
+            raw.to_string()
+        }
+        _ if raw.starts_with("localalbum:") => {
+            let mut parts = raw["localalbum:".len()..].split(':');
+            let artist = parts.next().unwrap_or_default();
+            let album = parts.next().unwrap_or_default();
+            if parts.next().is_none()
+                && !artist.is_empty()
+                && !album.is_empty()
+                && !artist.contains(&[':', '/', '?', '#'][..])
+                && !album.contains(&[':', '/', '?', '#'][..])
+            {
+                raw.to_string()
+            } else {
+                "home".to_string()
+            }
+        }
+        _ => "home".to_string(),
+    }
+}
+
+fn raw_view_query_param(query: &str) -> Option<&str> {
+    query
+        .split('&')
+        .find_map(|part| part.strip_prefix("view="))
+        .filter(|value| !value.is_empty())
+}
+
+fn launch_view_from_url(raw_url: &str) -> Option<String> {
+    let url = tauri::Url::parse(raw_url).ok()?;
+    if url.scheme() != DEEP_LINK_SCHEME {
+        return None;
+    }
+
+    let route = url
+        .fragment()
+        .filter(|fragment| !fragment.is_empty())
+        .or_else(|| url.query().and_then(raw_view_query_param))
+        .unwrap_or("home");
+
+    Some(normalize_internal_view(route))
+}
+
+fn navigation_script_for_url(url: &str) -> String {
+    let encoded = serde_json::to_string(url).unwrap_or_else(|_| "\"/\"".to_string());
+    format!("window.location.replace({encoded})")
+}
+
+fn navigation_url(base_url: &str, view: Option<&str>) -> String {
+    match view {
+        Some(view) => format!("{base_url}#{view}"),
+        None => base_url.to_string(),
+    }
+}
+
+fn sidecar_base_url(handle: &tauri::AppHandle) -> Option<String> {
+    let sidecar = handle.try_state::<Sidecar>()?;
+    let base_url = sidecar.0.lock().ok()?.base_url.clone();
+    base_url
+}
+
+fn take_launch_view(handle: &tauri::AppHandle) -> Option<String> {
+    let target = handle.try_state::<LaunchTarget>()?;
+    let view = target.0.lock().ok()?.take();
+    view
+}
+
+fn set_launch_view(handle: &tauri::AppHandle, view: String) {
+    if let Some(target) = handle.try_state::<LaunchTarget>() {
+        if let Ok(mut guard) = target.0.lock() {
+            *guard = Some(view);
+        }
+    }
+}
+
+fn navigate_to_view(handle: &tauri::AppHandle, base_url: &str, view: Option<&str>) {
+    navigate_to(handle, &navigation_url(base_url, view));
+}
+
+fn handle_launch_url(handle: &tauri::AppHandle, raw_url: &str) {
+    let Some(view) = launch_view_from_url(raw_url) else {
+        return;
+    };
+
+    if let Some(base_url) = sidecar_base_url(handle) {
+        navigate_to_view(handle, &base_url, Some(&view));
+    } else {
+        set_launch_view(handle, view);
+    }
+}
+
+fn handle_launch_urls<'a, I>(handle: &tauri::AppHandle, urls: I)
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    for url in urls {
+        handle_launch_url(handle, url);
+    }
+}
+
 fn spawn_sidecar(app: &tauri::AppHandle) -> Result<CommandChild, String> {
     let sidecar_cmd = app
         .shell()
@@ -249,8 +404,7 @@ fn sidecar_state_is_ready(state: &SidecarState) -> bool {
 
 fn navigate_to(handle: &tauri::AppHandle, base_url: &str) {
     if let Some(window) = handle.get_webview_window("main") {
-        let nav = format!("window.location.replace('{base_url}')");
-        let _ = window.eval(&nav);
+        let _ = window.eval(&navigation_script_for_url(base_url));
     }
 }
 
@@ -274,7 +428,7 @@ fn show_loading_error(handle: &tauri::AppHandle, message: &str) {
 fn launch_initial_sidecar(handle: tauri::AppHandle) {
     thread::spawn(move || {
         if let Some(meta) = read_daemon_metadata() {
-            if browser_metadata_is_ready(&meta) {
+            if local_metadata_is_ready(&meta) {
                 match state_from_external_metadata(meta) {
                     Ok(state) => {
                         let base_url = state.base_url.clone();
@@ -283,7 +437,8 @@ fn launch_initial_sidecar(handle: tauri::AppHandle) {
                         }
 
                         if let Some(base_url) = base_url {
-                            navigate_to(&handle, &base_url);
+                            let view = take_launch_view(&handle);
+                            navigate_to_view(&handle, &base_url, view.as_deref());
                         }
                     }
                     Err(err) => show_loading_error(&handle, &err),
@@ -341,7 +496,8 @@ fn launch_initial_sidecar(handle: tauri::AppHandle) {
                 }
 
                 if should_navigate {
-                    navigate_to(&handle, &base_url);
+                    let view = take_launch_view(&handle);
+                    navigate_to_view(&handle, &base_url, view.as_deref());
                 }
             }
             Err(err) => {
@@ -458,8 +614,21 @@ fn restart_sidecar(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+            handle_launch_urls(app, argv.iter().map(String::as_str));
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
@@ -487,6 +656,24 @@ pub fn run() {
             app.manage(updater::StagedUpdate(Mutex::new(None)));
 
             app.manage(Sidecar(Mutex::new(SidecarState::default())));
+            app.manage(LaunchTarget(Mutex::new(None)));
+
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            app.deep_link().register_all()?;
+
+            if let Some(urls) = app.deep_link().get_current()? {
+                for url in urls {
+                    handle_launch_url(app.handle(), url.as_str());
+                }
+            }
+
+            let deep_link_handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    handle_launch_url(&deep_link_handle, url.as_str());
+                }
+            });
+
             launch_initial_sidecar(app.handle().clone());
 
             // Spawn background update check (non-blocking, release only)
@@ -551,7 +738,50 @@ mod tests {
     }
 
     #[test]
-    fn reusable_browser_metadata_rejects_other_sidecars() {
+    fn launch_view_extracts_hash_routes() {
+        assert_eq!(
+            launch_view_from_url("music-dl://open#search").as_deref(),
+            Some("search")
+        );
+        assert_eq!(
+            launch_view_from_url("music-dl://open#artist:AC%2FDC").as_deref(),
+            Some("artist:AC%2FDC")
+        );
+    }
+
+    #[test]
+    fn launch_view_extracts_query_route() {
+        assert_eq!(
+            launch_view_from_url("music-dl://open?view=album:12345").as_deref(),
+            Some("album:12345")
+        );
+    }
+
+    #[test]
+    fn launch_view_rejects_wrong_scheme() {
+        assert_eq!(launch_view_from_url("https://evil.example/#search"), None);
+    }
+
+    #[test]
+    fn launch_view_falls_back_to_home_for_bad_internal_route() {
+        assert_eq!(
+            launch_view_from_url("music-dl://open#artist:../../etc/passwd").as_deref(),
+            Some("home")
+        );
+    }
+
+    #[test]
+    fn navigation_script_json_encodes_url() {
+        let script = navigation_script_for_url("http://127.0.0.1:8765#artist:O'Hara");
+
+        assert_eq!(
+            script,
+            "window.location.replace(\"http://127.0.0.1:8765#artist:O'Hara\")"
+        );
+    }
+
+    #[test]
+    fn reusable_local_metadata_accepts_browser_and_sidecar_modes() {
         let meta = DaemonMetadata {
             app: APP_NAME.to_string(),
             status: READY_STATUS.to_string(),
@@ -561,11 +791,17 @@ mod tests {
             mode: SIDECAR_MODE.to_string(),
         };
 
-        assert!(!reusable_browser_metadata(&meta, true));
+        assert!(reusable_local_metadata(&meta, true));
+
+        let browser_meta = DaemonMetadata {
+            mode: BROWSER_MODE.to_string(),
+            ..meta
+        };
+        assert!(reusable_local_metadata(&browser_meta, true));
     }
 
     #[test]
-    fn sidecar_metadata_must_match_spawned_pid() {
+    fn sidecar_metadata_requires_sidecar_mode_and_matching_pid() {
         let meta = DaemonMetadata {
             app: APP_NAME.to_string(),
             status: READY_STATUS.to_string(),
@@ -577,5 +813,11 @@ mod tests {
 
         assert!(sidecar_metadata_matches(&meta, 123));
         assert!(!sidecar_metadata_matches(&meta, 456));
+
+        let browser_meta = DaemonMetadata {
+            mode: BROWSER_MODE.to_string(),
+            ..meta
+        };
+        assert!(!sidecar_metadata_matches(&browser_meta, 123));
     }
 }

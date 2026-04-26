@@ -78,6 +78,13 @@ Before marking Windows support ready:
 8. Quit and reopen the app.
 9. Confirm settings, auth, and library state persist.
 
+### Expected release assets
+
+Each release should include:
+
+- Linux: `.AppImage`, `.AppImage.sig`, `.deb`, and `latest.json`
+- macOS: `.dmg`
+
 ### Full docs
 
 See the project [README](https://github.com/alfdav/music-dl/blob/master/README.md) for dev setup, Docker Compose, Discord bot onboarding, and the `uv tool install` path.
