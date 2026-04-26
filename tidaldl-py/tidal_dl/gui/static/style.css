@@ -1596,12 +1596,32 @@ body {
 }
 
 .djai-bot-pill.ok {
-  color: var(--accent);
-  border-color: rgba(212, 160, 83, 0.35);
+  color: var(--green);
+  border-color: rgba(126, 201, 122, 0.35);
+  background: var(--green-dim);
 }
 
 .djai-bot-pill.warn {
   color: var(--text-muted);
+}
+
+.djai-ghost-input {
+  color: var(--text-secondary);
+  background: rgba(255, 245, 235, 0.035);
+  border-color: var(--glass-border);
+  -webkit-text-fill-color: var(--text-secondary);
+  opacity: 1;
+}
+
+.djai-ghost-input.ok {
+  color: var(--green);
+  border-color: rgba(126, 201, 122, 0.24);
+  -webkit-text-fill-color: var(--green);
+}
+
+.djai-ghost-input.warn {
+  color: var(--text-muted);
+  -webkit-text-fill-color: var(--text-muted);
 }
 
 .djai-bot-form {

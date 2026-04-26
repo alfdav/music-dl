@@ -26,6 +26,12 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 - Replaced the DJAI placeholder with GUI controls to save Discord bot config and start, restart, or shut down the bot service from the browser.
 - Hardened the DJAI Discord bot config path so bot tokens are handled as secrets and never returned by the GUI API.
+- Clarified existing Discord bot configs in the DJAI view by reusing the same fields as ghost-filled saved fields so CLI-onboarded users do not have to re-enter secrets.
+- Show saved non-secret Discord IDs in the DJAI bot config fields while keeping bot tokens hidden.
+- Resolve Discord app, server, channel, and user names for human-readable DJAI bot config fields when Discord lookup is available.
+- Use human saved-state labels instead of raw placeholder IDs when saved Discord IDs are not real snowflakes.
+- Treat placeholder/non-snowflake Discord IDs as invalid so DJAI does not present broken bot configs as ready.
+- Let DJAI discover valid legacy CLI `.env` bot configs when the canonical GUI config is missing or stale.
 - Fixed packaged app startup and login handoff problems found after v1.6.0.
 - Added desktop deep-link routing and playback/library quality-of-life fixes from the post-v1.6.0 release branch.
 - Persisted recently played local tracks through the backend so the Home view can recover recent playback after relaunch.

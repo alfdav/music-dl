@@ -11,6 +11,7 @@ import subprocess
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, SecretStr
+import requests
 
 from tidal_dl.gui.bot_onboarding import TokenSource, bot_token_source, shared_token_path
 from tidal_dl.helper.path import path_config_base
@@ -19,6 +20,8 @@ router = APIRouter(prefix="/bot-control", tags=["bot-control"])
 
 BOT_ENV_FILENAME = "discord-bot.env"
 STOP_TIMEOUT_SECONDS = 5
+DISCORD_API = "https://discord.com/api/v10"
+DISCORD_LOOKUP_TIMEOUT_SECONDS = 2
 USER_FIELDS = [
     "DISCORD_TOKEN",
     "DISCORD_APPLICATION_ID",
@@ -30,6 +33,12 @@ ALL_FIELDS = [
     *USER_FIELDS,
     "MUSIC_DL_BASE_URL",
     "MUSIC_DL_BOT_TOKEN",
+]
+ID_FIELDS = [
+    "DISCORD_APPLICATION_ID",
+    "ALLOWED_GUILD_ID",
+    "ALLOWED_CHANNEL_ID",
+    "ALLOWED_USER_ID",
 ]
 
 
@@ -56,6 +65,13 @@ def bot_root_path() -> Path:
     return here.parents[4] / "apps" / "discord-bot"
 
 
+def legacy_bot_env_paths() -> list[Path]:
+    return [
+        Path(path_config_base()) / ".env",
+        bot_root_path() / ".env",
+    ]
+
+
 @router.get("/status")
 def status(request: Request) -> dict:
     return _status(request)
@@ -73,6 +89,9 @@ def configure(payload: BotConfigureRequest, request: Request) -> dict:
     missing = [key for key, value in values.items() if not value]
     if missing:
         raise HTTPException(status_code=400, detail=f"Missing required fields: {', '.join(missing)}")
+    invalid = _invalid_id_fields(values)
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Invalid Discord IDs: {', '.join(invalid)}")
 
     token = _ensure_shared_token()
     values["MUSIC_DL_BASE_URL"] = request.app.state.daemon_meta.base_url
@@ -103,9 +122,10 @@ def _start_bot(request: Request) -> dict:
     if running is not None:
         return _status(request)
 
-    env_values = _load_env(bot_env_path())
+    env_path, env_values = _active_env()
     missing = _missing_user_fields(env_values)
-    if missing or not _token_ready():
+    invalid = _invalid_id_fields(env_values)
+    if missing or invalid or not _token_ready():
         raise HTTPException(status_code=400, detail="Discord bot is not configured")
 
     root = bot_root_path()
@@ -120,6 +140,7 @@ def _start_bot(request: Request) -> dict:
         proc = subprocess.Popen(
             [bun, "run", "start"],
             cwd=str(root),
+            env={**os.environ, "MUSIC_DL_BOT_ENV_PATH": str(env_path)},
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -132,14 +153,23 @@ def _start_bot(request: Request) -> dict:
 
 
 def _status(request: Request) -> dict:
-    env_values = _load_env(bot_env_path())
+    env_path, env_values = _active_env()
     missing = _missing_user_fields(env_values)
+    invalid = _invalid_id_fields(env_values)
+    token_ready = _token_ready()
     return {
-        "configured": not missing and _token_ready(),
+        "configured": not missing and not invalid and token_ready,
         "running": _running_process(request) is not None,
-        "backend_url": request.app.state.daemon_meta.base_url,
+        "backend_url": env_values.get("MUSIC_DL_BASE_URL", "").strip() or request.app.state.daemon_meta.base_url,
         "missing_fields": missing,
-        "env_path": str(bot_env_path()),
+        "invalid_fields": invalid,
+        "configured_fields": [key for key in USER_FIELDS if key not in missing and key not in invalid],
+        "saved_ids": _saved_ids(env_values),
+        "saved_labels": _saved_labels(env_values),
+        "config_file_present": bool(env_values),
+        "shared_token_present": token_ready,
+        "env_path": str(env_path),
+        "env_source": _env_source(env_path),
         "token_source": bot_token_source().value,
         "bot_root": str(bot_root_path()),
     }
@@ -184,6 +214,120 @@ def _stop_bot(request: Request) -> None:
 
 def _missing_user_fields(values: dict[str, str]) -> list[str]:
     return [key for key in USER_FIELDS if not values.get(key, "").strip()]
+
+
+def _active_env() -> tuple[Path, dict[str, str]]:
+    canonical = bot_env_path()
+    canonical_values = _load_env(canonical)
+    if _config_values_usable(canonical_values):
+        return canonical, canonical_values
+
+    for path in legacy_bot_env_paths():
+        values = _load_env(path)
+        if _config_values_usable(values):
+            return path, values
+    return canonical, canonical_values
+
+
+def _config_values_usable(values: dict[str, str]) -> bool:
+    return bool(values) and not _missing_user_fields(values) and not _invalid_id_fields(values)
+
+
+def _env_source(path: Path) -> str:
+    try:
+        if path == bot_env_path():
+            return "canonical"
+        if path in legacy_bot_env_paths():
+            return "legacy"
+    except OSError:
+        pass
+    return "custom"
+
+
+def _invalid_id_fields(values: dict[str, str]) -> list[str]:
+    return [
+        key for key in ID_FIELDS
+        if values.get(key, "").strip() and not _is_discord_snowflake(values[key].strip())
+    ]
+
+
+def _is_discord_snowflake(value: str) -> bool:
+    return value.isdigit() and 17 <= len(value) <= 20
+
+
+def _saved_ids(values: dict[str, str]) -> dict[str, str]:
+    return {
+        "discord_application_id": values.get("DISCORD_APPLICATION_ID", "").strip(),
+        "allowed_guild_id": values.get("ALLOWED_GUILD_ID", "").strip(),
+        "allowed_channel_id": values.get("ALLOWED_CHANNEL_ID", "").strip(),
+        "allowed_user_id": values.get("ALLOWED_USER_ID", "").strip(),
+    }
+
+
+def _saved_labels(values: dict[str, str]) -> dict[str, str]:
+    saved_ids = _saved_ids(values)
+    labels = {
+        "discord_application_id": _id_label("Application", saved_ids["discord_application_id"]),
+        "allowed_guild_id": _id_label("Server", saved_ids["allowed_guild_id"]),
+        "allowed_channel_id": _channel_label(saved_ids["allowed_channel_id"]),
+        "allowed_user_id": _id_label("User", saved_ids["allowed_user_id"]),
+    }
+
+    token = values.get("DISCORD_TOKEN", "").strip()
+    if not _looks_like_discord_token(token) or not all(value.isdigit() for value in saved_ids.values() if value):
+        return labels
+
+    headers = {"Authorization": f"Bot {token}", "User-Agent": "music-dl-gui/1.0"}
+    app = _discord_get_json("/oauth2/applications/@me", headers)
+    guild = _discord_get_json(f"/guilds/{saved_ids['allowed_guild_id']}", headers)
+    channel = _discord_get_json(f"/channels/{saved_ids['allowed_channel_id']}", headers)
+    member = _discord_get_json(
+        f"/guilds/{saved_ids['allowed_guild_id']}/members/{saved_ids['allowed_user_id']}",
+        headers,
+    )
+
+    if app.get("name"):
+        labels["discord_application_id"] = f"{app['name']} app"
+    if guild.get("name"):
+        labels["allowed_guild_id"] = str(guild["name"])
+    if channel.get("name"):
+        labels["allowed_channel_id"] = f"#{channel['name']}"
+    user = member.get("user") if isinstance(member.get("user"), dict) else {}
+    user_label = member.get("nick") or user.get("global_name") or user.get("username")
+    if user_label:
+        labels["allowed_user_id"] = str(user_label)
+    return labels
+
+
+def _id_label(prefix: str, value: str) -> str:
+    if not value:
+        return ""
+    return f"{prefix} {value}" if value.isdigit() else f"{prefix} saved"
+
+
+def _channel_label(value: str) -> str:
+    if not value:
+        return ""
+    return f"Channel {value}" if value.isdigit() else "Channel saved"
+
+
+def _looks_like_discord_token(value: str) -> bool:
+    return value.count(".") >= 2
+
+
+def _discord_get_json(path: str, headers: dict[str, str]) -> dict:
+    try:
+        resp = requests.get(
+            DISCORD_API + path,
+            headers=headers,
+            timeout=DISCORD_LOOKUP_TIMEOUT_SECONDS,
+        )
+        if not resp.ok:
+            return {}
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+    except (requests.RequestException, ValueError):
+        return {}
 
 
 def _token_ready() -> bool:

@@ -138,8 +138,20 @@ class TestAppJsFeatureMarkers:
         assert "/bot-control/restart" in js
         assert "/bot-control/stop" in js
         assert "Deploy Discord Bot" in js
+        assert "Start Discord Bot" in js
         assert "Restart" in js
         assert "Shutdown" in js
+        assert "Edit Config" in js
+        assert "Saved (hidden)" in js
+        assert "data.saved_labels?.[name]" in js
+        assert "data.saved_ids?.[name]" in js
+        assert "Invalid Discord IDs" in js
+        assert "djai-ghost-input" in js
+        assert "Existing config detected" in js
+        assert ".djai-ghost-input.ok" in css
+        assert "className: 'djai-config-summary'" not in js
+        assert ".djai-config-summary" not in css
+        assert "var(--green)" in css
         assert "djai-discord-card" in css
 
     def test_library_artist_view_uses_page_size(self):

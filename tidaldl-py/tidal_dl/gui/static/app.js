@@ -3419,41 +3419,83 @@ function renderDjai(container) {
   const deployBtn = h('button', { className: 'wizard-btn djai-deploy-btn', type: 'button' }, 'Deploy Discord Bot');
   const restartBtn = h('button', { className: 'wizard-btn-sm', type: 'button' }, 'Restart');
   const shutdownBtn = h('button', { className: 'wizard-btn-sm', type: 'button' }, 'Shutdown');
+  const editBtn = h('button', { className: 'wizard-btn-sm', type: 'button' }, 'Edit Config');
+  const cancelEditBtn = h('button', { className: 'wizard-btn-sm', type: 'button' }, 'Cancel');
   const refreshBtn = h('button', { className: 'wizard-btn-sm', type: 'button' }, 'Refresh');
-  const actions = h('div', { className: 'djai-bot-actions' }, saveBtn, deployBtn, restartBtn, shutdownBtn, refreshBtn);
-  form.appendChild(actions);
+  const formActions = h('div', { className: 'djai-bot-actions' }, saveBtn, cancelEditBtn);
+  const serviceActions = h('div', { className: 'djai-bot-actions' }, deployBtn, restartBtn, shutdownBtn, editBtn, refreshBtn);
+  form.appendChild(formActions);
 
   shell.appendChild(header);
   botCard.appendChild(botHeader);
   botCard.appendChild(statusLine);
   botCard.appendChild(form);
+  botCard.appendChild(serviceActions);
   botCard.appendChild(details);
   moduleGrid.appendChild(botCard);
   shell.appendChild(moduleGrid);
   container.appendChild(shell);
 
   let lastStatus = null;
+  let editingConfig = false;
 
   function setBusy(busy) {
     saveBtn.disabled = busy;
     deployBtn.disabled = busy || !lastStatus?.configured || lastStatus?.running;
     restartBtn.disabled = busy || !lastStatus?.configured;
     shutdownBtn.disabled = busy || !lastStatus?.running;
+    editBtn.disabled = busy;
+    cancelEditBtn.disabled = busy;
     refreshBtn.disabled = busy;
   }
 
   function renderStatus(data) {
     lastStatus = data;
+    saveBtn.hidden = data.configured && !editingConfig;
+    cancelEditBtn.hidden = !data.configured || !editingConfig;
+
     while (statusLine.firstChild) statusLine.removeChild(statusLine.firstChild);
     statusLine.appendChild(textEl('span', data.configured ? 'Configured' : 'Needs config', 'djai-bot-pill ' + (data.configured ? 'ok' : 'warn')));
     statusLine.appendChild(textEl('span', data.running ? 'Running' : 'Stopped', 'djai-bot-pill ' + (data.running ? 'ok' : 'warn')));
+    deployBtn.textContent = data.running ? 'Bot Running' : (data.configured ? 'Start Discord Bot' : 'Deploy Discord Bot');
     deployBtn.disabled = !data.configured || data.running;
     restartBtn.disabled = !data.configured;
     shutdownBtn.disabled = !data.running;
+    editBtn.hidden = !data.configured || editingConfig;
+
+    fields.forEach(([name, , type]) => {
+      const input = inputs[name];
+      input.disabled = data.configured && !editingConfig;
+      input.readOnly = data.configured && !editingConfig;
+      input.classList.toggle('djai-ghost-input', data.configured && !editingConfig);
+
+      if (data.configured && !editingConfig) {
+        const key = {
+          discord_token: 'DISCORD_TOKEN',
+          discord_application_id: 'DISCORD_APPLICATION_ID',
+          allowed_guild_id: 'ALLOWED_GUILD_ID',
+          allowed_channel_id: 'ALLOWED_CHANNEL_ID',
+          allowed_user_id: 'ALLOWED_USER_ID',
+        }[name];
+        const present = data.configured_fields?.includes(key);
+        input.type = 'text';
+        input.value = present ? (name === 'discord_token' ? 'Saved (hidden)' : (data.saved_labels?.[name] || data.saved_ids?.[name] || 'Saved')) : 'Missing';
+        input.classList.toggle('ok', present);
+        input.classList.toggle('warn', !present);
+      } else {
+        input.type = type;
+        input.classList.remove('ok', 'warn');
+      }
+    });
 
     while (details.firstChild) details.removeChild(details.firstChild);
     if (data.missing_fields?.length) {
       details.appendChild(textEl('div', 'Missing: ' + data.missing_fields.join(', '), 'wizard-desc'));
+    }
+    if (data.invalid_fields?.length) {
+      details.appendChild(textEl('div', 'Invalid Discord IDs: ' + data.invalid_fields.join(', '), 'wizard-desc'));
+    } else if (data.configured) {
+      details.appendChild(textEl('div', 'Existing config detected. You can deploy or restart without re-entering secrets.', 'wizard-desc'));
     }
     details.appendChild(textEl('div', 'Backend: ' + data.backend_url, 'wizard-desc'));
     details.appendChild(textEl('div', 'Config: ' + data.env_path, 'wizard-desc'));
@@ -3489,6 +3531,7 @@ function renderDjai(container) {
       setBusy(true);
       const payload = {};
       fields.forEach(([name]) => { payload[name] = inputs[name].value.trim(); });
+      editingConfig = false;
       renderStatus(await api('/bot-control/configure', { method: 'POST', body: payload }));
       inputs.discord_token.value = '';
       toast('Discord bot config saved', 'success');
@@ -3509,6 +3552,18 @@ function renderDjai(container) {
 
   shutdownBtn.addEventListener('click', async () => {
     await runBotAction('/bot-control/stop', 'Discord bot stopped', 'Bot shutdown failed');
+  });
+
+  editBtn.addEventListener('click', () => {
+    editingConfig = true;
+    fields.forEach(([name]) => { inputs[name].value = ''; });
+    if (lastStatus) renderStatus(lastStatus);
+  });
+
+  cancelEditBtn.addEventListener('click', () => {
+    editingConfig = false;
+    fields.forEach(([name]) => { inputs[name].value = ''; });
+    if (lastStatus) renderStatus(lastStatus);
   });
 
   refreshBtn.addEventListener('click', loadStatus);
