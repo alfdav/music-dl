@@ -40,7 +40,17 @@ checks (Node version, libsodium, ffmpeg, Opus, Discord token validity,
 guild/channel/user reachability, voice permissions), and atomic file
 writes.
 
-**Easiest path (from a terminal):**
+**Easiest path (from the GUI):**
+
+```bash
+music-dl gui
+```
+
+Open the DJAI view, enter the Discord bot token and allowed guild/channel/user
+IDs, save the config, then use **Deploy Discord Bot**, **Restart**, or
+**Shutdown** to manage the bot service.
+
+**Terminal fallback:**
 
 ```bash
 music-dl gui --setup-bot

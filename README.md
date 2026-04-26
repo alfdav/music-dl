@@ -193,7 +193,7 @@ Your browser opens automatically. The wizard handles the rest.
 - **Favorites** — mark tracks you love, access them from one place
 - **Local lyrics** — synced `.lrc` sidecars and embedded tag fallback, rendered in the player with no network lookups. See [`tidaldl-py/docs/local-lyrics.md`](tidaldl-py/docs/local-lyrics.md).
 - **Setup wizard** — first-run experience that walks you through Tidal login and library paths
-- **Discord bot (optional)** — single-user, single-guild companion that streams and downloads from your library over Discord voice. Set up in one command: `music-dl gui --setup-bot`. See [`apps/discord-bot/README.md`](apps/discord-bot/README.md) and [`tidaldl-py/docs/bot-onboarding.md`](tidaldl-py/docs/bot-onboarding.md).
+- **Discord bot (optional)** — single-user, single-guild companion that streams and downloads from your library over Discord voice. Configure it and manage the bot service from the GUI's DJAI view, or use `music-dl gui --setup-bot` from a terminal. See [`apps/discord-bot/README.md`](apps/discord-bot/README.md) and [`tidaldl-py/docs/bot-onboarding.md`](tidaldl-py/docs/bot-onboarding.md).
 
 ## CLI
 
@@ -214,7 +214,7 @@ music-dl isrc-tag <path>        # write ISRC tags to local audio files
 music-dl source show            # inspect Hi-Fi API/OAuth download source settings
 music-dl scan add <PATH>        # add and scan a local library directory
 music-dl dl_fav tracks --since 2026-01-01  # download favorite tracks incrementally
-music-dl gui --setup-bot        # run Discord bot onboarding, then start the GUI
+music-dl gui --setup-bot        # terminal fallback for Discord bot onboarding
 ```
 
 Run `music-dl --help` for the full list.

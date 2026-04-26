@@ -3366,13 +3366,153 @@ async function renderAlbumDetail(container, albumId) {
   }
 }
 
-// ---- DJAI VIEW (placeholder) ----
+// ---- DJAI VIEW ----
 function renderDjai(container) {
-  container.appendChild(h('div', { className: 'empty-state' },
-    textEl('div', 'DJAI', 'empty-state-title'),
-    textEl('div', 'Your AI DJ — picks music based on your mood. Bring your own API key.', 'empty-state-sub'),
-    textEl('div', 'Coming soon.', 'empty-state-sub')
-  ));
+  const shell = h('div', { className: 'djai-shell' });
+  const header = h('div', { className: 'djai-header' },
+    textEl('div', 'DJAI', 'wizard-step-label'),
+    textEl('h2', 'DJAI', 'djai-title'),
+    textEl('p', 'Music automation modules live here. Discord Bot is the first deployable module.', 'djai-desc')
+  );
+
+  const moduleGrid = h('div', { className: 'djai-module-grid' });
+  const botCard = h('section', { className: 'djai-module-card djai-discord-card' });
+  const botHeader = h('div', { className: 'djai-module-header' },
+    h('div', {},
+      textEl('div', 'Available now', 'wizard-step-label'),
+      textEl('h3', 'Discord Bot', 'djai-module-title')
+    ),
+    textEl('p', 'Deploy the private voice bot against this music-dl server.', 'djai-module-desc')
+  );
+
+  const statusLine = h('div', { className: 'djai-bot-status' },
+    textEl('span', 'Checking bot status...', 'djai-bot-pill')
+  );
+
+  const fields = [
+    ['discord_token', 'Discord Bot Token', 'password'],
+    ['discord_application_id', 'Application ID', 'text'],
+    ['allowed_guild_id', 'Allowed Guild ID', 'text'],
+    ['allowed_channel_id', 'Allowed Channel ID', 'text'],
+    ['allowed_user_id', 'Allowed User ID', 'text'],
+  ];
+
+  const inputs = {};
+  const form = h('form', { className: 'djai-bot-form' });
+  fields.forEach(([name, label, type]) => {
+    const input = h('input', {
+      className: 'settings-input',
+      name,
+      type,
+      autocomplete: 'off',
+      spellcheck: 'false',
+    });
+    inputs[name] = input;
+    form.appendChild(h('label', { className: 'djai-bot-field' },
+      textEl('span', label, 'settings-label'),
+      input
+    ));
+  });
+
+  const details = h('div', { className: 'djai-bot-details' });
+  const saveBtn = h('button', { className: 'wizard-btn', type: 'submit' }, 'Save Bot Config');
+  const deployBtn = h('button', { className: 'wizard-btn djai-deploy-btn', type: 'button' }, 'Deploy Discord Bot');
+  const restartBtn = h('button', { className: 'wizard-btn-sm', type: 'button' }, 'Restart');
+  const shutdownBtn = h('button', { className: 'wizard-btn-sm', type: 'button' }, 'Shutdown');
+  const refreshBtn = h('button', { className: 'wizard-btn-sm', type: 'button' }, 'Refresh');
+  const actions = h('div', { className: 'djai-bot-actions' }, saveBtn, deployBtn, restartBtn, shutdownBtn, refreshBtn);
+  form.appendChild(actions);
+
+  shell.appendChild(header);
+  botCard.appendChild(botHeader);
+  botCard.appendChild(statusLine);
+  botCard.appendChild(form);
+  botCard.appendChild(details);
+  moduleGrid.appendChild(botCard);
+  shell.appendChild(moduleGrid);
+  container.appendChild(shell);
+
+  let lastStatus = null;
+
+  function setBusy(busy) {
+    saveBtn.disabled = busy;
+    deployBtn.disabled = busy || !lastStatus?.configured || lastStatus?.running;
+    restartBtn.disabled = busy || !lastStatus?.configured;
+    shutdownBtn.disabled = busy || !lastStatus?.running;
+    refreshBtn.disabled = busy;
+  }
+
+  function renderStatus(data) {
+    lastStatus = data;
+    while (statusLine.firstChild) statusLine.removeChild(statusLine.firstChild);
+    statusLine.appendChild(textEl('span', data.configured ? 'Configured' : 'Needs config', 'djai-bot-pill ' + (data.configured ? 'ok' : 'warn')));
+    statusLine.appendChild(textEl('span', data.running ? 'Running' : 'Stopped', 'djai-bot-pill ' + (data.running ? 'ok' : 'warn')));
+    deployBtn.disabled = !data.configured || data.running;
+    restartBtn.disabled = !data.configured;
+    shutdownBtn.disabled = !data.running;
+
+    while (details.firstChild) details.removeChild(details.firstChild);
+    if (data.missing_fields?.length) {
+      details.appendChild(textEl('div', 'Missing: ' + data.missing_fields.join(', '), 'wizard-desc'));
+    }
+    details.appendChild(textEl('div', 'Backend: ' + data.backend_url, 'wizard-desc'));
+    details.appendChild(textEl('div', 'Config: ' + data.env_path, 'wizard-desc'));
+    details.appendChild(textEl('div', 'Bot app: ' + data.bot_root, 'wizard-desc'));
+  }
+
+  async function runBotAction(path, successMessage, failurePrefix) {
+    try {
+      setBusy(true);
+      renderStatus(await api(path, { method: 'POST', body: {} }));
+      toast(successMessage, 'success');
+    } catch (err) {
+      toast(failurePrefix + ': ' + err.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadStatus() {
+    try {
+      setBusy(true);
+      renderStatus(await api('/bot-control/status'));
+    } catch (err) {
+      toast('Bot status failed: ' + err.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      setBusy(true);
+      const payload = {};
+      fields.forEach(([name]) => { payload[name] = inputs[name].value.trim(); });
+      renderStatus(await api('/bot-control/configure', { method: 'POST', body: payload }));
+      inputs.discord_token.value = '';
+      toast('Discord bot config saved', 'success');
+    } catch (err) {
+      toast('Bot config failed: ' + err.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  deployBtn.addEventListener('click', async () => {
+    await runBotAction('/bot-control/start', 'Discord bot started', 'Bot deploy failed');
+  });
+
+  restartBtn.addEventListener('click', async () => {
+    await runBotAction('/bot-control/restart', 'Discord bot restarted', 'Bot restart failed');
+  });
+
+  shutdownBtn.addEventListener('click', async () => {
+    await runBotAction('/bot-control/stop', 'Discord bot stopped', 'Bot shutdown failed');
+  });
+
+  refreshBtn.addEventListener('click', loadStatus);
+  loadStatus();
 }
 
 // ---- LIBRARY VIEW ----

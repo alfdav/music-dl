@@ -44,7 +44,8 @@ music-dl dl_fav tracks --since 2026-01-01
 ## Discord bot (optional)
 
 A companion Discord bot streams and downloads from your library over voice.
-Set up in one command from the same terminal:
+Open the GUI's DJAI view to save the bot config and start, restart, or shut
+down the bot service from the browser. Terminal onboarding remains available:
 
 ```shell
 music-dl gui --setup-bot

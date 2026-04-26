@@ -1511,6 +1511,134 @@ body {
   line-height: 1.6;
 }
 
+.djai-shell {
+  max-width: 960px;
+  margin: 56px auto 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.djai-header {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.djai-title {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 44px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.djai-desc {
+  margin: 0;
+  max-width: 600px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.djai-module-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 760px);
+  gap: 18px;
+}
+
+.djai-module-card {
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.035);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.djai-discord-card {
+  border-color: rgba(212, 160, 83, 0.22);
+}
+
+.djai-module-header {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.djai-module-title {
+  margin: 4px 0 0;
+  font-family: var(--serif);
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.djai-module-desc {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.djai-bot-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.djai-bot-pill {
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  padding: 6px 12px;
+  color: var(--text-secondary);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.djai-bot-pill.ok {
+  color: var(--accent);
+  border-color: rgba(212, 160, 83, 0.35);
+}
+
+.djai-bot-pill.warn {
+  color: var(--text-muted);
+}
+
+.djai-bot-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.djai-bot-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.djai-bot-field:first-child {
+  grid-column: 1 / -1;
+}
+
+.djai-bot-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.djai-deploy-btn {
+  background: var(--text-primary);
+}
+
+.djai-bot-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  word-break: break-word;
+}
+
 .lucky-btn {
   margin-top: 20px;
   padding: 10px 28px;

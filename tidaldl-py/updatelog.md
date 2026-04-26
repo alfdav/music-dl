@@ -24,6 +24,8 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ### Desktop app fixes
 
+- Replaced the DJAI placeholder with GUI controls to save Discord bot config and start, restart, or shut down the bot service from the browser.
+- Hardened the DJAI Discord bot config path so bot tokens are handled as secrets and never returned by the GUI API.
 - Fixed packaged app startup and login handoff problems found after v1.6.0.
 - Added desktop deep-link routing and playback/library quality-of-life fixes from the post-v1.6.0 release branch.
 - Persisted recently played local tracks through the backend so the Home view can recover recent playback after relaunch.
