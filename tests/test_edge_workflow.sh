@@ -29,6 +29,7 @@ assert_contains "$workflow_contents" "windows-latest" "edge workflow builds Wind
 assert_contains "$workflow_contents" "scripts/edge_channel.py prepare" "edge workflow stamps edge app version"
 assert_contains "$workflow_contents" "scripts/edge_channel.py manifest" "edge workflow generates updater manifest"
 assert_contains "$workflow_contents" "gh release upload edge" "edge workflow uploads to the rolling edge channel"
+assert_contains "$workflow_contents" "releases/assets" "edge workflow deletes stale rolling assets before upload"
 assert_contains "$workflow_contents" "*.AppImage.sig" "edge workflow preserves Linux updater signature"
 assert_contains "$workflow_contents" "*.app.tar.gz.sig" "edge workflow preserves macOS updater signature"
 assert_contains "$workflow_contents" "*.msi.sig" "edge workflow preserves Windows updater signature"

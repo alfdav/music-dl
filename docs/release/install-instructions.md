@@ -106,8 +106,8 @@ Manual release assets are still available below:
 Each release should include:
 
 - Linux: `.AppImage`, `.AppImage.sig`, `.deb`, and `latest.json`
-- macOS: `.dmg`
-- Windows: `.msi`
+- macOS: `.dmg`, `.app.tar.gz`, and `.app.tar.gz.sig`
+- Windows: `.msi` and `.msi.sig`
 
 ### Windows release smoke
 

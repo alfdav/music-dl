@@ -126,7 +126,7 @@ jobs:
 
       - name: Build Tauri app (macOS)
         if: runner.os == 'macOS'
-        run: bunx tauri build --target ${{ matrix.target }} --bundles dmg
+        run: bunx tauri build --target ${{ matrix.target }} --bundles app,dmg
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -223,6 +223,11 @@ jobs:
               --notes "Rolling edge build from master commit ${GITHUB_SHA}." \
               --prerelease
           fi
+
+          while IFS= read -r asset_id; do
+            [ -n "$asset_id" ] || continue
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
+          done < <(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/edge" --jq '.assets[].id')
 
           mapfile -t files < <(find artifacts -type f \( \
             -name '*.AppImage' -o \

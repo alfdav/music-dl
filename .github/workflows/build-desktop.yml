@@ -21,6 +21,9 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: linux-x86_64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            label: macos-aarch64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             label: windows-x86_64
@@ -161,6 +164,13 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
+      - name: Build Tauri app (macOS)
+        if: runner.os == 'macOS'
+        run: bunx tauri build --target ${{ matrix.target }} --bundles app,dmg
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
       - name: Build Tauri app (Windows MSI)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -181,12 +191,25 @@ jobs:
             tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
           if-no-files-found: warn
 
+      - name: Upload macOS desktop artifacts
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: music-dl-${{ matrix.label }}
+          path: |
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
       - name: Upload Windows desktop artifacts
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: music-dl-${{ matrix.label }}
-          path: tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+          path: |
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi.sig
           if-no-files-found: error
 
       # ── Attach to release if tagged ──────────────────────────────
@@ -199,11 +222,22 @@ jobs:
             tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
             tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
 
+      - name: Upload macOS assets to release
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+
       - name: Upload Windows MSI to release
         if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+          files: |
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi.sig
 
   publish-manifest:
     if: startsWith(github.ref, 'refs/tags/')
@@ -276,26 +310,12 @@ jobs:
 
           find artifacts/ -type f | sort
 
-          LINUX_SIG=$(cat "$(find artifacts/music-dl-linux-x86_64 -name '*.AppImage.sig' | head -1)")
-          LINUX_APPIMAGE=$(basename "$(find artifacts/music-dl-linux-x86_64 -name '*.AppImage' ! -name '*.sig' | head -1)")
-
-          jq -n \
-            --arg version "$TAG" \
-            --arg notes "$(cat RELEASE_NOTES.md)" \
-            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg linux_sig "$LINUX_SIG" \
-            --arg linux_url "${BASE_URL}/${LINUX_APPIMAGE}" \
-            '{
-              version: $version,
-              notes: $notes,
-              pub_date: $pub_date,
-              platforms: {
-                "linux-x86_64": {
-                  signature: $linux_sig,
-                  url: $linux_url
-                }
-              }
-            }' > latest.json
+          python scripts/edge_channel.py manifest \
+            --artifacts-dir artifacts \
+            --version "$TAG" \
+            --base-url "$BASE_URL" \
+            --notes "$(cat RELEASE_NOTES.md)" \
+            --output latest.json
 
           echo "Generated latest.json:"
           cat latest.json
