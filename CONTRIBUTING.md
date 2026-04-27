@@ -85,27 +85,19 @@ bun run typecheck
    - `TAURI_SIGNING_PRIVATE_KEY`
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 4. After the PR merges, push an annotated tag like `v1.6.0`.
-5. GitHub Actions runs `.github/workflows/build-desktop.yml`, uploads Linux binaries, updates `latest.json`, and writes release notes onto the GitHub release.
-6. Confirm the Windows MSI asset is present when the release should support Windows 10/11:
-   - Windows asset is uploaded: `.msi`
+5. GitHub Actions runs `.github/workflows/build-desktop.yml`, uploads Linux, macOS, and Windows binaries, updates `latest.json`, and writes release notes onto the GitHub release.
+6. Confirm the Windows MSI assets are present when the release should support Windows 10/11:
+   - Windows assets are uploaded: `.msi`, `.msi.sig`
    - The MSI is unsigned, so SmartScreen warnings are expected.
    - WSL is not required to install or run the desktop app.
-7. Build the macOS DMG locally when the release should support the quick macOS installer:
-   ```shell
-   cd tidaldl-py
-   uv sync --extra build
-   bun install
-   bunx tauri build --bundles dmg
-   ```
-8. Upload the generated DMG from `tidaldl-py/src-tauri/target/release/bundle/dmg/` to the same GitHub release.
-9. Sanity-check the release before announcing it:
+7. Sanity-check the release before announcing it:
    - release notes are present
    - Linux assets are uploaded: `.AppImage`, `.AppImage.sig`, `.deb`
-   - Windows asset is uploaded: `.msi`
-   - macOS asset is uploaded: `.dmg`
+   - macOS assets are uploaded: `.dmg`, `.app.tar.gz`, `.app.tar.gz.sig`
+   - Windows assets are uploaded: `.msi`, `.msi.sig`
    - `latest.json` points at the new tag
-   - `latest.json` only contains `linux-x86_64`
-10. Smoke-test Windows before announcing Windows support:
+   - `latest.json` contains `linux-x86_64`, `darwin-aarch64`, and `windows-x86_64`
+8. Smoke-test Windows before announcing Windows support:
    - Install the MSI.
    - Launch `music-dl`.
    - Complete or recover Tidal authentication.
@@ -118,7 +110,7 @@ bun run typecheck
 
 Blank release notes are a release bug.
 
-macOS DMGs are manually built and attached to releases. Windows MSIs are unsigned. The updater manifest intentionally remains Linux-only until macOS signing/notarization and Windows signing/update support are handled.
+macOS DMGs and updater archives are built and attached by GitHub Actions. Windows MSIs are unsigned, so SmartScreen warnings are expected.
 
 ## Security
 
