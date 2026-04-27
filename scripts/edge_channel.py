@@ -4,20 +4,28 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 EDGE_ENDPOINT = "https://github.com/alfdav/music-dl/releases/download/edge/latest.json"
 
 
-def edge_version(current_version: str, run_number: str) -> str:
-    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", current_version)
+def _version_parts(current_version: str) -> tuple[int, int, int]:
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+._].*)?", current_version)
     if not match:
         raise ValueError(f"Unsupported version: {current_version}")
+    return tuple(int(part) for part in match.groups())
 
-    major, minor, patch = (int(part) for part in match.groups())
+
+def edge_version(current_version: str, run_number: str) -> str:
+    major, minor, patch = _version_parts(current_version)
     return f"{major}.{minor}.{patch + 1}-edge.{run_number}"
+
+
+def python_edge_version(current_version: str, run_number: str) -> str:
+    major, minor, patch = _version_parts(current_version)
+    return f"{major}.{minor}.{patch + 1}.dev{run_number}"
 
 
 def replace_version_assignment(text: str, version: str) -> str:
@@ -40,7 +48,8 @@ def apply_edge_version(root: Path, run_number: str, endpoint: str = EDGE_ENDPOIN
         raise ValueError(f"Could not find project version in {pyproject}")
 
     version = edge_version(current_match.group(1), run_number)
-    pyproject.write_text(replace_version_assignment(pyproject_text, version), encoding="utf-8")
+    python_version = python_edge_version(current_match.group(1), run_number)
+    pyproject.write_text(replace_version_assignment(pyproject_text, python_version), encoding="utf-8")
     cargo_toml.write_text(
         replace_version_assignment(cargo_toml.read_text(encoding="utf-8"), version),
         encoding="utf-8",
@@ -126,7 +135,7 @@ def main() -> None:
             print(version)
         return
 
-    pub_date = args.pub_date or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    pub_date = args.pub_date or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     manifest_json = build_manifest(
         artifacts_dir=args.artifacts_dir,
         version=args.version,
