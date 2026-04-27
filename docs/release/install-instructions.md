@@ -24,6 +24,8 @@ What it does:
 - **macOS Apple Silicon**: downloads the latest `.dmg`, verifies the GitHub release checksum, installs to `/Applications`, strips quarantine, then opens `music-dl.app`.
 - **Linux x86_64**: downloads the latest `.AppImage`, verifies the GitHub release checksum, installs it as `~/.local/bin/music-dl`.
 
+If macOS reports a DMG mount failure, rerun the current command from this document before trying manual install steps. The installer keeps progress output separate from returned file paths so `hdiutil` receives the verified DMG path, not status text.
+
 ### Desktop: Windows 10/11
 
 Copy this into PowerShell:

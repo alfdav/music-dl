@@ -10,10 +10,23 @@ REPO="alfdav/music-dl"
 APP_NAME="music-dl"
 MACOS_INSTALL_DIR="/Applications"
 LINUX_INSTALL_DIR="${MUSIC_DL_INSTALL_DIR:-$HOME/.local/bin}"
+INSTALLER_TMPDIR=""
+INSTALLER_MOUNT_POINT=""
 
-say()  { printf '\n\033[1;33m==> %s\033[0m\n' "$1"; }
+say()  { printf '\n\033[1;33m==> %s\033[0m\n' "$1" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$1" >&2; exit 1; }
-ok()   { printf '\033[1;32m==> %s\033[0m\n' "$1"; }
+ok()   { printf '\033[1;32m==> %s\033[0m\n' "$1" >&2; }
+
+cleanup_installer() {
+  if [ -n "${INSTALLER_MOUNT_POINT:-}" ]; then
+    hdiutil detach "$INSTALLER_MOUNT_POINT" 2>/dev/null || true
+    INSTALLER_MOUNT_POINT=""
+  fi
+  if [ -n "${INSTALLER_TMPDIR:-}" ]; then
+    rm -rf "$INSTALLER_TMPDIR"
+    INSTALLER_TMPDIR=""
+  fi
+}
 
 current_os() {
   uname -s
@@ -114,8 +127,10 @@ install_macos_dmg() {
   [ -n "$dmg_sha" ] || die "No SHA-256 digest found for the macOS DMG in the latest GitHub release."
 
   tmpdir="$(mktemp -d)"
+  INSTALLER_TMPDIR="$tmpdir"
   mount_point=""
-  trap 'rm -rf "$tmpdir"; if [ -n "${mount_point:-}" ]; then hdiutil detach "$mount_point" 2>/dev/null || true; fi' EXIT
+  INSTALLER_MOUNT_POINT=""
+  trap cleanup_installer EXIT
   dmg_file="$(download_verified_asset "$dmg_url" "$dmg_sha" "$tmpdir")"
 
   say "Installing to ${MACOS_INSTALL_DIR}"
@@ -130,6 +145,7 @@ install_macos_dmg() {
   mount_point="$(hdiutil attach -nobrowse -readonly "$dmg_file" 2>/dev/null \
     | grep '/Volumes/' | sed 's/.*\(\/Volumes\/.*\)/\1/')" \
     || die "Could not mount DMG."
+  INSTALLER_MOUNT_POINT="$mount_point"
 
   app_src="$(find "$mount_point" -maxdepth 1 -name "*.app" -print -quit)"
   [ -n "$app_src" ] || die "No .app found in the DMG."
@@ -144,7 +160,10 @@ install_macos_dmg() {
 
   xattr -cr "${MACOS_INSTALL_DIR}/${APP_NAME}.app" 2>/dev/null || true
   hdiutil detach "$mount_point" -quiet 2>/dev/null || true
+  INSTALLER_MOUNT_POINT=""
   mount_point=""
+  cleanup_installer
+  trap - EXIT
 
   ok "${APP_NAME} ${version} installed to ${MACOS_INSTALL_DIR}/${APP_NAME}.app"
   open -a "$APP_NAME"
@@ -167,7 +186,9 @@ install_linux_appimage() {
   [ -n "$appimage_sha" ] || die "No SHA-256 digest found for the Linux AppImage in the latest GitHub release."
 
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  INSTALLER_TMPDIR="$tmpdir"
+  INSTALLER_MOUNT_POINT=""
+  trap cleanup_installer EXIT
   appimage_file="$(download_verified_asset "$appimage_url" "$appimage_sha" "$tmpdir")"
 
   say "Installing to ${LINUX_INSTALL_DIR}"
@@ -175,6 +196,8 @@ install_linux_appimage() {
   target="${LINUX_INSTALL_DIR}/${APP_NAME}"
   cp "$appimage_file" "$target" || die "Could not write ${target}."
   chmod +x "$target" || die "Could not make ${target} executable."
+  cleanup_installer
+  trap - EXIT
 
   ok "${APP_NAME} ${version} installed to ${target}"
   case ":$PATH:" in
@@ -183,14 +206,20 @@ install_linux_appimage() {
   esac
 }
 
-case "$(current_os)" in
-  Darwin)
-    install_macos_dmg
-    ;;
-  Linux)
-    install_linux_appimage
-    ;;
-  *)
-    die "Unsupported OS: $(current_os). Use Windows PowerShell instead:\n  irm https://raw.githubusercontent.com/${REPO}/master/scripts/install.ps1 | iex"
-    ;;
-esac
+main() {
+  case "$(current_os)" in
+    Darwin)
+      install_macos_dmg
+      ;;
+    Linux)
+      install_linux_appimage
+      ;;
+    *)
+      die "Unsupported OS: $(current_os). Use Windows PowerShell instead:\n  irm https://raw.githubusercontent.com/${REPO}/master/scripts/install.ps1 | iex"
+      ;;
+  esac
+}
+
+if [ "${MUSIC_DL_INSTALLER_SOURCE_ONLY:-0}" != "1" ]; then
+  main "$@"
+fi
