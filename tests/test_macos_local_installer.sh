@@ -147,15 +147,9 @@ run_and_capture uv_output uv_status require_uv
 assert_nonzero "$uv_status" "require_uv exits non-zero"
 assert_contains "$uv_output" "Install it from https://docs.astral.sh/uv/ then rerun this installer." "require_uv prints rerun guidance"
 
-TMP_BIN="$(mktemp -d)"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP_BIN/node"
-chmod +x "$TMP_BIN/node"
-export MUSIC_DL_TEST_PATH_BIN="$TMP_BIN"
-run_and_capture node_output node_status require_node_npm
-assert_nonzero "$node_status" "require_node_npm exits non-zero when npm missing"
-assert_contains "$node_output" "Install Node.js + npm from https://nodejs.org/en/download, then rerun this installer." "require_node_npm prints rerun guidance"
-rm -rf "$TMP_BIN"
-unset MUSIC_DL_TEST_PATH_BIN
+run_and_capture bun_output bun_status require_bun
+assert_nonzero "$bun_status" "require_bun exits non-zero when bun missing"
+assert_contains "$bun_output" "Install it from https://bun.sh/docs/installation then rerun this installer." "require_bun prints rerun guidance"
 
 TMP_REMOTE="$(mktemp -d)"
 TMP_WORK="$(mktemp -d)"
@@ -220,22 +214,22 @@ cat > "$TMP_BUILD_BIN/uv" <<EOF
 printf 'uv %s\n' "\$*" >> "$BUILD_LOG"
 exit 0
 EOF
-cat > "$TMP_BUILD_BIN/npm" <<EOF
+cat > "$TMP_BUILD_BIN/bun" <<EOF
 #!/usr/bin/env bash
-printf 'npm %s\n' "\$*" >> "$BUILD_LOG"
+printf 'bun %s\n' "\$*" >> "$BUILD_LOG"
 exit 0
 EOF
-cat > "$TMP_BUILD_BIN/npx" <<EOF
+cat > "$TMP_BUILD_BIN/bunx" <<EOF
 #!/usr/bin/env bash
-printf 'npx %s\n' "\$*" >> "$BUILD_LOG"
+printf 'bunx %s\n' "\$*" >> "$BUILD_LOG"
 exit 0
 EOF
-chmod +x "$TMP_BUILD_BIN/uv" "$TMP_BUILD_BIN/npm" "$TMP_BUILD_BIN/npx"
+chmod +x "$TMP_BUILD_BIN/uv" "$TMP_BUILD_BIN/bun" "$TMP_BUILD_BIN/bunx"
 ORIGINAL_PATH="$PATH"
 PATH="$TMP_BUILD_BIN:$PATH"
 repo_dir() { printf '%s\n' "$TMP_BUILD_ROOT"; }
 build_app >/dev/null 2>&1 || fail "build_app succeeds with available toolchain"
-assert_eq "$(cat "$BUILD_LOG")" $'uv sync --extra build\nnpm install\nnpx tauri build --config {"bundle":{"createUpdaterArtifacts":false}}' "build_app runs Task 3 build commands in order"
+assert_eq "$(cat "$BUILD_LOG")" $'uv sync --extra build\nbun install\nbunx tauri build --config {"bundle":{"createUpdaterArtifacts":false}}' "build_app runs Task 3 build commands in order"
 assert_contains "$(cat "$BUILD_LOG")" 'createUpdaterArtifacts":false' "build_app disables updater artifacts for local installer builds"
 PATH="$ORIGINAL_PATH"
 rm -rf "$TMP_BUILD_ROOT" "$TMP_BUILD_BIN"
@@ -247,15 +241,15 @@ cat > "$TMP_BUILD_BIN/uv" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-cat > "$TMP_BUILD_BIN/npm" <<'EOF'
+cat > "$TMP_BUILD_BIN/bun" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-cat > "$TMP_BUILD_BIN/npx" <<'EOF'
+cat > "$TMP_BUILD_BIN/bunx" <<'EOF'
 #!/usr/bin/env bash
 exit 1
 EOF
-chmod +x "$TMP_BUILD_BIN/uv" "$TMP_BUILD_BIN/npm" "$TMP_BUILD_BIN/npx"
+chmod +x "$TMP_BUILD_BIN/uv" "$TMP_BUILD_BIN/bun" "$TMP_BUILD_BIN/bunx"
 ORIGINAL_PATH="$PATH"
 PATH="$TMP_BUILD_BIN:$PATH"
 repo_dir() { printf '%s\n' "$TMP_BUILD_ROOT"; }
@@ -340,7 +334,7 @@ require_macos() { record_call require_macos; }
 require_xcode_clt() { record_call require_xcode_clt; }
 require_rust() { record_call require_rust; }
 require_uv() { record_call require_uv; }
-require_node_npm() { record_call require_node_npm; }
+require_bun() { record_call require_bun; }
 require_arm64() { record_call require_arm64; }
 sync_repo() { record_call sync_repo; }
 build_app() { record_call build_app; }
@@ -348,11 +342,10 @@ install_app() { record_call install_app; }
 say() { record_call "say:$1"; }
 
 main >/dev/null 2>&1 || fail "main runs dependency checks"
-assert_eq "$call_order" "require_macos -> require_arm64 -> require_xcode_clt -> require_rust -> require_uv -> require_node_npm -> sync_repo -> build_app -> install_app -> say:Done. Open /Applications/music-dl.app" "main runs Task 3 flow in spec order"
+assert_eq "$call_order" "require_macos -> require_arm64 -> require_xcode_clt -> require_rust -> require_uv -> require_bun -> sync_repo -> build_app -> install_app -> say:Done. Open /Applications/music-dl.app" "main runs Task 3 flow in spec order"
 
 readme_contents="$(<"$README_FILE")"
 assert_contains "$readme_contents" "curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash" "README documents the macOS local installer"
-assert_contains "$readme_contents" "npx tauri build --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'" "README documents the no-updater local macOS Tauri build override"
+assert_contains "$readme_contents" "bunx tauri build --bundles dmg" "README documents Bun Tauri builds"
 assert_not_contains "$readme_contents" "You can also rebuild locally if you want to manage the app bundle yourself." "README removes misleading plain macOS manual-build guidance"
-assert_contains "$readme_contents" "SETUP (Tauri desktop app — Linux builds only):" "README keeps the plain Tauri build block Linux-only"
-assert_contains "$readme_contents" "# macOS local installs / unsigned local app bundles:" "README labels the local no-updater build command as macOS-specific"
+assert_contains "$readme_contents" "Bun" "README names Bun for desktop builds"

@@ -11,12 +11,18 @@ The image includes Python 3.12, FFmpeg, and the music-dl package. It runs as a *
 Launch the browser-based player and library manager:
 
 ```shell
+curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-docker.sh | bash
+```
+
+Open [http://localhost:8765](http://localhost:8765). Done.
+
+Manual source checkout still works:
+
+```shell
 git clone https://github.com/alfdav/music-dl.git
 cd music-dl
 docker compose -f docker/docker-compose.yml up gui -d
 ```
-
-Open [http://localhost:8765](http://localhost:8765). Done.
 
 The setup wizard walks you through Tidal login and library configuration on first launch.
 

@@ -2,7 +2,7 @@
   Canonical install block.
 
   Injected into every GitHub release body by .github/workflows/build-desktop.yml
-  (publish-manifest job). Also surfaced from README.md Option 1b.
+  (publish-manifest job). Also surfaced from README.md.
 
   Edit this file only — both release notes and README reference it.
 -->
@@ -11,50 +11,63 @@
 
 ## Install
 
-### macOS (Apple Silicon) — quick install
+### Desktop: macOS / Linux
 
-Downloads the `.dmg` attached to the latest GitHub release, verifies the GitHub release checksum, installs to `/Applications`, handles Gatekeeper automatically. No dev tools needed.
+Copy this into Terminal:
 
 ```shell
 curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash
 ```
 
-### macOS — build from source
+What it does:
 
-If you prefer to build locally (or want the latest code), the installer handles Xcode tools, `uv`, Node, Rust, and Tauri. On success it installs `music-dl.app` to `/Applications/music-dl.app` with no Gatekeeper prompts since the app is built on your machine.
+- **macOS Apple Silicon**: downloads the latest `.dmg`, verifies the GitHub release checksum, installs to `/Applications`, strips quarantine, then opens `music-dl.app`.
+- **Linux x86_64**: downloads the latest `.AppImage`, verifies the GitHub release checksum, installs it as `~/.local/bin/music-dl`.
+
+### Desktop: Windows 10/11
+
+Copy this into PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.ps1 | iex
+```
+
+Downloads the latest unsigned `.msi`, verifies the GitHub release checksum, then starts the Windows installer. SmartScreen warnings are expected for early unsigned builds. WSL is not required.
+
+### Headless / NAS / Docker
+
+Copy this into Terminal:
+
+```shell
+curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-docker.sh | bash
+```
+
+Builds and starts the Docker Compose GUI at `http://localhost:8765`. Use this for Linux servers, NAS boxes, or machines where you do not want desktop packaging.
+
+### macOS: build from source
+
+If you prefer to build locally, copy this into Terminal:
 
 ```shell
 curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash
 ```
 
-### Linux (x86_64)
+On success, it installs `music-dl.app` to `/Applications/music-dl.app`. Requires Xcode Command Line Tools, Rust, `uv`, and Bun.
 
-Download the `.AppImage` from the release assets below, then:
+### Manual assets
 
-```shell
-chmod +x music-dl_*.AppImage
-./music-dl_*.AppImage
-```
+Manual release assets are still available below:
 
-For Debian/Ubuntu, the `.deb` is also available in the assets:
-
-```shell
-sudo dpkg -i music-dl_*.deb
-```
-
-### Windows 10/11
-
-Download the unsigned `.msi` from the release assets below and run it.
-
-Windows SmartScreen may warn because early Windows builds are unsigned. Choose **More info**, then **Run anyway** only if you downloaded the installer from the official `alfdav/music-dl` GitHub release.
-
-WSL is not required.
+- **Linux**: `.AppImage` or `.deb`
+- **Windows 10/11**: unsigned `.msi`
+- **macOS Apple Silicon**: `.dmg`
 
 ### Updating
 
-- macOS quick install users: rerun the same `curl` command — it replaces the old version in place.
-- Linux users: download the latest `.AppImage` or `.deb` from GitHub Releases. The app also self-updates on launch when a signed Linux update manifest is published.
-- Windows users: download and run the newest `.msi` from GitHub Releases. Windows updater support is not published yet.
+- macOS/Linux desktop users: rerun the same `install.sh` command.
+- Windows users: rerun the same PowerShell command and follow the MSI installer.
+- Headless/Docker users: rerun the same `install-docker.sh` command.
+- macOS source-build users: rerun the same `install-macos-local.sh` command.
 
 ### Expected release assets
 
@@ -77,13 +90,6 @@ Before marking Windows support ready:
 7. Play that track.
 8. Quit and reopen the app.
 9. Confirm settings, auth, and library state persist.
-
-### Expected release assets
-
-Each release should include:
-
-- Linux: `.AppImage`, `.AppImage.sig`, `.deb`, and `latest.json`
-- macOS: `.dmg`
 
 ### Full docs
 

@@ -20,8 +20,10 @@
   waveform visualization. macOS, Linux, and Windows 10/11. No cloud dependency — your files,
   your hardware, your rules.
 
-  INSTALL (macOS, one command):
+  INSTALL (macOS/Linux):
     curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash
+  INSTALL (Windows PowerShell):
+    irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.ps1 | iex
 
   DEV SETUP:
     cd tidaldl-py && uv sync && music-dl gui   # opens http://localhost:8765
@@ -44,10 +46,12 @@ music-dl — local-first Tidal music manager. Downloads lossless/hi-res tracks,
 manages a local library (any drive or NAS), plays everything in a browser GUI.
 macOS, Linux, and Windows 10/11. Free and open-source.
 
-INSTALL (macOS):
+INSTALL (macOS/Linux):
   curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash
 INSTALL (Windows 10/11):
-  Download the unsigned .msi from GitHub Releases. WSL is not required.
+  irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.ps1 | iex
+INSTALL (Headless/NAS):
+  curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-docker.sh | bash
 
 DEV:   cd tidaldl-py && uv sync && music-dl gui     # http://localhost:8765
 TEST:  cd tidaldl-py && uv run --extra test pytest
@@ -87,47 +91,54 @@ A **setup wizard** walks you through Tidal login and library configuration on fi
 
 The GUI can also start and recover the Tidal OAuth flow itself from the browser. Use `music-dl login` only if you want to authenticate from the terminal for CLI-first workflows.
 
-## Get Started
+## Install
 
 > **Using an AI coding agent?** Expand the LLM Quick Reference at the top and paste it into your agent.
 
-### Option 1: Desktop App (Linux / Windows releases)
+### Desktop: macOS / Linux
 
-Public desktop releases are downloadable from [GitHub Releases](https://github.com/alfdav/music-dl/releases).
-
-- **Linux**: `music-dl_x.x.x_amd64.AppImage` or `.deb`
-- **Windows 10/11**: download the unsigned `.msi`. SmartScreen warnings are expected for early unsigned builds. WSL is not required.
-
-### Option 1b: Desktop App on macOS (Apple Silicon)
-
-Two ways to get the macOS app — pick whichever fits:
-
-#### Quick install (recommended)
+Copy this into Terminal:
 
 ```shell
 curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash
 ```
 
-Downloads the latest DMG, verifies the GitHub release checksum, installs to `/Applications`, and handles Gatekeeper automatically. No dev tools needed. Mounting or installing the DMG does not start the local daemon; the daemon starts when you launch `music-dl.app`.
+What it does:
 
-#### Build from source
+- **macOS Apple Silicon**: downloads the latest `.dmg`, verifies the GitHub release checksum, installs to `/Applications`, strips quarantine, then opens `music-dl.app`.
+- **Linux x86_64**: downloads the latest `.AppImage`, verifies the GitHub release checksum, installs it as `~/.local/bin/music-dl`.
 
-If you prefer to build locally (or want the latest code), the installer handles everything:
+### Desktop: Windows 10/11
+
+Copy this into PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.ps1 | iex
+```
+
+Downloads the latest unsigned `.msi`, verifies the GitHub release checksum, then starts the Windows installer. SmartScreen warnings are expected for early unsigned builds. WSL is not required.
+
+### Headless / NAS / Docker
+
+Copy this into Terminal:
+
+```shell
+curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-docker.sh | bash
+```
+
+Builds and starts the Docker Compose GUI at [http://localhost:8765](http://localhost:8765). Use this for Linux servers, NAS boxes, or machines where you do not want desktop packaging.
+
+### macOS: Build From Source
+
+If you prefer to build locally, copy this into Terminal:
 
 ```shell
 curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash
 ```
 
-On success, it installs `music-dl.app` to `/Applications/music-dl.app`. No Gatekeeper prompts since the app is built on your machine.
+On success, it installs `music-dl.app` to `/Applications/music-dl.app`. Requires Xcode Command Line Tools, Rust, `uv`, and Bun.
 
-If the installer stops because a dependency is missing, fix the reported issue and rerun the same command.
-
-#### Updating
-
-- **Quick install users:** rerun the same `curl` command — it replaces the old version.
-- **Build-from-source users:** rerun the installer to rebuild from the latest code.
-
-#### Manual build
+### Manual Build
 
 See [Building the Desktop App](#building-the-desktop-app) for the full prerequisite list and platform-specific commands. The short version for macOS:
 
@@ -139,26 +150,16 @@ bunx tauri build --bundles dmg
 # Output: src-tauri/target/release/bundle/dmg/
 ```
 
+### Updating
+
+- **macOS/Linux desktop:** rerun the same `install.sh` command.
+- **Windows:** rerun the same PowerShell command and follow the MSI installer.
+- **Headless/Docker:** rerun the same `install-docker.sh` command.
+- **macOS source build:** rerun the same `install-macos-local.sh` command.
+
 > These same install one-liners appear in every [release's notes](https://github.com/alfdav/music-dl/releases). Canonical source: [`docs/release/install-instructions.md`](docs/release/install-instructions.md) — edit there and both README and release notes stay in sync.
 
-### Option 2: Docker Compose (Linux / headless / NAS)
-
-```shell
-git clone https://github.com/alfdav/music-dl.git
-cd music-dl
-docker compose -f docker/docker-compose.yml up gui -d
-```
-
-Open [http://localhost:8765](http://localhost:8765). Done.
-
-Config is stored in `~/.config/music-dl` and downloads go to `~/Music` by default. Override with environment variables:
-
-```shell
-MUSIC_DL_CONFIG=~/.my-config MUSIC_DL_DOWNLOADS=/mnt/nas/music \
-  docker compose -f docker/docker-compose.yml up gui -d
-```
-
-### Option 3: pip / uv
+### CLI / uv
 
 Requires Python 3.12+ and [ffmpeg](https://ffmpeg.org/).
 
