@@ -18,6 +18,10 @@ import { MusicDlClient } from "./musicDlClient";
 import { QueueState } from "./queue";
 import { VoiceManager, Playback } from "./player";
 import { buildCommands, handleInteraction } from "./commands";
+import {
+  handleControllerInteraction,
+  postOrUpdateControllerPanel,
+} from "./controller";
 
 async function main(): Promise<void> {
   const config = parseConfig();
@@ -38,7 +42,19 @@ async function main(): Promise<void> {
   const logger = {
     error: (...args: unknown[]) => console.error("[bot]", ...args),
   };
-  const deps = { config, client: musicDl, queue, voice, playback, logger };
+  const deps = {
+    config,
+    client: musicDl,
+    queue,
+    voice,
+    playback,
+    logger,
+    controller: {
+      postOrUpdate: async () => {
+        await postOrUpdateControllerPanel(client, deps);
+      },
+    },
+  };
 
   // Register slash commands for the allowed guild only.
   const rest = new REST({ version: "10" }).setToken(config.discordToken);
@@ -53,15 +69,16 @@ async function main(): Promise<void> {
   console.log(`Registered ${commands.length} slash commands.`);
 
   client.on(Events.InteractionCreate, async (interaction) => {
+    if (await handleControllerInteraction(interaction, deps)) return;
     if (!interaction.isChatInputCommand()) return;
-    await handleInteraction(
-      interaction as ChatInputCommandInteraction,
-      deps,
-    );
+    await handleInteraction(interaction as ChatInputCommandInteraction, deps);
   });
 
   client.once(Events.ClientReady, (c) => {
     console.log(`Logged in as ${c.user.tag}.`);
+    void postOrUpdateControllerPanel(client, deps).catch((error) => {
+      logger.error("failed to post DJAI remote:", (error as Error).message);
+    });
   });
 
   await client.login(config.discordToken);

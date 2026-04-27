@@ -32,6 +32,8 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 - Use human saved-state labels instead of raw placeholder IDs when saved Discord IDs are not real snowflakes.
 - Treat placeholder/non-snowflake Discord IDs as invalid so DJAI does not present broken bot configs as ready.
 - Let DJAI discover valid legacy CLI `.env` bot configs when the canonical GUI config is missing or stale.
+- Added an auto-refreshing DJAI Discord remote panel with search, playlist selection, playback controls, queue view, and repeat controls in the allowed channel.
+- Let Discord playlist selection queue saved Tidal playlists without copying IDs and default playlist playback to repeat-all.
 - Fixed packaged app startup and login handoff problems found after v1.6.0.
 - Added desktop deep-link routing and playback/library quality-of-life fixes from the post-v1.6.0 release branch.
 - Persisted recently played local tracks through the backend so the Home view can recover recent playback after relaunch.

@@ -45,7 +45,10 @@ music-dl dl_fav tracks --since 2026-01-01
 
 A companion Discord bot streams and downloads from your library over voice.
 Open the GUI's DJAI view to save the bot config and start, restart, or shut
-down the bot service from the browser. Terminal onboarding remains available:
+down the bot service from the browser. When the bot starts, it posts or
+refreshes one DJAI remote panel in the allowed Discord channel so the allowed
+user can search, pick playlists, control playback, and repeat playlists without
+copying Tidal IDs. Terminal onboarding remains available:
 
 ```shell
 music-dl gui --setup-bot

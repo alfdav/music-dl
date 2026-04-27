@@ -160,13 +160,13 @@ function makeDeps(overrides: Partial<CommandDeps> = {}): CommandDeps {
 }
 
 // ---------------------------------------------------------------------------
-// R4-AC13: exactly 11 commands are registered
+// R4-AC13: exactly 12 commands are registered
 // ---------------------------------------------------------------------------
 
 describe("command registration", () => {
-  test("exactly 11 commands built", () => {
+  test("exactly 12 commands built", () => {
     const built = buildCommands();
-    expect(built.length).toBe(11);
+    expect(built.length).toBe(12);
   });
 
   test("command names match the expected set", () => {
