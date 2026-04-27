@@ -67,8 +67,12 @@ test-results/
 output/
 **/docs/superpowers/
 
-# Local-only helper scripts
-/scripts/
+# Local-only helper scripts. Keep public installer scripts tracked.
+/scripts/*
+!/scripts/install.sh
+!/scripts/install-macos-local.sh
+!/scripts/install.ps1
+!/scripts/install-docker.sh
 /tidaldl-py/scripts/
 
 # Local MCP config

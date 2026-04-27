@@ -89,10 +89,9 @@ require_uv() {
   have_command uv || die "uv is required. Install it from https://docs.astral.sh/uv/ then rerun this installer."
 }
 
-require_node_npm() {
-  say "Checking Node.js + npm"
-  have_command node || die "Node.js is required. Install it from https://nodejs.org/en/download, make sure npm is available, then rerun this installer."
-  have_command npm || die "npm is required. Install Node.js + npm from https://nodejs.org/en/download, then rerun this installer."
+require_bun() {
+  say "Checking Bun"
+  have_command bun || die "Bun is required. Install it from https://bun.sh/docs/installation then rerun this installer."
 }
 
 sync_repo() {
@@ -128,8 +127,8 @@ build_app() {
   (
     cd "$app_dir" || die "Could not enter $app_dir. Delete $(installer_cache_dir) and rerun this installer."
     uv sync --extra build || die "Python dependency sync failed. Fix the reported problem, then rerun this installer."
-    npm install || die "Node dependency install failed. Fix the reported problem, then rerun this installer."
-    npx tauri build --config "$tauri_local_config" || die "Local Tauri build failed. Fix the reported problem, then rerun this installer."
+    bun install || die "Bun dependency install failed. Fix the reported problem, then rerun this installer."
+    bunx tauri build --config "$tauri_local_config" || die "Local Tauri build failed. Fix the reported problem, then rerun this installer."
   )
 }
 
@@ -174,7 +173,7 @@ main() {
   require_xcode_clt
   require_rust
   require_uv
-  require_node_npm
+  require_bun
   sync_repo
   build_app
   install_app
