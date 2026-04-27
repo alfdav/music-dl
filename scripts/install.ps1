@@ -2,6 +2,7 @@ $ErrorActionPreference = "Stop"
 
 $Repo = "alfdav/music-dl"
 $AppName = "music-dl"
+$ReleaseTag = if ($env:MUSIC_DL_RELEASE_TAG) { $env:MUSIC_DL_RELEASE_TAG } else { "latest" }
 
 function Say($Message) {
   Write-Host ""
@@ -14,8 +15,13 @@ function Fail($Message) {
 }
 
 try {
-  Say "Fetching latest release info"
-  $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
+  Say "Fetching $ReleaseTag release info"
+  $ReleaseUri = if ($ReleaseTag -eq "latest") {
+    "https://api.github.com/repos/$Repo/releases/latest"
+  } else {
+    "https://api.github.com/repos/$Repo/releases/tags/$ReleaseTag"
+  }
+  $Release = Invoke-RestMethod -Uri $ReleaseUri
   $Asset = $Release.assets | Where-Object { $_.browser_download_url -like "*.msi" } | Select-Object -First 1
   if (-not $Asset) {
     Fail "No MSI found in the latest release."

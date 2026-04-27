@@ -73,6 +73,8 @@ output/
 !/scripts/install-macos-local.sh
 !/scripts/install.ps1
 !/scripts/install-docker.sh
+!/scripts/install-windows-local.ps1
+!/scripts/edge_channel.py
 /tidaldl-py/scripts/
 
 # Local MCP config

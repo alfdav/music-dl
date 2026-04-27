@@ -24,6 +24,8 @@
     curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | bash
   INSTALL (Windows PowerShell):
     irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.ps1 | iex
+  INTERNAL LATEST (Windows from master):
+    irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-windows-local.ps1 | iex
 
   DEV SETUP:
     cd tidaldl-py && uv sync && music-dl gui   # opens http://localhost:8765
@@ -52,6 +54,10 @@ INSTALL (Windows 10/11):
   irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.ps1 | iex
 INSTALL (Headless/NAS):
   curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-docker.sh | bash
+INTERNAL LATEST (macOS):
+  curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash
+INTERNAL LATEST (Windows 10/11):
+  irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-windows-local.ps1 | iex
 
 DEV:   cd tidaldl-py && uv sync && music-dl gui     # http://localhost:8765
 TEST:  cd tidaldl-py && uv run --extra test pytest
@@ -139,6 +145,38 @@ curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/inst
 ```
 
 On success, it installs `music-dl.app` to `/Applications/music-dl.app`. Requires Xcode Command Line Tools, Rust, `uv`, and Bun.
+
+### Internal Latest From Master
+
+Use these on our own machines when `master` has newer commits than the latest GitHub release and we do not want to cut binaries.
+
+**No local build tools, rolling edge channel:**
+
+```shell
+curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | MUSIC_DL_RELEASE_TAG=edge bash
+```
+
+```powershell
+$env:MUSIC_DL_RELEASE_TAG = "edge"
+irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.ps1 | iex
+Remove-Item Env:MUSIC_DL_RELEASE_TAG
+```
+
+These install the latest rolling edge artifact. Edge builds are produced automatically from `master` and point the app updater at the same edge manifest.
+
+**Build locally from source:**
+
+```shell
+curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash
+```
+
+**Windows 10/11:**
+
+```powershell
+irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-windows-local.ps1 | iex
+```
+
+Both installers clone or refresh the source checkout, build locally, and install the app. They require normal build tools. Source installers use SSH Git by default (`git@github.com:alfdav/music-dl.git`), so your machine needs GitHub SSH access.
 
 ### Manual Build
 
@@ -363,6 +401,12 @@ $TargetTriple = rustc --print host-tuple
 uv run pyinstaller --clean --distpath src-tauri/binaries --workpath build/pyinstaller --noconfirm build/pyinstaller/music-dl-server.spec
 Move-Item -Force "src-tauri/binaries/music-dl-server.exe" "src-tauri/binaries/music-dl-server-$TargetTriple.exe"
 bunx tauri build --target $TargetTriple --bundles msi --config src-tauri/tauri.ci.conf.json
+```
+
+The one-command internal Windows source installer runs that same flow:
+
+```powershell
+irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-windows-local.ps1 | iex
 ```
 
 The desktop app and browser mode share the same local web UI. Tauri starts or reuses the localhost daemon, then opens the same route the browser would use. Desktop protocol links such as `music-dl://open#search` open supported internal views in the app.

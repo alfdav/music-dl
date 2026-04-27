@@ -1,0 +1,238 @@
+name: edge-desktop
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: edge-desktop
+  cancel-in-progress: true
+
+env:
+  EDGE_TAG: edge
+  EDGE_BASE_URL: https://github.com/${{ github.repository }}/releases/download/edge
+  EDGE_MANIFEST_URL: https://github.com/${{ github.repository }}/releases/download/edge/latest.json
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: linux-x86_64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            label: macos-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x86_64
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        working-directory: tidaldl-py
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Stamp edge version and updater endpoint
+        shell: bash
+        working-directory: .
+        run: |
+          python scripts/edge_channel.py prepare \
+            --run-number "${GITHUB_RUN_NUMBER}" \
+            --endpoint "${EDGE_MANIFEST_URL}" \
+            --output edge-version.txt
+          printf 'EDGE_VERSION=%s\n' "$(cat edge-version.txt)" >> "$GITHUB_ENV"
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev librsvg2-dev \
+            patchelf libgtk-3-dev libayatana-appindicator3-dev \
+            ffmpeg
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Sync Python dependencies
+        run: uv sync --extra test --extra build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: tidaldl-py/src-tauri -> target
+
+      - name: Build PyInstaller sidecar (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          TARGET_TRIPLE=$(rustc --print host-tuple)
+          .venv/bin/pyinstaller --clean \
+            --distpath src-tauri/binaries \
+            --workpath build/pyinstaller \
+            --noconfirm \
+            build/pyinstaller/music-dl-server.spec
+          mv src-tauri/binaries/music-dl-server \
+             src-tauri/binaries/music-dl-server-${TARGET_TRIPLE}
+
+      - name: Build PyInstaller sidecar (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $TargetTriple = rustc --print host-tuple
+          uv run pyinstaller --clean `
+            --distpath src-tauri/binaries `
+            --workpath build/pyinstaller `
+            --noconfirm `
+            build/pyinstaller/music-dl-server.spec
+          Move-Item `
+            -Path "src-tauri/binaries/music-dl-server.exe" `
+            -Destination "src-tauri/binaries/music-dl-server-$TargetTriple.exe" `
+            -Force
+
+      - name: Install Tauri dependencies
+        run: bun install
+
+      - name: Build Tauri app (Linux)
+        if: runner.os == 'Linux'
+        run: bunx tauri build --target ${{ matrix.target }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Build Tauri app (macOS)
+        if: runner.os == 'macOS'
+        run: bunx tauri build --target ${{ matrix.target }} --bundles dmg
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Build Tauri app (Windows MSI)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: bunx tauri build --target ${{ matrix.target }} --bundles msi --config src-tauri/tauri.ci.conf.json
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Upload Linux edge artifacts
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: music-dl-edge-${{ matrix.label }}
+          path: |
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+      - name: Upload macOS edge artifacts
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: music-dl-edge-${{ matrix.label }}
+          path: |
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - name: Upload Windows edge artifacts
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: music-dl-edge-${{ matrix.label }}
+          path: |
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            tidaldl-py/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi.sig
+          if-no-files-found: error
+
+  publish-edge:
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download edge artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: music-dl-edge-*
+          path: artifacts
+
+      - name: Generate edge manifest
+        run: |
+          set -euo pipefail
+          python scripts/edge_channel.py prepare \
+            --run-number "${GITHUB_RUN_NUMBER}" \
+            --endpoint "${EDGE_MANIFEST_URL}" \
+            --output edge-version.txt
+          EDGE_VERSION="$(cat edge-version.txt)"
+          python scripts/edge_channel.py manifest \
+            --artifacts-dir artifacts \
+            --version "$EDGE_VERSION" \
+            --base-url "$EDGE_BASE_URL" \
+            --notes "Rolling edge build from master commit ${GITHUB_SHA}." \
+            --output latest.json
+          cat latest.json
+
+      - name: Publish rolling edge release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git tag -f edge "${GITHUB_SHA}"
+          git push origin refs/tags/edge --force
+
+          if gh release view edge --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit edge \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "music-dl edge" \
+              --notes "Rolling edge build from master commit ${GITHUB_SHA}."
+          else
+            gh release create edge \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "music-dl edge" \
+              --notes "Rolling edge build from master commit ${GITHUB_SHA}." \
+              --prerelease
+          fi
+
+          mapfile -t files < <(find artifacts -type f \( \
+            -name '*.AppImage' -o \
+            -name '*.AppImage.sig' -o \
+            -name '*.deb' -o \
+            -name '*.dmg' -o \
+            -name '*.app.tar.gz' -o \
+            -name '*.app.tar.gz.sig' -o \
+            -name '*.msi' -o \
+            -name '*.msi.sig' \
+          \) | sort)
+
+          gh release upload edge --repo "${GITHUB_REPOSITORY}" --clobber latest.json "${files[@]}"

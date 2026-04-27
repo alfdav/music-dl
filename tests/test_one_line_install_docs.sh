@@ -8,6 +8,8 @@ GITIGNORE="$ROOT/.gitignore"
 INSTALL_SH="$ROOT/scripts/install.sh"
 INSTALL_PS1="$ROOT/scripts/install.ps1"
 INSTALL_DOCKER="$ROOT/scripts/install-docker.sh"
+INSTALL_WINDOWS_LOCAL="$ROOT/scripts/install-windows-local.ps1"
+EDGE_CHANNEL="$ROOT/scripts/edge_channel.py"
 
 pass() { printf 'ok - %s\n' "$1"; }
 fail() { printf 'not ok - %s\n' "$1"; exit 1; }
@@ -50,7 +52,11 @@ assert_contains "$install_sh_contents" "\$HOME/.local/bin" "install.sh installs 
 
 assert_file "$INSTALL_PS1" "Windows installer script exists"
 assert_file "$INSTALL_DOCKER" "Docker installer script exists"
+assert_file "$INSTALL_WINDOWS_LOCAL" "Windows source installer script exists"
+assert_file "$EDGE_CHANNEL" "edge channel helper exists"
 install_docker_contents="$(<"$INSTALL_DOCKER")"
 assert_contains "$install_docker_contents" "Refusing unsafe install directory" "Docker installer refuses unsafe install dirs"
 assert_contains "$gitignore_contents" "!/scripts/install.ps1" "gitignore allows Windows installer script"
 assert_contains "$gitignore_contents" "!/scripts/install-docker.sh" "gitignore allows Docker installer script"
+assert_contains "$gitignore_contents" "!/scripts/install-windows-local.ps1" "gitignore allows Windows source installer script"
+assert_contains "$gitignore_contents" "!/scripts/edge_channel.py" "gitignore allows edge channel helper"
