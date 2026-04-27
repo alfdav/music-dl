@@ -20,7 +20,7 @@ def _version_parts(current_version: str) -> tuple[int, int, int]:
 
 def edge_version(current_version: str, run_number: str) -> str:
     major, minor, patch = _version_parts(current_version)
-    return f"{major}.{minor}.{patch + 1}-edge.{run_number}"
+    return f"{major}.{minor}.{patch + 1}-{run_number}"
 
 
 def python_edge_version(current_version: str, run_number: str) -> str:
