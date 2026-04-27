@@ -162,7 +162,7 @@ irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.ps1
 Remove-Item Env:MUSIC_DL_RELEASE_TAG
 ```
 
-These install the latest rolling edge artifact. Edge builds are produced automatically from `master` and point the app updater at the same edge manifest.
+These install the latest rolling edge artifact. Edge builds are produced automatically from `master`, replace the previous edge release assets, and point the app updater at the same edge manifest.
 
 **Build locally from source:**
 
