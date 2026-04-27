@@ -9,6 +9,7 @@ from scripts.edge_channel import (
     apply_edge_version,
     build_manifest,
     edge_version,
+    python_edge_version,
 )
 
 
@@ -45,6 +46,10 @@ def test_edge_version_bumps_patch_and_uses_run_number():
     assert edge_version("1.6.1", "42") == "1.6.2-edge.42"
 
 
+def test_python_edge_version_is_pep440_compatible():
+    assert python_edge_version("1.6.1", "42") == "1.6.2.dev42"
+
+
 def test_apply_edge_version_updates_app_versions_and_endpoint(tmp_path):
     write_project(tmp_path)
 
@@ -55,7 +60,7 @@ def test_apply_edge_version_updates_app_versions_and_endpoint(tmp_path):
     )
 
     assert version == "1.6.2-edge.42"
-    assert 'version = "1.6.2-edge.42"' in (
+    assert 'version = "1.6.2.dev42"' in (
         tmp_path / "tidaldl-py" / "pyproject.toml"
     ).read_text(encoding="utf-8")
     assert 'version = "1.6.2-edge.42"' in (
