@@ -1,7 +1,7 @@
 /**
  * Slash command registration + dispatch (R4).
  *
- * Exactly 11 commands are defined. Each handler runs ensureAuthorized
+ * Exactly 12 commands are defined. Each handler runs ensureAuthorized
  * before doing any work, and /play never triggers a download.
  */
 
@@ -32,6 +32,7 @@ export interface CommandDeps {
   // Optional override for the picker so tests can substitute a mock
   // without building a full Discord button-collector runtime.
   picker?: typeof runPicker;
+  controller?: { postOrUpdate: () => Promise<void> };
 }
 
 const REPEAT_CHOICES: ReadonlyArray<{ name: string; value: RepeatMode }> = [
@@ -40,9 +41,12 @@ const REPEAT_CHOICES: ReadonlyArray<{ name: string; value: RepeatMode }> = [
   { name: "all", value: "all" },
 ];
 
-/** Definitions for exactly 11 slash commands (R4-AC13). */
+/** Definitions for exactly 12 slash commands (R4-AC13). */
 export function buildCommands() {
   return [
+    new SlashCommandBuilder()
+      .setName("djai")
+      .setDescription("Show or refresh the DJAI remote controls"),
     new SlashCommandBuilder()
       .setName("summon")
       .setDescription("Join your current voice channel"),
@@ -102,6 +106,7 @@ export function buildCommands() {
 
 /** Names of all commands this bot registers. Exported for test inspection. */
 export const COMMAND_NAMES = [
+  "djai",
   "summon",
   "leave",
   "play",
@@ -135,6 +140,8 @@ export async function handleInteraction(
     switch (name) {
       case "summon":
         return await handleSummon(interaction, deps);
+      case "djai":
+        return await handleDjai(interaction, deps);
       case "leave":
         return await handleLeave(interaction, deps);
       case "play":
@@ -173,6 +180,19 @@ export async function handleInteraction(
 // ---------------------------------------------------------------------------
 // Individual command handlers
 // ---------------------------------------------------------------------------
+
+async function handleDjai(
+  interaction: ChatInputCommandInteraction,
+  deps: CommandDeps,
+): Promise<void> {
+  if (deps.controller) {
+    await deps.controller.postOrUpdate();
+  }
+  await safeReply(interaction, {
+    content: "DJAI remote is active in this channel.",
+    ephemeral: true,
+  });
+}
 
 async function handleSummon(
   interaction: ChatInputCommandInteraction,

@@ -7,9 +7,15 @@ resolve, playable URL, and download job goes through the backend's
 
 ## What it does
 
-- **Slash commands in one channel, for one user.** `summon`, `leave`, `play`,
+- **Slash commands in one channel, for one user.** `djai`, `summon`, `leave`, `play`,
   `pause`, `resume`, `skip`, `queue`, `nowplaying`, `volume`, `repeat`,
   `download`.
+- **DJAI remote panel.** On startup the bot posts or refreshes one control
+  panel in the allowed channel. Buttons open search, playlist selection,
+  playback controls, queue view, and repeat controls. Only the allowed user
+  can use them.
+- **Playlist UX without IDs.** The playlist button shows saved Tidal
+  playlists. Selecting one queues it and defaults repeat to `all`.
 - **Voice playback** via `@discordjs/voice` + native `@discordjs/opus` +
   `libsodium-wrappers`. DAVE (v=8) voice protocol is supported through
   `@snazzah/davey`.
@@ -40,7 +46,17 @@ checks (Node version, libsodium, ffmpeg, Opus, Discord token validity,
 guild/channel/user reachability, voice permissions), and atomic file
 writes.
 
-**Easiest path (from a terminal):**
+**Easiest path (from the GUI):**
+
+```bash
+music-dl gui
+```
+
+Open the DJAI view, enter the Discord bot token and allowed guild/channel/user
+IDs, save the config, then use **Deploy Discord Bot**, **Restart**, or
+**Shutdown** to manage the bot service.
+
+**Terminal fallback:**
 
 ```bash
 music-dl gui --setup-bot
@@ -93,7 +109,7 @@ initial integration.
 On startup you should see:
 
 ```
-Registered 11 slash commands.
+Registered 12 slash commands.
 Logged in as <bot-name>#<discriminator>.
 ```
 
@@ -158,6 +174,19 @@ Discord interaction
 
 No filesystem access, no Tidal API, no `ytdl`/remote resolution —
 everything routes through the backend.
+
+### DJAI remote flow
+
+```
+Bot startup
+  → post or refresh one DJAI panel in ALLOWED_CHANNEL_ID
+  → button/select/modal interactions
+  → auth.ensureAuthorized          (guild + channel + user gate)
+  → Search                         → modal → /api/bot/play/resolve → track picker
+  → Playlists                      → /api/playlists → select → /api/playlists/{id}/tracks
+  → queue.append([...])
+  → playlist selection sets repeat all by default
+```
 
 ## Testing
 

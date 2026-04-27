@@ -117,6 +117,43 @@ class TestAppJsFeatureMarkers:
         assert "_smartShuffleTracks" in js
         assert "smartShuffle" in js
 
+    def test_has_visible_djai_panel(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        css = (STATIC_DIR / "style.css").read_text()
+        html = (STATIC_DIR / "index.html").read_text()
+        assert "djai-shell" in js
+        assert "textEl('h2', 'DJAI'" in js
+        assert "textEl('h3', 'Discord Bot'" in js
+        assert "textEl('h2', 'Deploy Discord Bot'" not in js
+        assert ">lab</span>" in html
+        assert ">soon</span>" not in html
+        assert ".djai-module-card" in css
+
+    def test_has_djai_discord_bot_deploy_controls(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        css = (STATIC_DIR / "style.css").read_text()
+        assert "/bot-control/status" in js
+        assert "/bot-control/configure" in js
+        assert "/bot-control/start" in js
+        assert "/bot-control/restart" in js
+        assert "/bot-control/stop" in js
+        assert "Deploy Discord Bot" in js
+        assert "Start Discord Bot" in js
+        assert "Restart" in js
+        assert "Shutdown" in js
+        assert "Edit Config" in js
+        assert "Saved (hidden)" in js
+        assert "data.saved_labels?.[name]" in js
+        assert "data.saved_ids?.[name]" in js
+        assert "Invalid Discord IDs" in js
+        assert "djai-ghost-input" in js
+        assert "Existing config detected" in js
+        assert ".djai-ghost-input.ok" in css
+        assert "className: 'djai-config-summary'" not in js
+        assert ".djai-config-summary" not in css
+        assert "var(--green)" in css
+        assert "djai-discord-card" in css
+
     def test_library_artist_view_uses_page_size(self):
         js = (STATIC_DIR / "app.js").read_text()
         assert "const LIBRARY_PAGE_SIZE = 50" in js

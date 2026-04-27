@@ -43,6 +43,12 @@ export interface DownloadStatus {
   finished_at: number | null;
 }
 
+export interface PlaylistSummary {
+  id: string;
+  name: string;
+  num_tracks: number;
+}
+
 export class MusicDlError extends Error {
   constructor(
     public readonly code: "unreachable" | "parse" | "auth" | "backend",
@@ -75,6 +81,44 @@ export class MusicDlClient {
     const data = await this.request<ResolveResult>("POST", "/api/bot/play/resolve", { query });
     this.assertResolveShape(data);
     return data;
+  }
+
+  async playlists(): Promise<PlaylistSummary[]> {
+    const data = await this.request<{ playlists: PlaylistSummary[] }>("GET", "/api/playlists");
+    if (typeof data !== "object" || data === null || !Array.isArray(data.playlists)) {
+      throw new MusicDlError("parse", "playlists: response missing playlists array");
+    }
+    return data.playlists.map((playlist, i) => {
+      this.assertFields(playlist, ["id", "name", "num_tracks"], `playlists: item[${i}]`);
+      return {
+        id: String(playlist.id),
+        name: String(playlist.name),
+        num_tracks: Number(playlist.num_tracks) || 0,
+      };
+    });
+  }
+
+  async playlistItems(playlistId: string): Promise<ResolvedItem[]> {
+    const data = await this.request<{ tracks: Array<Record<string, unknown>> }>(
+      "GET",
+      `/api/playlists/${encodeURIComponent(playlistId)}/tracks`,
+    );
+    if (typeof data !== "object" || data === null || !Array.isArray(data.tracks)) {
+      throw new MusicDlError("parse", "playlistItems: response missing tracks array");
+    }
+    return data.tracks.map((track, i) => {
+      this.assertFields(track, ["id", "name", "artist", "duration"], `playlistItems: item[${i}]`);
+      const localPath = typeof track.local_path === "string" ? track.local_path.trim() : "";
+      const isLocal = Boolean(track.is_local && localPath);
+      return {
+        id: isLocal ? encodeLocalItemId(localPath) : `tidal:${String(track.id)}`,
+        title: String(track.name),
+        artist: String(track.artist ?? ""),
+        source_type: isLocal ? "local" : "tidal",
+        local: isLocal,
+        duration: Number(track.duration) || 0,
+      };
+    });
   }
 
   async playable(itemId: string): Promise<PlayableSource> {
@@ -193,4 +237,13 @@ export class MusicDlClient {
       );
     }
   }
+}
+
+function encodeLocalItemId(path: string): string {
+  const encoded = Buffer.from(path, "utf8")
+    .toString("base64")
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+  return `local:${encoded}`;
 }
