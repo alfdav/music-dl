@@ -24,6 +24,8 @@ What it does:
 - **macOS Apple Silicon**: downloads the latest `.dmg`, verifies the GitHub release checksum, installs to `/Applications`, strips quarantine, then opens `music-dl.app`.
 - **Linux x86_64**: downloads the latest `.AppImage`, verifies the GitHub release checksum, installs it as `~/.local/bin/music-dl`.
 
+If macOS reports a DMG mount failure, rerun the current command from this document before trying manual install steps. The installer keeps progress output separate from returned file paths so `hdiutil` receives the verified DMG path, not status text.
+
 ### Desktop: Windows 10/11
 
 Copy this into PowerShell:
@@ -53,6 +55,36 @@ curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/inst
 ```
 
 On success, it installs `music-dl.app` to `/Applications/music-dl.app`. Requires Xcode Command Line Tools, Rust, `uv`, and Bun.
+
+### Internal latest from `master`
+
+Use these on our own machines when `master` has newer commits than the latest GitHub release and we do not want to cut new binaries yet.
+
+No local build tools, rolling edge channel:
+
+```shell
+curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.sh | MUSIC_DL_RELEASE_TAG=edge bash
+```
+
+```powershell
+$env:MUSIC_DL_RELEASE_TAG = "edge"
+irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install.ps1 | iex
+Remove-Item Env:MUSIC_DL_RELEASE_TAG
+```
+
+These install the latest rolling edge artifact. Edge builds are produced automatically from `master` and point the app updater at the same edge manifest.
+
+Build locally from source:
+
+```shell
+curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash
+```
+
+```powershell
+irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-windows-local.ps1 | iex
+```
+
+These build from source and install locally. They require normal build tools. Source installers use SSH Git by default (`git@github.com:alfdav/music-dl.git`), so the machine needs GitHub SSH access.
 
 ### Manual assets
 

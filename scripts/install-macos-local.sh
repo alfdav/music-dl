@@ -29,7 +29,7 @@ repo_dir() {
 }
 
 repo_url() {
-  printf '%s\n' "${MUSIC_DL_INSTALLER_REPO_URL:-https://github.com/alfdav/music-dl.git}"
+  printf '%s\n' "${MUSIC_DL_INSTALLER_REPO_URL:-git@github.com:alfdav/music-dl.git}"
 }
 
 install_target() {
@@ -109,6 +109,7 @@ sync_repo() {
     git clone "$(repo_url)" "$repo" || die "Could not clone music-dl. Check your network connection, then rerun this installer."
   fi
 
+  git -C "$repo" remote set-url origin "$(repo_url)" || die "Could not update cached repo origin. Delete $(installer_cache_dir) and rerun this installer."
   git -C "$repo" fetch origin --prune || die "Could not update the cached music-dl repo. Check your network connection, then rerun this installer."
   git -C "$repo" remote set-head origin -a >/dev/null 2>&1 || die "Could not refresh origin/HEAD. Delete $(installer_cache_dir) and rerun this installer."
   default_ref="$(git -C "$repo" symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')" || die "Could not resolve the remote default branch. Delete $(installer_cache_dir) and rerun this installer."

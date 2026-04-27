@@ -102,6 +102,7 @@ unset MUSIC_DL_TEST_ARCH
 
 expected_cache="$HOME/Library/Caches/music-dl-installer"
 assert_eq "$(installer_cache_dir)" "$expected_cache" "default cache dir"
+assert_eq "$(repo_url)" "git@github.com:alfdav/music-dl.git" "default repo URL uses SSH"
 
 export MUSIC_DL_INSTALLER_CACHE_DIR="/tmp/music-dl-test-cache"
 assert_eq "$(installer_cache_dir)" "/tmp/music-dl-test-cache" "cache dir override"
@@ -345,6 +346,8 @@ main >/dev/null 2>&1 || fail "main runs dependency checks"
 assert_eq "$call_order" "require_macos -> require_arm64 -> require_xcode_clt -> require_rust -> require_uv -> require_bun -> sync_repo -> build_app -> install_app -> say:Done. Open /Applications/music-dl.app" "main runs Task 3 flow in spec order"
 
 readme_contents="$(<"$README_FILE")"
+script_contents="$(<"$SCRIPT")"
+assert_contains "$script_contents" "remote set-url origin" "macOS source installer normalizes cached repo origin"
 assert_contains "$readme_contents" "curl -fsSL https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-macos-local.sh | bash" "README documents the macOS local installer"
 assert_contains "$readme_contents" "bunx tauri build --bundles dmg" "README documents Bun Tauri builds"
 assert_not_contains "$readme_contents" "You can also rebuild locally if you want to manage the app bundle yourself." "README removes misleading plain macOS manual-build guidance"
