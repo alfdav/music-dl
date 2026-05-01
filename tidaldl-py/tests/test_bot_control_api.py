@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -374,6 +375,108 @@ def test_bot_control_start_launches_bun_from_configured_bot_root(
     assert launched["kwargs"]["cwd"] == str(bot_root)
     assert launched["kwargs"]["env"]["MUSIC_DL_BOT_ENV_PATH"] == str(tmp_path / "discord-bot.env")
     assert launched["kwargs"]["start_new_session"] is True
+
+
+def test_bot_control_start_reuses_live_recorded_pid_without_spawning(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_bot_config(tmp_path, monkeypatch)
+    pid_path = tmp_path / "discord-bot.pid"
+    pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    monkeypatch.setenv("MUSIC_DL_BOT_PID_PATH", str(pid_path))
+
+    from tidal_dl.gui.api import bot_control
+
+    def fail_popen(*args, **kwargs):
+        raise AssertionError("start must not spawn when recorded bot PID is alive")
+
+    monkeypatch.setattr(bot_control.subprocess, "Popen", fail_popen)
+
+    app, client = _client()
+    resp = client.post("/api/bot-control/start", headers=_csrf_headers(app), json={})
+
+    assert resp.status_code == 200
+    assert resp.json()["running"] is True
+
+
+def test_bot_control_start_replaces_stale_recorded_pid(
+    tmp_path: Path, monkeypatch
+) -> None:
+    bot_root = _write_bot_config(tmp_path, monkeypatch)
+    pid_path = tmp_path / "discord-bot.pid"
+    pid_path.write_text("999999999\n", encoding="utf-8")
+    monkeypatch.setenv("MUSIC_DL_BOT_PID_PATH", str(pid_path))
+
+    from tidal_dl.gui.api import bot_control
+
+    launched = {}
+
+    class FakeProcess:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        launched["cmd"] = cmd
+        launched["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(bot_control.shutil, "which", lambda name: "/usr/bin/bun" if name == "bun" else None)
+    monkeypatch.setattr(bot_control.subprocess, "Popen", fake_popen)
+
+    app, client = _client()
+    resp = client.post("/api/bot-control/start", headers=_csrf_headers(app), json={})
+
+    assert resp.status_code == 200
+    assert resp.json()["running"] is True
+    assert launched["cmd"] == ["/usr/bin/bun", "run", "start"]
+    assert launched["kwargs"]["cwd"] == str(bot_root)
+    assert pid_path.read_text(encoding="utf-8").strip() == "4321"
+
+
+def test_bot_control_lifespan_starts_and_stops_configured_bot(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_bot_config(tmp_path, monkeypatch)
+    pid_path = tmp_path / "discord-bot.pid"
+    monkeypatch.setenv("MUSIC_DL_BOT_PID_PATH", str(pid_path))
+
+    from tidal_dl.gui import create_app
+    from tidal_dl.gui.api import bot_control
+
+    killed = []
+
+    class FakeProcess:
+        pid = 4321
+        stopped = False
+
+        def poll(self):
+            return 0 if self.stopped else None
+
+        def wait(self, timeout=None):
+            self.stopped = True
+            return 0
+
+    proc = FakeProcess()
+
+    def fake_popen(cmd, **kwargs):
+        return proc
+
+    monkeypatch.setattr(bot_control.shutil, "which", lambda name: "/usr/bin/bun" if name == "bun" else None)
+    monkeypatch.setattr(bot_control.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bot_control.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+
+    app = create_app(port=8765)
+    with TestClient(app) as client:
+        resp = client.get("/api/bot-control/status", headers=HOST_HEADER)
+        assert resp.status_code == 200
+        assert resp.json()["running"] is True
+        assert pid_path.read_text(encoding="utf-8").strip() == "4321"
+
+    assert killed
+    assert getattr(app.state, "discord_bot_process") is None
+    assert not pid_path.exists()
 
 
 def test_bot_control_stop_terminates_running_bot(tmp_path: Path, monkeypatch) -> None:

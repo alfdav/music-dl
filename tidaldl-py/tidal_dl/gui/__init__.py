@@ -39,6 +39,7 @@ def create_app(
 
         loop = asyncio.get_running_loop()
         from tidal_dl.gui.api.upgrade import set_scan_event_loop
+        from tidal_dl.gui.api.bot_control import start_configured_bot, stop_running_bot
         from tidal_dl.gui.services.download_job_service import DownloadJobService
 
         service = DownloadJobService(db_path=job_db_path)
@@ -56,9 +57,11 @@ def create_app(
         app.state.daemon_meta = app.state.daemon_meta.with_status("ready")
         if app.state.write_daemon_metadata:
             write_metadata(app.state.daemon_meta)
+        start_configured_bot(app)
         try:
             yield
         finally:
+            stop_running_bot(app)
             service.stop_worker()
 
     app = FastAPI(title="music-dl", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)

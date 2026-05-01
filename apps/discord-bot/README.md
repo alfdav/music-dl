@@ -56,6 +56,12 @@ Open the DJAI view, enter the Discord bot token and allowed guild/channel/user
 IDs, save the config, then use **Deploy Discord Bot**, **Restart**, or
 **Shutdown** to manage the bot service.
 
+After config is valid, the GUI owns the normal bot lifecycle. App startup
+launches the bot in the background, records its PID in
+`<config-dir>/discord-bot.pid`, reuses a still-live recorded bot after backend
+restarts, and shuts the bot down when the app exits. You do not need a
+separate terminal just to keep the bot alive.
+
 **Terminal fallback:**
 
 ```bash
@@ -84,9 +90,11 @@ precedence: `$MUSIC_DL_CONFIG_DIR` → `$XDG_CONFIG_HOME/music-dl` →
 | --- | --- | --- |
 | `<config-dir>/discord-bot.env` | Bot runtime config (7 required vars) | 0600 |
 | `<config-dir>/bot-shared-token` | Bearer token the backend validates against | 0600 |
+| `<config-dir>/discord-bot.pid` | GUI-owned bot process marker | 0600 |
 
 Override individual paths with `MUSIC_DL_BOT_ENV_PATH` and
-`MUSIC_DL_BOT_TOKEN_PATH` if you need to (CI, container mounts).
+`MUSIC_DL_BOT_TOKEN_PATH` if you need to (CI, container mounts). Override the
+PID marker with `MUSIC_DL_BOT_PID_PATH`.
 
 ## Running the bot
 

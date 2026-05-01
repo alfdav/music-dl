@@ -241,7 +241,7 @@ Your browser opens automatically. The wizard handles the rest.
 - **Favorites** — mark tracks you love, access them from one place
 - **Local lyrics** — synced `.lrc` sidecars and embedded tag fallback, rendered in the player with no network lookups. See [`tidaldl-py/docs/local-lyrics.md`](tidaldl-py/docs/local-lyrics.md).
 - **Setup wizard** — first-run experience that walks you through Tidal login and library paths
-- **Discord bot (optional)** — single-user, single-guild companion that streams and downloads from your library over Discord voice. Configure it and manage the bot service from the GUI's DJAI view, then use the auto-posted Discord remote panel for search, playlists, playback controls, and repeat. See [`apps/discord-bot/README.md`](apps/discord-bot/README.md) and [`tidaldl-py/docs/bot-onboarding.md`](tidaldl-py/docs/bot-onboarding.md).
+- **Discord bot (optional)** — single-user, single-guild companion that streams and downloads from your library over Discord voice. Configure it from the GUI's DJAI view; when valid config exists, the app starts the bot in the background, reuses any live recorded bot process after backend restarts, and stops it when the app exits. The Discord remote panel handles search, playlists, playback controls, and repeat. See [`apps/discord-bot/README.md`](apps/discord-bot/README.md) and [`tidaldl-py/docs/bot-onboarding.md`](tidaldl-py/docs/bot-onboarding.md).
 
 ## CLI
 
@@ -316,6 +316,7 @@ For deep dives, see:
 | `MUSIC_DL_DOWNLOADS` | `~/Music` | Docker compose downloads volume source |
 | `MUSIC_DL_BOT_ENV_PATH` | `<config-dir>/discord-bot.env` | Optional Discord bot env-file override |
 | `MUSIC_DL_BOT_TOKEN_PATH` | `<config-dir>/bot-shared-token` | Optional backend shared-token file override |
+| `MUSIC_DL_BOT_PID_PATH` | `<config-dir>/discord-bot.pid` | Optional Discord bot PID-file override |
 | `MUSIC_DL_BOT_PATH` | auto-detected repo path | Optional path to `apps/discord-bot` for `music-dl gui --setup-bot` |
 | `MUSIC_DL_BOT_TOKEN` | _(unset)_ | Optional env override for bot/backend bearer auth |
 
