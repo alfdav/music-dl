@@ -8,6 +8,7 @@ import secrets
 import shutil
 import signal
 import subprocess
+import time
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, SecretStr
@@ -19,6 +20,7 @@ from tidal_dl.helper.path import path_config_base
 router = APIRouter(prefix="/bot-control", tags=["bot-control"])
 
 BOT_ENV_FILENAME = "discord-bot.env"
+BOT_PID_FILENAME = "discord-bot.pid"
 STOP_TIMEOUT_SECONDS = 5
 DISCORD_API = "https://discord.com/api/v10"
 DISCORD_LOOKUP_TIMEOUT_SECONDS = 2
@@ -55,6 +57,13 @@ def bot_env_path() -> Path:
     if override:
         return Path(override)
     return Path(path_config_base()) / BOT_ENV_FILENAME
+
+
+def bot_pid_path() -> Path:
+    override = os.environ.get("MUSIC_DL_BOT_PID_PATH", "").strip()
+    if override:
+        return Path(override)
+    return Path(path_config_base()) / BOT_PID_FILENAME
 
 
 def bot_root_path() -> Path:
@@ -102,25 +111,40 @@ def configure(payload: BotConfigureRequest, request: Request) -> dict:
 
 @router.post("/start")
 def start(request: Request) -> dict:
-    return _start_bot(request)
+    return _start_bot_for_app(request.app)
 
 
 @router.post("/stop")
 def stop(request: Request) -> dict:
-    _stop_bot(request)
+    _stop_bot_for_app(request.app)
     return _status(request)
 
 
 @router.post("/restart")
 def restart(request: Request) -> dict:
-    _stop_bot(request)
-    return _start_bot(request)
+    _stop_bot_for_app(request.app)
+    return _start_bot_for_app(request.app)
 
 
-def _start_bot(request: Request) -> dict:
-    running = _running_process(request)
+def start_configured_bot(app) -> None:
+    """Best-effort app startup hook. Startup must not fail because bot cannot start."""
+    env_values = _active_env()[1]
+    if not _config_values_usable(env_values) or not _token_ready():
+        return
+    try:
+        _start_bot_for_app(app)
+    except HTTPException:
+        return
+
+
+def stop_running_bot(app) -> None:
+    _stop_bot_for_app(app)
+
+
+def _start_bot_for_app(app) -> dict:
+    running = _running_process_for_app(app)
     if running is not None:
-        return _status(request)
+        return _status_for_app(app)
 
     env_path, env_values = _active_env()
     missing = _missing_user_fields(env_values)
@@ -148,19 +172,25 @@ def _start_bot(request: Request) -> dict:
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Could not start Discord bot: {exc}") from exc
 
-    request.app.state.discord_bot_process = proc
-    return _status(request)
+    app.state.discord_bot_process = proc
+    app.state.discord_bot_pid = proc.pid
+    _write_private_file_atomic(bot_pid_path(), f"{proc.pid}\n")
+    return _status_for_app(app)
 
 
 def _status(request: Request) -> dict:
+    return _status_for_app(request.app)
+
+
+def _status_for_app(app) -> dict:
     env_path, env_values = _active_env()
     missing = _missing_user_fields(env_values)
     invalid = _invalid_id_fields(env_values)
     token_ready = _token_ready()
     return {
         "configured": not missing and not invalid and token_ready,
-        "running": _running_process(request) is not None,
-        "backend_url": env_values.get("MUSIC_DL_BASE_URL", "").strip() or request.app.state.daemon_meta.base_url,
+        "running": _running_process_for_app(app) is not None,
+        "backend_url": env_values.get("MUSIC_DL_BASE_URL", "").strip() or app.state.daemon_meta.base_url,
         "missing_fields": missing,
         "invalid_fields": invalid,
         "configured_fields": [key for key in USER_FIELDS if key not in missing and key not in invalid],
@@ -176,44 +206,129 @@ def _status(request: Request) -> dict:
 
 
 def _running_process(request: Request):
-    proc = getattr(request.app.state, "discord_bot_process", None)
+    return _running_process_for_app(request.app)
+
+
+def _running_process_for_app(app):
+    proc = getattr(app.state, "discord_bot_process", None)
     if proc is None:
+        pid = getattr(app.state, "discord_bot_pid", None) or _read_recorded_pid()
+        if pid is None:
+            return None
+        if _pid_alive(pid):
+            app.state.discord_bot_pid = pid
+            return pid
+        _forget_recorded_pid(app)
         return None
     if proc.poll() is None:
         return proc
-    request.app.state.discord_bot_process = None
+    _forget_recorded_pid(app)
     return None
 
 
 def _stop_bot(request: Request) -> None:
-    proc = _running_process(request)
+    _stop_bot_for_app(request.app)
+
+
+def _stop_bot_for_app(app) -> None:
+    proc = _running_process_for_app(app)
     if proc is None:
-        request.app.state.discord_bot_process = None
+        _forget_recorded_pid(app)
         return
 
+    pid = proc if isinstance(proc, int) else proc.pid
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
+        os.killpg(pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
     except OSError:
-        proc.terminate()
+        if isinstance(proc, int):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        else:
+            proc.terminate()
 
     try:
-        proc.wait(timeout=STOP_TIMEOUT_SECONDS)
+        if isinstance(proc, int):
+            _wait_for_pid_exit(pid, STOP_TIMEOUT_SECONDS)
+        else:
+            proc.wait(timeout=STOP_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
+            os.killpg(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         except OSError:
-            proc.kill()
-        proc.wait(timeout=STOP_TIMEOUT_SECONDS)
+            if isinstance(proc, int):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                proc.kill()
+        if not isinstance(proc, int):
+            proc.wait(timeout=STOP_TIMEOUT_SECONDS)
     finally:
-        request.app.state.discord_bot_process = None
+        _forget_recorded_pid(app)
 
 
 def _missing_user_fields(values: dict[str, str]) -> list[str]:
     return [key for key in USER_FIELDS if not values.get(key, "").strip()]
+
+
+def _read_recorded_pid() -> int | None:
+    path = bot_pid_path()
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        _remove_pid_file()
+        return None
+    if pid <= 0:
+        _remove_pid_file()
+        return None
+    return pid
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _wait_for_pid_exit(pid: int, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return
+        time.sleep(0.1)
+    raise subprocess.TimeoutExpired(str(pid), timeout)
+
+
+def _forget_recorded_pid(app) -> None:
+    app.state.discord_bot_process = None
+    app.state.discord_bot_pid = None
+    _remove_pid_file()
+
+
+def _remove_pid_file() -> None:
+    try:
+        bot_pid_path().unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
 
 
 def _active_env() -> tuple[Path, dict[str, str]]:

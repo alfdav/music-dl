@@ -83,6 +83,7 @@ All media intelligence stays in `music-dl`.
 - the bot runs on the same machine as `music-dl`
 - bot-facing APIs bind to `127.0.0.1` only
 - the feature may later be released for wider self-hosted use, but `v1` is optimized for local development and validation
+- when GUI configuration is valid, the app owns the normal bot lifecycle: background start on app startup, PID-file reuse across backend restarts, and shutdown with the app
 
 ## Supported Inputs
 
