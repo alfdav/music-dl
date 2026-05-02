@@ -20,6 +20,20 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
+## v1.6.2 (2026-05-02)
+
+### Desktop release automation
+
+- Added rolling edge desktop builds from `master` for macOS, Linux, and Windows.
+- Added stable release CI support for macOS DMG and updater archive assets.
+- Replaced stale rolling edge assets before upload so installers do not pick old builds.
+- Documented the stable-versus-edge install flow for internal release candidates.
+
+### DJAI Discord controls
+
+- Added GUI-owned Discord bot lifecycle controls with live PID reuse.
+- Kept Discord bot setup and status in the DJAI surface instead of forcing CLI-only setup.
+
 ## v1.6.1 (2026-04-25)
 
 ### Desktop app fixes
