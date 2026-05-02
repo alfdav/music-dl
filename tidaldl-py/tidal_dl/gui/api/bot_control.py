@@ -8,6 +8,7 @@ import secrets
 import shutil
 import signal
 import subprocess
+import sys
 import time
 
 from fastapi import APIRouter, HTTPException, Request
@@ -21,6 +22,8 @@ router = APIRouter(prefix="/bot-control", tags=["bot-control"])
 
 BOT_ENV_FILENAME = "discord-bot.env"
 BOT_PID_FILENAME = "discord-bot.pid"
+BOT_BUNDLE_DIRNAME = "discord-bot"
+BOT_INSTALLED_DIRNAME = "discord-bot-runtime"
 STOP_TIMEOUT_SECONDS = 5
 DISCORD_API = "https://discord.com/api/v10"
 DISCORD_LOOKUP_TIMEOUT_SECONDS = 2
@@ -70,8 +73,33 @@ def bot_root_path() -> Path:
     override = os.environ.get("MUSIC_DL_BOT_PATH", "").strip()
     if override:
         return Path(override)
+    repo_root = _repo_bot_root_path()
+    if _bot_root_has_sources(repo_root):
+        return repo_root
+    bundled_root = _bundled_bot_root_path()
+    if _bot_root_has_sources(bundled_root):
+        return _installed_bot_root_path()
+    return repo_root
+
+
+def _repo_bot_root_path() -> Path:
     here = Path(__file__).resolve()
     return here.parents[4] / "apps" / "discord-bot"
+
+
+def _bundled_bot_root_path() -> Path:
+    base = getattr(sys, "_MEIPASS", "")
+    if not base:
+        return Path()
+    return Path(base) / BOT_BUNDLE_DIRNAME
+
+
+def _installed_bot_root_path() -> Path:
+    return Path(path_config_base()) / BOT_INSTALLED_DIRNAME
+
+
+def _bot_root_has_sources(root: Path) -> bool:
+    return root.is_dir() and (root / "package.json").is_file() and (root / "src" / "boot.ts").is_file()
 
 
 def legacy_bot_env_paths() -> list[Path]:
@@ -152,13 +180,15 @@ def _start_bot_for_app(app) -> dict:
     if missing or invalid or not _token_ready():
         raise HTTPException(status_code=400, detail="Discord bot is not configured")
 
-    root = bot_root_path()
-    if not root.is_dir():
+    root = _prepared_bot_root_path()
+    if not _bot_root_has_sources(root):
         raise HTTPException(status_code=400, detail="Discord bot sources not found")
 
     bun = shutil.which("bun")
     if bun is None:
         raise HTTPException(status_code=400, detail="Bun is required to start the Discord bot")
+
+    _ensure_bot_dependencies(root, bun)
 
     try:
         proc = subprocess.Popen(
@@ -176,6 +206,46 @@ def _start_bot_for_app(app) -> dict:
     app.state.discord_bot_pid = proc.pid
     _write_private_file_atomic(bot_pid_path(), f"{proc.pid}\n")
     return _status_for_app(app)
+
+
+def _prepared_bot_root_path() -> Path:
+    root = bot_root_path()
+    if _bot_root_has_sources(root):
+        return root
+
+    bundled_root = _bundled_bot_root_path()
+    if not _bot_root_has_sources(bundled_root):
+        return root
+
+    installed_root = _installed_bot_root_path()
+    _copy_bundled_bot_sources(bundled_root, installed_root)
+    return installed_root
+
+
+def _copy_bundled_bot_sources(source: Path, target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    for name in ("package.json", "bun.lock", "tsconfig.json"):
+        src = source / name
+        if src.is_file():
+            shutil.copy2(src, target / name)
+    src_dir = source / "src"
+    if src_dir.is_dir():
+        shutil.copytree(src_dir, target / "src", dirs_exist_ok=True)
+
+
+def _ensure_bot_dependencies(root: Path, bun: str) -> None:
+    if (root / "node_modules").is_dir():
+        return
+    try:
+        subprocess.run(
+            [bun, "install"],
+            cwd=str(root),
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HTTPException(status_code=500, detail=f"Could not install Discord bot dependencies: {exc}") from exc
 
 
 def _status(request: Request) -> dict:

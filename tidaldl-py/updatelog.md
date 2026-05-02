@@ -20,6 +20,15 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
+## v1.6.3 (2026-05-02)
+
+### Desktop Discord bot fix
+
+- Bundled Discord bot sources into the packaged desktop sidecar.
+- Provisioned packaged bot sources into the music-dl config directory before starting the bot.
+- Installed bot dependencies on first packaged bot start when `node_modules` is missing.
+- Fixed the installed-app error: `Bot deploy failed: Discord bot sources not found`.
+
 ## v1.6.2 (2026-05-02)
 
 ### Desktop release automation

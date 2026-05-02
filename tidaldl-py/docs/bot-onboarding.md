@@ -218,6 +218,7 @@ Files inside the config dir:
 | --- | --- | --- |
 | `discord-bot.env` | `MUSIC_DL_BOT_ENV_PATH` | Bot runtime env (7 vars) |
 | `bot-shared-token` | `MUSIC_DL_BOT_TOKEN_PATH` | Backend bearer validation |
+| `discord-bot-runtime/` | `MUSIC_DL_BOT_PATH` | Packaged desktop bot source runtime, provisioned from bundled sources |
 
 > The bot's `src/boot.ts` reads from `getBotEnvPath()` — **not** from
 > `.env` in `cwd`. Matching the wizard's write path here closes the
