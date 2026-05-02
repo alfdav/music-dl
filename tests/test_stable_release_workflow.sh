@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKFLOW="$ROOT/.github/workflows/build-desktop.yml"
+PYINSTALLER_SPEC="$ROOT/tidaldl-py/build/pyinstaller/music-dl-server.spec"
 CONTRIBUTING="$ROOT/CONTRIBUTING.md"
 README="$ROOT/README.md"
 INSTALL_DOC="$ROOT/docs/release/install-instructions.md"
@@ -24,6 +25,7 @@ assert_contains() {
 }
 
 workflow_contents="$(<"$WORKFLOW")"
+pyinstaller_spec_contents="$(<"$PYINSTALLER_SPEC")"
 contributing_contents="$(<"$CONTRIBUTING")"
 readme_contents="$(<"$README")"
 install_doc_contents="$(<"$INSTALL_DOC")"
@@ -36,6 +38,8 @@ assert_contains "$workflow_contents" "*.dmg" "stable workflow uploads macOS DMG"
 assert_contains "$workflow_contents" "*.msi.sig" "stable workflow preserves Windows updater signature"
 assert_contains "$workflow_contents" "scripts/edge_channel.py manifest" "stable workflow generates multi-platform latest.json"
 assert_contains "$workflow_contents" "read_text(encoding='utf-8')" "stable workflow reads static assets as UTF-8"
+assert_contains "$pyinstaller_spec_contents" "apps\", \"discord-bot" "PyInstaller spec locates Discord bot sources"
+assert_contains "$pyinstaller_spec_contents" "\"discord-bot\"" "PyInstaller spec bundles Discord bot sources"
 
 assert_contains "$contributing_contents" "Linux, macOS, and Windows binaries" "release docs describe cross-platform CI"
 assert_contains "$contributing_contents" "darwin-aarch64" "release docs require macOS updater manifest platform"

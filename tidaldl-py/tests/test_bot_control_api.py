@@ -24,8 +24,10 @@ def _write_bot_config(tmp_path: Path, monkeypatch) -> Path:
     env_path = tmp_path / "discord-bot.env"
     token_path = tmp_path / "bot-shared-token"
     bot_root = tmp_path / "discord-bot"
-    bot_root.mkdir()
+    (bot_root / "src").mkdir(parents=True)
+    (bot_root / "node_modules").mkdir()
     (bot_root / "package.json").write_text("{}", encoding="utf-8")
+    (bot_root / "src" / "boot.ts").write_text("console.log('bot')\n", encoding="utf-8")
     env_path.write_text(
         "\n".join(
             [
@@ -549,3 +551,21 @@ def test_bot_control_restart_stops_then_starts_bot(tmp_path: Path, monkeypatch) 
     assert killed
     assert launched[0][0] == ["/usr/bin/bun", "run", "start"]
     assert launched[0][1]["cwd"] == str(bot_root)
+
+
+def test_bot_control_copies_bundled_bot_sources_to_runtime_dir(tmp_path: Path) -> None:
+    from tidal_dl.gui.api import bot_control
+
+    source = tmp_path / "bundle" / "discord-bot"
+    target = tmp_path / "config" / "discord-bot-runtime"
+    (source / "src").mkdir(parents=True)
+    (source / "package.json").write_text("{}", encoding="utf-8")
+    (source / "bun.lock").write_text("# lock\n", encoding="utf-8")
+    (source / "tsconfig.json").write_text("{}", encoding="utf-8")
+    (source / "src" / "boot.ts").write_text("console.log('bot')\n", encoding="utf-8")
+
+    bot_control._copy_bundled_bot_sources(source, target)
+
+    assert bot_control._bot_root_has_sources(target)
+    assert (target / "bun.lock").read_text(encoding="utf-8") == "# lock\n"
+    assert (target / "src" / "boot.ts").read_text(encoding="utf-8") == "console.log('bot')\n"

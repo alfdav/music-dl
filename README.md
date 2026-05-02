@@ -317,7 +317,7 @@ For deep dives, see:
 | `MUSIC_DL_BOT_ENV_PATH` | `<config-dir>/discord-bot.env` | Optional Discord bot env-file override |
 | `MUSIC_DL_BOT_TOKEN_PATH` | `<config-dir>/bot-shared-token` | Optional backend shared-token file override |
 | `MUSIC_DL_BOT_PID_PATH` | `<config-dir>/discord-bot.pid` | Optional Discord bot PID-file override |
-| `MUSIC_DL_BOT_PATH` | auto-detected repo path | Optional path to `apps/discord-bot` for `music-dl gui --setup-bot` |
+| `MUSIC_DL_BOT_PATH` | repo path or bundled runtime | Optional path to `apps/discord-bot`; packaged installs provision bundled bot sources into `<config-dir>/discord-bot-runtime` |
 | `MUSIC_DL_BOT_TOKEN` | _(unset)_ | Optional env override for bot/backend bearer auth |
 
 ## Development

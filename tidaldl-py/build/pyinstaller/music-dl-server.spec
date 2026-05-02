@@ -9,6 +9,7 @@ import os
 from PyInstaller.utils.hooks import collect_submodules
 
 PROJECT_DIR = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
+REPO_DIR = os.path.abspath(os.path.join(PROJECT_DIR, ".."))
 
 EXCLUDED_IMPORT_PREFIXES = (
     "anyio.pytest_plugin",
@@ -34,9 +35,11 @@ def runtime_submodules(package):
 # ── We only need to add non-Python data files (static assets) as datas. ──
 static_dir = os.path.join(PROJECT_DIR, "tidal_dl", "gui", "static")
 pyproject_toml = os.path.join(PROJECT_DIR, "pyproject.toml")
+discord_bot_dir = os.path.join(REPO_DIR, "apps", "discord-bot")
 tidal_datas = [
     (static_dir, os.path.join("tidal_dl", "gui", "static")),
     (pyproject_toml, "."),
+    (discord_bot_dir, "discord-bot"),
 ]
 
 # All tidal_dl submodules as hidden imports (PyInstaller can't trace

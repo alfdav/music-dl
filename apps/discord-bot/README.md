@@ -227,7 +227,9 @@ a real filesystem, or the real user config directory.
   nothing. Fix the reported token, guild/channel/user, voice permission,
   or local dependency issue and rerun `music-dl gui --setup-bot`.
 - **Wizard exits `126`** — the backend could not find the bot sources.
-  Set `MUSIC_DL_BOT_PATH=/path/to/apps/discord-bot`.
+  Packaged desktop installs include the bot sources and provision them
+  under the music-dl config directory. Source checkouts can still set
+  `MUSIC_DL_BOT_PATH=/path/to/apps/discord-bot`.
 - **Wizard exits `127`** — Bun or the Node/tsx fallback is unavailable.
   Install Bun, then run `bun install` in `apps/discord-bot`.
 - **Backend returns `401` to every bot request** — the bot and backend
