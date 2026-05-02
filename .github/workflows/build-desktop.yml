@@ -108,7 +108,7 @@ jobs:
         run: |
           .venv/bin/python -c "
           from pathlib import Path
-          js = Path('tidal_dl/gui/static/app.js').read_text()
+          js = Path('tidal_dl/gui/static/app.js').read_text(encoding='utf-8')
           assert 'mediaSession' in js, 'STALE JS: mediaSession missing'
           assert '_wfHires' in js, 'STALE JS: waveform hires missing'
           print('[verify] Static assets OK')
@@ -118,7 +118,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          uv run python -c "from pathlib import Path; js = Path('tidal_dl/gui/static/app.js').read_text(); assert 'mediaSession' in js, 'STALE JS: mediaSession missing'; assert '_wfHires' in js, 'STALE JS: waveform hires missing'; print('[verify] Static assets OK')"
+          uv run python -c "from pathlib import Path; js = Path('tidal_dl/gui/static/app.js').read_text(encoding='utf-8'); assert 'mediaSession' in js, 'STALE JS: mediaSession missing'; assert '_wfHires' in js, 'STALE JS: waveform hires missing'; print('[verify] Static assets OK')"
 
       - name: Smoke test Windows sidecar
         if: runner.os == 'Windows'

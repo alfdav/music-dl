@@ -35,6 +35,7 @@ assert_contains "$workflow_contents" "*.app.tar.gz.sig" "stable workflow uploads
 assert_contains "$workflow_contents" "*.dmg" "stable workflow uploads macOS DMG"
 assert_contains "$workflow_contents" "*.msi.sig" "stable workflow preserves Windows updater signature"
 assert_contains "$workflow_contents" "scripts/edge_channel.py manifest" "stable workflow generates multi-platform latest.json"
+assert_contains "$workflow_contents" "read_text(encoding='utf-8')" "stable workflow reads static assets as UTF-8"
 
 assert_contains "$contributing_contents" "Linux, macOS, and Windows binaries" "release docs describe cross-platform CI"
 assert_contains "$contributing_contents" "darwin-aarch64" "release docs require macOS updater manifest platform"
