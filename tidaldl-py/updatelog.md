@@ -22,6 +22,10 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ## Unreleased
 
+### Release automation
+
+- Updated GitHub Actions workflow dependencies to Node 24 runtime-compatible action majors to avoid Node 20 action deprecation warnings.
+
 ### Desktop startup recovery
 
 - Quarantine corrupt `~/.config/music-dl/library.db` cache files as `library.db.corrupt-*` and rebuild the schema instead of leaving the desktop app stuck at daemon readiness timeout.
