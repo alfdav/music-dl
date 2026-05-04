@@ -275,6 +275,10 @@ If music-dl breaks, open a GitHub issue with the bug template. The [bug reportin
 
 Settings are managed from the in-app **Settings** page. The config file lives at `~/.config/music-dl/settings.json`.
 
+## Bug Reports
+
+The GUI includes a static **Report bug** link in the app chrome and no-JavaScript fallback. It opens the GitHub bug report template directly, so users can still file a report when local API calls or app state are broken.
+
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `download_base_path` | `~/download` | Where downloaded files go |

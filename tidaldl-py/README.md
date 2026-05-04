@@ -20,6 +20,8 @@ The web UI opens in your browser and serves the local music library, search, dow
 
 Tidal sign-in and reconnect can be started directly from the GUI; terminal `music-dl login` remains available for CLI-first use.
 
+The GUI keeps a static **Report bug** link in the app chrome and no-JavaScript fallback. It opens the GitHub bug report template directly without depending on local API calls.
+
 The Home view shows recent additions, recently played items, top artists, genre stats, repeat listening, and a Continue Listening card when playback has a saved queue position. Library artist navigation renders page-sized batches, and album navigation uses an in-memory album cache with batched card rendering to keep large collections responsive. Recently Played supports Today, This Week, and Older filters plus clear-old/history controls. The player persists queue, volume, shuffle, repeat, and Smart Shuffle preferences across reloads.
 
 Continue Listening ignores finished tracks and near-end positions so completed songs do not reappear as one-second resume cards.
