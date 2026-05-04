@@ -1,53 +1,136 @@
 name: Bug Report
-description: Create a bug report to help us improve.
+description: Report a reproducible problem with music-dl.
 title: "[BUG]: "
 labels: bug
 body:
   - type: markdown
     attributes:
       value: |
-        Please search for this issue in the issues page first. Avoid duplication.
-  - type: textarea
+        Search existing issues first to avoid duplicates.
+
+        If you use an AI assistant, ask it to fill this form from real evidence on your machine.
+        Do not paste Tidal tokens, cookies, `.env` files, or credentials.
+        Bug report guide: https://github.com/alfdav/music-dl/blob/master/docs/bug-reporting.md
+  - type: input
     id: version
     attributes:
       label: Version
-      description: Output of `music-dl --version`.
-      placeholder: |
-        e.g. 3.0.0
+      description: Output of `music-dl --version`, app About/version text, or installed release tag.
+      placeholder: "e.g. 1.6.3"
     validations:
       required: true
-  - type: textarea
+  - type: dropdown
+    id: app-mode
+    attributes:
+      label: App mode
+      description: Where did the bug happen?
+      options:
+        - Desktop app
+        - Browser GUI (`music-dl gui`)
+        - CLI command
+        - Docker/NAS
+        - Discord bot
+        - Installer/updater
+        - Not sure
+    validations:
+      required: true
+  - type: input
     id: platform
     attributes:
       label: Platform
-      description: Describe the platform on which the tool has been used.
-      placeholder: |
-        Windows\Linux\Macos\Android
+      description: OS, version, CPU architecture, and install target if known.
+      placeholder: "e.g. macOS 15.4, Apple Silicon; Windows 11 x64; Ubuntu 24.04 x86_64"
+    validations:
+      required: true
+  - type: dropdown
+    id: install-path
+    attributes:
+      label: Install/update path
+      description: This separates clean-install bugs from local-state or upgrade bugs.
+      options:
+        - First install
+        - Updated from an older version
+        - Reinstalled the same version
+        - Built from source
+        - Rolling edge build
+        - Not sure
     validations:
       required: true
   - type: textarea
-    id: describe-bug
+    id: last-action
     attributes:
-      label: Describe the bug
-      description: Describe the bug as accurately as possible.
+      label: What happened right before the problem?
+      description: Include the last successful action and the first failed action.
       placeholder: |
-        How to reappear this bug?
-        Which albumID\trackID\artistID?
-        Please describe in detail.
+        Example: I scanned my library, clicked Upgrade, several downloads failed, clicked Resume, force-quit the app, restarted macOS, then the app showed "Timed out waiting for daemon readiness".
     validations:
       required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Exact clicks/commands/URLs/track IDs/album IDs if relevant.
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. Run ...
+        4. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should music-dl have done instead?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Exact error message, failed screen, or command output.
+    validations:
+      required: true
+  - type: textarea
+    id: local-state
+    attributes:
+      label: Local state that may matter
+      description: List relevant files only. Do not paste secrets or file contents.
+      placeholder: |
+        Config directory checked:
+        - macOS/Linux: ~/.config/music-dl/
+        - Windows: %APPDATA%\music-dl\
+
+        Files present before any cleanup:
+        - settings.json: yes/no
+        - daemon.json: yes/no
+        - library.db: yes/no
+        - library.db-wal: yes/no
+        - library.db-shm: yes/no
+        - library.db.corrupt-*: yes/no
+    validations:
+      required: false
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Workarounds tried
+      description: Include reinstalls, restarts, file deletion, config changes, or source rebuilds.
+      placeholder: |
+        Example: Reinstalled 1.6.3, restarted computer, deleted ~/.config/music-dl/library.db, then app started.
+    validations:
+      required: false
   - type: textarea
     id: logs
     attributes:
       label: Relevant log output
-      description: Please copy and paste any relevant log output. This will be automatically formatted into code, so no need for backticks.
+      description: Paste relevant logs only. Remove tokens, cookies, and credentials.
       render: shell
     validations:
       required: false
   - type: textarea
     id: screenshots
     attributes:
-      label: Add screenshots
+      label: Screenshots or screen recordings
       description: Please add screenshots if available.
     validations:
       required: false

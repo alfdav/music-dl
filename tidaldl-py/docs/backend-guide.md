@@ -137,6 +137,11 @@ daemon to be ready, then navigates the Tauri webview to that route. Mounting or
 installing the macOS DMG does not start the daemon; the daemon starts only when
 the user launches `music-dl.app` or runs `music-dl gui`.
 
+The daemon opens `~/.config/music-dl/library.db` during startup for persisted
+download and upgrade jobs. If SQLite reports the cache file is corrupt, the app
+renames it to `library.db.corrupt-*`, moves matching WAL/SHM sidecars with it,
+and creates a fresh schema so the desktop shell can still reach readiness.
+
 ---
 
 ## 5. Middleware Stack
