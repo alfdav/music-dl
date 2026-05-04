@@ -209,6 +209,42 @@ body {
   border-top: 1px solid var(--glass-border);
 }
 
+.bug-report-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 8px 12px;
+  border: 1px solid rgba(212, 160, 83, 0.26);
+  border-radius: var(--radius-sm);
+  background: rgba(212, 160, 83, 0.10);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+
+.bug-report-link:hover {
+  background: rgba(212, 160, 83, 0.16);
+  border-color: rgba(212, 160, 83, 0.42);
+  color: var(--text);
+}
+
+.bug-report-link svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  stroke-width: 1.7;
+}
+
+.bug-report-link-sidebar {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
 .connection {
   display: flex;
   align-items: center;
@@ -263,6 +299,11 @@ body {
 
 .main-topbar-spacer {
   flex: 1;
+}
+
+.bug-report-link-topbar {
+  min-height: 30px;
+  padding: 6px 10px;
 }
 
 .app-version-chip {

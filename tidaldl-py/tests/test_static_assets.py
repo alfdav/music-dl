@@ -129,6 +129,19 @@ class TestAppJsFeatureMarkers:
         assert ">soon</span>" not in html
         assert ".djai-module-card" in css
 
+    def test_has_static_bug_report_link(self):
+        html = (STATIC_DIR / "index.html").read_text()
+        css = (STATIC_DIR / "style.css").read_text()
+        issue_url = "https://github.com/alfdav/music-dl/issues/new?template=bug-report.yml"
+        assert html.count(issue_url) == 3
+        assert "Report bug" in html
+        assert "Report a bug" in html
+        assert "bug-report-link-sidebar" in html
+        assert "bug-report-link-topbar" in html
+        assert 'target="_blank"' in html
+        assert 'rel="noopener noreferrer"' in html
+        assert ".bug-report-link" in css
+
     def test_has_djai_discord_bot_deploy_controls(self):
         js = (STATIC_DIR / "app.js").read_text()
         css = (STATIC_DIR / "style.css").read_text()
