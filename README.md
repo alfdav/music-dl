@@ -267,6 +267,10 @@ music-dl gui --setup-bot        # terminal fallback for Discord bot onboarding
 
 Run `music-dl --help` for the full list.
 
+## Bug Reports
+
+If music-dl breaks, open a GitHub issue with the bug template. The [bug reporting guide](docs/bug-reporting.md) lists the local state, logs, and safe commands that help us avoid generic follow-up questions. If you use an AI assistant, point it at that guide and ask it to fill the issue from real evidence on your machine.
+
 ## Configuration
 
 Settings are managed from the in-app **Settings** page. The config file lives at `~/.config/music-dl/settings.json`.
@@ -410,7 +414,7 @@ The one-command internal Windows source installer runs that same flow:
 irm https://raw.githubusercontent.com/alfdav/music-dl/master/scripts/install-windows-local.ps1 | iex
 ```
 
-The desktop app and browser mode share the same local web UI. Tauri starts or reuses the localhost daemon, then opens the same route the browser would use. Desktop protocol links such as `music-dl://open#search` open supported internal views in the app.
+The desktop app and browser mode share the same local web UI. Tauri starts or reuses the localhost daemon, then opens the same route the browser would use. Desktop protocol links such as `music-dl://open#search` open supported internal views in the app. If the local `~/.config/music-dl/library.db` cache is corrupt, startup quarantines it as `library.db.corrupt-*` and rebuilds an empty cache instead of timing out.
 
 Linux, macOS, and Windows releases are published via GitHub Actions. The macOS app is not notarized (no Apple Developer ID). The `scripts/install.sh` one-liner verifies the GitHub release checksum and strips the quarantine xattr so Gatekeeper doesn't fire. If you download a DMG through Safari instead, macOS will set the quarantine bit and you'll need a one-time right-click → Open bypass on first launch. Windows MSI builds are unsigned, so SmartScreen may warn on first install.
 

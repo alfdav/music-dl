@@ -22,6 +22,38 @@ import re
 import sqlite3
 import time
 
+_SQLITE_CORRUPTION_MESSAGES = (
+    "file is not a database",
+    "database disk image is malformed",
+)
+
+
+def _is_sqlite_corruption(exc: sqlite3.DatabaseError) -> bool:
+    message = str(exc).casefold()
+    return any(fragment in message for fragment in _SQLITE_CORRUPTION_MESSAGES)
+
+
+def _corrupt_backup_path(path: pathlib.Path) -> pathlib.Path:
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    candidate = path.with_name(f"{path.name}.corrupt-{stamp}")
+    index = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{path.name}.corrupt-{stamp}-{index}")
+        index += 1
+    return candidate
+
+
+def _quarantine_corrupt_db(path: pathlib.Path) -> None:
+    if not path.exists():
+        return
+
+    backup = _corrupt_backup_path(path)
+    path.replace(backup)
+    for suffix in ("-wal", "-shm"):
+        sidecar = path.with_name(f"{path.name}{suffix}")
+        if sidecar.exists():
+            sidecar.replace(backup.with_name(f"{backup.name}{suffix}"))
+
 
 def _normalize_track_text(value: str | None) -> str:
     return (value or "").strip().casefold()
@@ -116,6 +148,16 @@ class LibraryDB:
     # ------------------------------------------------------------------
 
     def open(self) -> None:
+        try:
+            self._open_existing_or_new()
+        except sqlite3.DatabaseError as exc:
+            if not _is_sqlite_corruption(exc):
+                raise
+            self.close()
+            _quarantine_corrupt_db(self._path)
+            self._open_existing_or_new()
+
+    def _open_existing_or_new(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self._path))
         self._conn.row_factory = sqlite3.Row

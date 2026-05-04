@@ -21,6 +21,26 @@ class TestPragmas:
         timeout = db._conn.execute("PRAGMA busy_timeout").fetchone()[0]
         assert timeout == 5000
 
+    def test_open_quarantines_corrupt_db_and_recreates_schema(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        db_path.write_text("not sqlite", encoding="utf-8")
+
+        recovered = LibraryDB(db_path)
+        recovered.open()
+        try:
+            tables = {
+                row[0]
+                for row in recovered._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+        finally:
+            recovered.close()
+
+        assert "scanned" in tables
+        assert "download_jobs" in tables
+        assert list(tmp_path.glob("test.db.corrupt-*"))
+
 
 class TestCRUD:
     def test_record_and_get(self, db):

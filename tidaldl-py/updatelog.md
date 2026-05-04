@@ -20,6 +20,12 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
+## Unreleased
+
+### Desktop startup recovery
+
+- Quarantine corrupt `~/.config/music-dl/library.db` cache files as `library.db.corrupt-*` and rebuild the schema instead of leaving the desktop app stuck at daemon readiness timeout.
+
 ## v1.6.3 (2026-05-02)
 
 ### Desktop Discord bot fix

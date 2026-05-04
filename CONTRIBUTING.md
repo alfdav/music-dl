@@ -126,4 +126,4 @@ See [backend-guide.md](tidaldl-py/docs/backend-guide.md) for the full architectu
 
 ## Questions?
 
-Open an [issue](https://github.com/alfdav/music-dl/issues). Use the templates.
+Open an [issue](https://github.com/alfdav/music-dl/issues). Use the templates. For bugs, follow the [bug reporting guide](docs/bug-reporting.md) so reports include version, platform, install path, local state, logs, and reproduction steps.
