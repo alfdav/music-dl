@@ -2,9 +2,20 @@
 
 Good bug reports let maintainers reproduce the problem without guessing. If you
 use an AI assistant, ask it to gather the fields below from real files, command
-output, and screenshots on your machine.
+output, and screenshots on your machine. AI-assisted reports are welcome, but
+AI-only guesses or static-analysis claims without local reproduction are not
+actionable.
 
 Do not paste Tidal tokens, cookies, `.env` files, OAuth URLs, or credentials.
+
+## Before opening a bug
+
+- Search existing issues for the same problem.
+- Reproduce the problem yourself, or clearly state that you could not reproduce
+  it yet.
+- Test the latest release or a current edge/source build, or explain why you
+  cannot update.
+- Base the report on real local evidence, not only AI output or static analysis.
 
 ## What to include
 

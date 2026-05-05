@@ -9,8 +9,23 @@ body:
         Search existing issues first to avoid duplicates.
 
         If you use an AI assistant, ask it to fill this form from real evidence on your machine.
+        AI-assisted reports are welcome; AI-only guesses or static-analysis claims without reproduction are not actionable.
         Do not paste Tidal tokens, cookies, `.env` files, or credentials.
         Bug report guide: https://github.com/alfdav/music-dl/blob/master/docs/bug-reporting.md
+  - type: checkboxes
+    id: evidence-checks
+    attributes:
+      label: Evidence checks
+      description: Reports missing these checks may be closed as not reproducible.
+      options:
+        - label: I searched existing issues and did not find this exact report.
+          required: true
+        - label: I personally reproduced this on my machine, or I clearly marked the report as not reproducible yet.
+          required: true
+        - label: I tested the latest release or a current edge/source build, or I explained why I could not update.
+          required: true
+        - label: This report is based on real local evidence, not only an AI-generated guess or static-analysis claim.
+          required: true
   - type: input
     id: version
     attributes:
