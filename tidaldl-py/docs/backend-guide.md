@@ -191,9 +191,9 @@ Whitelist: `localhost:{port}`, `127.0.0.1:{port}`, bare `localhost`, bare `127.0
 | `validate_download_path(path)` | Settings/wizard | Rejects `FORBIDDEN_PATHS` (`/etc`, `/usr`, `/System`, `~/.ssh`, `~/.gnupg`, `~/.config`, etc.) |
 | `validate_stream_url(url)` | Download proxy | HTTPS only, host must be `*.tidal.com` — prevents SSRF |
 
-GUI file endpoints keep CodeQL `py/path-injection` suppressions next to the
-validated filesystem calls. Those suppressions are only valid when the path came
-from `validate_audio_path` or `validate_download_path`.
+GUI file endpoints keep CodeQL `py/path-injection` suppressions next to validated
+filesystem calls. Those suppressions are only valid when the path came from
+`validate_audio_path` or `validate_download_path`.
 
 ### Constants
 
