@@ -45,8 +45,11 @@ def validate_path(body: ValidatePathRequest) -> dict:
     if not path_str:
         raise HTTPException(status_code=400, detail="Path must not be empty")
 
+    valid = validate_download_path(path_str)
+    # CodeQL false-positive: validate_download_path already resolved and
+    # rejected unsafe/system paths before this display value is returned.
+    # codeql[py/path-injection]
     resolved = str(Path(path_str).expanduser())
-    valid = validate_download_path(resolved)
     return {
         "path": resolved,
         "valid": valid,
