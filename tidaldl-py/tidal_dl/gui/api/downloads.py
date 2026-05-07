@@ -171,9 +171,11 @@ def delete_track(req: DeleteTrackRequest) -> dict:
         raise HTTPException(status_code=400, detail="Invalid path")
     file_path = validated
 
-    # Delete from disk
+    # Delete from disk. file_path is validated by validate_audio_path above.
+    # codeql[py/path-injection]
     if file_path.exists():
         try:
+            # codeql[py/path-injection]
             os.remove(str(file_path))
         except OSError:
             if platform.system() == "Darwin":
@@ -217,6 +219,8 @@ def reveal_in_finder(req: RevealRequest) -> dict:
     if validated is None:
         raise HTTPException(status_code=400, detail="Invalid path")
     file_path = validated
+    # file_path is validated by validate_audio_path above.
+    # codeql[py/path-injection]
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
 
