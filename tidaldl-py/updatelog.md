@@ -30,6 +30,12 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 - Quarantine corrupt `~/.config/music-dl/library.db` cache files as `library.db.corrupt-*` and rebuild the schema instead of leaving the desktop app stuck at daemon readiness timeout.
 
+### Desktop updater
+
+- Fixed disabled updater controls caused by false boolean attributes in the GUI helper.
+- Open GitHub update actions through the desktop shell external-browser helper.
+- Normalize desktop updater state in the GUI and report download progress while staging updates.
+
 ## v1.6.3 (2026-05-02)
 
 ### Desktop Discord bot fix

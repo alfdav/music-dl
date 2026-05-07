@@ -205,3 +205,22 @@ class TestAppJsFeatureMarkers:
     def test_html_loads_route_helper_before_app_js(self):
         html = (STATIC_DIR / "index.html").read_text()
         assert html.index('/routes.js') < html.index('/app.js')
+
+    def test_h_helper_does_not_write_false_boolean_attributes(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        assert "else if (typeof v === 'boolean')" in js
+        assert "if (v) e.setAttribute(k, '')" in js
+        assert "else e.setAttribute(k, v)" in js
+
+    def test_update_links_use_external_open_helper(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        assert "className: 'toast-update-link',\n      type: 'button'," in js
+        assert "className: 'update-notification-btn',\n    type: 'button'," in js
+        assert "_openExternal(data.release_url)" in js
+
+    def test_tauri_updater_state_is_normalized_for_frontend(self):
+        js = (STATIC_DIR / "app.js").read_text()
+        assert "function _normalizeUpdaterState(us)" in js
+        assert "status: us.status || us.phase || 'idle'" in js
+        assert "available_version: us.available_version || us.version || ''" in js
+        assert "error_message: us.error_message || us.error || ''" in js

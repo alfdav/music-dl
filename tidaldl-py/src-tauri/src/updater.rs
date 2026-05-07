@@ -32,6 +32,8 @@ pub struct UpdaterState {
     pub version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress_pct: Option<u8>,
 }
 
 impl Default for UpdaterState {
@@ -40,6 +42,7 @@ impl Default for UpdaterState {
             phase: UpdatePhase::Idle,
             version: None,
             error: None,
+            progress_pct: None,
         }
     }
 }
@@ -166,6 +169,7 @@ pub async fn install_update(
             phase: UpdatePhase::Installing,
             version: None,
             error: None,
+            progress_pct: None,
         },
     );
 
@@ -178,6 +182,7 @@ pub async fn install_update(
                 phase: UpdatePhase::Error,
                 version: None,
                 error: Some(format!("Install failed: {e}")),
+                progress_pct: None,
             },
         );
         return Err(format!("Install failed: {e}"));
@@ -205,6 +210,7 @@ async fn do_check(app: AppHandle, shared: &UpdaterSharedState, staged: &StagedUp
                 phase: UpdatePhase::UnsupportedInstallContext,
                 version: None,
                 error: Some(msg),
+                progress_pct: None,
             },
         );
         return;
@@ -217,6 +223,7 @@ async fn do_check(app: AppHandle, shared: &UpdaterSharedState, staged: &StagedUp
             phase: UpdatePhase::Checking,
             version: None,
             error: None,
+            progress_pct: None,
         },
     );
 
@@ -230,6 +237,7 @@ async fn do_check(app: AppHandle, shared: &UpdaterSharedState, staged: &StagedUp
                     phase: UpdatePhase::Error,
                     version: None,
                     error: Some(format!("Updater init error: {e}")),
+                    progress_pct: None,
                 },
             );
             return;
@@ -247,6 +255,7 @@ async fn do_check(app: AppHandle, shared: &UpdaterSharedState, staged: &StagedUp
                     phase: UpdatePhase::UpdateAvailable,
                     version: Some(version.clone()),
                     error: None,
+                    progress_pct: None,
                 },
             );
 
@@ -258,16 +267,36 @@ async fn do_check(app: AppHandle, shared: &UpdaterSharedState, staged: &StagedUp
                     phase: UpdatePhase::Downloading,
                     version: Some(version.clone()),
                     error: None,
+                    progress_pct: Some(0),
                 },
             );
 
             let mut bytes_so_far: usize = 0;
+            let mut last_progress_pct: Option<u8> = Some(0);
             match update
                 .download(
-                    |chunk_len, _content_len| {
+                    |chunk_len, content_len| {
                         bytes_so_far += chunk_len;
                         if bytes_so_far % (512 * 1024) < chunk_len {
                             info!("updater: downloaded {} KB", bytes_so_far / 1024);
+                        }
+                        if let Some(total) = content_len {
+                            if total > 0 {
+                                let pct = ((bytes_so_far as u64 * 100) / total).min(100) as u8;
+                                if Some(pct) != last_progress_pct {
+                                    last_progress_pct = Some(pct);
+                                    set_state(
+                                        &app,
+                                        shared,
+                                        UpdaterState {
+                                            phase: UpdatePhase::Downloading,
+                                            version: Some(version.clone()),
+                                            error: None,
+                                            progress_pct: Some(pct),
+                                        },
+                                    );
+                                }
+                            }
                         }
                     },
                     || {
@@ -286,6 +315,7 @@ async fn do_check(app: AppHandle, shared: &UpdaterSharedState, staged: &StagedUp
                             phase: UpdatePhase::ReadyToInstall,
                             version: Some(version),
                             error: None,
+                            progress_pct: Some(100),
                         },
                     );
                 }
@@ -297,6 +327,7 @@ async fn do_check(app: AppHandle, shared: &UpdaterSharedState, staged: &StagedUp
                             phase: UpdatePhase::Error,
                             version: Some(version),
                             error: Some(format!("Download failed: {e}")),
+                            progress_pct: None,
                         },
                     );
                 }
@@ -311,6 +342,7 @@ async fn do_check(app: AppHandle, shared: &UpdaterSharedState, staged: &StagedUp
                     phase: UpdatePhase::UpToDate,
                     version: None,
                     error: None,
+                    progress_pct: None,
                 },
             );
         }
@@ -322,6 +354,7 @@ async fn do_check(app: AppHandle, shared: &UpdaterSharedState, staged: &StagedUp
                     phase: UpdatePhase::Error,
                     version: None,
                     error: Some(format!("Check failed: {e}")),
+                    progress_pct: None,
                 },
             );
         }
