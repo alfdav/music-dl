@@ -45,6 +45,9 @@ function h(tag, attrs, ...children) {
       if (k === 'className') e.className = v;
       else if (k === 'style' && typeof v === 'object') Object.assign(e.style, v);
       else if (k.startsWith('on')) e.addEventListener(k.slice(2).toLowerCase(), v);
+      else if (typeof v === 'boolean') {
+        if (v) e.setAttribute(k, '');
+      }
       else e.setAttribute(k, v);
     }
   }
@@ -8049,10 +8052,28 @@ function _tauriInvoke(cmd) {
   return window.__TAURI__.core.invoke(cmd);
 }
 
+function _currentAppVersionLabel() {
+  const chip = document.getElementById('app-version-chip')?.textContent?.trim();
+  return chip || null;
+}
+
+function _normalizeUpdaterState(us) {
+  if (!us) return us;
+  return {
+    ...us,
+    status: us.status || us.phase || 'idle',
+    current_version: us.current_version || _currentAppVersionLabel(),
+    available_version: us.available_version || us.version || '',
+    error_message: us.error_message || us.error || '',
+    progress_pct: us.progress_pct || 0,
+  };
+}
+
 function _onUpdaterState(us) {
-  _updater.state = us;
-  renderUpdaterBanner(us);
-  if (_updater.settingsEl) renderUpdaterSettings(_updater.settingsEl, us);
+  const normalized = _normalizeUpdaterState(us);
+  _updater.state = normalized;
+  renderUpdaterBanner(normalized);
+  if (_updater.settingsEl) renderUpdaterSettings(_updater.settingsEl, normalized);
 }
 
 function initUpdater() {
@@ -8201,14 +8222,15 @@ function _checkWebUpdate() {
     // Persistent toast with dismiss
     const t = h('div', { className: 'toast toast-update' });
     t.appendChild(textEl('span', 'v' + data.latest_version + ' is available', ''));
-    const viewBtn = h('a', {
+    const viewBtn = h('button', {
       className: 'toast-update-link',
-      href: data.release_url,
-      target: '_blank',
-      rel: 'noopener',
+      type: 'button',
     });
     viewBtn.textContent = 'View';
-    viewBtn.addEventListener('click', e => e.stopPropagation());
+    viewBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      _openExternal(data.release_url);
+    });
     t.appendChild(viewBtn);
     const dismissBtn = h('button', { className: 'toast-update-dismiss' });
     dismissBtn.textContent = '\u00d7';
@@ -8240,13 +8262,12 @@ function _renderWebUpdaterSettings(container) {
     card.appendChild(textEl('div', notes, 'update-notification-notes'));
   }
   const actions = h('div', { className: 'update-notification-actions' });
-  const dlBtn = h('a', {
+  const dlBtn = h('button', {
     className: 'update-notification-btn',
-    href: data.release_url,
-    target: '_blank',
-    rel: 'noopener',
+    type: 'button',
   });
   dlBtn.textContent = 'Download from GitHub';
+  dlBtn.addEventListener('click', () => _openExternal(data.release_url));
   actions.appendChild(dlBtn);
   card.appendChild(actions);
   container.prepend(card);
