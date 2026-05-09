@@ -295,7 +295,7 @@ wheels = [
 
 [[package]]
 name = "music-dl"
-version = "1.6.4"
+version = "1.6.6"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
