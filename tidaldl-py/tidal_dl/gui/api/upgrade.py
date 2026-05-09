@@ -27,6 +27,51 @@ def _norm(s: str) -> str:
     """Normalize string for comparison: lowercase, alphanumeric only."""
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
+
+_ARTIST_SPLIT_RE = re.compile(
+    r"\s*(?:,|&|\+|/|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b|\bx\b)\s*",
+    re.IGNORECASE,
+)
+
+
+def _artist_parts(raw: str) -> set[str]:
+    """Return normalized artist/collaborator parts from a metadata artist string."""
+    parts = {_norm(raw)} if raw else set()
+    for piece in _ARTIST_SPLIT_RE.split(raw or ""):
+        normed = _norm(piece)
+        if normed:
+            parts.add(normed)
+    return parts
+
+
+def _track_artist_parts(track: Any) -> set[str]:
+    """Return normalized artist parts from a Tidal track object."""
+    raw_artists: list[str] = []
+    if hasattr(track, "artists"):
+        raw_artists.extend(a.name for a in (track.artists or []) if getattr(a, "name", None))
+    artist = getattr(track, "artist", None)
+    if getattr(artist, "name", None):
+        raw_artists.append(artist.name)
+
+    joined = ", ".join(raw_artists)
+    parts = _artist_parts(joined)
+    for raw in raw_artists:
+        parts.update(_artist_parts(raw))
+    return parts
+
+
+def _artist_matches(local_artist: str, track: Any) -> bool:
+    """Match local artist metadata to Tidal primary/collaborator artists.
+
+    A local primary artist may match one Tidal artist even when Tidal has
+    collaborators, but normalized prefixes must not match ("Drake" !=
+    "Drake Bell").
+    """
+    local_parts = _artist_parts(local_artist)
+    tidal_parts = _track_artist_parts(track)
+    return bool(local_parts and tidal_parts and local_parts.intersection(tidal_parts))
+
+
 router = APIRouter()
 logger = logging.getLogger("music-dl.upgrade")
 
@@ -159,15 +204,13 @@ def _probe_tidal_meta(
 
         for t in tracks:
             t_name = _norm(getattr(t, "name", "") or getattr(t, "full_name", "") or "")
-            t_artist_raw = ", ".join(a.name for a in (t.artists or []) if a.name) if hasattr(t, "artists") else ""
-            t_artist = _norm(t_artist_raw)
-
             # Title must match closely (substring ok — titles are usually unique)
             if target_title not in t_name and t_name not in target_title:
                 continue
-            # Artist must match exactly after normalization to prevent
-            # wrong-artist downloads (e.g. "Drake" != "Drake Bell")
-            if target_artist != t_artist:
+            # Artist must match a full normalized artist/collaborator part to prevent
+            # wrong-artist downloads (e.g. "Drake" != "Drake Bell") while allowing
+            # multi-artist tracks (e.g. local "Drake" vs Tidal "Drake, Future").
+            if not _artist_matches(artist, t):
                 continue
             # Duration check if available (±5 seconds)
             if duration > 0:

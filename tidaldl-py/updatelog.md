@@ -22,6 +22,13 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ## Unreleased
 
+## v1.6.5 (2026-05-09)
+
+### Upgrade matching
+
+- Fixed Upgrade fallback matching for tracks whose Tidal artist list includes collaborators or whose local metadata uses collaborator separators such as `feat.`, `ft.`, `featuring`, `with`, `&`, `+`, `/`, comma, or `x`.
+- Kept full artist-part matching strict enough to reject shared-prefix wrong artists such as `Drake` versus `Drake Bell`.
+
 ### Release automation
 
 - Updated GitHub Actions workflow dependencies to Node 24 runtime-compatible action majors to avoid Node 20 action deprecation warnings.
