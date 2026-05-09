@@ -301,11 +301,6 @@ body {
   flex: 1;
 }
 
-.bug-report-link-topbar {
-  min-height: 30px;
-  padding: 6px 10px;
-}
-
 .app-version-chip {
   font-family: var(--mono);
   font-size: 10px;

@@ -129,15 +129,16 @@ class TestAppJsFeatureMarkers:
         assert ">soon</span>" not in html
         assert ".djai-module-card" in css
 
-    def test_has_static_bug_report_link(self):
+    def test_has_single_visible_static_bug_report_link(self):
         html = (STATIC_DIR / "index.html").read_text()
         css = (STATIC_DIR / "style.css").read_text()
         issue_url = "https://github.com/alfdav/music-dl/issues/new?template=bug-report.yml"
-        assert html.count(issue_url) == 3
-        assert "Report bug" in html
+        assert html.count(issue_url) == 2  # noscript fallback + sidebar link
+        assert html.count("Report bug") == 1
         assert "Report a bug" in html
         assert "bug-report-link-sidebar" in html
-        assert "bug-report-link-topbar" in html
+        assert "bug-report-link-topbar" not in html
+        assert ".bug-report-link-topbar" not in css
         assert 'target="_blank"' in html
         assert 'rel="noopener noreferrer"' in html
         assert ".bug-report-link" in css
