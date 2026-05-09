@@ -4420,10 +4420,17 @@ body {
   -webkit-backdrop-filter: blur(12px);
 }
 .toast-update-link {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
   color: var(--accent);
   text-decoration: none;
   font-weight: 600;
+  font-family: var(--sans);
+  font-size: 12px;
   white-space: nowrap;
+  cursor: pointer;
 }
 .toast-update-link:hover { text-decoration: underline; }
 .toast-update-dismiss {

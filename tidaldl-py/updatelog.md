@@ -28,6 +28,7 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 - Fixed Upgrade fallback matching for tracks whose Tidal artist list includes collaborators or whose local metadata uses collaborator separators such as `feat.`, `ft.`, `featuring`, `with`, `&`, `+`, `/`, comma, or `x`.
 - Kept full artist-part matching strict enough to reject shared-prefix wrong artists such as `Drake` versus `Drake Bell`.
+- Restored updater controls by normalizing Tauri updater state for the web UI, opening release links through the desktop shell, and reporting download progress.
 
 ### Desktop startup recovery
 
