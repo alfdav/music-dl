@@ -75,6 +75,7 @@ output/
 !/scripts/install-docker.sh
 !/scripts/install-windows-local.ps1
 !/scripts/edge_channel.py
+!/scripts/release_version.py
 /tidaldl-py/scripts/
 
 # Local MCP config
