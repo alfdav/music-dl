@@ -20,7 +20,7 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
-## Unreleased
+## v1.6.7 (2026-05-12)
 
 - Migrate older `library.db` cache schemas that are missing legacy scan columns
   instead of leaving desktop startup stuck at daemon readiness timeout.
