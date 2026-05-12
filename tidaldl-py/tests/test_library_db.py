@@ -41,6 +41,34 @@ class TestPragmas:
         assert "download_jobs" in tables
         assert list(tmp_path.glob("test.db.corrupt-*"))
 
+    def test_open_migrates_legacy_scanned_schema_missing_isrc(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE scanned (path TEXT PRIMARY KEY, status TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO scanned (path, status) VALUES (?, ?)",
+            ("/music/old.flac", "tagged"),
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = LibraryDB(db_path)
+        migrated.open()
+        try:
+            cols = {
+                row["name"]
+                for row in migrated._conn.execute("PRAGMA table_info(scanned)")
+            }
+            row = migrated.get("/music/old.flac")
+        finally:
+            migrated.close()
+
+        assert {"isrc", "artist", "title", "scanned_at"} <= cols
+        assert row is not None
+        assert row["status"] == "tagged"
+
 
 class TestCRUD:
     def test_record_and_get(self, db):

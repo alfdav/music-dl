@@ -199,7 +199,16 @@ class LibraryDB:
         else:
             # Migrate v1 → v2: add missing columns
             cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(scanned)")}
-            for col, coltype in [("album", "TEXT"), ("duration", "INTEGER"), ("quality", "TEXT"), ("format", "TEXT")]:
+            for col, coltype in [
+                ("isrc", "TEXT"),
+                ("artist", "TEXT"),
+                ("title", "TEXT"),
+                ("album", "TEXT"),
+                ("duration", "INTEGER"),
+                ("quality", "TEXT"),
+                ("format", "TEXT"),
+                ("scanned_at", "INTEGER DEFAULT 0"),
+            ]:
                 if col not in cols:
                     self._conn.execute(f"ALTER TABLE scanned ADD COLUMN {col} {coltype}")
 
