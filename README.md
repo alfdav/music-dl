@@ -365,6 +365,17 @@ uv build --project tidaldl-py
 docker build -f docker/Dockerfile -t music-dl .
 ```
 
+Prepare stable release metadata from the repository root:
+
+```shell
+python scripts/release_version.py bump patch
+```
+
+Use `bump minor`, `bump major`, or `set X.Y.Z` when needed. The script updates
+the Python, Tauri, Rust, changelog, and lockfile version state together. It
+rejects non-SemVer stable versions such as `1.6.6.1` and requires an
+`## Unreleased` changelog section before it will prepare a release.
+
 ### Building the Desktop App
 
 Prerequisites: [Rust](https://rustup.rs/), [Bun](https://bun.sh/), Python 3.12+, and platform-specific dependencies.
