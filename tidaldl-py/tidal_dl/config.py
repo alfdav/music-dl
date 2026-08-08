@@ -259,13 +259,18 @@ class Tidal(BaseConfig[ModelToken]):
         # Apply the first valid API key from the managed key list.
         self._apply_api_key(0)
 
-        # Initialise the response cache (TTL applied after settings load).
-        ttl = settings.data.api_cache_ttl_sec if settings else 300
-        self.api_cache = TTLCache(ttl_sec=ttl)
+        # Always attach a Settings instance, even if the caller didn't pass one.
+        # GUI code paths construct Tidal() with no arguments and rely on some
+        # other caller having already supplied settings first; if that ordering
+        # assumption is ever broken by a new code path, self.settings must still
+        # exist rather than raising AttributeError on first access.
+        settings = settings or Settings()
 
-        if settings:
-            self.settings = settings
-            self.settings_apply()
+        # Initialise the response cache (TTL applied after settings load).
+        self.api_cache = TTLCache(ttl_sec=settings.data.api_cache_ttl_sec)
+
+        self.settings = settings
+        self.settings_apply()
 
     def settings_apply(self, settings: Settings | None = None) -> bool:
         """Apply quality settings from the Settings singleton to the session.
