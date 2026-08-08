@@ -399,19 +399,29 @@ class Tidal(BaseConfig[ModelToken]):
                 )
 
         # All managed keys exhausted — restore original tidalapi credentials
-        # and attempt one final login with them.  Only this last-resort attempt
-        # is allowed to delete the token file on failure.
+        # and attempt one final login with them.
+        # FIX #2: Only delete the token file on an explicit auth rejection
+        # (401/unauthorized), not on any exception (e.g. network errors, rate limits).
         self.session.config.client_id = self.original_client_id
         self.session.config.client_secret = self.original_client_secret
-        return self.login_token(do_pkce=self.is_pkce, delete_on_failure=not quiet, quiet=quiet)
+        return self.login_token(do_pkce=self.is_pkce, delete_on_failure_auth_only=not quiet, quiet=quiet)
 
-    def login_token(self, do_pkce: bool = False, delete_on_failure: bool = False, quiet: bool = False) -> bool:
+    def login_token(
+        self,
+        do_pkce: bool = False,
+        delete_on_failure: bool = False,
+        delete_on_failure_auth_only: bool = False,
+        quiet: bool = False,
+    ) -> bool:
         """Attempt to restore a session from a stored token.
 
         Args:
             do_pkce (bool): Use PKCE flow. Defaults to False.
             delete_on_failure (bool): If True, delete the token file when restoration
-                fails.  Should only be set after ALL API keys have been exhausted.
+                fails for any reason. Deprecated in favour of delete_on_failure_auth_only.
+            delete_on_failure_auth_only (bool): If True, delete the token file only when
+                the failure is an explicit authentication rejection (401/unauthorized),
+                not on network errors or other transient failures.
             quiet (bool): Suppress error messages on failure.
 
         Returns:
@@ -425,13 +435,20 @@ class Tidal(BaseConfig[ModelToken]):
                 token_type: str | None = self.data.token_type
                 access_token: str | None = self.data.access_token
                 refresh_token: str = self.data.refresh_token or ""
-                _raw_exp = self.data.expiry_time
-                if isinstance(_raw_exp, datetime):
-                    expiry_time = _raw_exp
-                elif _raw_exp and _raw_exp > 0:
-                    expiry_time = datetime.fromtimestamp(_raw_exp)
-                else:
-                    expiry_time = None
+
+                # FIX #1: Guard datetime.fromtimestamp() against OSError/OverflowError
+                # on bad or zero expiry_time values. Never delete the token file on a
+                # timestamp parse error — treat it as expired, not corrupt.
+                try:
+                    _raw_exp = self.data.expiry_time
+                    if isinstance(_raw_exp, datetime):
+                        expiry_time: datetime | None = _raw_exp
+                    elif _raw_exp and float(_raw_exp) > 0:
+                        expiry_time = datetime.fromtimestamp(float(_raw_exp))
+                    else:
+                        expiry_time = None
+                except (OSError, OverflowError, ValueError, TypeError):
+                    expiry_time = None  # treat as expired — do NOT delete the token
 
                 if token_type is None or access_token is None:
                     return False
@@ -443,8 +460,13 @@ class Tidal(BaseConfig[ModelToken]):
                     expiry_time,
                     is_pkce=do_pkce,
                 )
-            except Exception:
+            except Exception as exc:
                 result = False
+                exc_str = str(exc).lower()
+                is_auth_rejection = any(
+                    kw in exc_str
+                    for kw in ("unauthorized", "401", "invalid token", "token expired", "forbidden")
+                )
 
                 if not quiet:
                     print(
@@ -452,7 +474,13 @@ class Tidal(BaseConfig[ModelToken]):
                         "side. Try logging in again by re-running this app."
                     )
 
-                if delete_on_failure and os.path.exists(self.file_path):
+                # FIX #2: Only wipe the token file on an explicit auth rejection,
+                # not on network errors, rate limits, or other transient failures.
+                should_delete = (
+                    (delete_on_failure or (delete_on_failure_auth_only and is_auth_rejection))
+                    and os.path.exists(self.file_path)
+                )
+                if should_delete:
                     os.remove(self.file_path)
 
         return result
@@ -467,6 +495,11 @@ class Tidal(BaseConfig[ModelToken]):
 
         if result:
             self.token_persist()
+            # FIX #3: Mark token as loaded from storage so the singleton uses
+            # the persisted token on the next call within the same process.
+            # Without this, re-login after a GUI reset always falls through to
+            # a fresh OAuth flow even though a valid token was just written.
+            self.token_from_storage = True
 
         return result
 
@@ -485,8 +518,25 @@ class Tidal(BaseConfig[ModelToken]):
     def _ensure_token_fresh(self, refresh_window_sec: int = 300) -> bool:
         _raw_exp = getattr(self.data, "expiry_time", 0) or 0
         expiry_time = _raw_exp.timestamp() if hasattr(_raw_exp, "timestamp") else float(_raw_exp)
+
+        # FIX #4: When expiry_time is 0 (e.g. old token files written before
+        # the field existed), treat as unknown rather than "no refresh needed".
+        # Attempt a speculative refresh using the refresh token if available.
         if expiry_time <= 0:
-            return False
+            refresh_token = self.data.refresh_token
+            if not refresh_token:
+                return False
+            try:
+                self.session.token_refresh(refresh_token)
+                self.token_persist()
+                return True
+            except Exception:
+                _console.print(
+                    "[yellow]Warning:[/yellow] Speculative token refresh failed; "
+                    "expiry time unknown. Proceeding with current token."
+                )
+                return False
+
         if expiry_time - time.time() > refresh_window_sec:
             return False
 
