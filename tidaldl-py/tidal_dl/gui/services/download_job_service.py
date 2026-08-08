@@ -327,6 +327,9 @@ class DownloadJobService:
                     "progress": job.progress,
                     "title": job.name,
                     "artist": job.artist,
+                    "album": job.album,
+                    "cover_url": job.cover_url,
+                    "quality": job.quality,
                     "started_at": job.started_at,
                     "finished_at": job.finished_at,
                 }
@@ -469,13 +472,6 @@ class DownloadJobService:
                 self._mark_cancelled(current)
                 return
             try:
-                # NOTE: dl.item() does NOT raise on a failed stream/auth fetch —
-                # it catches internally and returns (DownloadOutcome.FAILED, path)
-                # so we must inspect the outcome ourselves. Previously this
-                # return value was discarded entirely, which meant a failed
-                # TIDAL authorization or stream-manifest fetch (e.g. due to a
-                # stale/expired OAuth token) silently produced NO file while
-                # the job was still marked "done" below.
                 outcome_result = dl.item(
                     file_template=settings.data.format_track,
                     media=track,

@@ -256,17 +256,10 @@ class Tidal(BaseConfig[ModelToken]):
         self._active_key_index = 0
         self.token_from_storage = self.read(self.file_path)
 
-        # Apply the first valid API key from the managed key list.
         self._apply_api_key(0)
 
-        # Always attach a Settings instance, even if the caller didn't pass one.
-        # GUI code paths construct Tidal() with no arguments and rely on some
-        # other caller having already supplied settings first; if that ordering
-        # assumption is ever broken by a new code path, self.settings must still
-        # exist rather than raising AttributeError on first access.
         settings = settings or Settings()
 
-        # Initialise the response cache (TTL applied after settings load).
         self.api_cache = TTLCache(ttl_sec=settings.data.api_cache_ttl_sec)
 
         self.settings = settings
@@ -405,8 +398,6 @@ class Tidal(BaseConfig[ModelToken]):
 
         # All managed keys exhausted — restore original tidalapi credentials
         # and attempt one final login with them.
-        # FIX #2: Only delete the token file on an explicit auth rejection
-        # (401/unauthorized), not on any exception (e.g. network errors, rate limits).
         self.session.config.client_id = self.original_client_id
         self.session.config.client_secret = self.original_client_secret
         return self.login_token(do_pkce=self.is_pkce, delete_on_failure_auth_only=not quiet, quiet=quiet)
@@ -441,18 +432,9 @@ class Tidal(BaseConfig[ModelToken]):
                 access_token: str | None = self.data.access_token
                 refresh_token: str = self.data.refresh_token or ""
 
-                # FIX #1: Guard datetime.fromtimestamp() against OSError/OverflowError
-                # on bad or zero expiry_time values. Never delete the token file on a
-                # timestamp parse error — treat it as expired, not corrupt.
-                #
-                # FIX #5 (timezone bug): expiry_time is persisted as a UTC unix
-                # timestamp (see token_persist()). tidalapi's Session compares
-                # expiry against naive datetime.utcnow(), so we MUST reconstruct
-                # a naive UTC datetime here via utcfromtimestamp(), not the
-                # local-time fromtimestamp(). Using fromtimestamp() previously
-                # shifted the restored expiry by the local UTC offset (e.g. -10h
-                # in AEST), making the token appear expired far earlier than it
-                # actually was and triggering constant unnecessary refreshes.
+                # Guard against OSError/OverflowError on bad or zero expiry_time values.
+                # expiry_time is stored as a UTC unix timestamp; reconstruct as naive UTC
+                # via utcfromtimestamp() so tidalapi's utcnow() comparison is correct.
                 try:
                     _raw_exp = self.data.expiry_time
                     if isinstance(_raw_exp, datetime):
@@ -462,7 +444,7 @@ class Tidal(BaseConfig[ModelToken]):
                     else:
                         expiry_time = None
                 except (OSError, OverflowError, ValueError, TypeError):
-                    expiry_time = None  # treat as expired — do NOT delete the token
+                    expiry_time = None  # treat as expired; do not delete the token
 
                 if token_type is None or access_token is None:
                     return False
@@ -488,7 +470,7 @@ class Tidal(BaseConfig[ModelToken]):
                         "side. Try logging in again by re-running this app."
                     )
 
-                # FIX #2: Only wipe the token file on an explicit auth rejection,
+                # Only wipe the token file on an explicit auth rejection,
                 # not on network errors, rate limits, or other transient failures.
                 should_delete = (
                     (delete_on_failure or (delete_on_failure_auth_only and is_auth_rejection))
@@ -509,10 +491,6 @@ class Tidal(BaseConfig[ModelToken]):
 
         if result:
             self.token_persist()
-            # FIX #3: Mark token as loaded from storage so the singleton uses
-            # the persisted token on the next call within the same process.
-            # Without this, re-login after a GUI reset always falls through to
-            # a fresh OAuth flow even though a valid token was just written.
             self.token_from_storage = True
 
         return result
@@ -523,12 +501,8 @@ class Tidal(BaseConfig[ModelToken]):
         self.set_option("access_token", self.session.access_token)
         self.set_option("refresh_token", self.session.refresh_token)
         _exp = self.session.expiry_time
-        # FIX #5 (timezone bug): tidalapi sets expiry_time using
-        # datetime.utcnow() (a NAIVE datetime that represents UTC, not local
-        # time). Calling .timestamp() directly on a naive datetime makes
-        # Python assume it is LOCAL time, silently shifting the stored value
-        # by the machine's UTC offset (e.g. -10 hours in AEST). We must
-        # explicitly mark it as UTC before converting to a unix timestamp.
+        # tidalapi sets expiry_time as a naive UTC datetime; mark it explicitly
+        # as UTC before calling .timestamp() to avoid local-time shift.
         if hasattr(_exp, "timestamp"):
             if getattr(_exp, "tzinfo", None) is None:
                 _exp = _exp.replace(tzinfo=timezone.utc)
@@ -550,9 +524,8 @@ class Tidal(BaseConfig[ModelToken]):
         else:
             expiry_time = float(_raw_exp)
 
-        # FIX #4: When expiry_time is 0 (e.g. old token files written before
-        # the field existed), treat as unknown rather than "no refresh needed".
-        # Attempt a speculative refresh using the refresh token if available.
+        # When expiry_time is 0 (old token files pre-dating this field), treat
+        # as unknown and attempt a speculative refresh via the refresh token.
         if expiry_time <= 0:
             refresh_token = self.data.refresh_token
             if not refresh_token:
