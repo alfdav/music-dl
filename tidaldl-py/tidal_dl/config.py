@@ -228,7 +228,7 @@ class Tidal(BaseConfig[ModelToken]):
         session.request_session.verify = certifi.where()
         return session
 
-    def __new__(cls) -> Self:
+    def __new__(cls, *args, **kwargs) -> Self:
         global _tidal_instance
         with _singleton_lock:
             if _tidal_instance is None:
