@@ -62,7 +62,7 @@ def path_has_skipped_scan_dir(path: str | pathlib.Path) -> bool:
     return any(is_skipped_scan_dir(part) for part in pathlib.Path(path).parts[:-1])
 
 
-def drop_skipped_scan_paths(library_db: "LibraryDB") -> int:
+def drop_skipped_scan_paths(library_db: LibraryDB) -> int:
     """Remove already-indexed rows whose path walks through a skipped directory."""
     removed = 0
     for path in library_db.known_paths():
@@ -183,7 +183,7 @@ def _extract_isrc(path: pathlib.Path) -> str | None:
 
 def scan_directory(
     root: pathlib.Path,
-    library_db: "LibraryDB",
+    library_db: LibraryDB,
     *,
     dry_run: bool = False,
     on_file: Callable[[pathlib.Path], None] | None = None,

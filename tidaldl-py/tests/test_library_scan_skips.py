@@ -15,7 +15,6 @@ from tidal_dl.helper.library_scanner import (
     scan_directory,
 )
 
-
 SKIPPED_DIR_NAMES = (
     "#recycle",
     "#Recycle",

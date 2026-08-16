@@ -6,7 +6,7 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from types import FrameType
-from typing import TYPE_CHECKING, Annotated, Any, Protocol, cast
+from typing import Annotated, Any, Protocol, cast
 from urllib.parse import urlparse
 
 import requests
@@ -43,9 +43,6 @@ from tidal_dl.helper.tidal import (
 )
 from tidal_dl.hifi_api import HiFiApiClient
 from tidal_dl.model.cfg import SETTINGS_HELP
-
-if TYPE_CHECKING:
-    from tidal_dl.helper.library_db import LibraryDB
 
 
 def _progress_logger(print_fn: Callable[..., Any], *, debug: bool = False):
