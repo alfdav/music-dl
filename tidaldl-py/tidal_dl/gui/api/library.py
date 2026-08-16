@@ -28,6 +28,11 @@ from pydantic import BaseModel
 from tidal_dl.config import Settings
 from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.library_db.utils import _album_track_key, _album_track_preference
+from tidal_dl.helper.library_scanner import (
+    drop_skipped_scan_paths,
+    is_skipped_scan_dir,
+    path_has_skipped_scan_dir,
+)
 from tidal_dl.helper.path import path_config_base
 
 router = APIRouter()
@@ -1060,6 +1065,11 @@ def _background_scan(rescan: bool) -> None:
             db.close()
             return
 
+        dropped = drop_skipped_scan_paths(db)
+        if dropped:
+            db.commit()
+            print(f"[library] Dropped {dropped} rows under skipped directories")
+
         if not rescan:
             repaired = _reconcile_library_rows(db, scan_dirs=scan_dirs)
             if repaired:
@@ -1096,13 +1106,18 @@ def _background_scan(rescan: bool) -> None:
         if scan_dirs:
             # Phase 1: Walk filesystem — fast, just collect paths
             for scan_dir in scan_dirs:
-                for f in scan_dir.rglob("*"):
-                    if f.is_symlink():  # symlink → arbitrary target recorded as trusted path (DB poisoning)
-                        continue
-                    if f.suffix.lower() not in _AUDIO_EXTENSIONS:
-                        continue
-                    disk_paths.add(str(f))
-                    _scan_progress["total"] = len(disk_paths)
+                for walk_root, dirs, files in os.walk(scan_dir):
+                    dirs[:] = [name for name in dirs if not is_skipped_scan_dir(name)]
+                    for fname in files:
+                        f = Path(walk_root) / fname
+                        if path_has_skipped_scan_dir(f):
+                            continue
+                        if f.is_symlink():  # symlink → arbitrary target recorded as trusted path (DB poisoning)
+                            continue
+                        if f.suffix.lower() not in _AUDIO_EXTENSIONS:
+                            continue
+                        disk_paths.add(str(f))
+                        _scan_progress["total"] = len(disk_paths)
 
             # Phase 2: Read metadata + waveform only for NEW files (the diff)
             from tidal_dl.helper.waveform import extract_both, peaks_to_json

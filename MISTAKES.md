@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-08-16 — Local scan indexed Synology `#recycle` as an artist
+
+**What happened:** Artists view showed a `#recycle` heading with deleted NAS files (WAV titles like `08 Menu Groove Edit`) as if they were a real library artist.
+
+**Root cause:** The local folder walk used `rglob("*")` with no directory-name skip. Recycle and system dirs (`#recycle`, `@eaDir`, `$RECYCLE.BIN`, `.Trash`, `lost+found`, …) were treated as music. When tags were missing, the first relative path part became the artist, so `#recycle` appeared as an artist. Duplicate scoring already penalized `#recycle` paths; the indexer did not skip them.
+
+**Prevention:** Skip those directory names at the walk (whole component, case-insensitive). Do not match the word recycle in a track title. Drop already-indexed rows whose path contains a skipped dir so a rescan does not keep them. Hidden-dot albums stay indexed unless the name is an explicit skip.
+
 ## 2026-08-15 — Progress SSE skipped the queue counts that clear the waiting card
 
 **What happened:** Claiming a queued job emits `progress` (and that payload already includes `queued_count`). The Active list only re-snapshotted on non-`progress` events, so the “Waiting to start…” summary stayed beside the now-running track until a later terminal or queue event.

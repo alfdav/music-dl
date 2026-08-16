@@ -14,6 +14,7 @@ Supported formats and tag locations (mirrors the write logic in metadata.py):
 
 from __future__ import annotations
 
+import os
 import pathlib
 import time
 from collections.abc import Callable
@@ -32,6 +33,43 @@ if TYPE_CHECKING:
 
 # Audio file extensions to consider during scanning.
 SCAN_EXTENSIONS: frozenset[str] = frozenset({".flac", ".mp3", ".m4a", ".mp4", ".ogg"})
+
+# Directory names that are never music. Match the whole component, case-insensitive.
+_SKIPPED_SCAN_DIR_NAMES = frozenset({
+    "#recycle",
+    "@eadir",
+    "@tmp",
+    "#snapshot",
+    "$recycle.bin",
+    "recycle.bin",
+    ".trash",
+    ".trashes",
+    "lost+found",
+})
+
+
+def is_skipped_scan_dir(name: str) -> bool:
+    """Return True if *name* is a trash or filesystem-metadata directory."""
+    return name.casefold() in _SKIPPED_SCAN_DIR_NAMES
+
+
+def path_has_skipped_scan_dir(path: str | pathlib.Path) -> bool:
+    """Return True if any parent directory of *path* is a skipped scan dir.
+
+    The filename itself is not checked, so a track titled ``recycle.bin``
+    or ``08 Menu Groove Edit`` under a real album stays eligible.
+    """
+    return any(is_skipped_scan_dir(part) for part in pathlib.Path(path).parts[:-1])
+
+
+def drop_skipped_scan_paths(library_db: "LibraryDB") -> int:
+    """Remove already-indexed rows whose path walks through a skipped directory."""
+    removed = 0
+    for path in library_db.known_paths():
+        if path_has_skipped_scan_dir(path):
+            library_db.remove(path)
+            removed += 1
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -169,37 +207,45 @@ def scan_directory(
     result = ScanResult()
     start = time.monotonic()
 
-    for file_path in sorted(root.rglob("*")):
-        if not file_path.is_file():
-            continue
-        if file_path.suffix.lower() not in SCAN_EXTENSIONS:
-            continue
+    if not dry_run:
+        drop_skipped_scan_paths(library_db)
 
-        if on_file is not None:
-            on_file(file_path)
+    for walk_root, dirs, files in os.walk(root):
+        dirs[:] = [name for name in dirs if not is_skipped_scan_dir(name)]
+        for fname in files:
+            file_path = pathlib.Path(walk_root) / fname
+            if path_has_skipped_scan_dir(file_path):
+                continue
+            if not file_path.is_file():
+                continue
+            if file_path.suffix.lower() not in SCAN_EXTENSIONS:
+                continue
 
-        result.files_scanned += 1
+            if on_file is not None:
+                on_file(file_path)
 
-        try:
-            isrc = _extract_isrc(file_path)
-        except Exception:
-            result.errors += 1
-            if len(result.error_paths) < result._ERROR_PATH_CAP:
-                result.error_paths.append(str(file_path))
-            continue
+            result.files_scanned += 1
 
-        if not isrc:
-            result.no_isrc += 1
-            continue
+            try:
+                isrc = _extract_isrc(file_path)
+            except Exception:
+                result.errors += 1
+                if len(result.error_paths) < result._ERROR_PATH_CAP:
+                    result.error_paths.append(str(file_path))
+                continue
 
-        if library_db.has_live_isrc(isrc):
-            result.already_indexed += 1
-            continue
+            if not isrc:
+                result.no_isrc += 1
+                continue
 
-        if not dry_run:
-            library_db.register_isrc_path(isrc, file_path)
+            if library_db.has_live_isrc(isrc):
+                result.already_indexed += 1
+                continue
 
-        result.isrcs_found += 1
+            if not dry_run:
+                library_db.register_isrc_path(isrc, file_path)
+
+            result.isrcs_found += 1
 
     result.elapsed_sec = time.monotonic() - start
     return result
