@@ -104,7 +104,7 @@ A **setup wizard** walks you through Tidal login and library configuration on fi
 
 The GUI can also start and recover the Tidal OAuth flow itself from the browser. Settings includes **Reset Tidal connection** for removing stale local credentials without contacting Tidal; login begins only when you explicitly press **Log in to Tidal** afterward. Use `music-dl login` only if you want to authenticate from the terminal for CLI-first workflows.
 
-Selected audio quality is exact: `LOW`, `HIGH`, `LOSSLESS`, and `HI_RES_LOSSLESS` accept only the same delivered tier with a compatible codec. A mismatch creates no media output and is reported with the requested tier, delivered tier, and codec. Login quality probing is advisory; it never changes or saves your selected quality.
+Selected audio quality is a ceiling. Lossy `LOW`/`HIGH` stay exact. Lossless settings accept FLAC `LOSSLESS`/`HI_RES`/`HI_RES_LOSSLESS` when that is all Tidal has. A track listed as Hi-Res (`HIRES_LOSSLESS` / `HIRES` tags) with a Hi-Res setting still selects a Hi-Res stream when one is available — it does not keep the 16-bit/44.1 fallback. Login quality probing is advisory; it never changes or saves your selected quality.
 
 Dolby Atmos is a separate opt-in lossy spatial-audio mode delivered as EC-3/EAC3; it is not an ordinary exact lossless tier and does not weaken the ordinary quality contract.
 

@@ -14,7 +14,6 @@ from tidal_dl.download.streams import StreamMixin
 from tidal_dl.hifi_api import HiFiStreamResult
 from tidal_dl.model.downloader import HiFiStreamManifest
 
-
 # Reporter track: Sting — The Last Ship (Live at the Rijksmuseum)
 _HIRES_TRACK_ID = 534789853
 

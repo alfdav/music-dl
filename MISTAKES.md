@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-08-26 — Listed-HiRes downloads wrote 16-bit/44.1 FLAC
+
+**What happened:** First-install desktop (v1.7.6) listed Sting — The Last Ship (tidal 534789853) as HiRes. The far-right track download wrote a Mutagen-tagged FLAC at 16-bit/44.1 kHz / ~765 kb/s. Standard lossless still worked.
+
+**Root cause:** Default source is OAuth. `_get_stream_info` treated lossless settings as a family ceiling, so an OAuth `LOSSLESS` 16/44.1 delivery was accepted for a `HIRES_LOSSLESS`-tagged track and Hi-Fi was never asked. Catalog `audioQuality` is often `LOSSLESS` even when `mediaMetadata.tags` say HiRes; the listing uses the tags, the stream pick did not.
+
+**Prevention:** In the shared stream pick, if the setting is Hi-Res and the track lists Hi-Res (`HIRES_LOSSLESS` / `HIRES` tags) and OAuth delivered CD FLAC, try Hi-Fi and keep that stream when it is actually Hi-Res. Still accept Blue Lossless when the track is not listed Hi-Res or Hi-Fi has nothing better. Do not treat `_require_exact_quality` family-accept as “we selected HiRes.”
+
 ## 2026-08-18 — Home insight fan would outlive a sidebar navigate
 
 **What happened:** The fan overlay mounts on `.main` so it can cover the Home pane without a hash view. `navigate()` only tears down `#view`. Leaving the overlay on `.main` would keep the fan up after Home was gone.

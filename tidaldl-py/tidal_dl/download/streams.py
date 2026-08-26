@@ -1,6 +1,6 @@
 """Download streams helpers."""
 
-from tidal_dl.download._common import *  # noqa: F403
+from tidal_dl.download._common import *
 
 
 class QualityMismatchError(ValueError):
@@ -8,6 +8,8 @@ class QualityMismatchError(ValueError):
 
 
 _LOSSLESS_TIERS = frozenset({"LOSSLESS", "HI_RES", "HI_RES_LOSSLESS"})
+_HIRES_TIERS = frozenset({"HI_RES", "HI_RES_LOSSLESS"})
+_HIRES_TAGS = frozenset({"HIRES_LOSSLESS", "HIRES", "HI_RES_LOSSLESS", "HI_RES", "MQA"})
 _EXPECTED_CODECS = {
     "LOW": ("aac", "mp4a"),
     "HIGH": ("aac", "mp4a"),
@@ -15,6 +17,26 @@ _EXPECTED_CODECS = {
     "HI_RES": ("flac",),
     "HI_RES_LOSSLESS": ("flac",),
 }
+
+
+def _track_lists_hires(media: Track) -> bool:
+    tags = {str(tag).upper() for tag in (getattr(media, "media_metadata_tags", None) or [])}
+    return bool(tags & _HIRES_TAGS)
+
+
+def _requested_wants_hires(requested: Quality | str | None) -> bool:
+    return bool(requested) and quality_name(requested).upper() in _HIRES_TIERS
+
+
+def _delivery_is_cd_lossless(
+    quality: Quality | str | None,
+    bit_depth: int | None = None,
+    sample_rate: int | None = None,
+) -> bool:
+    name = quality_name(quality).upper() if quality else ""
+    if name in _HIRES_TIERS:
+        return bit_depth is not None and bit_depth <= 16 and sample_rate is not None and sample_rate <= 44100
+    return name == "LOSSLESS"
 
 
 def _require_exact_quality(requested: Quality | str, delivered: Quality | str | None, codec: str | None) -> None:
@@ -72,6 +94,9 @@ class StreamMixin:
             codecs=result.codecs,
             is_encrypted=result.encryption_type not in ("NONE", ""),
             encryption_key=None,
+            audio_quality=result.audio_quality,
+            bit_depth=result.bit_depth,
+            sample_rate=result.sample_rate,
         )
         return TrackStreamInfo(
             stream_manifest=manifest,
@@ -79,6 +104,43 @@ class StreamMixin:
             requires_flac_extraction=False,
             media_stream=None,
         )
+
+    def _ensure_hifi_client(self):
+        if getattr(self.tidal, "hifi_client", None) is not None:
+            return self.tidal.hifi_client
+        from tidal_dl.hifi_api import HiFiApiClient
+
+        instances = []
+        configured = getattr(self.tidal, "_configured_hifi_instances", None)
+        if callable(configured):
+            instances = configured()
+        self.tidal.hifi_client = HiFiApiClient(instances=instances or None)
+        return self.tidal.hifi_client
+
+    def _prefer_listed_hires(self, media: Track, oauth_info: TrackStreamInfo) -> TrackStreamInfo | None:
+        """When a listed-HiRes track arrives as CD FLAC, take Hi-Fi HiRes if it exists."""
+        if not _requested_wants_hires(self.session.audio_quality) or not _track_lists_hires(media):
+            return None
+        stream = oauth_info.media_stream
+        if not _delivery_is_cd_lossless(
+            getattr(stream, "audio_quality", None),
+            getattr(stream, "bit_depth", None),
+            getattr(stream, "sample_rate", None),
+        ):
+            return None
+        try:
+            self._ensure_hifi_client()
+            hifi_info = self._get_track_stream_info_hifi(media)
+        except (QualityMismatchError, RuntimeError, ValueError, OSError, requests.RequestException):
+            return None
+        manifest = hifi_info.stream_manifest
+        if manifest is None or _delivery_is_cd_lossless(
+            getattr(manifest, "audio_quality", None),
+            getattr(manifest, "bit_depth", None),
+            getattr(manifest, "sample_rate", None),
+        ):
+            return None
+        return hifi_info
 
     def _get_stream_info(
         self, media: Track | Video
@@ -145,6 +207,7 @@ class StreamMixin:
         # DO NOT "OPTIMIZE" THIS by making the lock more granular.
         # Correctness > Performance.
         # ------------------------------------------------------------------
+        track_info: TrackStreamInfo | None = None
         with self.tidal.stream_lock:
             # Proactively refresh a near-expiry OAuth token before the API call.
             self.tidal._ensure_token_fresh()
@@ -155,13 +218,6 @@ class StreamMixin:
 
                     if track_info.stream_manifest is None:
                         return None, "", False, None
-
-                    return (
-                        track_info.stream_manifest,
-                        track_info.file_extension,
-                        track_info.requires_flac_extraction,
-                        track_info.media_stream,
-                    )
 
                 elif isinstance(media, Video):
                     # Videos always require the normal session
@@ -191,6 +247,19 @@ class StreamMixin:
             except Exception:
                 self.fn_logger.exception(f"Something went wrong. Skipping '{name_builder_item(media)}'.")
                 return None, "", False, None
+
+        if isinstance(media, Track) and track_info is not None:
+            upgraded = self._prefer_listed_hires(media, track_info)
+            if upgraded is not None:
+                track_info = upgraded
+            return (
+                track_info.stream_manifest,
+                track_info.file_extension,
+                track_info.requires_flac_extraction,
+                track_info.media_stream,
+            )
+
+        return None, "", False, None
 
     def _get_track_stream_info(self, media: Track) -> TrackStreamInfo:
         """Get stream info for a Track, handling Atmos/Normal session switching.
