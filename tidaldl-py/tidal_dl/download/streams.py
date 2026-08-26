@@ -118,7 +118,7 @@ class StreamMixin:
         return self.tidal.hifi_client
 
     def _prefer_listed_hires(self, media: Track, oauth_info: TrackStreamInfo) -> TrackStreamInfo | None:
-        """When a listed-HiRes track arrives as CD FLAC, take Hi-Fi HiRes if it exists."""
+        """Take Hi-Fi HiRes for a listed-HiRes CD delivery, or fail — do not keep 16/44.1."""
         if not _requested_wants_hires(self.session.audio_quality) or not _track_lists_hires(media):
             return None
         stream = oauth_info.media_stream
