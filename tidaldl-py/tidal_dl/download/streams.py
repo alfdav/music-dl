@@ -132,15 +132,20 @@ class StreamMixin:
             self._ensure_hifi_client()
             hifi_info = self._get_track_stream_info_hifi(media)
         except (QualityMismatchError, RuntimeError, ValueError, OSError, requests.RequestException):
-            return None
-        manifest = hifi_info.stream_manifest
-        if manifest is None or _delivery_is_cd_lossless(
+            hifi_info = None
+        manifest = getattr(hifi_info, "stream_manifest", None)
+        if manifest is not None and not _delivery_is_cd_lossless(
             getattr(manifest, "audio_quality", None),
             getattr(manifest, "bit_depth", None),
             getattr(manifest, "sample_rate", None),
         ):
-            return None
-        return hifi_info
+            return hifi_info
+        requested = quality_name(self.session.audio_quality).upper()
+        delivered = quality_name(getattr(stream, "audio_quality", None)).upper() if getattr(stream, "audio_quality", None) else "LOSSLESS"
+        raise QualityMismatchError(
+            f"Quality mismatch: requested {requested} for listed Hi-Res track "
+            f"but received {delivered} and Hi-Fi has no Hi-Res stream."
+        )
 
     def _get_stream_info(
         self, media: Track | Video

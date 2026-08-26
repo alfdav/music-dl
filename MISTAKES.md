@@ -2,11 +2,11 @@
 
 ## 2026-08-26 — Listed-HiRes downloads wrote 16-bit/44.1 FLAC
 
-**What happened:** First-install desktop (v1.7.6) listed Sting — The Last Ship (tidal 534789853) as HiRes. The far-right track download wrote a Mutagen-tagged FLAC at 16-bit/44.1 kHz / ~765 kb/s. Standard lossless still worked.
+**What happened:** First-install desktop (v1.7.6) and Tetrarch live on SHA 15ba50a listed Sting — The Last Ship (tidal 534789853) as HiRes. The download wrote Mutagen-tagged FLAC at 16-bit/44.1 kHz / ~765 kb/s. Settings: `hifi_api_instances` empty, `hifi_instances []`, `hifi_health` None, active source oauth. Probe: requested `HI_RES_LOSSLESS`, delivered `LOSSLESS`.
 
-**Root cause:** Default source is OAuth. `_get_stream_info` treated lossless settings as a family ceiling, so an OAuth `LOSSLESS` 16/44.1 delivery was accepted for a `HIRES_LOSSLESS`-tagged track and Hi-Fi was never asked. Catalog `audioQuality` is often `LOSSLESS` even when `mediaMetadata.tags` say HiRes; the listing uses the tags, the stream pick did not.
+**Root cause:** OAuth `get_stream` already sends `audioquality=HI_RES_LOSSLESS`. This app's `playbackinfopostpaywall` clients still return `LOSSLESS` 16/44.1. Empty `hifi_api_instances` means auto-discover; the uptime trackers currently return `streaming: []` (all hosts 504). `_require_exact_quality` family-accept then wrote the CD file. Catalog tags (`HIRES_LOSSLESS`) are what the UI lists — not what this OAuth client can deliver. Stubbing a live Hi-Fi retry hid this path.
 
-**Prevention:** In the shared stream pick, if the setting is Hi-Res and the track lists Hi-Res (`HIRES_LOSSLESS` / `HIRES` tags) and OAuth delivered CD FLAC, try Hi-Fi and keep that stream when it is actually Hi-Res. Still accept Blue Lossless when the track is not listed Hi-Res or Hi-Fi has nothing better. Do not treat `_require_exact_quality` family-accept as “we selected HiRes.”
+**Prevention:** After OAuth CD on a listed-HiRes track, keep Hi-Fi only when it actually returns Hi-Res. If Hi-Fi is empty or down, raise `QualityMismatchError` — do not write 16/44.1. Still accept Blue Lossless when the track is not listed Hi-Res. Do not treat a green Hi-Fi-stub fixture as closing #148.
 
 ## 2026-08-18 — Home insight fan would outlive a sidebar navigate
 
