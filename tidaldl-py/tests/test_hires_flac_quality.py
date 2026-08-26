@@ -6,11 +6,13 @@ import subprocess
 import threading
 from pathlib import Path
 
+import pytest
+import requests
 from mutagen.flac import FLAC
 from tidalapi import Quality, Track
 
 from tidal_dl.constants import DownloadSource, quality_name
-from tidal_dl.download.streams import StreamMixin
+from tidal_dl.download.streams import QualityMismatchError, StreamMixin
 from tidal_dl.hifi_api import HiFiStreamResult
 from tidal_dl.model.downloader import HiFiStreamManifest
 
@@ -218,6 +220,29 @@ def test_listed_hires_small_download_selects_and_writes_hires_flac(tmp_path):
     assert written_bits > 16 or written_rate > 44100
     assert hifi_calls == [(_HIRES_TRACK_ID, "HI_RES_LOSSLESS")]
     assert manifest.get_urls() == ["https://example.invalid/hires.flac"]
+
+
+def test_listed_hires_empty_hifi_oauth_only_does_not_write_cd_flac():
+    """Live #148 path: empty Hi-Fi + OAuth CD must not land as a successful 16/44.1 file."""
+    oauth_stream = _oauth_cd_stream()
+    track = _listed_hires_track(oauth_stream)
+    subject, hifi_calls = _download_stream_subject()
+    subject.tidal.hifi_client = type(
+        "DeadHiFi",
+        (),
+        {
+            "track_stream": staticmethod(
+                lambda track_id, quality: (_ for _ in ()).throw(
+                    requests.RequestException("No live Hi-Fi API instances available.")
+                )
+            )
+        },
+    )()
+
+    with pytest.raises(QualityMismatchError, match="listed Hi-Res"):
+        subject._get_stream_info(track)
+
+    assert hifi_calls == []
 
 
 def test_listed_lossless_still_writes_cd_flac(tmp_path):
