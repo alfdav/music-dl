@@ -613,6 +613,28 @@ def test_hifi_client_caches_empty_tracker_result_without_fallback(monkeypatch):
     assert get.call_count == 1
 
 
+def test_hifi_discover_uses_tracker_api_when_streaming_empty(monkeypatch):
+    """Live tracker shape: streaming [] + down 504s, one live host under api."""
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "streaming": [],
+                "down": [{"url": "https://dead.example", "status": 504}],
+                "api": [{"url": "https://monochrome-api.samidy.com", "version": "2.3"}],
+            }
+
+    get = mock.Mock(return_value=Response())
+    monkeypatch.setattr("tidal_dl.hifi_api.requests.get", get)
+    monkeypatch.setattr(HiFiApiClient, "_discovery_cache", None)
+
+    client = HiFiApiClient()
+    assert client.instances == ["https://monochrome-api.samidy.com"]
+    assert client.health_check() == "https://monochrome-api.samidy.com"
+
+
 def test_hifi_client_caches_malformed_tracker_results(monkeypatch):
     class Response:
         def __init__(self, payload):
