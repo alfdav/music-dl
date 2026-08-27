@@ -16,6 +16,23 @@ from tidal_dl.constants import (
 from tidal_dl.dash import parse_manifest
 
 
+def _tracker_instance_urls(*groups: object) -> list[str]:
+    """Collect instance URLs from tracker lists. `streaming` first, then `api`."""
+    urls: list[str] = []
+    seen: set[str] = set()
+    for items in groups:
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip().rstrip("/")
+            if url and url not in seen:
+                seen.add(url)
+                urls.append(url)
+    return urls
+
+
 @dataclass
 class HiFiStreamResult:
     urls: list[str]
@@ -114,14 +131,7 @@ class HiFiApiClient:
                     payload = response.json()
                     if not isinstance(payload, dict):
                         continue
-                    streaming = payload.get("streaming", [])
-                    if not isinstance(streaming, list):
-                        continue
-                    urls = [
-                        str(item.get("url", "")).strip().rstrip("/")
-                        for item in streaming
-                        if isinstance(item, dict) and item.get("url")
-                    ]
+                    urls = _tracker_instance_urls(payload.get("streaming"), payload.get("api"))
                     type(self)._discovery_cache = (now, urls)
                     return list(urls)
                 except (requests.RequestException, ValueError):

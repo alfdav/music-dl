@@ -4,9 +4,9 @@
 
 **What happened:** First-install desktop (v1.7.6) and Tetrarch live on SHA 15ba50a listed Sting — The Last Ship (tidal 534789853) as HiRes. The download wrote Mutagen-tagged FLAC at 16-bit/44.1 kHz / ~765 kb/s. Settings: `hifi_api_instances` empty, `hifi_instances []`, `hifi_health` None, active source oauth. Probe: requested `HI_RES_LOSSLESS`, delivered `LOSSLESS`.
 
-**Root cause:** OAuth `get_stream` already sends `audioquality=HI_RES_LOSSLESS`. This app's `playbackinfopostpaywall` clients still return `LOSSLESS` 16/44.1. Empty `hifi_api_instances` means auto-discover; the uptime trackers currently return `streaming: []` (all hosts 504). `_require_exact_quality` family-accept then wrote the CD file. Catalog tags (`HIRES_LOSSLESS`) are what the UI lists — not what this OAuth client can deliver. Stubbing a live Hi-Fi retry hid this path.
+**Root cause:** OAuth `get_stream` already sends `audioquality=HI_RES_LOSSLESS` and this client still returns `LOSSLESS` 16/44.1. Empty `hifi_api_instances` auto-discovers, but `discover_instances` only read tracker `streaming`. Live tracker JSON had `streaming: []` (hosts 504) and a live host under `api`. Discover returned [] → resolve fell back to OAuth → fail-closed or a 16/44.1 write. Catalog tags still list Hi-Res.
 
-**Prevention:** After OAuth CD on a listed-HiRes track, keep Hi-Fi only when it actually returns Hi-Res. If Hi-Fi is empty or down, raise `QualityMismatchError` — do not write 16/44.1. Still accept Blue Lossless when the track is not listed Hi-Res. Do not treat a green Hi-Fi-stub fixture as closing #148.
+**Prevention:** Auto-discover `streaming` first, then tracker `api` when streaming is empty. Resolve/health then treat Hi-Fi as available and download Hi-Res from that host. Fail-closed only after that discovery still has no Hi-Res stream. Do not close #148 on synthetic tests or fail-closed alone.
 
 ## 2026-08-18 — Home insight fan would outlive a sidebar navigate
 

@@ -608,9 +608,10 @@ art `aspect-ratio: 1`, and use `align-items: start` on `.album-grid` /
 | `GET` | `/playback/waveform` | Return cached or generated waveform peaks |
 | `POST` | `/home/play` | Record play event |
 
-`GET /hifi/status` reports tracker-advertised streaming instances. It never
-fetches a track as a health probe. An empty tracker result remains empty rather
-than activating stale hard-coded fallback hosts.
+`GET /hifi/status` reports tracker-advertised `streaming` instances, and `api`
+hosts when `streaming` is empty. It never fetches a track as a health probe.
+An empty tracker result remains empty rather than activating stale hard-coded
+fallback hosts.
 
 ### Collections
 
