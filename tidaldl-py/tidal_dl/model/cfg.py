@@ -88,7 +88,7 @@ SETTINGS_HELP: dict[str, str] = {
         "If enabled, automatically fallback to the next source when the preferred source is unavailable."
     ),
     "hifi_api_instances": (
-        "Comma-separated custom Hi-Fi API instances. Empty means auto-discover from live uptime trackers."
+        "Comma-separated custom Hi-Fi API instances. Empty means auto-discover from live uptime trackers (`streaming`, or `api` when streaming is empty)."
     ),
     "download_dolby_atmos": "Download Dolby Atmos audio streams if available.",
     "format_album": "Where to download albums and how to name the items.",

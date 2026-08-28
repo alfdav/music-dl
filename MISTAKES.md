@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-08-26 — Listed-HiRes downloads wrote 16-bit/44.1 FLAC
+
+**What happened:** First-install desktop (v1.7.6) and Tetrarch live on SHA 15ba50a listed Sting — The Last Ship (tidal 534789853) as HiRes. The download wrote Mutagen-tagged FLAC at 16-bit/44.1 kHz / ~765 kb/s. Settings: `hifi_api_instances` empty, `hifi_instances []`, `hifi_health` None, active source oauth. Probe: requested `HI_RES_LOSSLESS`, delivered `LOSSLESS`.
+
+**Root cause:** OAuth `get_stream` already sends `audioquality=HI_RES_LOSSLESS` and this client still returns `LOSSLESS` 16/44.1. Empty `hifi_api_instances` auto-discovers, but `discover_instances` only read tracker `streaming`. Live tracker JSON had `streaming: []` (hosts 504) and a live host under `api`. Discover returned [] → resolve fell back to OAuth → fail-closed or a 16/44.1 write. Catalog tags still list Hi-Res.
+
+**Prevention:** Auto-discover `streaming` first, then tracker `api` when streaming is empty. Resolve/health then treat Hi-Fi as available and download Hi-Res from that host. Fail-closed only after that discovery still has no Hi-Res stream. Do not close #148 on synthetic tests or fail-closed alone.
+
 ## 2026-08-18 — Home insight fan would outlive a sidebar navigate
 
 **What happened:** The fan overlay mounts on `.main` so it can cover the Home pane without a hash view. `navigate()` only tears down `#view`. Leaving the overlay on `.main` would keep the fan up after Home was gone.

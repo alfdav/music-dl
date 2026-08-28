@@ -105,6 +105,7 @@ HIFI_UPTIME_TRACKER_URLS: list[str] = [
 # Maps tidalapi.Quality enum → Hi-Fi API quality string parameter.
 HIFI_QUALITY_MAP: dict[str, str] = {
     quality_name(Quality.hi_res_lossless): "HI_RES_LOSSLESS",
+    "HI_RES": "HI_RES",
     quality_name(Quality.high_lossless): "LOSSLESS",
     quality_name(Quality.low_320k): "HIGH",
     quality_name(Quality.low_96k): "LOW",

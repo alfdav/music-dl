@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pathlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 
 from requests import HTTPError
@@ -67,6 +67,9 @@ class HiFiStreamManifest:
     codecs: str
     is_encrypted: bool = False
     encryption_key: str | None = None
+    audio_quality: str | None = None
+    bit_depth: int | None = None
+    sample_rate: int | None = None
 
     def get_urls(self) -> list[str]:
         return self.urls
