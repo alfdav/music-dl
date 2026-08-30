@@ -427,8 +427,8 @@ class ItemMixin:
             if isinstance(media, Video) and self.settings.data.video_convert_mp4:
                 tmp_path_file = self._video_convert(tmp_path_file)
 
-            # Native FLAC when the audio codec is FLAC, even if Tidal boxed it in MP4.
-            # Do not rename an MP4 box to *.flac when extract cannot run.
+            # Native FLAC when the stream is FLAC, even if Tidal boxed it in MP4.
+            # Empty codec + dest .m4a still extracts when the box itself contains FLAC.
             if isinstance(media, Track):
                 codecs = getattr(stream_manifest, "codecs", "") if stream_manifest is not None else ""
                 boxed_flac = self._flac_stream_in_mp4_container(tmp_path_file, codecs, path_media_dst.suffix)
@@ -439,7 +439,13 @@ class ItemMixin:
                             "Refusing to write a lying .flac or keep .m4a."
                         )
                         return False, path_media_dst
-                    tmp_path_file = self._extract_flac(tmp_path_file)
+                    try:
+                        tmp_path_file = self._extract_flac(tmp_path_file)
+                    except Exception:
+                        self.fn_logger.exception(
+                            "FFmpeg failed to extract FLAC from an MP4 box. Failing closed."
+                        )
+                        return False, path_media_dst
                     path_media_dst = pathlib.Path(
                         path_file_sanitize(path_media_dst.with_suffix(AudioExtensions.FLAC), adapt=True, uniquify=True)
                     )
@@ -469,27 +475,35 @@ class ItemMixin:
     def _flac_stream_in_mp4_container(
         self, path_media_src: pathlib.Path, codecs: str, current_extension: str
     ) -> bool:
-        """True when a FLAC stream was written into an MP4/M4A box."""
-        from tidal_dl.download.streams import is_flac_codec
+        """True when a FLAC stream was written into an MP4/M4A box.
 
-        if not is_flac_codec(codecs) and current_extension != str(AudioExtensions.FLAC):
-            return False
+        Codec and planned `.flac` dest are enough. Empty codec + dest `.m4a`
+        (DASH / audio/mp4 mime) still matches when the box itself has fLaC/dfLa.
+        """
+        from tidal_dl.download.streams import is_flac_codec, mp4_box_contains_flac
+
         try:
             header = path_media_src.read_bytes()[:16]
         except OSError:
             return False
-        return len(header) >= 8 and header[4:8] == b"ftyp"
+        if len(header) < 8 or header[4:8] != b"ftyp":
+            return False
+        return (
+            is_flac_codec(codecs)
+            or current_extension == str(AudioExtensions.FLAC)
+            or mp4_box_contains_flac(path_media_src)
+        )
 
     def _detect_downloaded_audio_extension(
         self, path_media_src: pathlib.Path, current_extension: str, codecs: str = ""
     ) -> str:
         """Infer the output extension from codec + file header.
 
-        A FLAC stream must stay `*.flac`. Header is the source of truth after
-        extract: native `fLaC` → `.flac`. An unextracted `ftyp` box is not a
-        FLAC file; the download path must extract or fail, not rename.
+        Keep `.m4a` only when Tidal actually sent AAC/lossy. Boxed FLAC
+        (codec, planned `.flac` dest, or fLaC/dfLa in the box) stays `.flac`.
+        Extract or fail closed — do not rename boxed FLAC to `.m4a`.
         """
-        from tidal_dl.download.streams import is_flac_codec
+        from tidal_dl.download.streams import is_flac_codec, mp4_box_contains_flac
 
         try:
             header = path_media_src.read_bytes()[:16]
@@ -499,11 +513,16 @@ class ItemMixin:
         if header.startswith(b"fLaC"):
             return str(AudioExtensions.FLAC)
 
+        boxed_flac = (
+            is_flac_codec(codecs)
+            or current_extension == str(AudioExtensions.FLAC)
+            or mp4_box_contains_flac(path_media_src)
+        )
+        if boxed_flac:
+            return str(AudioExtensions.FLAC)
+
         if len(header) >= 8 and header[4:8] == b"ftyp":
             return str(AudioExtensions.M4A)
-
-        if is_flac_codec(codecs):
-            return str(AudioExtensions.FLAC)
 
         return current_extension
 

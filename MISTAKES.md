@@ -6,7 +6,7 @@
 
 **Root cause:** Shared mux/extension path, not discovery. Hi-Fi hardcoded `requires_flac_extraction=False`. BTS/DASH often labels FLAC as `audio/mp4`. `_detect_downloaded_audio_extension` then saw `ftyp` and *renamed* the dest to `.m4a` instead of extracting native FLAC. Mutagen wrote an MP4 `covr` (ffprobe: mjpeg). OAuth already extracted when codecs=FLAC and the container was not `.flac`; Hi-Fi skipped that plan. Dummy `extension_guess` also defaulted empty tags to `.m4a`.
 
-**Prevention:** If the audio codec is FLAC, dest is `.flac` and MP4-boxed FLAC is extracted (`-acodec copy`) before metadata. Cover stays as FLAC PICTURE. Detect must not flip a FLAC stream to `.m4a`. Dummy guess for lossless settings is `.flac`. Do not remux FLAC into m4a/mp4/alac. Do not treat this as a rename.
+**Prevention:** If the audio codec is FLAC, dest is `.flac` and MP4-boxed FLAC is extracted (`-map 0:a -vn -acodec copy`) before metadata. Empty codec + dest `.m4a` still extracts when the box has `fLaC`/`dfLa`. Cover stays as FLAC PICTURE, not ffmpeg MJPEG→PNG. Detect must not flip boxed FLAC to `.m4a`. Extract failure fails closed. Dummy guess for lossless settings is `.flac`.
 
 ## 2026-08-26 — Listed-HiRes downloads wrote 16-bit/44.1 FLAC
 

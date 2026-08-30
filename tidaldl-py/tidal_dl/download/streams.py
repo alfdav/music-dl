@@ -21,19 +21,30 @@ _EXPECTED_CODECS = {
 
 def is_flac_codec(codecs: str | None) -> bool:
     """True when the stream codec is FLAC (Hi-Res or CD lossless)."""
-    return (codecs or "").strip().upper().startswith("FLAC")
+    return "FLAC" in (codecs or "").upper()
+
+
+def mp4_box_contains_flac(path: pathlib.Path) -> bool:
+    """True when an MP4/M4A box carries a FLAC sample (fLaC / dfLa)."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return False
+    if len(data) < 8 or data[4:8] != b"ftyp":
+        return False
+    return b"fLaC" in data or b"dfLa" in data
 
 
 def plan_flac_output(codecs: str | None, file_extension: str, extract_flac: bool) -> tuple[str, bool]:
     """Force a native .flac dest when the audio codec is FLAC.
 
     Tidal often labels FLAC as audio/mp4. That is a container, not a lossy default.
-    Extraction still runs later if the downloaded bytes are an MP4 box.
+    Always plan extract when extract_flac is on — the bytes may still be an MP4 box
+    even if mime+codec already report `.flac`.
     """
     if not is_flac_codec(codecs):
         return file_extension, False
-    extension = str(AudioExtensions.FLAC)
-    return extension, bool(extract_flac) and file_extension != extension
+    return str(AudioExtensions.FLAC), bool(extract_flac)
 
 
 def _track_lists_hires(media: Track) -> bool:
