@@ -19,6 +19,23 @@ _EXPECTED_CODECS = {
 }
 
 
+def is_flac_codec(codecs: str | None) -> bool:
+    """True when the stream codec is FLAC (Hi-Res or CD lossless)."""
+    return (codecs or "").strip().upper().startswith("FLAC")
+
+
+def plan_flac_output(codecs: str | None, file_extension: str, extract_flac: bool) -> tuple[str, bool]:
+    """Force a native .flac dest when the audio codec is FLAC.
+
+    Tidal often labels FLAC as audio/mp4. That is a container, not a lossy default.
+    Extraction still runs later if the downloaded bytes are an MP4 box.
+    """
+    if not is_flac_codec(codecs):
+        return file_extension, False
+    extension = str(AudioExtensions.FLAC)
+    return extension, bool(extract_flac) and file_extension != extension
+
+
 def _track_lists_hires(media: Track) -> bool:
     tags = {str(tag).upper() for tag in (getattr(media, "media_metadata_tags", None) or [])}
     return bool(tags & _HIRES_TAGS)
@@ -88,9 +105,12 @@ class StreamMixin:
             raise RuntimeError("Hi-Fi client is not configured")
         result = hifi_client.track_stream(media.id, quality_str)
         _require_exact_quality(self.session.audio_quality, result.audio_quality, result.codecs)
+        file_extension, requires_flac_extraction = plan_flac_output(
+            result.codecs, result.file_extension, self.settings.data.extract_flac
+        )
         manifest = HiFiStreamManifest(
             urls=result.urls,
-            file_extension=result.file_extension,
+            file_extension=file_extension,
             codecs=result.codecs,
             is_encrypted=result.encryption_type not in ("NONE", ""),
             encryption_key=None,
@@ -100,8 +120,8 @@ class StreamMixin:
         )
         return TrackStreamInfo(
             stream_manifest=manifest,
-            file_extension=result.file_extension,
-            requires_flac_extraction=False,
+            file_extension=file_extension,
+            requires_flac_extraction=requires_flac_extraction,
             media_stream=None,
         )
 
@@ -297,14 +317,9 @@ class StreamMixin:
         stream_manifest = media_stream.get_stream_manifest()
         if not want_atmos:
             _require_exact_quality(self.session.audio_quality, media_stream.audio_quality, stream_manifest.codecs)
-        file_extension = str(stream_manifest.file_extension)
-        requires_flac_extraction = False
-
-        if self.settings.data.extract_flac and (
-            stream_manifest.codecs.upper() == Codec.FLAC and file_extension != AudioExtensions.FLAC
-        ):
-            file_extension = AudioExtensions.FLAC
-            requires_flac_extraction = True
+        file_extension, requires_flac_extraction = plan_flac_output(
+            stream_manifest.codecs, str(stream_manifest.file_extension), self.settings.data.extract_flac
+        )
 
         return TrackStreamInfo(
             stream_manifest=stream_manifest,

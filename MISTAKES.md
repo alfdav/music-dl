@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-08-30 — HiRes FLAC landed as `.m4a` (FLAC stuffed in MP4)
+
+**What happened:** After #149, Zeratool downloaded tidal 534789853 via Hi-Fi. ffprobe showed 24/96 FLAC plus an MJPEG cover stream, but the path ended in `.m4a`. Best quality is a real `*.flac`.
+
+**Root cause:** Shared mux/extension path, not discovery. Hi-Fi hardcoded `requires_flac_extraction=False`. BTS/DASH often labels FLAC as `audio/mp4`. `_detect_downloaded_audio_extension` then saw `ftyp` and *renamed* the dest to `.m4a` instead of extracting native FLAC. Mutagen wrote an MP4 `covr` (ffprobe: mjpeg). OAuth already extracted when codecs=FLAC and the container was not `.flac`; Hi-Fi skipped that plan. Dummy `extension_guess` also defaulted empty tags to `.m4a`.
+
+**Prevention:** If the audio codec is FLAC, dest is `.flac` and MP4-boxed FLAC is extracted (`-acodec copy`) before metadata. Cover stays as FLAC PICTURE. Detect must not flip a FLAC stream to `.m4a`. Dummy guess for lossless settings is `.flac`. Do not remux FLAC into m4a/mp4/alac. Do not treat this as a rename.
+
 ## 2026-08-26 — Listed-HiRes downloads wrote 16-bit/44.1 FLAC
 
 **What happened:** First-install desktop (v1.7.6) and Tetrarch live on SHA 15ba50a listed Sting — The Last Ship (tidal 534789853) as HiRes. The download wrote Mutagen-tagged FLAC at 16-bit/44.1 kHz / ~765 kb/s. Settings: `hifi_api_instances` empty, `hifi_instances []`, `hifi_health` None, active source oauth. Probe: requested `HI_RES_LOSSLESS`, delivered `LOSSLESS`.

@@ -427,12 +427,21 @@ class ItemMixin:
             if isinstance(media, Video) and self.settings.data.video_convert_mp4:
                 tmp_path_file = self._video_convert(tmp_path_file)
 
-            # Extract FLAC from MP4 container using ffmpeg
-            if isinstance(media, Track) and self.settings.data.extract_flac and do_flac_extract:
-                tmp_path_file = self._extract_flac(tmp_path_file)
+            # Native FLAC when the audio codec is FLAC, even if Tidal boxed it in MP4.
+            if isinstance(media, Track) and self.settings.data.extract_flac:
+                codecs = getattr(stream_manifest, "codecs", "") if stream_manifest is not None else ""
+                if do_flac_extract or self._flac_stream_in_mp4_container(tmp_path_file, codecs, path_media_dst.suffix):
+                    tmp_path_file = self._extract_flac(tmp_path_file)
+                    path_media_dst = pathlib.Path(
+                        path_file_sanitize(path_media_dst.with_suffix(AudioExtensions.FLAC), adapt=True, uniquify=True)
+                    )
+                    os.makedirs(win_long_path(path_media_dst).parent, exist_ok=True)
 
             if isinstance(media, Track):
-                detected_extension = self._detect_downloaded_audio_extension(tmp_path_file, path_media_dst.suffix)
+                codecs = getattr(stream_manifest, "codecs", "") if stream_manifest is not None else ""
+                detected_extension = self._detect_downloaded_audio_extension(
+                    tmp_path_file, path_media_dst.suffix, codecs=codecs
+                )
                 if detected_extension != path_media_dst.suffix:
                     path_media_dst = pathlib.Path(
                         path_file_sanitize(path_media_dst.with_suffix(detected_extension), adapt=True, uniquify=True)
@@ -449,13 +458,33 @@ class ItemMixin:
 
             return True, path_media_dst
 
-    def _detect_downloaded_audio_extension(self, path_media_src: pathlib.Path, current_extension: str) -> str:
-        """Infer the actual audio container from the downloaded file header.
+    def _flac_stream_in_mp4_container(
+        self, path_media_src: pathlib.Path, codecs: str, current_extension: str
+    ) -> bool:
+        """True when a FLAC stream was written into an MP4/M4A box."""
+        from tidal_dl.download.streams import is_flac_codec
 
-        The Hi-Fi API can occasionally report FLAC while returning an MP4/M4A
-        container. Detect the real container from bytes so the final filename
-        matches the downloaded file.
+        if not is_flac_codec(codecs) and current_extension != str(AudioExtensions.FLAC):
+            return False
+        try:
+            header = path_media_src.read_bytes()[:16]
+        except OSError:
+            return False
+        return len(header) >= 8 and header[4:8] == b"ftyp"
+
+    def _detect_downloaded_audio_extension(
+        self, path_media_src: pathlib.Path, current_extension: str, codecs: str = ""
+    ) -> str:
+        """Infer the output extension from codec + file header.
+
+        A FLAC stream must stay `*.flac`. MP4/M4A is only for AAC/lossy. Boxing
+        FLAC in ftyp is a container defect, not a reason to rename to `.m4a`.
         """
+        from tidal_dl.download.streams import is_flac_codec
+
+        if is_flac_codec(codecs):
+            return str(AudioExtensions.FLAC)
+
         try:
             header = path_media_src.read_bytes()[:16]
         except OSError:
