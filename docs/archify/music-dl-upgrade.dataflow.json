@@ -7,7 +7,7 @@
     "animation": "trace",
     "visual_preset": "signal-flow",
     "quality_profile": "showcase",
-    "viewBox": [1080, 860],
+    "viewBox": [1080, 560],
     "views": [
       {
         "id": "scan-gate",
@@ -22,10 +22,10 @@
         "note": "enqueue_upgrade → _execute_upgrade_job → dl.item → /Volumes/Music."
       },
       {
-        "id": "register-play",
-        "label": "Register then play",
-        "focus": ["music-file", "registry", "scanned-rows", "playback"],
-        "note": "Registry writes quality+codec back to scanned. Playback reads the file path."
+        "id": "register-back",
+        "label": "Register back",
+        "focus": ["music-file", "registry", "scanned-rows"],
+        "note": "Registry writes quality+codec back to scanned. Playback is a missing pipe."
       }
     ]
   },
@@ -34,7 +34,7 @@
     { "label": "Discover" },
     { "label": "Rank gate" },
     { "label": "Download" },
-    { "label": "Register + play" }
+    { "label": "Register" }
   ],
   "nodes": [
     {
@@ -44,7 +44,7 @@
       "sublabel": "SQLite",
       "tag": "quality + codec",
       "stage": 0,
-      "row": 1,
+      "row": 0,
       "width": 150
     },
     {
@@ -54,7 +54,7 @@
       "sublabel": "_start_bulk_scan",
       "tag": "SSE cache",
       "stage": 1,
-      "row": 1,
+      "row": 0,
       "width": 150
     },
     {
@@ -64,7 +64,7 @@
       "sublabel": "upgradeable: rank>0",
       "tag": "no local_rank",
       "stage": 1,
-      "row": 3,
+      "row": 2,
       "width": 150
     },
     {
@@ -74,7 +74,7 @@
       "sublabel": "local vs TIER_RANK",
       "tag": "24/48 = 3",
       "stage": 2,
-      "row": 1,
+      "row": 0,
       "width": 150
     },
     {
@@ -104,7 +104,7 @@
       "sublabel": "/Volumes/Music",
       "tag": "download_base_path",
       "stage": 4,
-      "row": 1,
+      "row": 0,
       "width": 150
     },
     {
@@ -114,17 +114,7 @@
       "sublabel": "_read_metadata",
       "tag": "writes scanned",
       "stage": 4,
-      "row": 3,
-      "width": 150
-    },
-    {
-      "id": "playback",
-      "type": "frontend",
-      "label": "playTrack",
-      "sublabel": "GET /playback/local",
-      "tag": "path query",
-      "stage": 4,
-      "row": 0,
+      "row": 2,
       "width": 150
     }
   ],
@@ -136,7 +126,7 @@
       "classification": "upgradeable_tracks",
       "variant": "emphasis",
       "route": "straight",
-      "labelAt": [208, 200]
+      "labelDy": -36
     },
     {
       "from": "bulk-scan",
@@ -145,7 +135,7 @@
       "classification": "probed > local",
       "variant": "emphasis",
       "route": "straight",
-      "labelAt": [423, 200]
+      "labelDy": -36
     },
     {
       "from": "probe",
@@ -159,7 +149,9 @@
       "to": "enqueue",
       "label": "UpgradeJob",
       "classification": "track_id + old_path",
-      "variant": "emphasis"
+      "variant": "emphasis",
+      "route": "straight",
+      "labelDy": -36
     },
     {
       "from": "enqueue",
@@ -168,7 +160,7 @@
       "classification": "quality enum",
       "variant": "emphasis",
       "route": "straight",
-      "labelDy": 24
+      "labelDy": 20
     },
     {
       "from": "dl-item",
@@ -184,46 +176,25 @@
       "classification": "quality + codec",
       "variant": "emphasis",
       "route": "straight",
-      "labelDy": 24
-    },
-    {
-      "from": "music-file",
-      "to": "playback",
-      "label": "/playback/local",
-      "classification": "no new_path hook",
-      "variant": "dashed",
-      "route": "straight",
-      "labelDy": -28
+      "labelDy": 20
     }
   ],
   "cards": [
     {
       "dot": "rose",
-      "title": "Disconnect answers",
+      "title": "Disconnects",
       "items": [
-        "TRUE: probe.upgradeable is probed_rank > 0 (upgrade.py:346). Upgrades tab uses scan results (player.js:1790,1902), not that flag",
-        "PARTIAL: same dl.item; skip_existing=False and job.quality differ from download (download_job_service.py:531-556 vs 757-768)",
-        "TRUE write / FALSE refresh: register writes quality+codec (registry.py:23-54). GET /upgrade/scan stays complete-cached (upgrade.py:530-545)",
-        "TRUE: GET /upgrade/scan after complete is sticky — Scan Again replays cache (upgrade.py:530-545; player.js:1818-1824)",
-        "TRUE: 24/48 FLAC is rank 3; HI_RES_LOSSLESS is rank 4 so it is offered (utils.py:77-80; upgrade.py:165-167,693)"
+        "Tab uses scan, not probe.upgradeable (upgrade.py:346)",
+        "Scan cache sticky after complete (upgrade.py:530-545)",
+        "24/48 FLAC rank 3 is offered HI_RES_LOSSLESS 4"
       ]
     },
     {
       "dot": "amber",
-      "title": "Missing pipes",
+      "title": "Missing play pipe",
       "items": [
-        "No reset of _scan_state after complete — DELETE /upgrade/probes does not clear it (upgrade.py:414-426,530-545)",
-        "register_downloaded_track does not call playTrack; upgrade_complete only paints the upgrade row (views.js:4091-4092)",
-        "upgradeTrack() trusts probe.upgradeable without local_rank (api.js:256-263)"
-      ]
-    },
-    {
-      "dot": "emerald",
-      "title": "Closed loops",
-      "items": [
-        "Scanner and registry both write quality/format/codec via _read_metadata (library.py:406-446; registry.py:50-52)",
-        "Upgrade start re-checks local_rank vs probed_rank before enqueue (upgrade.py:482-489)",
-        "Successful upgrade deletes the ISRC probe so a real rescan would re-probe (download_job_service.py:784-787)"
+        "register does not call playTrack (views.js:4091)",
+        "DELETE /upgrade/probes does not reset _scan_state"
       ]
     }
   ]

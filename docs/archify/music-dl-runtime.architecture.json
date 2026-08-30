@@ -43,7 +43,7 @@
     "origin": [48, 80],
     "cols": 5,
     "gapX": 96,
-    "gapY": 110,
+    "gapY": 88,
     "cellW": 168,
     "cellH": 72
   },
@@ -301,29 +301,24 @@
       "title": "Pipes that exist",
       "items": [
         "Download and upgrade both reach dl.item via DownloadJobService",
-        "Upgrade scan reads scanned rows; probe hits Tidal session.search",
-        "dl.item writes download_base_path then register_downloaded_track",
-        "OAuth get_stream is Hi-Fi fallback inside streams.py, not a second spine"
+        "Scan reads scanned; probe is session.search; register writes the new file"
       ]
     },
     {
       "dot": "rose",
       "title": "Missing / weak pipes",
       "items": [
-        "GET /upgrade/scan after status=complete returns cached SSE — no new scan (upgrade.py:530-545)",
-        "Upgrades tab never reads probe.upgradeable; upgradeTrack() does (api.js:258)",
-        "register writes quality+codec; _scan_state results stay sticky (upgrade.py:722-735)",
-        "No upgrades-tab → scanner edge; playback is not repointed to new_path",
-        "Scanner → library.db (db.record) is real but not drawn; it crossed the download spine"
+        "GET /upgrade/scan after complete is sticky (upgrade.py:530-545)",
+        "Tab ignores probe.upgradeable; upgradeTrack() uses it (api.js:258)",
+        "register writes quality+codec; _scan_state is not invalidated"
       ]
     },
     {
       "dot": "amber",
       "title": "Same function, different args",
       "items": [
-        "Upgrade: skip_existing=False, quality=job.quality, duplicate_action=redownload",
-        "Download: skip_existing=settings, quality=settings.quality_audio, no override",
-        "extract_flac is shared settings inside dl.item, not a job argument"
+        "Upgrade: skip_existing=False + job.quality + redownload",
+        "Download: settings.skip_existing + settings.quality_audio"
       ]
     }
   ]
