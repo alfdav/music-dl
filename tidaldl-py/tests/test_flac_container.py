@@ -429,20 +429,65 @@ def test_aac_high_still_writes_m4a(tmp_path: Path):
     assert "aac" in [s.get("codec_name") for s in streams]
 
 
-def test_detect_does_not_rename_flac_stream_to_m4a(tmp_path: Path):
+def test_detect_reads_header_not_codec_for_unextracted_mp4(tmp_path: Path):
+    """An unextracted ftyp box is not a FLAC file. Extract or fail — do not rename."""
     from tidal_dl.download import Download
 
     dl = _download_subject(tmp_path)
     src_flac = tmp_path / "src.flac"
-    boxed = tmp_path / "boxed.m4a"
+    boxed = tmp_path / "boxed.mp4"
     cover = tmp_path / "cover.jpg"
     _write_flac(src_flac, sample_rate=96000, bit_depth=24)
     cover.write_bytes(_JPEG)
     _mux_flac_into_m4a_with_cover(src_flac, cover, boxed)
 
     detect = Download._detect_downloaded_audio_extension.__get__(dl, Download)
-    assert detect(boxed, ".flac", codecs="flac") == ".flac"
-    assert detect(boxed, ".m4a", codecs="flac") == ".flac"
+    assert detect(boxed, ".flac", codecs="flac") == ".m4a"
+    extracted = tmp_path / "extracted.flac"
+    _write_flac(extracted, sample_rate=96000, bit_depth=24)
+    assert detect(extracted, ".m4a", codecs="flac") == ".flac"
+
+
+def test_boxed_flac_fails_closed_when_extract_disabled(tmp_path: Path):
+    src_flac = tmp_path / "src.flac"
+    boxed = tmp_path / "boxed.mp4"
+    cover = tmp_path / "cover.jpg"
+    _write_flac(src_flac, sample_rate=96000, bit_depth=24)
+    cover.write_bytes(_JPEG)
+    _mux_flac_into_m4a_with_cover(src_flac, cover, boxed)
+
+    dl = _download_subject(tmp_path)
+    dl.settings.data.extract_flac = False
+    dest = tmp_path / "out" / "The Last Ship.flac"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    def _copy_boxed(*, media, stream_manifest, path_file, event_stop=None):
+        path_file.write_bytes(boxed.read_bytes())
+        return True, path_file
+
+    dl._download = _copy_boxed
+    dl.metadata_write = lambda *args, **kwargs: (True, None, None)
+
+    manifest = HiFiStreamManifest(
+        urls=["https://example.invalid/hires"],
+        file_extension=".m4a",
+        codecs="flac",
+        audio_quality="HI_RES_LOSSLESS",
+        bit_depth=24,
+        sample_rate=96000,
+    )
+    ok, out_path = dl._perform_actual_download(
+        media=_flac_track(),
+        path_media_dst=dest,
+        stream_manifest=manifest,
+        do_flac_extract=False,
+        is_parent_album=False,
+        media_stream=None,
+    )
+
+    assert ok is False
+    written = [p for p in (tmp_path / "out").glob("*") if p.is_file()]
+    assert not any(p.read_bytes()[:8][4:8] == b"ftyp" and p.suffix == ".flac" for p in written)
 
 
 def test_extension_guess_lossless_defaults_to_flac_not_m4a(tmp_path: Path):
