@@ -1,0 +1,230 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Upgrade Quality Lineage",
+    "locale": "en",
+    "animation": "trace",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "viewBox": [1080, 860],
+    "views": [
+      {
+        "id": "scan-gate",
+        "label": "Scan then rank",
+        "focus": ["scanned-rows", "bulk-scan", "rank-gate", "probe"],
+        "note": "Bulk scan compares local_rank. Probe upgradeable is probed_rank > 0 only."
+      },
+      {
+        "id": "download-write",
+        "label": "Enqueue to file",
+        "focus": ["rank-gate", "enqueue", "dl-item", "music-file"],
+        "note": "enqueue_upgrade → _execute_upgrade_job → dl.item → /Volumes/Music."
+      },
+      {
+        "id": "register-play",
+        "label": "Register then play",
+        "focus": ["music-file", "registry", "scanned-rows", "playback"],
+        "note": "Registry writes quality+codec back to scanned. Playback reads the file path."
+      }
+    ]
+  },
+  "stages": [
+    { "label": "Library" },
+    { "label": "Discover" },
+    { "label": "Rank gate" },
+    { "label": "Download" },
+    { "label": "Register + play" }
+  ],
+  "nodes": [
+    {
+      "id": "scanned-rows",
+      "type": "database",
+      "label": "scanned rows",
+      "sublabel": "SQLite",
+      "tag": "quality + codec",
+      "stage": 0,
+      "row": 1,
+      "width": 150
+    },
+    {
+      "id": "bulk-scan",
+      "type": "backend",
+      "label": "GET /upgrade/scan",
+      "sublabel": "_start_bulk_scan",
+      "tag": "SSE cache",
+      "stage": 1,
+      "row": 1,
+      "width": 150
+    },
+    {
+      "id": "probe",
+      "type": "backend",
+      "label": "POST /upgrade/probe",
+      "sublabel": "upgradeable: rank>0",
+      "tag": "no local_rank",
+      "stage": 1,
+      "row": 3,
+      "width": 150
+    },
+    {
+      "id": "rank-gate",
+      "type": "backend",
+      "label": "rank compare",
+      "sublabel": "local vs TIER_RANK",
+      "tag": "24/48 = 3",
+      "stage": 2,
+      "row": 1,
+      "width": 150
+    },
+    {
+      "id": "enqueue",
+      "type": "messagebus",
+      "label": "enqueue_upgrade",
+      "sublabel": "UpgradeJobInput",
+      "tag": "job.quality",
+      "stage": 3,
+      "row": 0,
+      "width": 150
+    },
+    {
+      "id": "dl-item",
+      "type": "backend",
+      "label": "dl.item",
+      "sublabel": "skip_existing=False",
+      "tag": "redownload",
+      "stage": 3,
+      "row": 2,
+      "width": 150
+    },
+    {
+      "id": "music-file",
+      "type": "database",
+      "label": "file on disk",
+      "sublabel": "/Volumes/Music",
+      "tag": "download_base_path",
+      "stage": 4,
+      "row": 1,
+      "width": 150
+    },
+    {
+      "id": "registry",
+      "type": "backend",
+      "label": "register track",
+      "sublabel": "_read_metadata",
+      "tag": "writes scanned",
+      "stage": 4,
+      "row": 3,
+      "width": 150
+    },
+    {
+      "id": "playback",
+      "type": "frontend",
+      "label": "playTrack",
+      "sublabel": "GET /playback/local",
+      "tag": "path query",
+      "stage": 4,
+      "row": 0,
+      "width": 150
+    }
+  ],
+  "flows": [
+    {
+      "from": "scanned-rows",
+      "to": "bulk-scan",
+      "label": "ISRC rows",
+      "classification": "upgradeable_tracks",
+      "variant": "emphasis",
+      "route": "straight",
+      "labelAt": [208, 200]
+    },
+    {
+      "from": "bulk-scan",
+      "to": "rank-gate",
+      "label": "local vs probed",
+      "classification": "probed > local",
+      "variant": "emphasis",
+      "route": "straight",
+      "labelAt": [423, 200]
+    },
+    {
+      "from": "probe",
+      "to": "rank-gate",
+      "label": "max_quality",
+      "classification": "flag unused by tab",
+      "variant": "dashed"
+    },
+    {
+      "from": "rank-gate",
+      "to": "enqueue",
+      "label": "UpgradeJob",
+      "classification": "track_id + old_path",
+      "variant": "emphasis"
+    },
+    {
+      "from": "enqueue",
+      "to": "dl-item",
+      "label": "upgrade job",
+      "classification": "quality enum",
+      "variant": "emphasis",
+      "route": "straight",
+      "labelDy": 24
+    },
+    {
+      "from": "dl-item",
+      "to": "music-file",
+      "label": "shutil.move",
+      "classification": "new path",
+      "variant": "emphasis"
+    },
+    {
+      "from": "music-file",
+      "to": "registry",
+      "label": "_read_metadata",
+      "classification": "quality + codec",
+      "variant": "emphasis",
+      "route": "straight",
+      "labelDy": 24
+    },
+    {
+      "from": "music-file",
+      "to": "playback",
+      "label": "/playback/local",
+      "classification": "no new_path hook",
+      "variant": "dashed",
+      "route": "straight",
+      "labelDy": -28
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Disconnect answers",
+      "items": [
+        "TRUE: probe.upgradeable is probed_rank > 0 (upgrade.py:346). Upgrades tab uses scan results (player.js:1790,1902), not that flag",
+        "PARTIAL: same dl.item; skip_existing=False and job.quality differ from download (download_job_service.py:531-556 vs 757-768)",
+        "TRUE write / FALSE refresh: register writes quality+codec (registry.py:23-54). GET /upgrade/scan stays complete-cached (upgrade.py:530-545)",
+        "TRUE: GET /upgrade/scan after complete is sticky — Scan Again replays cache (upgrade.py:530-545; player.js:1818-1824)",
+        "TRUE: 24/48 FLAC is rank 3; HI_RES_LOSSLESS is rank 4 so it is offered (utils.py:77-80; upgrade.py:165-167,693)"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Missing pipes",
+      "items": [
+        "No reset of _scan_state after complete — DELETE /upgrade/probes does not clear it (upgrade.py:414-426,530-545)",
+        "register_downloaded_track does not call playTrack; upgrade_complete only paints the upgrade row (views.js:4091-4092)",
+        "upgradeTrack() trusts probe.upgradeable without local_rank (api.js:256-263)"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Closed loops",
+      "items": [
+        "Scanner and registry both write quality/format/codec via _read_metadata (library.py:406-446; registry.py:50-52)",
+        "Upgrade start re-checks local_rank vs probed_rank before enqueue (upgrade.py:482-489)",
+        "Successful upgrade deletes the ISRC probe so a real rescan would re-probe (download_job_service.py:784-787)"
+      ]
+    }
+  ]
+}

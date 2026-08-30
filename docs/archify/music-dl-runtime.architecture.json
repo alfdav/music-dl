@@ -1,0 +1,330 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "music-dl Runtime Pipes",
+    "locale": "en",
+    "animation": "trace",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/alfdav/music-dl",
+      "revision": "9f81c8de7f83be359c9520993fc7c93871b8101b"
+    },
+    "views": [
+      {
+        "id": "download-path",
+        "label": "Primary download",
+        "focus": ["download-ui", "job-queue", "download-core", "hifi-streams", "music-volume", "playback"],
+        "note": "POST /download enqueues a DOWNLOAD job; _execute_download_job calls dl.item."
+      },
+      {
+        "id": "upgrade-path",
+        "label": "Upgrade path",
+        "focus": ["upgrades-tab", "upgrade-api", "job-queue", "download-core", "library-db"],
+        "note": "Upgrades tab streams GET /upgrade/scan, then POST /upgrade/start → enqueue_upgrade."
+      },
+      {
+        "id": "trust-crossing",
+        "label": "Tidal / Hi-Fi trust",
+        "focus": ["download-core", "tidal-catalog", "hifi-streams", "upgrade-api"],
+        "note": "Probe uses session.search. Streams cross Hi-Fi track_stream or OAuth get_stream."
+      },
+      {
+        "id": "library-loop",
+        "label": "Library loop",
+        "focus": ["library-scanner", "library-db", "music-volume", "playback"],
+        "note": "Scanner and register write scanned quality+codec. Playback reads the file path."
+      }
+    ]
+  },
+  "layout": {
+    "mode": "grid",
+    "origin": [48, 80],
+    "cols": 5,
+    "gapX": 96,
+    "gapY": 110,
+    "cellW": 168,
+    "cellH": 72
+  },
+  "components": [
+    {
+      "id": "upgrades-tab",
+      "type": "frontend",
+      "label": "Upgrades tab",
+      "sublabel": "renderUpgradeScanner",
+      "tag": "SRC 1",
+      "row": 0,
+      "col": 0,
+      "sources": [
+        { "path": "tidaldl-py/tidal_dl/gui/static/index.html", "line": 57, "end_line": 60, "label": "nav" },
+        { "path": "tidaldl-py/tidal_dl/gui/static/views.js", "line": 150, "label": "route" },
+        { "path": "tidaldl-py/tidal_dl/gui/static/player.js", "line": 1719, "end_line": 1827, "label": "scanner" }
+      ]
+    },
+    {
+      "id": "upgrade-api",
+      "type": "backend",
+      "label": "Upgrade API",
+      "sublabel": "/upgrade/*",
+      "tag": "SRC 2",
+      "row": 0,
+      "col": 1,
+      "sources": [
+        { "path": "tidaldl-py/tidal_dl/gui/api/upgrade.py", "line": 280, "end_line": 356, "label": "probe" },
+        { "path": "tidaldl-py/tidal_dl/gui/api/upgrade.py", "line": 524, "end_line": 578, "label": "scan" },
+        { "path": "tidaldl-py/tidal_dl/gui/api/upgrade.py", "line": 429, "end_line": 517, "label": "start" }
+      ]
+    },
+    {
+      "id": "tidal-catalog",
+      "type": "external",
+      "label": "Tidal catalog",
+      "sublabel": "session.search",
+      "tag": "SRC 3",
+      "row": 0,
+      "col": 3,
+      "sources": [
+        { "path": "tidaldl-py/tidal_dl/gui/api/upgrade.py", "line": 130, "end_line": 158, "label": "probe ISRC" },
+        { "path": "tidaldl-py/tidal_dl/gui/api/playback.py", "line": 52, "end_line": 87, "label": "OAuth stream" }
+      ]
+    },
+    {
+      "id": "download-ui",
+      "type": "frontend",
+      "label": "Download UI",
+      "sublabel": "POST /download",
+      "tag": "SRC 4",
+      "row": 1,
+      "col": 0,
+      "sources": [
+        { "path": "tidaldl-py/tidal_dl/gui/api/downloads.py", "line": 24, "end_line": 40, "label": "enqueue" },
+        { "path": "tidaldl-py/tidal_dl/gui/static/views.js", "line": 2434, "end_line": 2438, "label": "missing tracks" }
+      ]
+    },
+    {
+      "id": "job-queue",
+      "type": "messagebus",
+      "label": "Download jobs",
+      "sublabel": "DOWNLOAD | UPGRADE",
+      "tag": "SRC 5",
+      "row": 1,
+      "col": 1,
+      "sources": [
+        { "path": "tidaldl-py/tidal_dl/gui/services/download_job_service.py", "line": 209, "end_line": 253, "label": "enqueue" },
+        { "path": "tidaldl-py/tidal_dl/gui/services/download_job_service.py", "line": 466, "end_line": 476, "label": "dispatch" },
+        { "path": "tidaldl-py/tidal_dl/gui/services/download_job_service.py", "line": 657, "end_line": 768, "label": "upgrade job" }
+      ]
+    },
+    {
+      "id": "download-core",
+      "type": "backend",
+      "label": "dl.item",
+      "sublabel": "ItemMixin",
+      "tag": "SRC 6",
+      "row": 1,
+      "col": 2,
+      "sources": [
+        { "path": "tidaldl-py/tidal_dl/download/items.py", "line": 8, "end_line": 134, "label": "item()" },
+        { "path": "tidaldl-py/tidal_dl/download/streams.py", "line": 150, "end_line": 200, "label": "stream info" },
+        { "path": "tidaldl-py/tidal_dl/download/registry.py", "line": 14, "end_line": 55, "label": "register" }
+      ]
+    },
+    {
+      "id": "hifi-streams",
+      "type": "external",
+      "label": "Hi-Fi streams",
+      "sublabel": "track_stream",
+      "tag": "SRC 7",
+      "row": 1,
+      "col": 3,
+      "sources": [
+        { "path": "tidaldl-py/tidal_dl/hifi_api.py", "line": 48, "end_line": 89, "label": "HiFi client" },
+        { "path": "tidaldl-py/tidal_dl/download/streams.py", "line": 72, "end_line": 106, "label": "hifi info" },
+        { "path": "tidaldl-py/tidal_dl/download/streams.py", "line": 169, "end_line": 200, "label": "HIFI_API" }
+      ]
+    },
+    {
+      "id": "library-scanner",
+      "type": "backend",
+      "label": "Library scanner",
+      "sublabel": "POST /library/scan",
+      "tag": "SRC 8",
+      "row": 2,
+      "col": 0,
+      "sources": [
+        { "path": "tidaldl-py/tidal_dl/gui/api/library.py", "line": 1826, "end_line": 1840, "label": "start scan" },
+        { "path": "tidaldl-py/tidal_dl/gui/api/library.py", "line": 1204, "end_line": 1342, "label": "walk + tags" },
+        { "path": "tidaldl-py/tidal_dl/gui/api/library.py", "line": 392, "end_line": 447, "label": "_read_metadata" }
+      ]
+    },
+    {
+      "id": "library-db",
+      "type": "database",
+      "label": "library.db",
+      "sublabel": "scanned + probes",
+      "tag": "SRC 9",
+      "row": 0,
+      "col": 2,
+      "sources": [
+        { "path": "tidaldl-py/tidal_dl/helper/library_db/__init__.py", "line": 14, "end_line": 26, "label": "LibraryDB" },
+        { "path": "tidaldl-py/tidal_dl/helper/library_db/probes.py", "line": 64, "end_line": 73, "label": "upgradeable" },
+        { "path": "tidaldl-py/tidal_dl/helper/library_db/utils.py", "line": 47, "end_line": 83, "label": "local rank" }
+      ]
+    },
+    {
+      "id": "music-volume",
+      "type": "database",
+      "label": "/Volumes/Music",
+      "sublabel": "download_base_path",
+      "tag": "SRC 10",
+      "row": 2,
+      "col": 2,
+      "sources": [
+        { "path": "tidaldl-py/tidal_dl/gui/api/library.py", "line": 1, "end_line": 8, "label": "NAS note" },
+        { "path": "tidaldl-py/tidal_dl/gui/services/download_job_service.py", "line": 757, "end_line": 768, "label": "path_base" },
+        { "path": "tidaldl-py/tidal_dl/download/items.py", "line": 447, "end_line": 448, "label": "move file" }
+      ]
+    },
+    {
+      "id": "playback",
+      "type": "frontend",
+      "label": "Playback",
+      "sublabel": "playTrack",
+      "tag": "SRC 11",
+      "row": 1,
+      "col": 4,
+      "sources": [
+        { "path": "tidaldl-py/tidal_dl/gui/static/player.js", "line": 841, "end_line": 860, "label": "playTrack" },
+        { "path": "tidaldl-py/tidal_dl/gui/api/playback.py", "line": 24, "end_line": 49, "label": "/local" },
+        { "path": "tidaldl-py/tidal_dl/helper/library_db/playback.py", "line": 7, "end_line": 14, "label": "play count" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "music-dl process",
+      "wraps": ["upgrades-tab", "upgrade-api", "download-ui", "job-queue", "download-core", "library-scanner", "library-db", "music-volume", "playback"]
+    },
+    {
+      "kind": "security-group",
+      "label": "Tidal / Hi-Fi trust",
+      "wraps": ["tidal-catalog", "hifi-streams"]
+    }
+  ],
+  "connections": [
+    {
+      "id": "upgrades-to-api",
+      "from": "upgrades-tab",
+      "to": "upgrade-api",
+      "label": "GET /upgrade/scan",
+      "variant": "emphasis"
+    },
+    {
+      "id": "api-to-jobs",
+      "from": "upgrade-api",
+      "to": "job-queue",
+      "label": "enqueue_upgrade",
+      "variant": "emphasis",
+      "labelDy": 24
+    },
+    {
+      "id": "ui-to-jobs",
+      "from": "download-ui",
+      "to": "job-queue",
+      "label": "POST /download",
+      "variant": "emphasis"
+    },
+    {
+      "id": "jobs-to-item",
+      "from": "job-queue",
+      "to": "download-core",
+      "label": "dl.item",
+      "variant": "emphasis"
+    },
+    {
+      "id": "item-to-hifi",
+      "from": "download-core",
+      "to": "hifi-streams",
+      "label": "track_stream",
+      "variant": "security"
+    },
+    {
+      "id": "api-to-tidal",
+      "from": "upgrade-api",
+      "to": "tidal-catalog",
+      "label": "session.search",
+      "variant": "security",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [[372, 36], [900, 36]]
+    },
+    {
+      "id": "item-to-files",
+      "from": "download-core",
+      "to": "music-volume",
+      "label": "write file",
+      "variant": "emphasis",
+      "labelDy": 24
+    },
+    {
+      "id": "api-to-db",
+      "from": "upgrade-api",
+      "to": "library-db",
+      "label": "upgradeable_tracks"
+    },
+    {
+      "id": "item-to-db",
+      "from": "download-core",
+      "to": "library-db",
+      "label": "register"
+    },
+    {
+      "id": "scanner-to-files",
+      "from": "library-scanner",
+      "to": "music-volume",
+      "label": "walk disk",
+      "variant": "dashed"
+    },
+    {
+      "id": "files-to-play",
+      "from": "music-volume",
+      "to": "playback",
+      "label": "GET /playback/local",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Pipes that exist",
+      "items": [
+        "Download and upgrade both reach dl.item via DownloadJobService",
+        "Upgrade scan reads scanned rows; probe hits Tidal session.search",
+        "dl.item writes download_base_path then register_downloaded_track",
+        "OAuth get_stream is Hi-Fi fallback inside streams.py, not a second spine"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Missing / weak pipes",
+      "items": [
+        "GET /upgrade/scan after status=complete returns cached SSE — no new scan (upgrade.py:530-545)",
+        "Upgrades tab never reads probe.upgradeable; upgradeTrack() does (api.js:258)",
+        "register writes quality+codec; _scan_state results stay sticky (upgrade.py:722-735)",
+        "No upgrades-tab → scanner edge; playback is not repointed to new_path",
+        "Scanner → library.db (db.record) is real but not drawn; it crossed the download spine"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Same function, different args",
+      "items": [
+        "Upgrade: skip_existing=False, quality=job.quality, duplicate_action=redownload",
+        "Download: skip_existing=settings, quality=settings.quality_audio, no override",
+        "extract_flac is shared settings inside dl.item, not a job argument"
+      ]
+    }
+  ]
+}
