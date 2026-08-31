@@ -780,6 +780,16 @@ function _homePlaysPhrase(count) {
   return n === 1 ? '1 play' : n.toLocaleString('en-US') + ' plays';
 }
 
+function _homeHoursAmount(hours) {
+  const n = Math.round(Number(hours) * 10) / 10;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function _homeHoursLabel(hours) {
+  const n = _homeHoursAmount(hours);
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
 function _homeReplayFact(track) {
   if (!track || !track.name) return '';
   const plays = _homePlaysPhrase(track.play_count);
@@ -841,12 +851,13 @@ function _homeInsightFacts(id, data) {
   } else if (id === 'listening_time_hours') {
     const peak = _homePeakWeekday(data.weekly_activity);
     if (peak) _homePushFact(facts, peak + ' was the peak this week');
-    const weekHours = Array.isArray(data.weekly_activity)
-      ? Math.round(data.weekly_activity.reduce((sum, hours) => sum + (Number(hours) || 0), 0) * 10) / 10
+    const allHours = _homeHoursAmount(data.listening_time_hours);
+    let weekHours = Array.isArray(data.weekly_activity)
+      ? _homeHoursAmount(data.weekly_activity.reduce((sum, hours) => sum + (Number(hours) || 0), 0))
       : 0;
-    if (weekHours > 0 && data.listening_time_hours > 0) {
-      const week = Number.isInteger(weekHours) ? String(weekHours) : weekHours.toFixed(1);
-      _homePushFact(facts, week + 'h this week of ' + Math.round(data.listening_time_hours) + 'h all-time');
+    if (weekHours > allHours) weekHours = allHours;
+    if (weekHours > 0 && allHours > 0) {
+      _homePushFact(facts, _homeHoursLabel(weekHours) + 'h this week of ' + _homeHoursLabel(allHours) + 'h all-time');
     }
   } else if (id === 'this_week') {
     const week = data.this_week || {};

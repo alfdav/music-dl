@@ -32,6 +32,14 @@
 
 **Prevention:** Parse Tidal URLs/ids and resolve with `session.track/album/artist/playlist`. Never `session.search(url)`. When track search misses a title, fetch tracks from a close album-name match. Artist view is hybrid (local + `/artists/{id}/albums`). Fire library and Tidal search in parallel and bound library album search to SQL `all_albums(q, limit)` — never full-library grouping. Truncate recent-search query text so the dismiss x stays visible.
 
+## 2026-08-31 — Listening-time fact rounded week and all-time to different precision
+
+**What happened:** The insight line kept this-week hours at one decimal and `Math.round` on all-time. A 2.4h week of 2.4h all-time read `2.4h this week of 2h all-time`. Under 0.5h all-time rounded to `0h`.
+
+**Root cause:** Two formatters for the same unit. Calendar-week hours can equal or (after rounding) exceed all-time.
+
+**Prevention:** Format both sides with the same one-decimal amount. Cap displayed week hours at all-time. Test week==all-time (2.4), all-time under 0.5h, and week hours above all-time.
+
 ## 2026-08-31 — Home insight cards showed a hero and left the listening facts unused
 
 **What happened:** The Home insight fan already had `/api/home` fields (`streak`, `most_replayed`, `this_week.most_replayed` / `genre_breakdown`, `top_artist.genre` / `album_count` / `track_count`, `weekly_activity`). Cards rendered a gold hero and label, then a void. Total plays, this week, and listening time taught almost nothing.

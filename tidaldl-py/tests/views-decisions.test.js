@@ -1802,7 +1802,7 @@ describe('Home insight fan decisions', () => {
     ]);
     expect(byId.listening_time_hours.facts).toEqual([
       'Friday was the peak this week',
-      '3.6h this week of 11h all-time',
+      '3.6h this week of 11.4h all-time',
     ]);
     expect(byId.weekly_activity.facts).toEqual(['Peak Friday']);
     expect(byId['top_artists:Deftones'].facts).toEqual([
@@ -1856,6 +1856,33 @@ describe('Home insight fan decisions', () => {
     });
     expect(weekOnly[0].detail).toBe('Sister Sledge');
     expect(weekOnly[0].facts).toEqual([]);
+  });
+
+  test('listening time uses the same hour precision and never shows week above all-time', () => {
+    const weekFacts = (payload) => {
+      const card = loadHomeInsightCards()(payload).find(item => item.id === 'listening_time_hours');
+      return (card && card.facts) || [];
+    };
+    const weekLine = (payload) => weekFacts(payload).find(fact => fact.includes('this week of')) || '';
+
+    expect(weekLine({
+      listening_time_hours: 2.4,
+      weekly_activity: [0, 0, 0, 0, 2.4, 0, 0],
+    })).toBe('2.4h this week of 2.4h all-time');
+
+    expect(weekLine({
+      listening_time_hours: 0.4,
+      weekly_activity: [0.4, 0, 0, 0, 0, 0, 0],
+    })).toBe('0.4h this week of 0.4h all-time');
+
+    expect(weekLine({
+      listening_time_hours: 0.4,
+      weekly_activity: [0.8, 0, 0, 0, 0, 0, 0],
+    })).toBe('0.4h this week of 0.4h all-time');
+    expect(weekLine({
+      listening_time_hours: 0.4,
+      weekly_activity: [0.8, 0, 0, 0, 0, 0, 0],
+    })).not.toMatch(/0\.8h this week/);
   });
 
   test('builds local cards only from already-loaded /home fields', () => {
