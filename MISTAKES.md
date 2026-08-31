@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-08-31 — CodeQL flagged `"tidal.com/" in url` as incomplete sanitization
+
+**What happened:** PR 154's `looks_like_web_url` used `"tidal.com/" in raw` so a scheme-less Tidal paste would not go to `session.search`. CodeQL High: Incomplete URL substring sanitization (`py/incomplete-url-substring-sanitization`).
+
+**Root cause:** A path can contain the substring (`https://evil.example/tidal.com/track/1`) without the host being Tidal. Substring host checks are the CodeQL pattern.
+
+**Prevention:** Parse the host (`urlparse`, then `hostname == "tidal.com"` or `.endswith(".tidal.com")`). Scheme-prefixed queries still count as URLs so they never hit `session.search`. `parse_tidal_ref` still requires a Tidal host at the start of the string, so a planted path is `None` and Search returns the recognized-URL error.
+
 ## 2026-08-31 — Search hid a live Tidal album and froze the Albums pill
 
 **What happened:** Pasting `https://tidal.com/track/330865538/u` or searching the album title `Clásicos de la Provincia 30 Años (Remastered & Expanded)` returned 0 tracks even though Tidal had album 330865537 / track 330865538. Artist cards routed to local-only `/library/artist/{name}/albums`. Albums pill for `Los Grandes Del Vallenato` sat on the skeleton for ~26s.

@@ -42,8 +42,14 @@ def test_parse_rejects_unknown_and_non_tidal_urls():
     assert parse_tidal_ref("https://evil.example/track/330865538") is None
     assert parse_tidal_ref(CLASICOS_ALBUM) is None
     assert looks_like_web_url(TRACK_URL) is True
+    assert looks_like_web_url("tidal.com/track/330865538") is True
     assert looks_like_web_url("https://evil.example/x") is True
     assert looks_like_web_url(CLASICOS_ALBUM) is False
+    planted = "https://evil.example/tidal.com/track/330865538"
+    assert looks_like_web_url(planted) is True
+    assert parse_tidal_ref(planted) is None
+    assert looks_like_web_url("evil.example/tidal.com/track/1") is False
+    assert parse_tidal_ref("evil.example/tidal.com/track/1") is None
 
 
 def _track(track_id, name, artist, album_name, album_id, artist_id=None):
@@ -208,6 +214,23 @@ def test_unknown_url_returns_error_without_search(monkeypatch):
     assert data["tracks"] == []
     assert data["total"] == 0
     assert data["error"]
+
+
+def test_planted_tidal_path_is_not_resolved_or_searched(monkeypatch):
+    session = _ResolveSession()
+    client = _search_client(monkeypatch, session)
+    planted = "https://evil.example/tidal.com/track/330865538"
+
+    resp = client.get(
+        f"/api/search?q={quote(planted, safe='')}&type=tracks",
+        headers={"host": "localhost:8765"},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert session.searches == []
+    assert data["tracks"] == []
+    assert data["error"] == "Not a recognized Tidal URL"
 
 
 def test_track_url_can_be_queued_for_download_without_search(monkeypatch, client):

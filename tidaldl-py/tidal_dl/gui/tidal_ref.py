@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import NamedTuple
+from urllib.parse import urlparse
 
 _TIDAL_REF_RE = re.compile(
     r"""
@@ -51,9 +52,18 @@ def parse_tidal_ref(query: str, type_hint: str | None = None) -> TidalRef | None
     return None
 
 
+def _hostname(value: str) -> str:
+    parsed = urlparse(value if "://" in value else "//" + value)
+    return (parsed.hostname or "").lower()
+
+
 def looks_like_web_url(query: str) -> bool:
     """True when the query looks like a URL and must not be sent to Tidal search."""
-    raw = (query or "").strip().lower()
-    if raw.startswith(("http://", "https://")):
+    raw = (query or "").strip()
+    if not raw:
+        return False
+    lowered = raw.lower()
+    if lowered.startswith(("http://", "https://")):
         return True
-    return "tidal.com/" in raw
+    host = _hostname(lowered.split()[0])
+    return host == "tidal.com" or host.endswith(".tidal.com")
