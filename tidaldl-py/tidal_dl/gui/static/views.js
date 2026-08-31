@@ -777,7 +777,7 @@ function _homePushFact(facts, text) {
 function _homePlaysPhrase(count) {
   const n = Number(count);
   if (!Number.isFinite(n) || n <= 0) return '';
-  return n === 1 ? '1 play' : n.toLocaleString() + ' plays';
+  return n === 1 ? '1 play' : n.toLocaleString('en-US') + ' plays';
 }
 
 function _homeReplayFact(track) {
@@ -826,7 +826,7 @@ function _homeInsightFacts(id, data) {
     }
     _homePushFact(facts, _homeReplayFact(data.most_replayed));
     if (data.track_count > 0 && data.album_count > 0) {
-      _homePushFact(facts, Number(data.track_count).toLocaleString() + ' tracks · ' + Number(data.album_count).toLocaleString() + ' albums');
+      _homePushFact(facts, Number(data.track_count).toLocaleString('en-US') + ' tracks · ' + Number(data.album_count).toLocaleString('en-US') + ' albums');
     } else if (data.album_count > 0 && data.total_plays > 0) {
       const per = data.total_plays / data.album_count;
       const shown = per >= 10 ? String(Math.round(per)) : per.toFixed(1);
@@ -836,7 +836,7 @@ function _homeInsightFacts(id, data) {
       _homePushFact(facts, data.top_album.album + ' — ' + _homePlaysPhrase(data.top_album.play_count));
     }
     if (data.collection_growth > 0) {
-      _homePushFact(facts, Number(data.collection_growth).toLocaleString() + ' added this month');
+      _homePushFact(facts, Number(data.collection_growth).toLocaleString('en-US') + ' added in the last 30 days');
     }
   } else if (id === 'listening_time_hours') {
     const peak = _homePeakWeekday(data.weekly_activity);
@@ -853,7 +853,7 @@ function _homeInsightFacts(id, data) {
     _homePushFact(facts, _homeReplayFact(week.most_replayed));
     const lead = (week.genre_breakdown || [])[0];
     if (lead && lead.genre && lead.count > 0) {
-      _homePushFact(facts, 'Mostly ' + lead.genre);
+      _homePushFact(facts, lead.genre);
     }
   } else if (id === 'top_artist') {
     return _homeArtistFacts(data.top_artist);

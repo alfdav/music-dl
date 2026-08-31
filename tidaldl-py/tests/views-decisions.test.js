@@ -1798,7 +1798,7 @@ describe('Home insight fan decisions', () => {
     ]);
     expect(byId.this_week.facts).toEqual([
       'Change on repeat — 8 plays',
-      'Mostly Alt Rock',
+      'Alt Rock',
     ]);
     expect(byId.listening_time_hours.facts).toEqual([
       'Friday was the peak this week',

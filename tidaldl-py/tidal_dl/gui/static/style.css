@@ -2300,6 +2300,7 @@ body {
   line-height: 1.35;
   color: var(--text-secondary);
   text-align: left;
+  overflow-wrap: anywhere;
 }
 .home-fan-card .mini-bar-chart,
 .home-fan-card .mini-weekly-chart {
