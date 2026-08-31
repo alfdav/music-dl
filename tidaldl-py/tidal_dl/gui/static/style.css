@@ -652,7 +652,7 @@ body {
 
 .track-header {
   display: grid;
-  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 44px 52px 40px 32px;
+  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 44px 52px 84px 32px;
   gap: 12px;
   align-items: center;
   padding: 0 14px 10px;
@@ -674,7 +674,7 @@ body {
 
 .track {
   display: grid;
-  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 44px 52px 40px 32px;
+  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 44px 52px 84px 32px;
   gap: 12px;
   align-items: center;
   padding: 10px 14px;
@@ -884,7 +884,9 @@ body {
 
 .track-actions {
   display: flex;
-  justify-content: center;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
   transition: opacity 0.15s;
 }
 
@@ -901,6 +903,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
   font-family: var(--mono);
   font-size: 9px;
   letter-spacing: 0.5px;
