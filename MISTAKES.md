@@ -32,6 +32,14 @@
 
 **Prevention:** Parse Tidal URLs/ids and resolve with `session.track/album/artist/playlist`. Never `session.search(url)`. When track search misses a title, fetch tracks from a close album-name match. Artist view is hybrid (local + `/artists/{id}/albums`). Fire library and Tidal search in parallel and bound library album search to SQL `all_albums(q, limit)` — never full-library grouping. Truncate recent-search query text so the dismiss x stays visible.
 
+## 2026-08-31 — Home insight cards showed a hero and left the listening facts unused
+
+**What happened:** The Home insight fan already had `/api/home` fields (`streak`, `most_replayed`, `this_week.most_replayed` / `genre_breakdown`, `top_artist.genre` / `album_count` / `track_count`, `weekly_activity`). Cards rendered a gold hero and label, then a void. Total plays, this week, and listening time taught almost nothing.
+
+**Root cause:** `_homeInsightCards` treated unused payload keys as optional extras instead of the middle of the card. The test loader later started at `_homeInsightFacts` and omitted sibling helpers (`_homePushFact`), so extracted tests threw `not defined`.
+
+**Prevention:** Fill each insight card with 1–3 facts from the already-loaded `/home` payload. Skip missing or zero values. Empty library stays empty — never invent numbers. When a views.js test extracts a helper, include the sibling functions it calls. Do not add API fields when the fact is already on first-paint `/home`.
+
 ## 2026-08-31 — Bugbot: refresh success treated as a live session, skip treated as rejected
 
 **What happened:** PR 152 stayed merge-blocked. Startup persist after a Hi-Fi-only `resolve_source` could write an empty `token.json`. `login_token` / `call_tidal` / `require_tidal` treated `_ensure_token_fresh` True as a usable session without `load_oauth_session` / `check_login`, so `session.user` stayed unset and `list_playlists` crashed. `auth_login` mapped a non-rejected refresh to expired and aborted an in-flight device-code wait. Reset raced keepalive persist. A window skip (`False` because the token was still inside the window) was cached as `REFRESH_REJECTED` and could start `login_oauth`.
