@@ -136,6 +136,33 @@ def _strong_title_match(query: str, tracks: list[Any]) -> bool:
     )
 
 
+def _track_artist_names(track: Any) -> list[str]:
+    artists = getattr(track, "artists", None) or []
+    names = [getattr(artist, "name", "") or "" for artist in artists]
+    if not names:
+        artist = getattr(track, "artist", None)
+        if artist is not None:
+            names = [getattr(artist, "name", None) or str(artist)]
+    return [name for name in names if name]
+
+
+def _strong_artist_match(query: str, tracks: list[Any]) -> bool:
+    return any(
+        _name_score(query, name) >= 0.7
+        for track in tracks
+        for name in _track_artist_names(track)
+    )
+
+
+def _use_album_title_fallback(query: str, tracks: list[Any]) -> bool:
+    """Album-title fallback only when track search missed, or the query is an album title."""
+    if not tracks:
+        return True
+    if _strong_title_match(query, tracks):
+        return False
+    return not _strong_artist_match(query, tracks)
+
+
 def _session_get(session: Any, kind: str, item_id: str) -> Any:
     if kind == "track":
         try:
@@ -301,7 +328,7 @@ def search(
 
     if type == "tracks":
         tracks = results.get("tracks", []) or []
-        if not tracks or not _strong_title_match(q, tracks):
+        if _use_album_title_fallback(q, tracks):
             album_tracks = _album_tracks_for_query(tidal, q, limit)
             if album_tracks:
                 serialized = _serialize_track_hits(album_tracks)

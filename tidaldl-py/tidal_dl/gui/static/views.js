@@ -1411,6 +1411,12 @@ function renderSearchSkeleton(container) {
   }
 }
 
+function _searchStillWaitingForTidal(localData, type, tidalSettled, tidalAuthRequired) {
+  if (tidalSettled || tidalAuthRequired) return false;
+  const localItems = localData ? (localData[type] || []) : [];
+  return localItems.length === 0;
+}
+
 function _followSearchResolve(resultsArea, tidalData) {
   const resolved = tidalData && tidalData.resolve;
   if (!resolved) return;
@@ -1447,10 +1453,16 @@ async function doSearch(resultsArea) {
   let localData = null;
   let tidalData = null;
   let tidalAuthRequired = false;
+  let tidalSettled = false;
   const isStale = () => state.searchQuery.trim() !== query || state.searchType !== type;
   const paint = () => {
     if (isStale()) return;
     state.searchResults = { query, type, local: localData, tidal: tidalData, tidalAuthRequired };
+    if (_searchStillWaitingForTidal(localData, type, tidalSettled, tidalAuthRequired)) {
+      renderSearchSkeleton(resultsArea);
+      refreshStatusLights();
+      return;
+    }
     renderUnifiedSearchResults(resultsArea, localData, tidalData, tidalAuthRequired);
     refreshStatusLights();
   };
@@ -1461,11 +1473,12 @@ async function doSearch(resultsArea) {
   ).then((data) => { localData = data; paint(); }).catch(() => { /* local search optional */ });
 
   const tidalP = api('/search?q=' + encodeURIComponent(query) + '&type=' + type + '&limit=50')
-    .then((data) => { tidalData = data; paint(); })
+    .then((data) => { tidalData = data; tidalSettled = true; paint(); })
     .catch((error) => {
       if (_isTidalAuthError(error)) {
         tidalAuthRequired = true;
       }
+      tidalSettled = true;
       paint();
     });
 

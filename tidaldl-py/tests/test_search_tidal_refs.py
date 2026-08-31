@@ -52,6 +52,13 @@ def test_parse_rejects_unknown_and_non_tidal_urls():
     assert parse_tidal_ref("evil.example/tidal.com/track/1") is None
 
 
+def test_percent_title_is_not_a_url_and_does_not_raise():
+    query = "100% Pure Love"
+    assert looks_like_web_url(query) is False
+    assert parse_tidal_ref(query) is None
+    assert looks_like_web_url("[::1%]") is False
+
+
 def _track(track_id, name, artist, album_name, album_id, artist_id=None):
     album = SimpleNamespace(
         id=album_id,
@@ -320,6 +327,66 @@ def test_album_title_track_search_surfaces_clasicos_album_tracks(monkeypatch):
     assert any(t.get("album_id") == CLASICOS_ALBUM_ID for t in data["tracks"])
     assert Track in {model for _, model in session.searches}
     assert Album in {model for _, model in session.searches}
+
+
+def test_artist_name_track_search_keeps_track_hits(monkeypatch):
+    from tidalapi.album import Album
+    from tidalapi.media import Track
+
+    hit_a = _track(11, "La tierra del olvido", "Carlos Vives", "La Tierra del Olvido", 100, artist_id=CARLOS_ID)
+    hit_b = _track(12, "Pa' Mayte", "Carlos Vives", "La Tierra del Olvido", 100, artist_id=CARLOS_ID)
+    self_titled = _track(99, "Carlos Vives", "Carlos Vives", "Carlos Vives", 200, artist_id=CARLOS_ID)
+    self_titled_album = _album(200, "Carlos Vives", "Carlos Vives", [self_titled])
+
+    class Session:
+        def __init__(self):
+            self.album_searches = 0
+
+        def check_login(self):
+            return True
+
+        def search(self, q, models=None, limit=50, offset=0):
+            model = models[0] if models else None
+            if model is Track:
+                return {"tracks": [hit_a, hit_b]}
+            if model is Album:
+                self.album_searches += 1
+                return {"albums": [self_titled_album]}
+            return {}
+
+        def album(self, album_id):
+            return self_titled_album
+
+    session = Session()
+    client = _search_client(monkeypatch, session)
+
+    resp = client.get(
+        f"/api/search?q={quote('Carlos Vives')}&type=tracks",
+        headers={"host": "localhost:8765"},
+    )
+
+    assert resp.status_code == 200
+    ids = [t["id"] for t in resp.json()["tracks"]]
+    assert ids == [11, 12]
+    assert 99 not in ids
+    assert session.album_searches == 0
+
+
+def test_percent_title_search_does_not_500(monkeypatch):
+    class Session:
+        def check_login(self):
+            return True
+
+        def search(self, q, models=None, limit=50, offset=0):
+            return {"tracks": [], "albums": [], "artists": [], "playlists": []}
+
+    client = _search_client(monkeypatch, Session())
+    resp = client.get(
+        f"/api/search?q={quote('100% Pure Love')}&type=tracks",
+        headers={"host": "localhost:8765"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["tracks"] == []
 
 
 def test_library_album_search_does_not_regroup_the_whole_library(tmp_path, monkeypatch):

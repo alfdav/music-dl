@@ -53,8 +53,11 @@ def parse_tidal_ref(query: str, type_hint: str | None = None) -> TidalRef | None
 
 
 def _hostname(value: str) -> str:
-    parsed = urlparse(value if "://" in value else "//" + value)
-    return (parsed.hostname or "").lower()
+    try:
+        parsed = urlparse(value if "://" in value else "//" + value)
+        return (parsed.hostname or "").lower()
+    except ValueError:
+        return ""
 
 
 def looks_like_web_url(query: str) -> bool:

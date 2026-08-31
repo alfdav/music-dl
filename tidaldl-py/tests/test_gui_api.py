@@ -337,6 +337,7 @@ def test_static_js_search_explains_tidal_auth_without_hiding_local_results():
     assert "if (_isTidalAuthError(error)) {\n        tidalAuthRequired = true;\n      }" in search_source
     assert "state.searchResults = { query, type, local: localData, tidal: tidalData, tidalAuthRequired };" in search_source
     assert "renderUnifiedSearchResults(resultsArea, localData, tidalData, tidalAuthRequired);" in search_source
+    assert "_searchStillWaitingForTidal" in search_source
     assert "state.searchResults.tidalAuthRequired" in search_view_source
     assert "Connect Tidal to search, stream, and download" in search_source
     assert "connectButton.addEventListener('click', () => triggerLogin());" in search_source

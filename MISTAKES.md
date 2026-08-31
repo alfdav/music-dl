@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
+
+**What happened:** Artist-name track search (Carlos Vives) replaced real track hits with a self-titled album. Local-empty paint showed `No results found` while Tidal was still in flight. `urlparse(...).hostname` can raise `ValueError` on broken IPv6 zones / trailing `%`, which would 500 `/api/search`.
+
+**Root cause:** Album-title fallback ran whenever titles scored `< 0.7`, including artist queries. `paint()` treated `tidalData === null` as settled empty. Host parse had no `ValueError` guard.
+
+**Prevention:** Album fallback only when track search is empty or the query is not a strong artist match on those hits. Keep the skeleton while Tidal is pending and local is empty. Catch `ValueError` in `_hostname`.
+
 ## 2026-08-31 — Albums search skipped the local/Tidal divider
 
 **What happened:** Albums pill Search showed one Your Library card (Various Artists) then "Tidal Albums 50 albums" flush against the card. The header collided with the local gallery.

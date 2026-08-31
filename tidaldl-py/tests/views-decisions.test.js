@@ -950,6 +950,25 @@ describe('artist and album loading state', () => {
     expect(recent).toContain('recent-chip-type');
   });
 
+  test('local-empty plus Tidal-pending keeps the skeleton', () => {
+    const search = viewsSource
+      .split('async function doSearch(resultsArea) {')[1]
+      ?.split('function renderTidalSearchAuthPanel(')[0] || '';
+    expect(search).toContain('_searchStillWaitingForTidal');
+    expect(search).toContain('renderSearchSkeleton(resultsArea)');
+    expect(search).toContain('tidalSettled');
+
+    const helperStart = viewsSource.indexOf('function _searchStillWaitingForTidal(');
+    expect(helperStart).toBeGreaterThan(-1);
+    const helperBody = viewsSource.slice(helperStart).split('\nfunction ')[0];
+    const waiting = new Function(`${helperBody}\nreturn _searchStillWaitingForTidal;`)();
+    expect(waiting(null, 'tracks', false, false)).toBe(true);
+    expect(waiting({ tracks: [] }, 'tracks', false, false)).toBe(true);
+    expect(waiting({ tracks: [{ id: 1 }] }, 'tracks', false, false)).toBe(false);
+    expect(waiting({ tracks: [] }, 'tracks', true, false)).toBe(false);
+    expect(waiting({ tracks: [] }, 'tracks', false, true)).toBe(false);
+  });
+
   test('album search does not skip the local/Tidal divider', () => {
     const source = viewsSource
       .split('function renderUnifiedSearchResults(')[1]
