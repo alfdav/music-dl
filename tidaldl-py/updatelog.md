@@ -20,7 +20,7 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
-## Unreleased
+## v1.7.7 (2026-08-31)
 - Hi-Res downloads write real 24-bit/96 kHz audio when Tidal lists the track as HiRes, instead of falling back to 16-bit/44.1 ([#149](https://github.com/alfdav/music-dl/pull/149), [#148](https://github.com/alfdav/music-dl/issues/148)).
 - Hi-Res / lossless streams write a real `.flac` container instead of FLAC stuffed in `.m4a` ([#150](https://github.com/alfdav/music-dl/pull/150)).
 - Keep a Tidal session alive from one machine login: tokens live outside the app; `token.json` is never wiped except Reset/logout; a new device-code OAuth is never started while a `refresh_token` can still revive; keepalive refresh plus one refresh+retry on Tidal 401 ([#152](https://github.com/alfdav/music-dl/pull/152)).
