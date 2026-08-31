@@ -430,7 +430,7 @@ class TestItemCopyAction:
         assert result_path == final_path
         assert dl._library_db.primary_path_for_isrc(track.isrc) == str(final_path.resolve())
 
-    def test_detect_downloaded_audio_extension_reads_mp4_header(self, tmp_path):
+    def test_detect_downloaded_audio_extension_keeps_planned_flac(self, tmp_path):
         from tidal_dl.download import Download
 
         dl = self._build_minimal_download(tmp_path)
@@ -439,7 +439,10 @@ class TestItemCopyAction:
         mp4_path = tmp_path / "download.bin"
         mp4_path.write_bytes(b"\x00\x00\x00\x18ftypiso8\x00\x00\x00\x00payload")
 
-        assert detect(mp4_path, ".flac") == ".m4a"
+        # Dest planned .flac: do not rename boxed audio to .m4a.
+        assert detect(mp4_path, ".flac") == ".flac"
+        # AAC/lossy dest stays .m4a when the box is not FLAC.
+        assert detect(mp4_path, ".m4a", codecs="aac") == ".m4a"
 
     def test_item_uses_corrected_extension_from_downloaded_file(self, tmp_path):
         """item() must propagate the final extension detected from downloaded bytes."""

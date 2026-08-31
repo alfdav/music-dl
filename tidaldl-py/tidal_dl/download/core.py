@@ -157,23 +157,11 @@ class DownloadCore:
 
         if is_video:
             result = str(AudioExtensions.MP4 if self.settings.data.video_convert_mp4 else VideoExtensions.TS)
+        elif quality_audio in (Quality.low_96k, Quality.low_320k):
+            result = str(AudioExtensions.M4A)
         else:
-            result = str(
-                AudioExtensions.FLAC
-                if len(metadata_tags) > 0  # If there are no metadata tags only lossy quality is available
-                and (
-                    (
-                        self.settings.data.extract_flac
-                        and quality_audio in (Quality.hi_res_lossless, Quality.high_lossless)
-                    )
-                    or (
-                        "HIRES_LOSSLESS" not in metadata_tags
-                        and quality_audio not in (Quality.low_96k, Quality.low_320k)
-                    )
-                    or quality_audio == Quality.high_lossless
-                )
-                else AudioExtensions.M4A
-            )
+            # Lossless settings (and any non-LOW/HIGH guess) write FLAC, not M4A.
+            result = str(AudioExtensions.FLAC)
 
         return result
 
