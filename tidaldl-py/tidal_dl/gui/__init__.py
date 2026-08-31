@@ -62,6 +62,7 @@ def create_app(
         def _restore_tidal_source() -> None:
             try:
                 from tidal_dl.config import Settings, Tidal
+                from tidal_dl.gui.api.settings import TOKEN_KEEPALIVE_WINDOW_SEC, keep_tidal_session_alive
 
                 tidal = Tidal(Settings())
                 app.state.source_restore_attempted = True
@@ -69,6 +70,7 @@ def create_app(
                     lambda _message: None,
                     allow_interactive_login=False,
                 )
+                keep_tidal_session_alive(tidal, refresh_window_sec=TOKEN_KEEPALIVE_WINDOW_SEC)
             except Exception as exc:
                 app.state.source_restore_attempted = True
                 app.state.source_restore_error = str(exc)
@@ -81,10 +83,22 @@ def create_app(
                 return
             start_configured_bot(app)
 
+        def _token_keepalive() -> None:
+            from tidal_dl.gui.api.settings import run_token_keepalive
+
+            run_token_keepalive(shutting_down)
+
         after_ready.append(
             threading.Thread(
                 target=_restore_tidal_source,
                 name="tidal-source-restore",
+                daemon=True,
+            )
+        )
+        after_ready.append(
+            threading.Thread(
+                target=_token_keepalive,
+                name="tidal-token-keepalive",
                 daemon=True,
             )
         )

@@ -65,17 +65,19 @@ class TestEnsureTokenFreshGuards:
 
         assert tidal.session.request_session.verify == certifi.where()
 
-    def test_returns_false_when_expiry_zero(self, tidal):
+    def test_refreshes_when_expiry_zero_and_refresh_token_present(self, tidal):
         tidal.data.expiry_time = 0.0
         tidal.data.refresh_token = "some-refresh-token"
-        assert tidal._ensure_token_fresh() is False
+        with patch.object(tidal, "token_persist"):
+            assert tidal._ensure_token_fresh() is True
+        tidal.session.token_refresh.assert_called_once_with("some-refresh-token")
 
-    def test_returns_false_when_expiry_none_like(self, tidal):
+    def test_refreshes_when_expiry_none_like_and_refresh_token_present(self, tidal):
         tidal.data.expiry_time = None
         tidal.data.refresh_token = "some-refresh-token"
-        # None should be treated as 0
-        # _ensure_token_fresh does: _raw_exp or 0 then float()
-        assert tidal._ensure_token_fresh() is False
+        with patch.object(tidal, "token_persist"):
+            assert tidal._ensure_token_fresh() is True
+        tidal.session.token_refresh.assert_called_once_with("some-refresh-token")
 
     def test_returns_false_when_no_refresh_token(self, tidal):
         # Token is expiring soon, but no refresh token available
@@ -165,6 +167,17 @@ class TestTokenPersistOnRefresh:
         tidal.data.expiry_time = time.time() + 60
         tidal.data.refresh_token = "bad-token"
         tidal.session.token_refresh.side_effect = Exception("network error")
+
+        with patch.object(tidal, "token_persist") as mock_persist:
+            result = tidal._ensure_token_fresh()
+
+        assert result is False
+        mock_persist.assert_not_called()
+
+    def test_token_persist_not_called_when_token_refresh_returns_false(self, tidal):
+        tidal.data.expiry_time = time.time() + 60
+        tidal.data.refresh_token = "rejected-token"
+        tidal.session.token_refresh.return_value = False
 
         with patch.object(tidal, "token_persist") as mock_persist:
             result = tidal._ensure_token_fresh()

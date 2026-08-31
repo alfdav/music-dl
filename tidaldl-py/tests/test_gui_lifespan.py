@@ -102,6 +102,31 @@ def test_health_ready_does_not_wait_for_blocked_tidal_probe(tmp_path, monkeypatc
     assert entered.wait(timeout=1)
 
 
+def test_lifespan_refreshes_persisted_token_on_start(tmp_path, monkeypatch):
+    """Sidecar start must refresh from disk before any OAuth prompt."""
+    ensure_calls = []
+
+    def spy_ensure(self, refresh_window_sec=300):
+        ensure_calls.append(refresh_window_sec)
+        return False
+
+    def spy_resolve(self, *args, **kwargs):
+        assert kwargs.get("allow_interactive_login") is False
+        return False
+
+    monkeypatch.setattr("tidal_dl.config.Tidal._ensure_token_fresh", spy_ensure)
+    monkeypatch.setattr("tidal_dl.config.Tidal.resolve_source", spy_resolve)
+
+    app = create_app(port=8765, job_db_path=tmp_path / "jobs.db")
+    with TestClient(app) as client:
+        response = client.get("/api/server/health", headers={"host": "localhost:8765"})
+        _wait_for_source_restore(app)
+
+    assert response.status_code == 200
+    assert ensure_calls
+    assert any(window >= 1800 for window in ensure_calls)
+
+
 def test_tidal_restore_still_runs_after_ready(tmp_path, monkeypatch):
     """Quiet Tidal restore must still happen after health is ready."""
     restore_started = threading.Event()

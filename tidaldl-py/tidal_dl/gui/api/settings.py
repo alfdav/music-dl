@@ -140,9 +140,68 @@ def settings_status() -> dict:
     }
 
 
+TOKEN_KEEPALIVE_WINDOW_SEC = 1800
+TOKEN_KEEPALIVE_INTERVAL_SEC = 1800
+_LOGIN_REFRESH_WINDOW_SEC = 30 * 24 * 3600
+
+
+def keep_tidal_session_alive(
+    tidal: Tidal | None = None,
+    refresh_window_sec: int = TOKEN_KEEPALIVE_WINDOW_SEC,
+) -> bool:
+    """Refresh and persist when a stored refresh_token can still revive the session."""
+    try:
+        instance = tidal if tidal is not None else get_tidal_instance()
+        ensure = getattr(instance, "_ensure_token_fresh", None)
+        if not callable(ensure):
+            return False
+        return bool(ensure(refresh_window_sec=refresh_window_sec))
+    except Exception:
+        return False
+
+
+def run_token_keepalive(
+    stop_event: threading.Event,
+    interval_sec: int = TOKEN_KEEPALIVE_INTERVAL_SEC,
+) -> None:
+    """Server-side keep-alive so a closed UI still refreshes overnight."""
+    while not stop_event.wait(interval_sec):
+        keep_tidal_session_alive()
+
+
+def _persisted_refresh_token(tidal: Tidal):
+    data_token = getattr(getattr(tidal, "data", None), "refresh_token", None)
+    session_token = getattr(getattr(tidal, "session", None), "refresh_token", None)
+    return data_token or session_token
+
+
+def _revive_from_refresh_token(tidal: Tidal, refresh_window_sec: int = TOKEN_KEEPALIVE_WINDOW_SEC) -> bool:
+    refresh_token = _persisted_refresh_token(tidal)
+    if not refresh_token:
+        return False
+    ensure = getattr(tidal, "_ensure_token_fresh", None)
+    if callable(ensure):
+        try:
+            return bool(ensure(refresh_window_sec=refresh_window_sec))
+        except Exception:
+            return False
+    token_refresh = getattr(getattr(tidal, "session", None), "token_refresh", None)
+    persist = getattr(tidal, "token_persist", None)
+    if not callable(token_refresh):
+        return False
+    try:
+        if token_refresh(refresh_token) is False:
+            return False
+        if callable(persist):
+            persist()
+        return True
+    except Exception:
+        return False
+
+
 @router.get("/auth/status")
 def auth_status(tidal: Tidal = Depends(get_tidal_instance)) -> dict:
-    """Return OAuth state from local token data without provider requests."""
+    """Return OAuth state from local tokens, refreshing when a refresh_token can revive."""
     return _local_auth_status(tidal)
 
 
@@ -168,19 +227,38 @@ def _auth_status_payload(
     }
 
 
+def _token_expiry(tidal: Tidal):
+    try:
+        raw_expiry = getattr(tidal.data, "expiry_time", 0) or 0
+        return raw_expiry.timestamp() if hasattr(raw_expiry, "timestamp") else float(raw_expiry)
+    except (TypeError, ValueError):
+        return None
+
+
 def _local_auth_status(tidal: Tidal) -> dict:
     username = ""
     access_token = getattr(tidal.data, "access_token", None)
-    if not access_token:
+    refresh_token = _persisted_refresh_token(tidal)
+    if not access_token and not refresh_token:
         return _auth_status_payload(False, username, "not_configured")
 
-    try:
-        raw_expiry = getattr(tidal.data, "expiry_time", 0) or 0
-        expiry_time = raw_expiry.timestamp() if hasattr(raw_expiry, "timestamp") else float(raw_expiry)
-    except (TypeError, ValueError):
+    expiry_time = _token_expiry(tidal)
+    if expiry_time is None and not refresh_token:
         return _auth_status_payload(False, username, "unavailable")
 
-    if expiry_time > 0 and expiry_time <= time.time():
+    expired = expiry_time is not None and expiry_time > 0 and expiry_time <= time.time()
+    needs_revive = bool(refresh_token) and (not access_token or expired or expiry_time == 0)
+    if needs_revive:
+        _revive_from_refresh_token(tidal)
+        access_token = getattr(tidal.data, "access_token", None)
+        expiry_time = _token_expiry(tidal)
+        expired = expiry_time is not None and expiry_time > 0 and expiry_time <= time.time()
+
+    if expiry_time is None:
+        return _auth_status_payload(False, username, "unavailable")
+    if not access_token:
+        return _auth_status_payload(False, username, "expired" if refresh_token else "not_configured")
+    if expired:
         return _auth_status_payload(False, username, "expired")
 
     user = getattr(tidal.session, "user", None)
@@ -221,22 +299,26 @@ def _wait_for_login(tidal: Tidal, future, generation: int) -> None:
             _replace_login_state(status)
 
 
+def _mark_already_logged_in(tidal: Tidal) -> dict:
+    refresh_quality = getattr(tidal, "refresh_account_quality", None)
+    if callable(refresh_quality):
+        refresh_quality()
+    _login_state["status"] = "success"
+    return {"status": "already_logged_in"}
+
+
 @router.post("/auth/login")
 def auth_login(tidal: Tidal = Depends(get_tidal_instance)) -> dict:  # noqa: B008
-    """Start OAuth login. Opens a Tidal link, polls in background until confirmed."""
+    """Reuse a persisted refresh_token before starting a new device-code OAuth flow."""
     global _login_generation
     with _login_lock:
-        if tidal.session.check_login():
-            refresh_token = getattr(tidal.session, "refresh_token", None)
+        if _revive_from_refresh_token(tidal, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC):
+            return _mark_already_logged_in(tidal)
+
+        if not _persisted_refresh_token(tidal):
             try:
-                refreshed = bool(refresh_token) and tidal.session.token_refresh(refresh_token)
-                if refreshed:
-                    tidal.token_persist()
-                    refresh_quality = getattr(tidal, "refresh_account_quality", None)
-                    if callable(refresh_quality):
-                        refresh_quality()
-                    _login_state["status"] = "success"
-                    return {"status": "already_logged_in"}
+                if tidal.session.check_login():
+                    return _mark_already_logged_in(tidal)
             except Exception:
                 pass
 
@@ -272,13 +354,11 @@ def auth_login(tidal: Tidal = Depends(get_tidal_instance)) -> dict:  # noqa: B00
 def auth_keepalive() -> dict:
     """Refresh the token only when local expiry data says it is near expiry.
 
-    Retained for older clients. This avoids provider-backed login checks; current
-    clients rely on request middleware before explicit Tidal-facing actions.
+    Sidecar startup and a server interval call the same helper so a closed UI
+    still keeps the session. Older clients may POST this endpoint directly.
     """
-    tidal = get_tidal_instance()
     try:
-        refreshed = tidal._ensure_token_fresh(refresh_window_sec=1800)
-        return {"refreshed": refreshed}
+        return {"refreshed": keep_tidal_session_alive()}
     except Exception:
         return {"refreshed": False, "reason": "refresh_error"}
 

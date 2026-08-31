@@ -520,19 +520,22 @@ class Tidal(BaseConfig[ModelToken]):
             return cached
 
     def _ensure_token_fresh(self, refresh_window_sec: int = 300) -> bool:
-        _raw_exp = getattr(self.data, "expiry_time", 0) or 0
-        expiry_time = _raw_exp.timestamp() if hasattr(_raw_exp, "timestamp") else float(_raw_exp)
-        if expiry_time <= 0:
-            return False
-        if expiry_time - time.time() > refresh_window_sec:
-            return False
-
         refresh_token = self.data.refresh_token
         if not refresh_token:
             return False
 
         try:
-            self.session.token_refresh(refresh_token)
+            _raw_exp = getattr(self.data, "expiry_time", 0) or 0
+            expiry_time = _raw_exp.timestamp() if hasattr(_raw_exp, "timestamp") else float(_raw_exp)
+        except (TypeError, ValueError):
+            expiry_time = 0
+        if expiry_time > 0 and expiry_time - time.time() > refresh_window_sec:
+            return False
+
+        try:
+            refreshed = self.session.token_refresh(refresh_token)
+            if refreshed is False:
+                return False
             self.token_persist()
             return True
         except Exception:

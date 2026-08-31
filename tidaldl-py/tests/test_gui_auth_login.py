@@ -1,4 +1,5 @@
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -77,7 +78,7 @@ def test_gui_auth_login_repairs_valid_existing_session():
 
     assert result == {"status": "already_logged_in"}
     assert settings_api._login_state == {"status": "success"}
-    assert calls == ["check_login", ("token_refresh", "legacy-refresh"), "token_persist"]
+    assert calls == [("token_refresh", "legacy-refresh"), "token_persist"]
 
 
 def test_gui_auth_login_uses_oauth_when_refresh_cannot_repair():
@@ -89,6 +90,7 @@ def test_gui_auth_login_uses_oauth_when_refresh_cannot_repair():
         refresh_token = "expired-refresh"
 
         def check_login(self):
+            calls.append("check_login")
             return True
 
         def token_refresh(self, refresh_token):
@@ -210,3 +212,197 @@ def test_auth_keepalive_uses_local_expiry_guard_without_check_login(monkeypatch)
 
     assert result == {"refreshed": False}
     assert calls == [1800]
+
+
+def test_auth_status_revives_expired_access_from_refresh_token_without_oauth():
+    from tidal_dl.gui.api import settings as settings_api
+
+    class ReviveTidal:
+        def __init__(self):
+            self.data = SimpleNamespace(
+                access_token="expired-access",
+                refresh_token="valid-refresh",
+                expiry_time=time.time() - 60,
+                account_quality="HI_RES",
+            )
+            self.session = SimpleNamespace(
+                user=SimpleNamespace(name="Ada"),
+                refresh_token="valid-refresh",
+                login_oauth=lambda: pytest.fail("status started login_oauth"),
+            )
+            self.ensure_calls = []
+
+        def _ensure_token_fresh(self, refresh_window_sec=300):
+            self.ensure_calls.append(refresh_window_sec)
+            self.data.access_token = "fresh-access"
+            self.data.expiry_time = time.time() + 3600
+            return True
+
+    tidal = ReviveTidal()
+    status = settings_api._local_auth_status(tidal)
+
+    assert status == {
+        "logged_in": True,
+        "username": "Ada",
+        "auth_state": "credentials_ready",
+        "account_quality": "HI_RES",
+    }
+    assert tidal.ensure_calls
+
+
+def test_auth_status_missing_tokens_is_not_configured():
+    from tidal_dl.gui.api import settings as settings_api
+
+    tidal = SimpleNamespace(
+        data=SimpleNamespace(access_token=None, refresh_token=None, expiry_time=0, account_quality=None),
+        session=SimpleNamespace(user=None, refresh_token=None),
+        _ensure_token_fresh=lambda refresh_window_sec=300: pytest.fail("no tokens to refresh"),
+    )
+
+    status = settings_api._local_auth_status(tidal)
+
+    assert status == {
+        "logged_in": False,
+        "username": "",
+        "auth_state": "not_configured",
+        "account_quality": None,
+    }
+
+
+def test_auth_status_refresh_failure_requires_login_not_not_configured():
+    from tidal_dl.gui.api import settings as settings_api
+
+    class DeadRefreshTidal:
+        def __init__(self):
+            self.data = SimpleNamespace(
+                access_token="expired-access",
+                refresh_token="dead-refresh",
+                expiry_time=time.time() - 60,
+                account_quality=None,
+            )
+            self.session = SimpleNamespace(user=None, refresh_token="dead-refresh")
+
+        def _ensure_token_fresh(self, refresh_window_sec=300):
+            return False
+
+    status = settings_api._local_auth_status(DeadRefreshTidal())
+
+    assert status["logged_in"] is False
+    assert status["auth_state"] == "expired"
+    assert status["auth_state"] != "not_configured"
+
+
+def test_gui_auth_login_refreshes_persisted_token_before_oauth_when_session_looks_dead():
+    from tidal_dl.gui.api import settings as settings_api
+
+    calls = []
+
+    class Session:
+        refresh_token = "disk-refresh"
+
+        def check_login(self):
+            return False
+
+        def login_oauth(self):
+            calls.append("login_oauth")
+            return (
+                SimpleNamespace(
+                    verification_uri_complete="login.tidal.com/device",
+                    user_code="ABCD",
+                    expires_in=300,
+                ),
+                _NeverCompletes(),
+            )
+
+        def token_refresh(self, refresh_token):
+            calls.append(("token_refresh", refresh_token))
+            return True
+
+    class Tidal:
+        session = Session()
+        data = SimpleNamespace(
+            access_token="expired-access",
+            refresh_token="disk-refresh",
+            expiry_time=time.time() - 60,
+        )
+
+        def _ensure_token_fresh(self, refresh_window_sec=300):
+            calls.append(("ensure", refresh_window_sec))
+            return True
+
+        def token_persist(self):
+            calls.append("token_persist")
+
+        def refresh_api_keys(self):
+            calls.append("refresh_api_keys")
+
+        def refresh_account_quality(self):
+            calls.append("refresh_account_quality")
+
+    settings_api._login_state.clear()
+    settings_api._login_state.update({"status": "idle"})
+    result = settings_api.auth_login(Tidal())
+
+    assert result == {"status": "already_logged_in"}
+    assert settings_api._login_state == {"status": "success"}
+    assert "login_oauth" not in calls
+    assert calls[0][0] == "ensure"
+
+
+def test_gui_auth_login_starts_oauth_only_after_refresh_failure():
+    from tidal_dl.gui.api import settings as settings_api
+
+    calls = []
+
+    class Session:
+        refresh_token = "dead-refresh"
+
+        def check_login(self):
+            return False
+
+        def login_oauth(self):
+            calls.append("login_oauth")
+            return (
+                SimpleNamespace(verification_uri_complete="", user_code="ABCD", expires_in=300),
+                _NeverCompletes(),
+            )
+
+        def token_refresh(self, refresh_token):
+            calls.append(("token_refresh", refresh_token))
+            return False
+
+    class Tidal:
+        session = Session()
+        data = SimpleNamespace(access_token="expired-access", refresh_token="dead-refresh", expiry_time=time.time() - 60)
+
+        def _ensure_token_fresh(self, refresh_window_sec=300):
+            calls.append(("ensure", refresh_window_sec))
+            return False
+
+        def refresh_api_keys(self):
+            calls.append("refresh_api_keys")
+
+    settings_api._login_state.clear()
+    settings_api._login_state.update({"status": "idle"})
+    result = settings_api.auth_login(Tidal())
+
+    assert result["status"] == "pending"
+    assert "login_oauth" in calls
+    assert calls[0][0] == "ensure"
+    assert calls.index("login_oauth") > calls.index(("ensure", calls[0][1]))
+
+
+def test_token_keepalive_loop_calls_ensure_until_stopped(monkeypatch):
+    from tidal_dl.gui.api import settings as settings_api
+
+    calls = []
+    stop = threading.Event()
+
+    def fake_keep():
+        calls.append("keep")
+        stop.set()
+
+    monkeypatch.setattr(settings_api, "keep_tidal_session_alive", fake_keep)
+    settings_api.run_token_keepalive(stop, interval_sec=0.01)
+
+    assert calls == ["keep"]

@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-08-31 — Tidal status asked for a new login while refresh_token could revive
+
+**What happened:** After one machine login, overnight or a restart could show `auth_state=expired` / "log in". Clicking login started a new device-code OAuth flow even when `token.json` still had a refresh_token. Extra device-code logins look like account sharing.
+
+**Root cause:** `GET /auth/status` reported local expiry without calling `_ensure_token_fresh`. The UI only polls status and never `/auth/keepalive`. `POST /auth/login` required `check_login()` before refresh, so a dead-looking session skipped the persisted refresh_token and called `login_oauth()`. Middleware already refreshed Tidal-facing routes, but skipped `/api/auth`, and nothing ran on an idle sidecar.
+
+**Prevention:** Status revives from refresh_token before reporting login-required. Login tries `_ensure_token_fresh` / `token_refresh` before `login_oauth()`. Sidecar startup plus a 30-minute server interval call the same helper so a closed UI still persists. `not_configured` only when both access and refresh are missing. Tokens stay in `path_file_token()` under the per-user config dir, not the download folder.
+
 ## 2026-08-30 — HiRes FLAC landed as `.m4a` (FLAC stuffed in MP4)
 
 **What happened:** After #149, Zeratool downloaded tidal 534789853 via Hi-Fi. ffprobe showed 24/96 FLAC plus an MJPEG cover stream, but the path ended in `.m4a`. Best quality is a real `*.flac`.
