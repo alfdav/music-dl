@@ -20,6 +20,14 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
+## v1.7.8 (2026-08-31)
+- Search accepts a pasted Tidal track, album, artist, or playlist URL (or a bare id) and resolves it for add/download instead of sending the URL to catalog search ([#154](https://github.com/alfdav/music-dl/pull/154)).
+- Track search falls back to a close album-title match when Tidal returns no tracks (Clásicos de la Provincia 30 Años); artist-name queries on the Tracks pill keep their track hits.
+- Artist drill-in is hybrid: local library albums plus Tidal discography.
+- Albums pill search no longer regroups the whole library; local and Tidal album sections stay visually separated.
+- Recent-search chips truncate the query so the dismiss control stays visible.
+- Search keeps the skeleton while Tidal is still in flight, and host parsing cannot 500 on titles like `100% Pure Love`.
+
 ## v1.7.7 (2026-08-31)
 - Hi-Res downloads write real 24-bit/96 kHz audio when Tidal lists the track as HiRes, instead of falling back to 16-bit/44.1 ([#149](https://github.com/alfdav/music-dl/pull/149), [#148](https://github.com/alfdav/music-dl/issues/148)).
 - Hi-Res / lossless streams write a real `.flac` container instead of FLAC stuffed in `.m4a` ([#150](https://github.com/alfdav/music-dl/pull/150)).
