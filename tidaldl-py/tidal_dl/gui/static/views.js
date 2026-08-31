@@ -767,6 +767,118 @@ const HOME_FAN_POSITIONS = [
 
 let _homeFan = null;
 
+const HOME_FAN_WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+function _homePushFact(facts, text) {
+  if (!text || facts.length >= 3) return;
+  facts.push(text);
+}
+
+function _homePlaysPhrase(count) {
+  const n = Number(count);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  return n === 1 ? '1 play' : n.toLocaleString('en-US') + ' plays';
+}
+
+function _homeHoursAmount(hours) {
+  const n = Math.round(Number(hours) * 10) / 10;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function _homeHoursLabel(hours) {
+  const n = _homeHoursAmount(hours);
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
+function _homeReplayFact(track) {
+  if (!track || !track.name) return '';
+  const plays = _homePlaysPhrase(track.play_count);
+  return plays ? track.name + ' on repeat — ' + plays : track.name + ' on repeat';
+}
+
+function _homePeakWeekday(weekly) {
+  if (!Array.isArray(weekly) || weekly.length < 7) return '';
+  let max = 0;
+  let idx = -1;
+  for (let i = 0; i < 7; i++) {
+    const hours = Number(weekly[i]) || 0;
+    if (hours > max) {
+      max = hours;
+      idx = i;
+    }
+  }
+  return idx >= 0 ? HOME_FAN_WEEKDAYS[idx] : '';
+}
+
+function _homeArtistFacts(artist) {
+  const facts = [];
+  if (!artist) return facts;
+  if (artist.genre) _homePushFact(facts, artist.genre);
+  const albums = artist.album_count > 0
+    ? artist.album_count + (artist.album_count === 1 ? ' album' : ' albums')
+    : '';
+  const tracks = artist.track_count > 0
+    ? artist.track_count + (artist.track_count === 1 ? ' track' : ' tracks')
+    : '';
+  if (albums && tracks) _homePushFact(facts, albums + ' · ' + tracks);
+  else if (albums) _homePushFact(facts, albums);
+  else if (tracks) _homePushFact(facts, tracks);
+  return facts;
+}
+
+function _homeInsightFacts(id, data) {
+  const facts = [];
+  if (!data) return facts;
+
+  if (id === 'total_plays') {
+    if (data.streak > 0) {
+      _homePushFact(facts, data.streak === 1 ? '1-day streak' : data.streak + '-day streak');
+    }
+    _homePushFact(facts, _homeReplayFact(data.most_replayed));
+    if (data.track_count > 0 && data.album_count > 0) {
+      _homePushFact(facts, Number(data.track_count).toLocaleString('en-US') + ' tracks · ' + Number(data.album_count).toLocaleString('en-US') + ' albums');
+    } else if (data.album_count > 0 && data.total_plays > 0) {
+      const per = data.total_plays / data.album_count;
+      const shown = per >= 10 ? String(Math.round(per)) : per.toFixed(1);
+      _homePushFact(facts, shown + ' plays per album');
+    }
+    if (data.top_album && data.top_album.album && data.top_album.play_count > 0) {
+      _homePushFact(facts, data.top_album.album + ' — ' + _homePlaysPhrase(data.top_album.play_count));
+    }
+    if (data.collection_growth > 0) {
+      _homePushFact(facts, Number(data.collection_growth).toLocaleString('en-US') + ' added in the last 30 days');
+    }
+  } else if (id === 'listening_time_hours') {
+    const peak = _homePeakWeekday(data.weekly_activity);
+    if (peak) _homePushFact(facts, peak + ' was the peak this week');
+    const allHours = _homeHoursAmount(data.listening_time_hours);
+    let weekHours = Array.isArray(data.weekly_activity)
+      ? _homeHoursAmount(data.weekly_activity.reduce((sum, hours) => sum + (Number(hours) || 0), 0))
+      : 0;
+    if (weekHours > allHours) weekHours = allHours;
+    if (weekHours > 0 && allHours > 0) {
+      _homePushFact(facts, _homeHoursLabel(weekHours) + 'h this week of ' + _homeHoursLabel(allHours) + 'h all-time');
+    }
+  } else if (id === 'this_week') {
+    const week = data.this_week || {};
+    _homePushFact(facts, _homeReplayFact(week.most_replayed));
+    const lead = (week.genre_breakdown || [])[0];
+    if (lead && lead.genre && lead.count > 0) {
+      _homePushFact(facts, lead.genre);
+    }
+  } else if (id === 'top_artist') {
+    return _homeArtistFacts(data.top_artist);
+  } else if (id.indexOf('top_artists:') === 0) {
+    const name = id.slice('top_artists:'.length);
+    const artist = (data.top_artists || []).find(item => item && item.name === name);
+    return _homeArtistFacts(artist);
+  } else if (id === 'weekly_activity') {
+    const peak = _homePeakWeekday(data.weekly_activity);
+    if (peak) _homePushFact(facts, 'Peak ' + peak);
+  }
+  return facts;
+}
+
 function _homeInsightCards(data) {
   const cards = [];
   if (!data) return cards;
@@ -777,6 +889,7 @@ function _homeInsightCards(data) {
       value: data.total_plays,
       display: Number(data.total_plays).toLocaleString(),
       label: 'Total plays',
+      facts: _homeInsightFacts('total_plays', data),
     });
   }
   if (data.listening_time_hours) {
@@ -787,6 +900,7 @@ function _homeInsightCards(data) {
       label: 'Listening time',
       unit: 'h',
       weekly: Array.isArray(data.weekly_activity) ? data.weekly_activity : null,
+      facts: _homeInsightFacts('listening_time_hours', data),
     });
   }
 
@@ -798,6 +912,7 @@ function _homeInsightCards(data) {
       display: top.name,
       label: 'Top artist',
       detail: top.play_count ? top.play_count + ' plays' : null,
+      facts: _homeInsightFacts('top_artist', data),
     });
   }
   for (const artist of data.top_artists || []) {
@@ -809,6 +924,7 @@ function _homeInsightCards(data) {
       display: artist.name,
       label: 'Also playing',
       detail: artist.play_count + ' plays',
+      facts: _homeInsightFacts('top_artists:' + artist.name, data),
     });
   }
 
@@ -858,6 +974,7 @@ function _homeInsightCards(data) {
       label: 'Weekly activity',
       unit: 'h',
       weekly: data.weekly_activity,
+      facts: _homeInsightFacts('weekly_activity', data),
     });
   }
   const week = data.this_week;
@@ -868,6 +985,7 @@ function _homeInsightCards(data) {
       display: String(week.total_plays),
       label: 'This week',
       detail: week.top_artist && week.top_artist.name ? week.top_artist.name : null,
+      facts: _homeInsightFacts('this_week', data),
     });
   }
   if (data.recent_albums && data.recent_albums.length) {
@@ -969,6 +1087,13 @@ function _renderHomeFanCard(card, slot, state, motion) {
     for (const name of card.names) {
       el.appendChild(textEl('div', name, 'home-fan-name'));
     }
+  }
+  if (card.facts && card.facts.length) {
+    const facts = h('div', { className: 'home-fan-facts' });
+    for (const fact of card.facts) {
+      facts.appendChild(textEl('div', fact, 'home-fan-fact'));
+    }
+    el.appendChild(facts);
   }
   if (card.bars && card.bars.length) el.appendChild(_barChart(card.bars));
   else if (card.weekly && card.weekly.some(v => v > 0)) el.appendChild(_weeklyChart(card.weekly));

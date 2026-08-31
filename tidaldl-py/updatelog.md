@@ -27,6 +27,7 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 - Albums pill search no longer regroups the whole library; local and Tidal album sections stay visually separated.
 - Recent-search chips truncate the query so the dismiss control stays visible.
 - Search keeps the skeleton while Tidal is still in flight, and host parsing cannot 500 on titles like `100% Pure Love`.
+- Home insight cards fill the empty middle from unused `/api/home` facts (streak, most replayed, this-week genre, artist genre/counts, week vs all-time) instead of a hero-only void ([#155](https://github.com/alfdav/music-dl/pull/155)).
 
 ## v1.7.7 (2026-08-31)
 - Hi-Res downloads write real 24-bit/96 kHz audio when Tidal lists the track as HiRes, instead of falling back to 16-bit/44.1 ([#149](https://github.com/alfdav/music-dl/pull/149), [#148](https://github.com/alfdav/music-dl/issues/148)).

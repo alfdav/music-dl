@@ -2286,6 +2286,22 @@ body {
   font-size: 0.85rem;
   color: var(--text-secondary);
 }
+.home-fan-facts {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 6px;
+  min-height: 0;
+  margin-top: 4px;
+}
+.home-fan-fact {
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
 .home-fan-card .mini-bar-chart,
 .home-fan-card .mini-weekly-chart {
   margin-top: auto;
