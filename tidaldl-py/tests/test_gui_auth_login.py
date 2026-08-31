@@ -724,3 +724,166 @@ def test_token_keepalive_loop_calls_ensure_until_stopped(monkeypatch):
     settings_api.run_token_keepalive(stop, interval_sec=0.01)
 
     assert calls == ["keep"]
+
+
+def test_auth_login_does_not_abort_pending_oauth_on_transient_refresh():
+    from tidal_dl.gui.api import settings as settings_api
+
+    class Tidal:
+        session = SimpleNamespace(
+            refresh_token="persist-refresh",
+            login_oauth=lambda: pytest.fail("pending oauth restarted login_oauth"),
+        )
+        data = SimpleNamespace(
+            access_token="expired-access",
+            refresh_token="persist-refresh",
+            expiry_time=time.time() - 60,
+        )
+
+        def _ensure_token_fresh(self, refresh_window_sec=300):
+            raise RuntimeError("tidal timeout")
+
+    settings_api._login_state.clear()
+    settings_api._login_state.update({
+        "status": "pending",
+        "user_code": "ABCD",
+        "verification_uri": "https://login.tidal.com/device",
+        "expires_in": 300,
+    })
+    settings_api._login_generation = 9
+
+    result = settings_api.auth_login(Tidal())
+
+    assert result["status"] == "pending"
+    assert result["user_code"] == "ABCD"
+    assert settings_api._login_state["status"] == "pending"
+    assert settings_api._login_generation == 9
+
+
+def test_refresh_session_window_skip_is_not_rejected():
+    from tidal_dl.gui.api import settings as settings_api
+
+    class Tidal:
+        def __init__(self):
+            self.data = SimpleNamespace(
+                access_token="still-good",
+                refresh_token="persist-refresh",
+                expiry_time=time.time() + 3600,
+            )
+            self.session = SimpleNamespace(refresh_token="persist-refresh")
+            self._last_refresh_error = None
+            self._last_refresh_outcome = None
+
+        def _ensure_token_fresh(self, refresh_window_sec=300):
+            self._last_refresh_error = None
+            self._last_refresh_outcome = "skipped"
+            return False
+
+    tidal = Tidal()
+    assert settings_api.refresh_session(tidal) == settings_api.REFRESH_SKIPPED
+    assert settings_api._refresh_backoff_until == 0.0
+    assert settings_api.refresh_session(tidal) == settings_api.REFRESH_SKIPPED
+    assert settings_api._refresh_backoff_outcome != settings_api.REFRESH_REJECTED
+
+    calls = []
+
+    class LoginTidal(Tidal):
+        def _ensure_token_fresh(self, refresh_window_sec=300):
+            self._last_refresh_outcome = "skipped"
+            return False
+
+        session = SimpleNamespace(
+            refresh_token="persist-refresh",
+            login_oauth=lambda: calls.append("login_oauth") or pytest.fail("window skip started login_oauth"),
+        )
+
+    settings_api._login_state.clear()
+    settings_api._login_state.update({"status": "idle"})
+    result = settings_api.auth_login(LoginTidal())
+    assert result == {"status": "already_logged_in"}
+    assert "login_oauth" not in calls
+
+
+def test_call_tidal_reloads_user_after_refresh_ok():
+    from tidal_dl.gui.api import settings as settings_api
+
+    loads = []
+
+    class Session:
+        def __init__(self):
+            self.user = None
+            self.refresh_token = "persist-refresh"
+
+        def check_login(self):
+            return self.user is not None
+
+        def load_oauth_session(self, *args, **kwargs):
+            loads.append(args)
+            self.user = SimpleNamespace(playlists=lambda: [SimpleNamespace(id=1, name="Fav")])
+            return True
+
+        def login_oauth(self):
+            raise AssertionError("call_tidal started login_oauth")
+
+    tidal = SimpleNamespace(
+        session=Session(),
+        data=SimpleNamespace(
+            access_token="fresh-access",
+            refresh_token="persist-refresh",
+            token_type="Bearer",
+            expiry_time=time.time() + 3600,
+        ),
+        _last_refresh_error=None,
+        _ensure_token_fresh=lambda refresh_window_sec=300: True,
+    )
+
+    result = settings_api.call_tidal(tidal, lambda: tidal.session.user.playlists())
+
+    assert loads
+    assert result[0].name == "Fav"
+    assert tidal.session.user is not None
+
+
+def test_list_playlists_does_not_crash_when_user_missing_after_refresh(monkeypatch):
+    from tidal_dl.gui.api import playlists as playlists_api
+    from tidal_dl.gui.api import settings as settings_api
+
+    playlists_api._playlist_list_cache["data"] = None
+    playlists_api._playlist_list_cache["ts"] = 0.0
+
+    class Session:
+        user = None
+
+        def check_login(self):
+            return False
+
+        def load_oauth_session(self, *args, **kwargs):
+            return True
+
+        def login_oauth(self):
+            raise AssertionError("list_playlists started login_oauth")
+
+    tidal = SimpleNamespace(
+        session=Session(),
+        data=SimpleNamespace(access_token="fresh", refresh_token="persist-refresh", token_type="Bearer", expiry_time=time.time() + 3600),
+        _ensure_token_fresh=lambda refresh_window_sec=300: True,
+    )
+    class _EmptyDB:
+        def get_playlist_cover(self, playlist_id):
+            return None
+
+        def set_playlist_cover(self, *args, **kwargs):
+            return None
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(playlists_api, "get_tidal", lambda: tidal)
+    monkeypatch.setattr(playlists_api, "_get_playlist_db", lambda: _EmptyDB())
+
+    result = playlists_api.list_playlists()
+
+    assert result == {"playlists": []}

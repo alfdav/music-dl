@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-08-31 — Bugbot: refresh success treated as a live session, skip treated as rejected
+
+**What happened:** PR 152 stayed merge-blocked. Startup persist after a Hi-Fi-only `resolve_source` could write an empty `token.json`. `login_token` / `call_tidal` / `require_tidal` treated `_ensure_token_fresh` True as a usable session without `load_oauth_session` / `check_login`, so `session.user` stayed unset and `list_playlists` crashed. `auth_login` mapped a non-rejected refresh to expired and aborted an in-flight device-code wait. Reset raced keepalive persist. A window skip (`False` because the token was still inside the window) was cached as `REFRESH_REJECTED` and could start `login_oauth`.
+
+**Root cause:** Persist ran on restore-true without checking that a refresh/access token still existed. Refresh-ok was confused with a loaded user. Window-skip `False` was collapsed into rejected. `logout` did not take `_token_fresh_lock`.
+
+**Prevention:** Persist after restore only if refresh_token or access_token is still present. After refresh-ok, reload the session (`_reload_oauth_session` / `check_login`) before returning success. `list_playlists` returns `[]` when `session.user` is missing. Distinguish skip vs rejected vs failed; never arm rejected backoff on a window skip; never start `login_oauth` from a cached skip. `logout`/Reset take the same lock as persist. Non-rejected refresh must not abort a pending device-code wait. Never wipe `token.json` and never start `login_oauth` while a refresh_token can still revive.
+
 ## 2026-08-31 — Tidal 401 after fail-silent refresh sent the UI back to login
 
 **What happened:** `TokenRefreshMiddleware` swallowed refresh errors, then search/download/playlists/albums raised 401 `"Not logged in to Tidal"`. UI `apiTidal` / `_isTidalAuthError` treated that as login-required even when `refresh_token` was still valid. `GET /auth/status` also re-hit Tidal on every poll after a transient refresh failure.

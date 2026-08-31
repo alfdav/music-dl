@@ -218,6 +218,12 @@ def refresh_session(
             if getattr(tidal, "_last_refresh_error", None):
                 _arm_refresh_backoff(REFRESH_FAILED)
                 return REFRESH_FAILED
+            outcome = getattr(tidal, "_last_refresh_outcome", None)
+            if outcome == "skipped":
+                return REFRESH_SKIPPED
+            if outcome == "failed":
+                _arm_refresh_backoff(REFRESH_FAILED)
+                return REFRESH_FAILED
             _arm_refresh_backoff(REFRESH_REJECTED)
             return REFRESH_REJECTED
         except Exception:
@@ -302,11 +308,38 @@ def _refresh_unavailable_error(exc: BaseException | None = None) -> HTTPExceptio
 
 
 def _raise_for_refresh_outcome(tidal: Tidal, outcome: str, exc: BaseException | None = None) -> None:
-    if outcome == REFRESH_OK:
+    if outcome in (REFRESH_OK, REFRESH_SKIPPED):
         return
     if outcome == REFRESH_REJECTED or not _persisted_refresh_token(tidal):
         raise _login_required_error(exc)
     raise _refresh_unavailable_error(exc)
+
+
+def _restore_session_after_refresh(tidal: Tidal) -> bool:
+    """Reload OAuth session/user after a token refresh. Never starts login_oauth."""
+    reload = getattr(tidal, "_reload_oauth_session", None)
+    if callable(reload):
+        try:
+            return bool(reload())
+        except Exception:
+            return False
+    session = getattr(tidal, "session", None)
+    load = getattr(session, "load_oauth_session", None)
+    data = getattr(tidal, "data", None)
+    if not callable(load) or data is None:
+        return _session_logged_in(session)
+    try:
+        loaded = load(
+            getattr(data, "token_type", None) or "Bearer",
+            getattr(data, "access_token", None),
+            getattr(data, "refresh_token", None) or "",
+            getattr(data, "expiry_time", None),
+        )
+    except Exception:
+        return False
+    if loaded is False:
+        return False
+    return _session_logged_in(session) or loaded is True
 
 
 def call_tidal(tidal: Tidal, fn):
@@ -317,6 +350,8 @@ def call_tidal(tidal: Tidal, fn):
             tidal, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC, honor_backoff=False
         )
         _raise_for_refresh_outcome(tidal, outcome)
+        if outcome in (REFRESH_OK, REFRESH_SKIPPED):
+            _restore_session_after_refresh(tidal)
     try:
         return fn()
     except HTTPException:
@@ -327,7 +362,8 @@ def call_tidal(tidal: Tidal, fn):
         outcome = refresh_session(
             tidal, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC, honor_backoff=False
         )
-        if outcome == REFRESH_OK:
+        if outcome in (REFRESH_OK, REFRESH_SKIPPED):
+            _restore_session_after_refresh(tidal)
             return fn()
         _raise_for_refresh_outcome(tidal, outcome, exc)
 
@@ -340,6 +376,8 @@ def require_tidal(tidal: Tidal | None = None) -> Tidal:
         instance, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC, honor_backoff=False
     )
     _raise_for_refresh_outcome(instance, outcome)
+    if outcome in (REFRESH_OK, REFRESH_SKIPPED):
+        _restore_session_after_refresh(instance)
     return instance
 
 
@@ -470,6 +508,8 @@ def auth_login(tidal: Tidal = Depends(get_tidal_instance)) -> dict:  # noqa: B00
             return _mark_already_logged_in(tidal)
 
         if _persisted_refresh_token(tidal) and outcome != REFRESH_REJECTED:
+            if _login_state.get("status") == "pending":
+                return _login_state.copy()
             _login_state["status"] = "idle"
             return {"status": "expired", "auth_state": "expired"}
 

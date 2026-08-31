@@ -14,7 +14,7 @@ import time
 from datetime import UTC, datetime
 from json import JSONDecodeError
 from pathlib import Path
-from threading import Event, Lock
+from threading import Event, Lock, RLock
 from typing import Any, Generic, Protocol, Self, TypeVar
 
 import certifi
@@ -45,7 +45,7 @@ from tidal_dl.model.cfg import Token as ModelToken
 _console = RichConsole()
 
 _singleton_lock = Lock()
-_token_fresh_lock = Lock()
+_token_fresh_lock = RLock()
 _settings_instance: "Settings | None" = None
 _tidal_instance: "Tidal | None" = None
 _handling_app_instance: "HandlingApp | None" = None
@@ -448,8 +448,8 @@ class Tidal(BaseConfig[ModelToken]):
                     expiry_time = None
 
                 if token_type is None or access_token is None:
-                    if refresh_token:
-                        return self._ensure_token_fresh(refresh_window_sec=30 * 24 * 3600)
+                    if refresh_token and self._ensure_token_fresh(refresh_window_sec=30 * 24 * 3600):
+                        return self._reload_oauth_session()
                     return False
 
                 result = self.session.load_oauth_session(
@@ -469,7 +469,8 @@ class Tidal(BaseConfig[ModelToken]):
                     )
 
             if not result and (self.data.refresh_token or refresh_token):
-                result = self._ensure_token_fresh(refresh_window_sec=30 * 24 * 3600)
+                if self._ensure_token_fresh(refresh_window_sec=30 * 24 * 3600):
+                    result = self._reload_oauth_session()
 
             if (
                 not result
@@ -480,6 +481,40 @@ class Tidal(BaseConfig[ModelToken]):
                 os.remove(self.file_path)
 
         return result
+
+    def _reload_oauth_session(self) -> bool:
+        """Load stored tokens into the session after a refresh. Never starts OAuth."""
+        token_type: str | None = getattr(self.data, "token_type", None)
+        access_token: str | None = getattr(self.data, "access_token", None)
+        refresh_token: str = getattr(self.data, "refresh_token", None) or ""
+        if token_type is None or access_token is None:
+            return False
+        _raw_exp = getattr(self.data, "expiry_time", None)
+        if isinstance(_raw_exp, datetime):
+            expiry_time = _raw_exp if _raw_exp.tzinfo is not None else _raw_exp.replace(tzinfo=UTC)
+        elif _raw_exp and _raw_exp > 0:
+            expiry_time = datetime.fromtimestamp(_raw_exp, tz=UTC)
+        else:
+            expiry_time = None
+        try:
+            loaded = self.session.load_oauth_session(
+                token_type,
+                access_token,
+                refresh_token,
+                expiry_time,
+                is_pkce=self.is_pkce,
+            )
+        except Exception:
+            return False
+        if not loaded:
+            return False
+        check = getattr(self.session, "check_login", None)
+        if callable(check):
+            try:
+                return bool(check())
+            except Exception:
+                return False
+        return True
 
     def login_finalize(self) -> bool:
         """Check and persist a newly-established login session.
@@ -497,17 +532,18 @@ class Tidal(BaseConfig[ModelToken]):
 
     def token_persist(self) -> None:
         """Save the current session token to disk."""
-        self.set_option("token_type", self.session.token_type)
-        self.set_option("access_token", self.session.access_token)
-        self.set_option("refresh_token", self.session.refresh_token)
-        _exp = self.session.expiry_time
-        if isinstance(_exp, datetime) and _exp.tzinfo is None:
-            _exp = _exp.replace(tzinfo=UTC)
-        self.set_option("expiry_time", _exp.timestamp() if hasattr(_exp, "timestamp") else _exp)
-        self.save()
+        with _token_fresh_lock:
+            self.set_option("token_type", self.session.token_type)
+            self.set_option("access_token", self.session.access_token)
+            self.set_option("refresh_token", self.session.refresh_token)
+            _exp = self.session.expiry_time
+            if isinstance(_exp, datetime) and _exp.tzinfo is None:
+                _exp = _exp.replace(tzinfo=UTC)
+            self.set_option("expiry_time", _exp.timestamp() if hasattr(_exp, "timestamp") else _exp)
+            self.save()
 
-        with contextlib.suppress(OSError, NotImplementedError):
-            os.chmod(self.file_path, 0o600)
+            with contextlib.suppress(OSError, NotImplementedError):
+                os.chmod(self.file_path, 0o600)
 
     def refresh_account_quality(self) -> str | None:
         """Read the account's highest Tidal quality and cache it on the token."""
@@ -533,8 +569,10 @@ class Tidal(BaseConfig[ModelToken]):
     def _ensure_token_fresh(self, refresh_window_sec: int = 300) -> bool:
         with _token_fresh_lock:
             self._last_refresh_error = None
+            self._last_refresh_outcome = None
             refresh_token = self.data.refresh_token
             if not refresh_token:
+                self._last_refresh_outcome = "skipped"
                 return False
 
             try:
@@ -543,16 +581,20 @@ class Tidal(BaseConfig[ModelToken]):
             except (TypeError, ValueError):
                 expiry_time = 0
             if expiry_time > 0 and expiry_time - time.time() > refresh_window_sec:
+                self._last_refresh_outcome = "skipped"
                 return False
 
             try:
                 refreshed = self.session.token_refresh(refresh_token)
                 if refreshed is False:
+                    self._last_refresh_outcome = "rejected"
                     return False
                 self.token_persist()
+                self._last_refresh_outcome = "ok"
                 return True
             except Exception as exc:
                 self._last_refresh_error = exc
+                self._last_refresh_outcome = "failed"
                 _console.print("[yellow]Warning:[/yellow] Token refresh failed; proceeding with current token.")
                 return False
 
@@ -721,28 +763,29 @@ class Tidal(BaseConfig[ModelToken]):
         Returns:
             bool: Always True.
         """
-        session = self._new_session()
-        original_client_id = session.config.client_id
-        original_client_secret = session.config.client_secret
-        key = _api.getItem(0)
-        if key.get("valid") == "True" and key.get("clientId"):
-            session.config.client_id = key["clientId"]
-            session.config.client_secret = key["clientSecret"]
+        with _token_fresh_lock:
+            session = self._new_session()
+            original_client_id = session.config.client_id
+            original_client_secret = session.config.client_secret
+            key = _api.getItem(0)
+            if key.get("valid") == "True" and key.get("clientId"):
+                session.config.client_id = key["clientId"]
+                session.config.client_secret = key["clientSecret"]
 
-        if hasattr(self, "settings"):
-            session.audio_quality = Quality(self.settings.data.quality_audio)
-        session.video_quality = VideoQuality.high
+            if hasattr(self, "settings"):
+                session.audio_quality = Quality(self.settings.data.quality_audio)
+            session.video_quality = VideoQuality.high
 
-        Path(self.file_path).unlink(missing_ok=True)
-        self.session = session
-        self.original_client_id = original_client_id
-        self.original_client_secret = original_client_secret
-        self.data = ModelToken()
-        self.token_from_storage = False
-        self.is_atmos_session = False
-        self._active_key_index = 0
-        self.api_cache.clear()
-        return True
+            Path(self.file_path).unlink(missing_ok=True)
+            self.session = session
+            self.original_client_id = original_client_id
+            self.original_client_secret = original_client_secret
+            self.data = ModelToken()
+            self.token_from_storage = False
+            self.is_atmos_session = False
+            self._active_key_index = 0
+            self.api_cache.clear()
+            return True
 
 
 class HandlingApp:

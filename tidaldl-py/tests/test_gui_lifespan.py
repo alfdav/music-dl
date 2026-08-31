@@ -132,7 +132,12 @@ def test_lifespan_refreshes_persisted_token_on_start(tmp_path, monkeypatch):
 def test_lifespan_persists_session_after_successful_silent_restore(tmp_path, monkeypatch):
     persists: list[int] = []
 
-    monkeypatch.setattr("tidal_dl.config.Tidal.resolve_source", lambda self, *args, **kwargs: True)
+    def fake_resolve(self, *args, **kwargs):
+        self.data.refresh_token = "persist-refresh"
+        self.data.access_token = "fresh-access"
+        return True
+
+    monkeypatch.setattr("tidal_dl.config.Tidal.resolve_source", fake_resolve)
     monkeypatch.setattr("tidal_dl.config.Tidal.token_persist", lambda self: persists.append(1))
     monkeypatch.setattr("tidal_dl.config.Tidal._ensure_token_fresh", lambda self, refresh_window_sec=300: False)
 
@@ -147,6 +152,31 @@ def test_lifespan_persists_session_after_successful_silent_restore(tmp_path, mon
     assert response.status_code == 200
     assert app.state.source_restored is True
     assert persists
+
+
+def test_lifespan_does_not_persist_empty_session_after_hifi_restore(tmp_path, monkeypatch):
+    persists: list[int] = []
+
+    def fake_resolve(self, *args, **kwargs):
+        self.data.access_token = None
+        self.data.refresh_token = None
+        self.session.access_token = None
+        self.session.refresh_token = None
+        return True
+
+    monkeypatch.setattr("tidal_dl.config.Tidal.resolve_source", fake_resolve)
+    monkeypatch.setattr("tidal_dl.config.Tidal.token_persist", lambda self: persists.append(1))
+    monkeypatch.setattr("tidal_dl.config.Tidal._ensure_token_fresh", lambda self, refresh_window_sec=300: False)
+
+    app = create_app(port=8765, job_db_path=tmp_path / "jobs.db")
+    with TestClient(app) as client:
+        response = client.get("/api/server/health", headers={"host": "localhost:8765"})
+        _wait_for_source_restore(app)
+        time.sleep(0.05)
+
+    assert response.status_code == 200
+    assert app.state.source_restored is True
+    assert persists == []
 
 
 def test_sidecar_start_after_binary_update_revives_refresh_token_without_oauth(tmp_path, monkeypatch):

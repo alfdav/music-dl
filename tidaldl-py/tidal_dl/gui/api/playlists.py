@@ -180,8 +180,17 @@ def list_playlists() -> dict:
 
     from tidal_dl.gui.api.settings import call_tidal
 
+    def _user_playlists():
+        user = getattr(tidal.session, "user", None)
+        if user is None:
+            return []
+        getter = getattr(user, "playlists", None)
+        if not callable(getter):
+            return []
+        return getter() or []
+
     tidal = get_tidal()
-    playlists = call_tidal(tidal, lambda: tidal.session.user.playlists() or [])
+    playlists = call_tidal(tidal, _user_playlists)
 
     # Use DB-cached playlist covers to survive server restarts
     db = _get_playlist_db()

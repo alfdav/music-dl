@@ -71,7 +71,15 @@ def create_app(
                     allow_interactive_login=False,
                 )
                 if app.state.source_restored:
-                    tidal.token_persist()
+                    data = getattr(tidal, "data", None)
+                    session = getattr(tidal, "session", None)
+                    if (
+                        getattr(data, "refresh_token", None)
+                        or getattr(data, "access_token", None)
+                        or getattr(session, "refresh_token", None)
+                        or getattr(session, "access_token", None)
+                    ):
+                        tidal.token_persist()
                 keep_tidal_session_alive(tidal, refresh_window_sec=TOKEN_KEEPALIVE_WINDOW_SEC)
             except Exception as exc:
                 app.state.source_restore_attempted = True

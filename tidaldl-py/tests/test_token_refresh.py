@@ -96,6 +96,14 @@ class TestEnsureTokenFreshGuards:
         tidal.data.refresh_token = "some-refresh-token"
         assert tidal._ensure_token_fresh() is False
         tidal.session.token_refresh.assert_not_called()
+        assert tidal._last_refresh_outcome == "skipped"
+
+    def test_token_refresh_false_is_rejected_not_skipped(self, tidal):
+        tidal.data.expiry_time = time.time() + 60
+        tidal.data.refresh_token = "dead-refresh"
+        tidal.session.token_refresh.return_value = False
+        assert tidal._ensure_token_fresh() is False
+        assert tidal._last_refresh_outcome == "rejected"
 
 
 # ---------------------------------------------------------------------------
@@ -313,10 +321,46 @@ class TestLoginTokenDoesNotWipeRefresh:
         tidal.data.access_token = None
         tidal.data.refresh_token = "persist-refresh"
         tidal.data.expiry_time = 0.0
+        tidal.session.load_oauth_session.return_value = True
+        tidal.session.check_login.return_value = True
 
-        with patch.object(tidal, "_ensure_token_fresh", return_value=True) as ensure:
+        def _refresh(refresh_window_sec=300):
+            tidal.data.access_token = "fresh-access"
+            tidal.data.token_type = "Bearer"
+            tidal.data.expiry_time = time.time() + 3600
+            return True
+
+        with patch.object(tidal, "_ensure_token_fresh", side_effect=_refresh) as ensure:
             assert tidal.login_token(quiet=True) is True
         ensure.assert_called_once()
+        tidal.session.load_oauth_session.assert_called()
+        tidal.session.check_login.assert_called()
+
+    def test_login_token_reloads_session_after_refresh_when_load_failed(self, tidal):
+        tidal.token_from_storage = True
+        tidal.data.token_type = "Bearer"
+        tidal.data.access_token = "stale-access"
+        tidal.data.refresh_token = "persist-refresh"
+        tidal.data.expiry_time = time.time() - 60
+        loads = []
+
+        def _load(*args, **kwargs):
+            loads.append(args)
+            return len(loads) > 1
+
+        tidal.session.load_oauth_session.side_effect = _load
+        tidal.session.check_login.return_value = True
+
+        def _refresh(refresh_window_sec=300):
+            tidal.data.access_token = "fresh-access"
+            tidal.data.expiry_time = time.time() + 3600
+            return True
+
+        with patch.object(tidal, "_ensure_token_fresh", side_effect=_refresh):
+            assert tidal.login_token(quiet=True) is True
+
+        assert len(loads) >= 2
+        assert tidal.session.login_oauth.call_count == 0
 
     def test_interactive_login_does_not_oauth_while_refresh_token_exists(self, tidal):
         tidal.data.refresh_token = "persist-refresh"
@@ -392,3 +436,33 @@ class TestLogoutReset:
         assert tidal.is_atmos_session is True
         tidal.api_cache.clear.assert_not_called()
         assert tidal.file_path_obj.exists()
+
+    def test_logout_takes_token_fresh_lock(self, tidal):
+        import tidal_dl.config as config
+
+        class RecordingLock:
+            def __init__(self):
+                self.calls = []
+
+            def __enter__(self):
+                self.calls.append("enter")
+                return self
+
+            def __exit__(self, *args):
+                self.calls.append("exit")
+                return False
+
+            def acquire(self, *args, **kwargs):
+                self.calls.append("acquire")
+                return True
+
+            def release(self):
+                self.calls.append("release")
+
+        lock = RecordingLock()
+        self._prepare(tidal)
+        with patch("tidal_dl.config._api.getItem", return_value={"valid": "False"}):
+            with patch.object(config, "_token_fresh_lock", lock):
+                assert tidal.logout() is True
+
+        assert "enter" in lock.calls or "acquire" in lock.calls
