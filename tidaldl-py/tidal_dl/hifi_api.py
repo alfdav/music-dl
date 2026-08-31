@@ -65,11 +65,12 @@ class HiFiApiClient:
         self._dead_instances: dict[str, float] = {}
 
     @staticmethod
-    def _extension_from_mime(mime_type: str) -> str:
+    def _extension_from_mime(mime_type: str, codecs: str = "") -> str:
         mime = (mime_type or "").lower()
-        if "flac" in mime:
+        codec = (codecs or "").lower()
+        if "flac" in codec or "flac" in mime:
             return ".flac"
-        if "mp4" in mime or "aac" in mime:
+        if "mp4" in mime or "aac" in mime or "mp4a" in codec or codec.startswith("aac"):
             return ".m4a"
         return ".bin"
 
@@ -108,7 +109,7 @@ class HiFiApiClient:
 
         return HiFiStreamResult(
             urls=urls,
-            file_extension=HiFiApiClient._extension_from_mime(mime_type),
+            file_extension=HiFiApiClient._extension_from_mime(mime_type, codecs),
             codecs=codecs,
             mime_type=mime_type,
             audio_quality=str(data.get("audioQuality", "")),

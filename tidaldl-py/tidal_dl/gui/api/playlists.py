@@ -23,8 +23,15 @@ _playlist_list_cache: dict = {"data": None, "ts": 0.0}
 _playlist_tracks_cache: dict[str, dict] = {}
 
 
+def get_tidal():
+    return Tidal()
+
+
 def get_tidal_session():
-    tidal = Tidal()
+    from tidal_dl.gui.api.settings import ensure_tidal_logged_in
+
+    tidal = get_tidal()
+    ensure_tidal_logged_in(tidal)
     return tidal.session
 
 
@@ -104,10 +111,16 @@ def _best_local_row(
 
 
 def _serialize_playlist_tracks(session, playlist_id: str) -> list[dict]:
+    from tidal_dl.gui.api.settings import _is_tidal_unauthorized
+
     try:
         playlist = session.playlist(playlist_id)
         tracks = playlist.tracks() or []
+    except HTTPException:
+        raise
     except Exception as exc:
+        if _is_tidal_unauthorized(exc):
+            raise
         raise HTTPException(status_code=404, detail=f"Playlist not found: {exc}") from exc
 
 
@@ -165,11 +178,19 @@ def list_playlists() -> dict:
     if _playlist_list_cache["data"] is not None and (now - _playlist_list_cache["ts"]) < _CACHE_TTL:
         return _playlist_list_cache["data"]
 
-    session = get_tidal_session()
-    if not session.check_login():
-        raise HTTPException(status_code=401, detail="Not logged in to Tidal")
+    from tidal_dl.gui.api.settings import call_tidal
 
-    playlists = session.user.playlists() or []
+    def _user_playlists():
+        user = getattr(tidal.session, "user", None)
+        if user is None:
+            return []
+        getter = getattr(user, "playlists", None)
+        if not callable(getter):
+            return []
+        return getter() or []
+
+    tidal = get_tidal()
+    playlists = call_tidal(tidal, _user_playlists)
 
     # Use DB-cached playlist covers to survive server restarts
     db = _get_playlist_db()
@@ -201,11 +222,10 @@ def list_playlists() -> dict:
 @router.get("/playlists/{playlist_id}/tracks")
 def playlist_tracks(playlist_id: str) -> dict:
     """Get tracks for a specific playlist with local-match flags."""
-    session = get_tidal_session()
-    if not session.check_login():
-        raise HTTPException(status_code=401, detail="Not logged in to Tidal")
+    from tidal_dl.gui.api.settings import call_tidal
 
-    return _playlist_tracks_data(session, playlist_id)
+    tidal = get_tidal()
+    return call_tidal(tidal, lambda: _playlist_tracks_data(tidal.session, playlist_id))
 
 
 def _enqueue_playlist_downloads(track_ids: list[int], request: Request | None) -> dict:
@@ -217,11 +237,12 @@ def _enqueue_playlist_downloads(track_ids: list[int], request: Request | None) -
 @router.post("/playlists/{playlist_id}/sync")
 def sync_playlist(playlist_id: str, request: Request = None) -> dict:
     """Trigger sync for a playlist — download tracks missing from the local library."""
-    session = get_tidal_session()
-    if not session.check_login():
-        raise HTTPException(status_code=401, detail="Not logged in to Tidal")
+    from tidal_dl.gui.api.settings import call_tidal
 
-    tracks_data = _playlist_tracks_data(session, playlist_id)["tracks"]
+    tidal = get_tidal()
+    tracks_data = call_tidal(
+        tidal, lambda: _playlist_tracks_data(tidal.session, playlist_id)
+    )["tracks"]
     missing_ids = [t["id"] for t in tracks_data if not t.get("is_local") and t.get("id")]
     total = len(tracks_data)
 

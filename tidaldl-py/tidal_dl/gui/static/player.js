@@ -1564,6 +1564,11 @@ async function triggerLogin() {
       await _handleLoginSuccess();
       return;
     }
+    if (data.status === 'expired') {
+      toast('Tidal session could not be refreshed. Try again in a moment.', 'error');
+      refreshStatusLights();
+      return;
+    }
 
     // Show device code modal so user always has the code + link visible in-app
     if (data.user_code) {

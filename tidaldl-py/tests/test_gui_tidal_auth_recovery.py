@@ -39,6 +39,7 @@ def test_successful_login_acknowledges_and_clears_auth_banner():
     assert "if (authSection) await loadAuthStatus(authSection);" in source
     assert "if (data.status === 'already_logged_in') {" in source
     assert "await _handleLoginSuccess();" in source
+    assert "if (data.status === 'expired')" in source
     assert "if (status.status === 'success') {" in source
 
 
