@@ -4337,6 +4337,7 @@ function _dlComplete(trackId, success) {
   }
   _downloading.delete(trackId);
   refreshDlBadge();
+  _scheduleHistoryReload();
 }
 
 // Global SSE for download progress (shared across views)
