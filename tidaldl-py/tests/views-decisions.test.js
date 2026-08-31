@@ -950,6 +950,15 @@ describe('artist and album loading state', () => {
     expect(recent).toContain('recent-chip-type');
   });
 
+  test('album search does not skip the local/Tidal divider', () => {
+    const source = viewsSource
+      .split('function renderUnifiedSearchResults(')[1]
+      ?.split('function renderSearchResults(')[0] || '';
+    expect(source).toContain("className: 'search-divider'");
+    expect(source).not.toContain("type !== 'albums' && localItems.length > 0");
+    expect(source).toMatch(/localItems\.length > 0 && [\s\S]*tidal/);
+  });
+
   test('album detail uses a visible loading hint instead of skeleton-row', () => {
     const detail = viewsSource
       .split('async function renderLocalAlbumDetail(container, artistName, albumName, prefetchedData) {')[1]
@@ -1289,6 +1298,96 @@ describe('artist search card captions', () => {
     )).toBe(true);
     expect(rule('.album-grid').some(body => body.includes('align-items: start'))).toBe(true);
     expect(rule('.album-gallery').some(body => body.includes('align-items: start'))).toBe(true);
+  });
+});
+
+function loadUnifiedSearchRenderer(searchType) {
+  const functionBody = viewsSource
+    .split('function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRequired) {')[1]
+    ?.split('\nfunction renderSearchResults(')[0];
+  if (!functionBody) throw new Error('renderUnifiedSearchResults not found');
+  const renderSearchResults = loadSearchResultsRenderer(searchType);
+  return new Function(
+    'state',
+    'h',
+    'textEl',
+    'artGradient',
+    'a11yClick',
+    'navigate',
+    'buildLocalReleaseView',
+    'buildLocalAlbumView',
+    'buildArtistView',
+    '_appendGroupingBadge',
+    '_filterTidalAlbums',
+    'renderSearchResults',
+    'renderTidalSearchAuthPanel',
+    `function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRequired) {${functionBody}
+     return renderUnifiedSearchResults;`,
+  )(
+    {
+      searchType,
+      albumQualityFilter: 'all',
+      albumRatingFilter: 'all',
+    },
+    searchCardH,
+    searchCardTextEl,
+    () => 'gradient',
+    () => {},
+    () => {},
+    () => 'local-release',
+    () => 'local-album',
+    () => 'artist',
+    () => {},
+    (items) => items,
+    renderSearchResults,
+    () => {},
+  );
+}
+
+describe('unified album search sections', () => {
+  test('separates the local gallery from the Tidal Albums header', () => {
+    const render = loadUnifiedSearchRenderer('albums');
+    const container = renderSearchContainer();
+    const tidalAlbums = Array.from({ length: 50 }, (_, i) => ({
+      id: i + 1,
+      name: 'Album ' + i,
+      artist: 'Tidal Artist',
+    }));
+
+    render(
+      container,
+      { albums: [{ id: 'local-1', name: 'Los Grandes Del Vallenato', artist: 'Various Artists' }] },
+      { albums: tidalAlbums },
+      false,
+    );
+
+    const classes = container.children.map(child => child.className);
+    const galleryAt = classes.indexOf('album-gallery');
+    const dividerAt = classes.indexOf('search-divider');
+    const headers = container.children.filter(child => child.className === 'results-header');
+
+    expect(galleryAt).toBeGreaterThan(-1);
+    expect(dividerAt).toBeGreaterThan(galleryAt);
+    expect(headers).toHaveLength(2);
+    expect(headers[0].textContent).toContain('Your Library');
+    expect(headers[0].textContent).toContain('1 result');
+    expect(headers[0].textContent).not.toContain('1 results');
+    expect(headers[1].textContent).toContain('Tidal Albums');
+    expect(headers[1].textContent).toContain('50 albums');
+    expect(container.children.indexOf(headers[1])).toBeGreaterThan(dividerAt);
+  });
+
+  test('search result headers vertically center the count with the title', () => {
+    const css = readFileSync(
+      join(import.meta.dir, '../tidal_dl/gui/static/style.css'),
+      'utf8',
+    );
+    const headerRules = [...css.matchAll(/^\.results-header \{([^}]*)\}/gm)].map(match => match[1]);
+    expect(headerRules.some(body => body.includes('align-items: center'))).toBe(true);
+    expect(headerRules.some(body => body.includes('align-items: baseline'))).toBe(false);
+    const galleryBreak = [...css.matchAll(/^\.album-gallery \+ \.search-divider \{([^}]*)\}/gm)]
+      .map(match => match[1]);
+    expect(galleryBreak.some(body => /padding-top:\s*\d+px/.test(body))).toBe(true);
   });
 });
 

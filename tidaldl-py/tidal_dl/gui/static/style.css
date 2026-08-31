@@ -482,6 +482,10 @@ body {
   padding: 20px 0 12px;
 }
 
+.album-gallery + .search-divider {
+  padding-top: 28px;
+}
+
 .search-divider::before,
 .search-divider::after {
   content: '';
@@ -621,7 +625,7 @@ body {
 
 .results-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
   margin-bottom: 20px;
 }

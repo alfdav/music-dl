@@ -1505,7 +1505,7 @@ function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRe
   if (localItems.length > 0) {
     const localHeader = h('div', { className: 'results-header' });
     localHeader.appendChild(textEl('h3', 'Your Library', 'results-section-title'));
-    localHeader.appendChild(textEl('span', localItems.length + ' results', 'results-count'));
+    localHeader.appendChild(textEl('span', localItems.length === 1 ? '1 result' : localItems.length + ' results', 'results-count'));
     container.appendChild(localHeader);
 
     if (type === 'tracks') {
@@ -1584,7 +1584,10 @@ function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRe
   const tidalResponse = type === 'albums'
     ? { ...(tidalData || {}), albums: tidalItems, unfiltered_total: originalTidalItems.length }
     : tidalData;
-  if (type !== 'albums' && localItems.length > 0 && tidalItems.length > 0) {
+  const showTidalSection = type === 'albums'
+    ? originalTidalItems.length > 0
+    : tidalItems.length > 0;
+  if (localItems.length > 0 && showTidalSection) {
     const divider = h('div', { className: 'search-divider' });
     divider.appendChild(textEl('span', 'Tidal', 'search-divider-label'));
     container.appendChild(divider);
@@ -1608,7 +1611,7 @@ function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRe
     if (localItems.length === 0) {
       const tidalHeader = h('div', { className: 'results-header' });
       tidalHeader.appendChild(textEl('h3', 'Tidal', 'results-section-title'));
-      tidalHeader.appendChild(textEl('span', tidalItems.length + ' results', 'results-count'));
+      tidalHeader.appendChild(textEl('span', tidalItems.length === 1 ? '1 result' : tidalItems.length + ' results', 'results-count'));
       container.appendChild(tidalHeader);
     }
 

@@ -290,6 +290,8 @@ class TestAppJsFeatureMarkers:
         )[0]
         filtered_condition = "state.searchType === 'albums' && data.unfiltered_total > 0"
         assert source.count("'Tidal Albums'") == 1
+        assert "className: 'search-divider'" in source
+        assert "type !== 'albums' && localItems.length > 0" not in source
         assert "renderSearchResults(tidalWrap, tidalResponse, false)" in source
         assert "unfiltered_total: originalTidalItems.length" in source
         assert "originalTidalItems.length === 0" in source
@@ -300,6 +302,11 @@ class TestAppJsFeatureMarkers:
         assert "No albums match these filters" in filtered_branch
         assert "Use Clear filters above to see every album." in filtered_branch
         assert "return;" in filtered_branch
+
+        css = (STATIC_DIR / "style.css").read_text()
+        header = _css_rule_bodies(css, ".results-header")
+        assert any("align-items: center" in body for body in header)
+        assert all("align-items: baseline" not in body for body in header)
 
     def test_search_cache_matches_query_and_type_and_drops_stale_results(self):
         js = read_gui_js()

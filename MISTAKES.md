@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-08-31 — Albums search skipped the local/Tidal divider
+
+**What happened:** Albums pill Search showed one Your Library card (Various Artists) then "Tidal Albums 50 albums" flush against the card. The header collided with the local gallery.
+
+**Root cause:** `renderUnifiedSearchResults` skipped `.search-divider` when `type === 'albums'` because albums already paint a "Tidal Albums" h3. The local `.album-gallery` has no bottom margin, so that h3 sat on the card. `.results-header` also used `align-items: baseline`, so the count sat off the title.
+
+**Prevention:** Show the divider whenever local results and a Tidal section both exist, including albums (`originalTidalItems.length > 0`). Keep `.album-gallery + .search-divider` padding. Center `.results-header` (`align-items: center`). Singularize `1 result`.
+
 ## 2026-08-31 — CodeQL flagged `"tidal.com/" in url` as incomplete sanitization
 
 **What happened:** PR 154's `looks_like_web_url` used `"tidal.com/" in raw` so a scheme-less Tidal paste would not go to `session.search`. CodeQL High: Incomplete URL substring sanitization (`py/incomplete-url-substring-sanitization`).
