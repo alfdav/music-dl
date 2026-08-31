@@ -24,7 +24,10 @@ _playlist_tracks_cache: dict[str, dict] = {}
 
 
 def get_tidal_session():
+    from tidal_dl.gui.api.settings import ensure_tidal_logged_in
+
     tidal = Tidal()
+    ensure_tidal_logged_in(tidal)
     return tidal.session
 
 

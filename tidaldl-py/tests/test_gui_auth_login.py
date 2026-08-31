@@ -349,6 +349,46 @@ def test_gui_auth_login_refreshes_persisted_token_before_oauth_when_session_look
     assert calls[0][0] == "ensure"
 
 
+def test_gui_auth_login_does_not_oauth_when_refresh_raises_and_refresh_token_exists():
+    from tidal_dl.gui.api import settings as settings_api
+
+    calls = []
+
+    class Session:
+        refresh_token = "disk-refresh"
+
+        def login_oauth(self):
+            calls.append("login_oauth")
+            return (
+                SimpleNamespace(verification_uri_complete="", user_code="ABCD", expires_in=300),
+                _NeverCompletes(),
+            )
+
+    class Tidal:
+        session = Session()
+        data = SimpleNamespace(
+            access_token="expired-access",
+            refresh_token="disk-refresh",
+            expiry_time=time.time() - 60,
+        )
+
+        def _ensure_token_fresh(self, refresh_window_sec=300):
+            calls.append("ensure")
+            raise RuntimeError("network blip")
+
+        def refresh_api_keys(self):
+            calls.append("refresh_api_keys")
+
+    settings_api._login_state.clear()
+    settings_api._login_state.update({"status": "idle"})
+    result = settings_api.auth_login(Tidal())
+
+    assert result["status"] == "expired"
+    assert result["auth_state"] == "expired"
+    assert "login_oauth" not in calls
+    assert calls == ["ensure"]
+
+
 def test_gui_auth_login_starts_oauth_only_after_refresh_failure():
     from tidal_dl.gui.api import settings as settings_api
 
@@ -429,6 +469,80 @@ def test_gui_auth_login_reuses_unexpired_access_without_oauth_when_refresh_fails
     assert result == {"status": "already_logged_in"}
     assert "login_oauth" not in calls
     assert calls == ["ensure"]
+
+
+def test_ensure_tidal_logged_in_refreshes_once_then_succeeds():
+    from tidal_dl.gui.api import settings as settings_api
+
+    class Session:
+        def __init__(self):
+            self.checks = 0
+
+        def check_login(self):
+            self.checks += 1
+            return self.checks > 1
+
+    tidal = SimpleNamespace(
+        session=Session(),
+        data=SimpleNamespace(access_token="expired", refresh_token="persist-refresh"),
+        _ensure_token_fresh=lambda refresh_window_sec=300: True,
+    )
+
+    assert settings_api.ensure_tidal_logged_in(tidal) is True
+    assert tidal.session.checks == 2
+
+
+def test_search_401_refreshes_then_retries_without_oauth(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from tidal_dl.gui import create_app
+    from tidal_dl.gui.api import search as search_api
+
+    calls = []
+
+    class Session:
+        def __init__(self):
+            self.checks = 0
+
+        def check_login(self):
+            self.checks += 1
+            return self.checks > 1
+
+        def login_oauth(self):
+            calls.append("login_oauth")
+            raise AssertionError("401 retry started login_oauth")
+
+        def search(self, *args, **kwargs):
+            return {"tracks": []}
+
+    class FakeTidal:
+        def __init__(self):
+            self.session = Session()
+            self.data = SimpleNamespace(access_token="expired", refresh_token="persist-refresh")
+
+        def _ensure_token_fresh(self, refresh_window_sec=300):
+            calls.append("ensure")
+            return True
+
+    monkeypatch.setattr(search_api, "Tidal", FakeTidal)
+    client = TestClient(create_app(port=8765))
+    resp = client.get("/api/search?q=test", headers={"host": "localhost:8765"})
+
+    assert resp.status_code == 200
+    assert "login_oauth" not in calls
+    assert "ensure" in calls
+
+
+def test_ensure_tidal_logged_in_false_when_no_tokens():
+    from tidal_dl.gui.api import settings as settings_api
+
+    tidal = SimpleNamespace(
+        session=SimpleNamespace(check_login=lambda: False, refresh_token=None),
+        data=SimpleNamespace(access_token=None, refresh_token=None),
+        _ensure_token_fresh=lambda refresh_window_sec=300: False,
+    )
+
+    assert settings_api.ensure_tidal_logged_in(tidal) is False
 
 
 def test_token_keepalive_loop_calls_ensure_until_stopped(monkeypatch):

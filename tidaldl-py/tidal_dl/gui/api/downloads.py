@@ -28,9 +28,10 @@ def download(req: DownloadRequest, request: Request) -> dict:
         raise HTTPException(status_code=400, detail="Provide track_ids")
 
     from tidal_dl.config import Tidal
+    from tidal_dl.gui.api.settings import ensure_tidal_logged_in
 
     try:
-        logged_in = Tidal().session.check_login()
+        logged_in = ensure_tidal_logged_in(Tidal())
     except Exception:
         logged_in = False
 

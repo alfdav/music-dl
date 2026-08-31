@@ -56,7 +56,10 @@ def stream_tidal_track(track_id: int):
 
     from tidal_dl.gui.security import validate_stream_url
 
+    from tidal_dl.gui.api.settings import ensure_tidal_logged_in
+
     tidal = Tidal()
+    ensure_tidal_logged_in(tidal)
     session = tidal.session
 
     if session.check_login():

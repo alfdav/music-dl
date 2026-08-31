@@ -45,6 +45,7 @@ from tidal_dl.model.cfg import Token as ModelToken
 _console = RichConsole()
 
 _singleton_lock = Lock()
+_token_fresh_lock = Lock()
 _settings_instance: "Settings | None" = None
 _tidal_instance: "Tidal | None" = None
 _handling_app_instance: "HandlingApp | None" = None
@@ -447,6 +448,8 @@ class Tidal(BaseConfig[ModelToken]):
                     expiry_time = None
 
                 if token_type is None or access_token is None:
+                    if refresh_token:
+                        return self._ensure_token_fresh(refresh_window_sec=30 * 24 * 3600)
                     return False
 
                 result = self.session.load_oauth_session(
@@ -465,8 +468,16 @@ class Tidal(BaseConfig[ModelToken]):
                         "side. Try logging in again by re-running this app."
                     )
 
-                if delete_on_failure and os.path.exists(self.file_path):
-                    os.remove(self.file_path)
+            if not result and (self.data.refresh_token or refresh_token):
+                result = self._ensure_token_fresh(refresh_window_sec=30 * 24 * 3600)
+
+            if (
+                not result
+                and delete_on_failure
+                and not self.data.refresh_token
+                and os.path.exists(self.file_path)
+            ):
+                os.remove(self.file_path)
 
         return result
 
@@ -520,27 +531,30 @@ class Tidal(BaseConfig[ModelToken]):
             return cached
 
     def _ensure_token_fresh(self, refresh_window_sec: int = 300) -> bool:
-        refresh_token = self.data.refresh_token
-        if not refresh_token:
-            return False
-
-        try:
-            _raw_exp = getattr(self.data, "expiry_time", 0) or 0
-            expiry_time = _raw_exp.timestamp() if hasattr(_raw_exp, "timestamp") else float(_raw_exp)
-        except (TypeError, ValueError):
-            expiry_time = 0
-        if expiry_time > 0 and expiry_time - time.time() > refresh_window_sec:
-            return False
-
-        try:
-            refreshed = self.session.token_refresh(refresh_token)
-            if refreshed is False:
+        with _token_fresh_lock:
+            self._last_refresh_error = None
+            refresh_token = self.data.refresh_token
+            if not refresh_token:
                 return False
-            self.token_persist()
-            return True
-        except Exception:
-            _console.print("[yellow]Warning:[/yellow] Token refresh failed; proceeding with current token.")
-            return False
+
+            try:
+                _raw_exp = getattr(self.data, "expiry_time", 0) or 0
+                expiry_time = _raw_exp.timestamp() if hasattr(_raw_exp, "timestamp") else float(_raw_exp)
+            except (TypeError, ValueError):
+                expiry_time = 0
+            if expiry_time > 0 and expiry_time - time.time() > refresh_window_sec:
+                return False
+
+            try:
+                refreshed = self.session.token_refresh(refresh_token)
+                if refreshed is False:
+                    return False
+                self.token_persist()
+                return True
+            except Exception as exc:
+                self._last_refresh_error = exc
+                _console.print("[yellow]Warning:[/yellow] Token refresh failed; proceeding with current token.")
+                return False
 
     def switch_to_atmos_session(self) -> bool:
         """Re-authenticate the session with Dolby Atmos credentials.
@@ -615,6 +629,10 @@ class Tidal(BaseConfig[ModelToken]):
             fn_print("Yep, looks good! You are logged in.")
             self._probe_subscription_quality()
             return True
+
+        if self.data.refresh_token or getattr(self.session, "refresh_token", None):
+            fn_print("Saved Tidal session could not be restored. Not starting a new login.")
+            return False
 
         fn_print("You either do not have a token or your token is invalid.")
         fn_print("No worries, we will handle this...")

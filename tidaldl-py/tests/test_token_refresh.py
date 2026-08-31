@@ -291,6 +291,43 @@ class TestDatetimeExpiryHandling:
         tidal.session.token_refresh.assert_not_called()
 
 
+class TestLoginTokenDoesNotWipeRefresh:
+    def test_login_token_does_not_delete_file_when_refresh_token_present(self, tidal):
+        tidal.token_from_storage = True
+        tidal.data.token_type = "Bearer"
+        tidal.data.access_token = "expired-access"
+        tidal.data.refresh_token = "persist-refresh"
+        tidal.data.expiry_time = time.time() - 60
+        tidal.session.load_oauth_session.side_effect = RuntimeError("network")
+        tidal.file_path_obj = Path(tidal.file_path)
+        tidal.file_path_obj.write_text("token", encoding="utf-8")
+
+        with patch.object(tidal, "_ensure_token_fresh", return_value=False):
+            assert tidal.login_token(delete_on_failure=True, quiet=True) is False
+
+        assert tidal.file_path_obj.exists()
+
+    def test_login_token_refreshes_when_access_missing_but_refresh_present(self, tidal):
+        tidal.token_from_storage = True
+        tidal.data.token_type = "Bearer"
+        tidal.data.access_token = None
+        tidal.data.refresh_token = "persist-refresh"
+        tidal.data.expiry_time = 0.0
+
+        with patch.object(tidal, "_ensure_token_fresh", return_value=True) as ensure:
+            assert tidal.login_token(quiet=True) is True
+        ensure.assert_called_once()
+
+    def test_interactive_login_does_not_oauth_while_refresh_token_exists(self, tidal):
+        tidal.data.refresh_token = "persist-refresh"
+        tidal.session.login_oauth.side_effect = AssertionError("login started login_oauth")
+
+        with patch.object(tidal, "_try_login_with_key_rotation", return_value=False):
+            assert tidal.login(fn_print=lambda _msg: None) is False
+
+        tidal.session.login_oauth.assert_not_called()
+
+
 class TestLogoutReset:
     def _prepare(self, tidal):
         tidal.data.access_token = "access"

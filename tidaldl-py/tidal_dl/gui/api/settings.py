@@ -175,28 +175,71 @@ def _persisted_refresh_token(tidal: Tidal):
     return data_token or session_token
 
 
-def _revive_from_refresh_token(tidal: Tidal, refresh_window_sec: int = TOKEN_KEEPALIVE_WINDOW_SEC) -> bool:
+REFRESH_OK = "ok"
+REFRESH_REJECTED = "rejected"
+REFRESH_FAILED = "failed"
+REFRESH_SKIPPED = "skipped"
+
+
+def refresh_session(tidal: Tidal, refresh_window_sec: int = TOKEN_KEEPALIVE_WINDOW_SEC) -> str:
+    """Attempt persist+refresh. Distinguishes rejected tokens from transient failures."""
     refresh_token = _persisted_refresh_token(tidal)
     if not refresh_token:
-        return False
+        return REFRESH_SKIPPED
     ensure = getattr(tidal, "_ensure_token_fresh", None)
     if callable(ensure):
         try:
-            return bool(ensure(refresh_window_sec=refresh_window_sec))
+            if ensure(refresh_window_sec=refresh_window_sec):
+                return REFRESH_OK
+            if getattr(tidal, "_last_refresh_error", None):
+                return REFRESH_FAILED
+            return REFRESH_REJECTED
         except Exception:
-            return False
+            return REFRESH_FAILED
     token_refresh = getattr(getattr(tidal, "session", None), "token_refresh", None)
     persist = getattr(tidal, "token_persist", None)
     if not callable(token_refresh):
-        return False
+        return REFRESH_FAILED
     try:
         if token_refresh(refresh_token) is False:
-            return False
+            return REFRESH_REJECTED
         if callable(persist):
             persist()
-        return True
+        return REFRESH_OK
     except Exception:
-        return False
+        return REFRESH_FAILED
+
+
+def _revive_from_refresh_token(tidal: Tidal, refresh_window_sec: int = TOKEN_KEEPALIVE_WINDOW_SEC) -> bool:
+    return refresh_session(tidal, refresh_window_sec=refresh_window_sec) == REFRESH_OK
+
+
+def ensure_tidal_logged_in(tidal: Tidal) -> bool:
+    """Refresh once if needed, then re-check login. Never wipes tokens."""
+    session = getattr(tidal, "session", None)
+    check = getattr(session, "check_login", None)
+    if callable(check):
+        try:
+            if check():
+                return True
+        except Exception:
+            pass
+    keep_tidal_session_alive(tidal)
+    if callable(check):
+        try:
+            return bool(check())
+        except Exception:
+            return False
+    return False
+
+
+def require_tidal_session():
+    from fastapi import HTTPException
+
+    tidal = get_tidal_instance()
+    if not ensure_tidal_logged_in(tidal):
+        raise HTTPException(status_code=401, detail="Not logged in to Tidal")
+    return tidal.session
 
 
 @router.get("/auth/status")
@@ -312,13 +355,18 @@ def auth_login(tidal: Tidal = Depends(get_tidal_instance)) -> dict:  # noqa: B00
     """Reuse a persisted refresh_token before starting a new device-code OAuth flow."""
     global _login_generation
     with _login_lock:
-        if _revive_from_refresh_token(tidal, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC):
+        outcome = refresh_session(tidal, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC)
+        if outcome == REFRESH_OK:
             return _mark_already_logged_in(tidal)
 
         access_token = getattr(getattr(tidal, "data", None), "access_token", None)
         expiry_time = _token_expiry(tidal) if getattr(tidal, "data", None) is not None else None
         if access_token and expiry_time is not None and expiry_time > time.time():
             return _mark_already_logged_in(tidal)
+
+        if _persisted_refresh_token(tidal) and outcome != REFRESH_REJECTED:
+            _login_state["status"] = "idle"
+            return {"status": "expired", "auth_state": "expired"}
 
         if not _persisted_refresh_token(tidal):
             try:

@@ -146,7 +146,7 @@ def create_app(
 
     class TokenRefreshMiddleware(BaseHTTPMiddleware):
         _SKIP_PREFIXES = (
-            "/api/settings", "/api/auth", "/api/setup",
+            "/api/settings", "/api/setup",
             "/api/library/scan", "/api/queue",
         )
 
