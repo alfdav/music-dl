@@ -20,6 +20,17 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
+## Unreleased
+- Hi-Res downloads write real 24-bit/96 kHz audio when Tidal lists the track as HiRes, instead of falling back to 16-bit/44.1 ([#149](https://github.com/alfdav/music-dl/pull/149), [#148](https://github.com/alfdav/music-dl/issues/148)).
+- Hi-Res / lossless streams write a real `.flac` container instead of FLAC stuffed in `.m4a` ([#150](https://github.com/alfdav/music-dl/pull/150)).
+- Keep a Tidal session alive from one machine login: tokens live outside the app; `token.json` is never wiped except Reset/logout; a new device-code OAuth is never started while a `refresh_token` can still revive; keepalive refresh plus one refresh+retry on Tidal 401 ([#152](https://github.com/alfdav/music-dl/pull/152)).
+- Show now-playing lyrics from Tidal when local files have none, and allow saving a sidecar ([#143](https://github.com/alfdav/music-dl/pull/143)).
+- Keep a single Home Continue Listening tile when `/home` retries while the music volume is offline ([#142](https://github.com/alfdav/music-dl/pull/142)).
+- Center library sort pill labels and keep chips off the search rail ([#144](https://github.com/alfdav/music-dl/pull/144)).
+- Add a quiet back arrow on drill-in views ([#145](https://github.com/alfdav/music-dl/pull/145)).
+- Serve the albums gallery from release stamps instead of regrouping the whole library ([#146](https://github.com/alfdav/music-dl/pull/146)).
+- Home data tiles open a local insight fan overlay ([#147](https://github.com/alfdav/music-dl/pull/147)).
+
 ## v1.7.6 (2026-08-18)
 - Skip NAS trash dirs (`#recycle` and similar) from the local library scan ([#131](https://github.com/alfdav/music-dl/pull/131)).
 - Stop full-library album grouping on artist and release reads ([#133](https://github.com/alfdav/music-dl/pull/133)).
