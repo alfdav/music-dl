@@ -6,6 +6,15 @@ import pytest
 from fastapi import HTTPException
 
 
+@pytest.fixture(autouse=True)
+def _clear_refresh_backoff():
+    from tidal_dl.gui.api import settings as settings_api
+
+    settings_api._refresh_backoff_until = 0.0
+    yield
+    settings_api._refresh_backoff_until = 0.0
+
+
 class _NeverCompletes:
     def result(self, timeout=None):
         threading.Event().wait(60)
@@ -531,6 +540,162 @@ def test_search_401_refreshes_then_retries_without_oauth(monkeypatch):
     assert resp.status_code == 200
     assert "login_oauth" not in calls
     assert "ensure" in calls
+
+
+class _TidalUnauthorized(Exception):
+    def __init__(self):
+        super().__init__("401 Client Error: Unauthorized for url: https://api.tidal.com/v1/search")
+        self.response = SimpleNamespace(status_code=401)
+
+
+def test_search_tidal_401_then_refresh_succeeds_without_oauth(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from tidal_dl.gui import create_app
+    from tidal_dl.gui.api import search as search_api
+
+    calls = []
+
+    class Session:
+        def __init__(self):
+            self.searches = 0
+
+        def check_login(self):
+            return True
+
+        def login_oauth(self):
+            calls.append("login_oauth")
+            raise AssertionError("Tidal 401 retry started login_oauth")
+
+        def search(self, *args, **kwargs):
+            self.searches += 1
+            calls.append(("search", self.searches))
+            if self.searches == 1:
+                raise _TidalUnauthorized()
+            return {"tracks": []}
+
+    class FakeTidal:
+        def __init__(self):
+            self.session = Session()
+            self.data = SimpleNamespace(
+                access_token="stale-access",
+                refresh_token="persist-refresh",
+                expiry_time=time.time() + 3600,
+            )
+
+        def _ensure_token_fresh(self, refresh_window_sec=300):
+            calls.append("ensure")
+            return True
+
+        def token_persist(self):
+            calls.append("token_persist")
+
+        def logout(self):
+            calls.append("logout")
+            raise AssertionError("Tidal 401 retry wiped tokens")
+
+    monkeypatch.setattr(search_api, "Tidal", FakeTidal)
+    client = TestClient(create_app(port=8765))
+    resp = client.get("/api/search?q=test", headers={"host": "localhost:8765"})
+
+    assert resp.status_code == 200
+    assert resp.json()["tracks"] == []
+    assert "login_oauth" not in calls
+    assert "logout" not in calls
+    assert ("search", 1) in calls
+    assert ("search", 2) in calls
+    assert "ensure" in calls
+
+
+def test_search_invalid_refresh_token_returns_401_and_keeps_tokens(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from tidal_dl.gui import create_app
+    from tidal_dl.gui.api import search as search_api
+
+    token_path = tmp_path / "token.json"
+    token_path.write_text('{"refresh_token":"dead-refresh"}', encoding="utf-8")
+    calls = []
+
+    class Session:
+        def check_login(self):
+            return True
+
+        def login_oauth(self):
+            calls.append("login_oauth")
+            raise AssertionError("rejected refresh started login_oauth")
+
+        def search(self, *args, **kwargs):
+            raise _TidalUnauthorized()
+
+        def token_refresh(self, refresh_token):
+            calls.append(("token_refresh", refresh_token))
+            return False
+
+    class FakeTidal:
+        instances = []
+
+        def __init__(self):
+            self.session = Session()
+            self.data = SimpleNamespace(
+                access_token="stale-access",
+                refresh_token="dead-refresh",
+                expiry_time=time.time() + 3600,
+            )
+            self.file_path = str(token_path)
+            FakeTidal.instances.append(self)
+
+        def _ensure_token_fresh(self, refresh_window_sec=300):
+            calls.append("ensure")
+            return False
+
+        def logout(self):
+            calls.append("logout")
+            token_path.unlink(missing_ok=True)
+
+    monkeypatch.setattr(search_api, "Tidal", FakeTidal)
+    client = TestClient(create_app(port=8765))
+    resp = client.get("/api/search?q=test", headers={"host": "localhost:8765"})
+
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Not logged in to Tidal"
+    assert "login_oauth" not in calls
+    assert "logout" not in calls
+    assert token_path.exists()
+    assert "dead-refresh" in token_path.read_text(encoding="utf-8")
+    assert FakeTidal.instances[-1].data.refresh_token == "dead-refresh"
+
+
+def test_auth_status_backs_off_after_transient_refresh_failure():
+    from tidal_dl.gui.api import settings as settings_api
+
+    class FlakyTidal:
+        def __init__(self):
+            self.data = SimpleNamespace(
+                access_token="expired-access",
+                refresh_token="persist-refresh",
+                expiry_time=time.time() - 60,
+                account_quality=None,
+            )
+            self.session = SimpleNamespace(
+                user=None,
+                refresh_token="persist-refresh",
+                login_oauth=lambda: pytest.fail("status started login_oauth"),
+            )
+            self.ensure_calls = 0
+
+        def _ensure_token_fresh(self, refresh_window_sec=300):
+            self.ensure_calls += 1
+            raise RuntimeError("tidal timeout")
+
+    tidal = FlakyTidal()
+    first = settings_api._local_auth_status(tidal)
+    second = settings_api._local_auth_status(tidal)
+
+    assert first["auth_state"] == "expired"
+    assert second["auth_state"] == "expired"
+    assert tidal.ensure_calls == 1
+    assert tidal.data.refresh_token == "persist-refresh"
 
 
 def test_ensure_tidal_logged_in_false_when_no_tokens():

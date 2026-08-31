@@ -114,16 +114,18 @@ def _track_match_keys(track: object) -> set[tuple[str, str]]:
 @router.get("/albums/{album_id}/tracks")
 def album_tracks(album_id: int) -> dict:
     """Get tracks for a specific album with local-match flags."""
-    from tidal_dl.gui.api.settings import ensure_tidal_logged_in
+    from tidal_dl.gui.api.settings import call_tidal
 
     tidal = Tidal()
-    if not ensure_tidal_logged_in(tidal):
-        raise HTTPException(status_code=401, detail="Not logged in to Tidal")
-    session = tidal.session
+
+    def _load_album():
+        loaded = tidal.session.album(album_id)
+        return loaded, loaded.tracks() or []
 
     try:
-        album = session.album(album_id)
-        tracks = album.tracks() or []
+        album, tracks = call_tidal(tidal, _load_album)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"Album not found: {exc}") from exc
 
@@ -162,17 +164,19 @@ def album_lookup(
     """
     from tidalapi.album import Album as TidalAlbum
 
-    from tidal_dl.gui.api.settings import ensure_tidal_logged_in
+    from tidal_dl.gui.api.settings import call_tidal
 
     tidal = Tidal()
-    if not ensure_tidal_logged_in(tidal):
-        raise HTTPException(status_code=401, detail="Not logged in to Tidal")
-    session = tidal.session
 
     # --- 1. Search Tidal for the album ---
     query = f"{artist} {album}"
     try:
-        results = session.search(query, models=[TidalAlbum], limit=20)
+        results = call_tidal(
+            tidal,
+            lambda: tidal.session.search(query, models=[TidalAlbum], limit=20),
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Tidal search failed: {exc}") from exc
 

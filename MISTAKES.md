@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-08-31 — Tidal 401 after fail-silent refresh sent the UI back to login
+
+**What happened:** `TokenRefreshMiddleware` swallowed refresh errors, then search/download/playlists/albums raised 401 `"Not logged in to Tidal"`. UI `apiTidal` / `_isTidalAuthError` treated that as login-required even when `refresh_token` was still valid. `GET /auth/status` also re-hit Tidal on every poll after a transient refresh failure.
+
+**Root cause:** Routes trusted local `check_login()` or wrapped a Tidal 401 as 502/401 without one refresh+retry. Transient refresh failure was not backed off, so status polls hammered Tidal.
+
+**Prevention:** One shared `call_tidal`: on Tidal 401, refresh once and retry. 401/expired only if refresh is rejected. Transient failure → 503 + 30s backoff so status/middleware cannot hammer Tidal. Do not wipe `token.json` and do not start `login_oauth` on this path. Only Reset deletes tokens.
+
 ## 2026-08-31 — Tidal status asked for a new login while refresh_token could revive
 
 **What happened:** After one machine login, overnight or a restart could show `auth_state=expired` / "log in". Clicking login started a new device-code OAuth flow even when `token.json` still had a refresh_token. Extra device-code logins look like account sharing.

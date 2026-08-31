@@ -179,34 +179,65 @@ REFRESH_OK = "ok"
 REFRESH_REJECTED = "rejected"
 REFRESH_FAILED = "failed"
 REFRESH_SKIPPED = "skipped"
+REFRESH_BACKOFF_SEC = 30
+_refresh_backoff_until = 0.0
+_refresh_backoff_outcome = REFRESH_FAILED
 
 
-def refresh_session(tidal: Tidal, refresh_window_sec: int = TOKEN_KEEPALIVE_WINDOW_SEC) -> str:
+def _clear_refresh_backoff() -> None:
+    global _refresh_backoff_until, _refresh_backoff_outcome
+    _refresh_backoff_until = 0.0
+    _refresh_backoff_outcome = REFRESH_FAILED
+
+
+def _arm_refresh_backoff(outcome: str) -> None:
+    global _refresh_backoff_until, _refresh_backoff_outcome
+    _refresh_backoff_until = time.time() + REFRESH_BACKOFF_SEC
+    _refresh_backoff_outcome = outcome
+
+
+def refresh_session(
+    tidal: Tidal,
+    refresh_window_sec: int = TOKEN_KEEPALIVE_WINDOW_SEC,
+    *,
+    honor_backoff: bool = True,
+) -> str:
     """Attempt persist+refresh. Distinguishes rejected tokens from transient failures."""
     refresh_token = _persisted_refresh_token(tidal)
     if not refresh_token:
         return REFRESH_SKIPPED
+    now = time.time()
+    if honor_backoff and now < _refresh_backoff_until:
+        return _refresh_backoff_outcome
     ensure = getattr(tidal, "_ensure_token_fresh", None)
     if callable(ensure):
         try:
             if ensure(refresh_window_sec=refresh_window_sec):
+                _clear_refresh_backoff()
                 return REFRESH_OK
             if getattr(tidal, "_last_refresh_error", None):
+                _arm_refresh_backoff(REFRESH_FAILED)
                 return REFRESH_FAILED
+            _arm_refresh_backoff(REFRESH_REJECTED)
             return REFRESH_REJECTED
         except Exception:
+            _arm_refresh_backoff(REFRESH_FAILED)
             return REFRESH_FAILED
     token_refresh = getattr(getattr(tidal, "session", None), "token_refresh", None)
     persist = getattr(tidal, "token_persist", None)
     if not callable(token_refresh):
+        _arm_refresh_backoff(REFRESH_FAILED)
         return REFRESH_FAILED
     try:
         if token_refresh(refresh_token) is False:
+            _arm_refresh_backoff(REFRESH_REJECTED)
             return REFRESH_REJECTED
         if callable(persist):
             persist()
+        _clear_refresh_backoff()
         return REFRESH_OK
     except Exception:
+        _arm_refresh_backoff(REFRESH_FAILED)
         return REFRESH_FAILED
 
 
@@ -233,13 +264,87 @@ def ensure_tidal_logged_in(tidal: Tidal) -> bool:
     return False
 
 
-def require_tidal_session():
-    from fastapi import HTTPException
+def _session_logged_in(session) -> bool:
+    check = getattr(session, "check_login", None)
+    if not callable(check):
+        return False
+    try:
+        return bool(check())
+    except Exception:
+        return False
 
-    tidal = get_tidal_instance()
-    if not ensure_tidal_logged_in(tidal):
-        raise HTTPException(status_code=401, detail="Not logged in to Tidal")
-    return tidal.session
+
+def _is_tidal_unauthorized(exc: BaseException) -> bool:
+    if isinstance(exc, HTTPException) and exc.status_code == 401:
+        return True
+    status = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    if status is None and response is not None:
+        status = getattr(response, "status_code", None)
+    if status == 401:
+        return True
+    text = str(exc).lower()
+    return "401" in text and ("unauthorized" in text or "unauthorised" in text)
+
+
+def _login_required_error(exc: BaseException | None = None) -> HTTPException:
+    error = HTTPException(status_code=401, detail="Not logged in to Tidal")
+    if exc is not None:
+        error.__cause__ = exc
+    return error
+
+
+def _refresh_unavailable_error(exc: BaseException | None = None) -> HTTPException:
+    error = HTTPException(status_code=503, detail="Tidal session refresh failed")
+    if exc is not None:
+        error.__cause__ = exc
+    return error
+
+
+def _raise_for_refresh_outcome(tidal: Tidal, outcome: str, exc: BaseException | None = None) -> None:
+    if outcome == REFRESH_OK:
+        return
+    if outcome == REFRESH_REJECTED or not _persisted_refresh_token(tidal):
+        raise _login_required_error(exc)
+    raise _refresh_unavailable_error(exc)
+
+
+def call_tidal(tidal: Tidal, fn):
+    """Run a Tidal call. One refresh+retry on 401. Never oauth, never wipe tokens."""
+    session = getattr(tidal, "session", None)
+    if not _session_logged_in(session):
+        outcome = refresh_session(
+            tidal, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC, honor_backoff=False
+        )
+        _raise_for_refresh_outcome(tidal, outcome)
+    try:
+        return fn()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if not _is_tidal_unauthorized(exc):
+            raise
+        outcome = refresh_session(
+            tidal, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC, honor_backoff=False
+        )
+        if outcome == REFRESH_OK:
+            return fn()
+        _raise_for_refresh_outcome(tidal, outcome, exc)
+
+
+def require_tidal(tidal: Tidal | None = None) -> Tidal:
+    instance = tidal if tidal is not None else get_tidal_instance()
+    if _session_logged_in(getattr(instance, "session", None)):
+        return instance
+    outcome = refresh_session(
+        instance, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC, honor_backoff=False
+    )
+    _raise_for_refresh_outcome(instance, outcome)
+    return instance
+
+
+def require_tidal_session():
+    return require_tidal().session
 
 
 @router.get("/auth/status")
@@ -445,6 +550,7 @@ def auth_reset(tidal: Tidal = Depends(get_tidal_instance)) -> dict:
                 raise RuntimeError("Tidal logout returned false")
         except Exception as exc:
             raise HTTPException(status_code=500, detail="Could not reset Tidal connection") from exc
+        _clear_refresh_backoff()
         _login_generation += 1
         _replace_login_state("idle")
     return {"status": "reset", "auth_state": "not_configured"}
