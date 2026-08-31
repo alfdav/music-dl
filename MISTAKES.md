@@ -1,5 +1,37 @@
 # Mistakes
 
+## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
+
+**What happened:** Artist-name track search (Carlos Vives) replaced real track hits with a self-titled album. Local-empty paint showed `No results found` while Tidal was still in flight. `urlparse(...).hostname` can raise `ValueError` on broken IPv6 zones / trailing `%`, which would 500 `/api/search`.
+
+**Root cause:** Album-title fallback ran whenever titles scored `< 0.7`, including artist queries. `paint()` treated `tidalData === null` as settled empty. Host parse had no `ValueError` guard.
+
+**Prevention:** Album fallback only when track search is empty or the query is not a strong artist match on those hits. Keep the skeleton while Tidal is pending and local is empty. Catch `ValueError` in `_hostname`.
+
+## 2026-08-31 — Albums search skipped the local/Tidal divider
+
+**What happened:** Albums pill Search showed one Your Library card (Various Artists) then "Tidal Albums 50 albums" flush against the card. The header collided with the local gallery.
+
+**Root cause:** `renderUnifiedSearchResults` skipped `.search-divider` when `type === 'albums'` because albums already paint a "Tidal Albums" h3. The local `.album-gallery` has no bottom margin, so that h3 sat on the card. `.results-header` also used `align-items: baseline`, so the count sat off the title.
+
+**Prevention:** Show the divider whenever local results and a Tidal section both exist, including albums (`originalTidalItems.length > 0`). Keep `.album-gallery + .search-divider` padding. Center `.results-header` (`align-items: center`). Singularize `1 result`.
+
+## 2026-08-31 — CodeQL flagged `"tidal.com/" in url` as incomplete sanitization
+
+**What happened:** PR 154's `looks_like_web_url` used `"tidal.com/" in raw` so a scheme-less Tidal paste would not go to `session.search`. CodeQL High: Incomplete URL substring sanitization (`py/incomplete-url-substring-sanitization`).
+
+**Root cause:** A path can contain the substring (`https://evil.example/tidal.com/track/1`) without the host being Tidal. Substring host checks are the CodeQL pattern.
+
+**Prevention:** Parse the host (`urlparse`, then `hostname == "tidal.com"` or `.endswith(".tidal.com")`). Scheme-prefixed queries still count as URLs so they never hit `session.search`. `parse_tidal_ref` still requires a Tidal host at the start of the string, so a planted path is `None` and Search returns the recognized-URL error.
+
+## 2026-08-31 — Search hid a live Tidal album and froze the Albums pill
+
+**What happened:** Pasting `https://tidal.com/track/330865538/u` or searching the album title `Clásicos de la Provincia 30 Años (Remastered & Expanded)` returned 0 tracks even though Tidal had album 330865537 / track 330865538. Artist cards routed to local-only `/library/artist/{name}/albums`. Albums pill for `Los Grandes Del Vallenato` sat on the skeleton for ~26s.
+
+**Root cause:** Search sent the raw URL/id to `session.search`. Track search never fell back to album search. Artist drill-in ignored Tidal ids. `doSearch` awaited `/library/search` first, and album library search called `_album_cards(db)` on the whole library.
+
+**Prevention:** Parse Tidal URLs/ids and resolve with `session.track/album/artist/playlist`. Never `session.search(url)`. When track search misses a title, fetch tracks from a close album-name match. Artist view is hybrid (local + `/artists/{id}/albums`). Fire library and Tidal search in parallel and bound library album search to SQL `all_albums(q, limit)` — never full-library grouping. Truncate recent-search query text so the dismiss x stays visible.
+
 ## 2026-08-31 — Bugbot: refresh success treated as a live session, skip treated as rejected
 
 **What happened:** PR 152 stayed merge-blocked. Startup persist after a Hi-Fi-only `resolve_source` could write an empty `token.json`. `login_token` / `call_tidal` / `require_tidal` treated `_ensure_token_fresh` True as a usable session without `load_oauth_session` / `check_login`, so `session.user` stayed unset and `list_playlists` crashed. `auth_login` mapped a non-rejected refresh to expired and aborted an in-flight device-code wait. Reset raced keepalive persist. A window skip (`False` because the token was still inside the window) was cached as `REFRESH_REJECTED` and could start `login_oauth`.

@@ -482,6 +482,10 @@ body {
   padding: 20px 0 12px;
 }
 
+.album-gallery + .search-divider {
+  padding-top: 28px;
+}
+
 .search-divider::before,
 .search-divider::after {
   content: '';
@@ -621,7 +625,7 @@ body {
 
 .results-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
   margin-bottom: 20px;
 }
@@ -3397,7 +3401,14 @@ body {
   transition: all 0.2s ease;
   letter-spacing: 0.1px;
   max-width: 220px;
+  min-width: 0;
   overflow: hidden;
+}
+.recent-chip-query {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .recent-chip:hover {
   color: var(--text);

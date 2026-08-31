@@ -155,7 +155,8 @@ function navigate(view, opts) {
       } else if (safeView.startsWith('localrelease:')) {
         renderLocalReleaseDetail(container, safeView.substring(13));
       } else if (safeView.startsWith('artist:')) {
-        renderArtistGallery(container, decodeURIComponent(safeView.substring(7)));
+        const parsed = parseArtistView(safeView);
+        renderArtistGallery(container, parsed.name, parsed.tidalId);
       } else if (safeView.startsWith('album:')) {
         renderAlbumDetail(container, safeView.split(':')[1]);
       } else {
@@ -737,7 +738,7 @@ function _renderRecentStrip(container) {
     artistEl.addEventListener('click', (e) => {
       e.stopPropagation();
       if (!track.artist) return;
-      navigate('artist:' + encodeURIComponent(track.artist));
+      navigate(buildArtistView(track.artist, track.artist_id));
     });
     card.appendChild(artistEl);
     card.addEventListener('click', () => {
@@ -1158,7 +1159,7 @@ function _renderRecentSearches(recentEl, input, resultsArea) {
   const chips = h('div', { className: 'recent-searches-chips' });
   for (const item of recent) {
     const chip = h('div', { className: 'recent-chip' });
-    chip.appendChild(textEl('span', item.query));
+    chip.appendChild(textEl('span', item.query, 'recent-chip-query'));
     chip.appendChild(textEl('span', item.type, 'recent-chip-type'));
     const x = textEl('span', '\u00d7', 'recent-chip-x');
     x.addEventListener('click', (e) => {
@@ -1273,7 +1274,7 @@ function renderSearch(container) {
   const input = h('input', {
     className: 'search-input',
     type: 'text',
-    placeholder: 'Search artists, albums, tracks on Tidal...',
+    placeholder: 'Search or paste a Tidal URL...',
   });
   input.value = state.searchQuery;
   searchField.appendChild(input);
@@ -1410,6 +1411,33 @@ function renderSearchSkeleton(container) {
   }
 }
 
+function _searchStillWaitingForTidal(localData, type, tidalSettled, tidalAuthRequired) {
+  if (tidalSettled || tidalAuthRequired) return false;
+  const localItems = localData ? (localData[type] || []) : [];
+  return localItems.length === 0;
+}
+
+function _followSearchResolve(resultsArea, tidalData) {
+  const resolved = tidalData && tidalData.resolve;
+  if (!resolved) return;
+  if (resolved.kind === 'album' && resolved.id) {
+    navigateAlbum(resolved.id);
+    return;
+  }
+  if (resolved.kind === 'artist') {
+    navigate(buildArtistView(resolved.name || '', resolved.id));
+    return;
+  }
+  if (resolved.kind === 'playlist' && resolved.id) {
+    loadPlaylistTracks(resultsArea, {
+      id: resolved.id,
+      name: resolved.name,
+      cover_url: resolved.cover_url,
+      num_tracks: resolved.num_tracks,
+    });
+  }
+}
+
 async function doSearch(resultsArea) {
   const query = state.searchQuery.trim();
   const type = state.searchType;
@@ -1422,28 +1450,41 @@ async function doSearch(resultsArea) {
   _saveRecentSearch(query, type);
   renderSearchSkeleton(resultsArea);
 
-  // Local results first (instant from SQLite)
   let localData = null;
-  try {
-    localData = await api('/library/search?q=' + encodeURIComponent(query) + '&type=' + type + '&limit=20');
-  } catch (_) { /* local search optional */ }
-
-  // Tidal results (async, may require a user-initiated login)
   let tidalData = null;
   let tidalAuthRequired = false;
-  try {
-    tidalData = await api('/search?q=' + encodeURIComponent(query) + '&type=' + type + '&limit=50');
-  } catch (error) {
-    if (_isTidalAuthError(error)) {
-      tidalAuthRequired = true;
+  let tidalSettled = false;
+  const isStale = () => state.searchQuery.trim() !== query || state.searchType !== type;
+  const paint = () => {
+    if (isStale()) return;
+    state.searchResults = { query, type, local: localData, tidal: tidalData, tidalAuthRequired };
+    if (_searchStillWaitingForTidal(localData, type, tidalSettled, tidalAuthRequired)) {
+      renderSearchSkeleton(resultsArea);
+      refreshStatusLights();
+      return;
     }
-  }
+    renderUnifiedSearchResults(resultsArea, localData, tidalData, tidalAuthRequired);
+    refreshStatusLights();
+  };
 
-  if (state.searchQuery.trim() !== query || state.searchType !== type) return;
+  const localP = api(
+    '/library/search?q=' + encodeURIComponent(query) + '&type=' + type + '&limit=20',
+    { timeoutMs: 2500 }
+  ).then((data) => { localData = data; paint(); }).catch(() => { /* local search optional */ });
 
-  state.searchResults = { query, type, local: localData, tidal: tidalData, tidalAuthRequired };
-  renderUnifiedSearchResults(resultsArea, localData, tidalData, tidalAuthRequired);
-  refreshStatusLights();
+  const tidalP = api('/search?q=' + encodeURIComponent(query) + '&type=' + type + '&limit=50')
+    .then((data) => { tidalData = data; tidalSettled = true; paint(); })
+    .catch((error) => {
+      if (_isTidalAuthError(error)) {
+        tidalAuthRequired = true;
+      }
+      tidalSettled = true;
+      paint();
+    });
+
+  await Promise.all([localP, tidalP]);
+  if (isStale()) return;
+  _followSearchResolve(resultsArea, tidalData);
 }
 
 function renderTidalSearchAuthPanel(container) {
@@ -1477,7 +1518,7 @@ function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRe
   if (localItems.length > 0) {
     const localHeader = h('div', { className: 'results-header' });
     localHeader.appendChild(textEl('h3', 'Your Library', 'results-section-title'));
-    localHeader.appendChild(textEl('span', localItems.length + ' results', 'results-count'));
+    localHeader.appendChild(textEl('span', localItems.length === 1 ? '1 result' : localItems.length + ' results', 'results-count'));
     container.appendChild(localHeader);
 
     if (type === 'tracks') {
@@ -1538,7 +1579,7 @@ function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRe
         meta.appendChild(textEl('div', a.name || 'Unknown', 'album-card-title'));
         meta.appendChild(textEl('div', a.track_count + ' tracks', 'album-card-sub'));
         card.appendChild(meta);
-        card.addEventListener('click', () => navigate('artist:' + encodeURIComponent(a.name)));
+        card.addEventListener('click', () => navigate(buildArtistView(a.name)));
         a11yClick(card);
         grid.appendChild(card);
       });
@@ -1556,7 +1597,10 @@ function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRe
   const tidalResponse = type === 'albums'
     ? { ...(tidalData || {}), albums: tidalItems, unfiltered_total: originalTidalItems.length }
     : tidalData;
-  if (type !== 'albums' && localItems.length > 0 && tidalItems.length > 0) {
+  const showTidalSection = type === 'albums'
+    ? originalTidalItems.length > 0
+    : tidalItems.length > 0;
+  if (localItems.length > 0 && showTidalSection) {
     const divider = h('div', { className: 'search-divider' });
     divider.appendChild(textEl('span', 'Tidal', 'search-divider-label'));
     container.appendChild(divider);
@@ -1580,7 +1624,7 @@ function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRe
     if (localItems.length === 0) {
       const tidalHeader = h('div', { className: 'results-header' });
       tidalHeader.appendChild(textEl('h3', 'Tidal', 'results-section-title'));
-      tidalHeader.appendChild(textEl('span', tidalItems.length + ' results', 'results-count'));
+      tidalHeader.appendChild(textEl('span', tidalItems.length === 1 ? '1 result' : tidalItems.length + ' results', 'results-count'));
       container.appendChild(tidalHeader);
     }
 
@@ -1603,7 +1647,14 @@ function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRe
 
   if (localItems.length === 0 && tidalItems.length === 0
       && originalTidalItems.length === 0 && !tidalAuthRequired) {
-    container.appendChild(textEl('div', 'No results found', 'search-empty-text'));
+    if (tidalData && tidalData.error) {
+      container.appendChild(h('div', { className: 'empty-state' },
+        textEl('div', 'Could not open that Tidal link', 'empty-state-title'),
+        textEl('div', tidalData.error, 'empty-state-sub')
+      ));
+    } else {
+      container.appendChild(textEl('div', 'No results found', 'search-empty-text'));
+    }
   }
 }
 
@@ -1708,7 +1759,7 @@ function renderSearchResults(container, data, showHeader = true) {
       if (state.searchType === 'albums' && item.id) {
         card.addEventListener('click', () => navigateAlbum(item.id));
       } else if (state.searchType === 'artists') {
-        card.addEventListener('click', () => navigate('artist:' + encodeURIComponent(item.name)));
+        card.addEventListener('click', () => navigate(buildArtistView(item.name, item.id)));
       } else if (state.searchType === 'playlists') {
         card.addEventListener('click', () => loadPlaylistTracks(container, item));
       }
@@ -1903,7 +1954,7 @@ function renderTrackRow(track, num, allTracks) {
     artistEl.style.cursor = 'pointer';
     artistEl.addEventListener('click', (e) => {
       e.stopPropagation();
-      navigate('artist:' + encodeURIComponent(track.artist));
+      navigate(buildArtistView(track.artist, track.artist_id));
     });
   }
   row.appendChild(h('div', { className: 'track-meta' },
@@ -2102,8 +2153,55 @@ function breadcrumb(crumbs) {
   return nav;
 }
 
-// ---- ARTIST ALBUM GALLERY (local library) ----
-async function renderArtistGallery(container, artistName) {
+function _albumDedupKey(name) {
+  return String(name || '').toLowerCase().replace(/[^\w]+/g, ' ').trim();
+}
+
+function _mergeArtistAlbums(localAlbums, tidalAlbums) {
+  const seen = new Set();
+  const merged = [];
+  for (const album of localAlbums || []) {
+    seen.add(_albumDedupKey(album.name));
+    merged.push({ ...album, is_local: true });
+  }
+  for (const album of tidalAlbums || []) {
+    const key = _albumDedupKey(album.name);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push({
+      ...album,
+      is_local: false,
+      tidal_id: album.id,
+      track_count: album.track_count || album.num_tracks || 0,
+      best_quality: album.best_quality || album.quality || '',
+    });
+  }
+  return merged;
+}
+
+async function _tidalArtistAlbums(artistName, tidalArtistId) {
+  let id = tidalArtistId;
+  if (!id) {
+    try {
+      const found = await api('/search?q=' + encodeURIComponent(artistName) + '&type=artists&limit=5');
+      const artists = found.artists || [];
+      const exact = artists.find(a => (a.name || '').toLowerCase() === String(artistName || '').toLowerCase());
+      id = (exact || artists[0] || {}).id;
+    } catch (_) {
+      return [];
+    }
+  }
+  if (!id) return [];
+  try {
+    const data = await api('/artists/' + id + '/albums');
+    return data.albums || [];
+  } catch (_) {
+    return [];
+  }
+}
+
+// ---- ARTIST ALBUM GALLERY (local library + Tidal) ----
+async function renderArtistGallery(container, artistName, tidalArtistId) {
   const header = h('div', { className: 'artist-gallery-header' });
   const crumbRow = h('div', { className: 'nav-back-row' });
   const back = _navBackControl();
@@ -2123,10 +2221,14 @@ async function renderArtistGallery(container, artistName) {
   grid.appendChild(textEl('p', 'Loading albums…', 'home-loading-hint'));
 
   try {
-    const data = await api('/library/artist/' + encodeURIComponent(artistName) + '/albums');
+    const localP = api('/library/artist/' + encodeURIComponent(artistName) + '/albums')
+      .catch(() => ({ albums: [] }));
+    const tidalP = _tidalArtistAlbums(artistName, tidalArtistId);
+    const [localData, tidalAlbums] = await Promise.all([localP, tidalP]);
+    const albums = _mergeArtistAlbums(localData.albums || [], tidalAlbums);
     while (grid.firstChild) grid.removeChild(grid.firstChild);
 
-    if (!data.albums || data.albums.length === 0) {
+    if (!albums.length) {
       grid.appendChild(h('div', { className: 'empty-state' },
         textEl('div', 'No albums found', 'empty-state-title'),
         textEl('div', 'Try syncing your library first', 'empty-state-sub')
@@ -2134,10 +2236,10 @@ async function renderArtistGallery(container, artistName) {
       return;
     }
 
-    const titleRow = header.querySelector('.artist-gallery-title-row');
-    if (titleRow) titleRow.appendChild(textEl('span', data.albums.length + ' album' + (data.albums.length !== 1 ? 's' : ''), 'artist-gallery-count'));
+    const countRow = header.querySelector('.artist-gallery-title-row');
+    if (countRow) countRow.appendChild(textEl('span', albums.length + ' album' + (albums.length !== 1 ? 's' : ''), 'artist-gallery-count'));
 
-    data.albums.forEach((album, index) => {
+    albums.forEach((album, index) => {
       const card = h('div', { className: 'album-card' });
 
       const artWrap = h('div', { className: 'album-card-art-wrap' });
@@ -2163,7 +2265,11 @@ async function renderArtistGallery(container, artistName) {
       card.appendChild(meta);
 
       card.addEventListener('click', () => {
-        navigate(album.id ? buildLocalReleaseView(album.id) : buildLocalAlbumView(artistName, album.name));
+        if (album.is_local) {
+          navigate(album.id ? buildLocalReleaseView(album.id) : buildLocalAlbumView(artistName, album.name));
+        } else {
+          navigateAlbum(album.tidal_id || album.id);
+        }
       });
       a11yClick(card);
 

@@ -86,15 +86,15 @@ class TestAppJsFeatureMarkers:
 
     def test_artist_gallery_eager_loads_first_six_covers_and_keeps_fallback(self):
         js = read_gui_js()
-        gallery_source = js.split("async function renderArtistGallery(container, artistName) {")[1].split(
+        gallery_source = js.split("async function renderArtistGallery(")[1].split(
             "// ---- LOCAL ALBUM DETAIL"
         )[0]
 
-        assert "data.albums.forEach((album, index) => {" in gallery_source
+        assert "albums.forEach((album, index) => {" in gallery_source
         assert "loading: index < 6 ? 'eager' : 'lazy'" in gallery_source
         assert "img.onerror = function() {" in gallery_source
         assert "artWrap.style.background = artGradient(album.name);" in gallery_source
-        assert "data.albums.length + ' album' + (data.albums.length !== 1 ? 's' : '')" in gallery_source
+        assert "albums.length + ' album' + (albums.length !== 1 ? 's' : '')" in gallery_source
         assert "data.albums.length + ' albums'" not in gallery_source
         assert "skeleton-row" not in gallery_source
         assert "Loading albums" in gallery_source or "home-loading-hint" in gallery_source
@@ -290,6 +290,8 @@ class TestAppJsFeatureMarkers:
         )[0]
         filtered_condition = "state.searchType === 'albums' && data.unfiltered_total > 0"
         assert source.count("'Tidal Albums'") == 1
+        assert "className: 'search-divider'" in source
+        assert "type !== 'albums' && localItems.length > 0" not in source
         assert "renderSearchResults(tidalWrap, tidalResponse, false)" in source
         assert "unfiltered_total: originalTidalItems.length" in source
         assert "originalTidalItems.length === 0" in source
@@ -300,6 +302,11 @@ class TestAppJsFeatureMarkers:
         assert "No albums match these filters" in filtered_branch
         assert "Use Clear filters above to see every album." in filtered_branch
         assert "return;" in filtered_branch
+
+        css = (STATIC_DIR / "style.css").read_text()
+        header = _css_rule_bodies(css, ".results-header")
+        assert any("align-items: center" in body for body in header)
+        assert all("align-items: baseline" not in body for body in header)
 
     def test_search_cache_matches_query_and_type_and_drops_stale_results(self):
         js = read_gui_js()
@@ -320,6 +327,43 @@ class TestAppJsFeatureMarkers:
         assert "state.searchResults.type === state.searchType" in cached_source
         assert "state.searchResults.query === state.searchQuery.trim()" in view_source
         assert "state.searchResults.type === state.searchType" in view_source
+
+    def test_search_resolves_tidal_urls_and_keeps_recent_chip_dismiss_visible(self):
+        js = read_gui_js()
+        css = (STATIC_DIR / "style.css").read_text()
+        search_source = js.split("async function doSearch(resultsArea) {")[1].split(
+            "function renderTidalSearchAuthPanel("
+        )[0]
+        results_source = js.split("function renderSearchResults(")[1].split(
+            "function _trackKey("
+        )[0]
+        gallery_source = js.split("async function renderArtistGallery(")[1].split(
+            "// ---- LOCAL ALBUM DETAIL"
+        )[0]
+        recent_source = js.split("function _renderRecentSearches(")[1].split(
+            "function _filterTidalAlbums("
+        )[0]
+
+        assert "Promise.all([localP, tidalP])" in search_source
+        assert "timeoutMs: 2500" in search_source
+        assert "_followSearchResolve(resultsArea, tidalData)" in search_source
+        assert "tidalData.resolve" in js
+        assert "downloadTrack" in js
+        assert "buildArtistView(item.name, item.id)" in results_source
+        assert "/artists/" in js
+        assert "/library/artist/" in gallery_source
+        assert "recent-chip-query" in recent_source
+
+        query = _css_rule_bodies(css, ".recent-chip-query")
+        assert query, ".recent-chip-query rule is missing"
+        assert any(
+            "overflow: hidden" in body
+            and "text-overflow: ellipsis" in body
+            and "min-width: 0" in body
+            for body in query
+        )
+        dismiss = _css_rule_bodies(css, ".recent-chip-x")
+        assert any("flex-shrink: 0" in body for body in dismiss)
 
     def test_has_queue_context_actions(self):
         js = read_gui_js()
