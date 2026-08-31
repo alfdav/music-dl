@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 import warnings
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -100,6 +102,149 @@ def test_health_ready_does_not_wait_for_blocked_tidal_probe(tmp_path, monkeypatc
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
     assert entered.wait(timeout=1)
+
+
+def test_lifespan_refreshes_persisted_token_on_start(tmp_path, monkeypatch):
+    """Sidecar start must refresh from disk before any OAuth prompt."""
+    ensure_calls = []
+
+    def spy_ensure(self, refresh_window_sec=300):
+        ensure_calls.append(refresh_window_sec)
+        return False
+
+    def spy_resolve(self, *args, **kwargs):
+        assert kwargs.get("allow_interactive_login") is False
+        return False
+
+    monkeypatch.setattr("tidal_dl.config.Tidal._ensure_token_fresh", spy_ensure)
+    monkeypatch.setattr("tidal_dl.config.Tidal.resolve_source", spy_resolve)
+
+    app = create_app(port=8765, job_db_path=tmp_path / "jobs.db")
+    with TestClient(app) as client:
+        response = client.get("/api/server/health", headers={"host": "localhost:8765"})
+        _wait_for_source_restore(app)
+
+    assert response.status_code == 200
+    assert ensure_calls
+    assert any(window >= 1800 for window in ensure_calls)
+
+
+def test_lifespan_persists_session_after_successful_silent_restore(tmp_path, monkeypatch):
+    persists: list[int] = []
+
+    def fake_resolve(self, *args, **kwargs):
+        self.data.refresh_token = "persist-refresh"
+        self.data.access_token = "fresh-access"
+        return True
+
+    monkeypatch.setattr("tidal_dl.config.Tidal.resolve_source", fake_resolve)
+    monkeypatch.setattr("tidal_dl.config.Tidal.token_persist", lambda self: persists.append(1))
+    monkeypatch.setattr("tidal_dl.config.Tidal._ensure_token_fresh", lambda self, refresh_window_sec=300: False)
+
+    app = create_app(port=8765, job_db_path=tmp_path / "jobs.db")
+    with TestClient(app) as client:
+        response = client.get("/api/server/health", headers={"host": "localhost:8765"})
+        _wait_for_source_restore(app)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not persists:
+            time.sleep(0.01)
+
+    assert response.status_code == 200
+    assert app.state.source_restored is True
+    assert persists
+
+
+def test_lifespan_does_not_persist_empty_session_after_hifi_restore(tmp_path, monkeypatch):
+    persists: list[int] = []
+
+    def fake_resolve(self, *args, **kwargs):
+        self.data.access_token = None
+        self.data.refresh_token = None
+        self.session.access_token = None
+        self.session.refresh_token = None
+        return True
+
+    monkeypatch.setattr("tidal_dl.config.Tidal.resolve_source", fake_resolve)
+    monkeypatch.setattr("tidal_dl.config.Tidal.token_persist", lambda self: persists.append(1))
+    monkeypatch.setattr("tidal_dl.config.Tidal._ensure_token_fresh", lambda self, refresh_window_sec=300: False)
+
+    app = create_app(port=8765, job_db_path=tmp_path / "jobs.db")
+    with TestClient(app) as client:
+        response = client.get("/api/server/health", headers={"host": "localhost:8765"})
+        _wait_for_source_restore(app)
+        time.sleep(0.05)
+
+    assert response.status_code == 200
+    assert app.state.source_restored is True
+    assert persists == []
+
+
+def test_sidecar_start_after_binary_update_revives_refresh_token_without_oauth(tmp_path, monkeypatch):
+    """First sidecar start of a new binary must revive token.json with no device-code OAuth.
+
+    Tauri install_update replaces the app and restarts the sidecar. token.json lives
+    outside the bundle (~/.config/music-dl). An expired access_token plus a still-valid
+    refresh_token must become credentials_ready without login_oauth().
+    """
+    (tmp_path / "token.json").write_text(
+        json.dumps(
+            {
+                "token_type": "Bearer",
+                "access_token": "expired-access",
+                "refresh_token": "persist-refresh",
+                "expiry_time": time.time() - 120,
+                "account_quality": "HI_RES",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    oauth_calls: list[str] = []
+
+    def boom_oauth(self, *args, **kwargs):
+        oauth_calls.append("login_oauth")
+        raise AssertionError("process start must not call login_oauth")
+
+    def fake_refresh(self, refresh_token):
+        self.token_type = "Bearer"
+        self.access_token = "fresh-access"
+        self.refresh_token = refresh_token
+        self.expiry_time = time.time() + 3600
+        return True
+
+    monkeypatch.setattr("tidalapi.session.Session.login_oauth", boom_oauth)
+    monkeypatch.setattr("tidalapi.session.Session.token_refresh", fake_refresh)
+    monkeypatch.setattr("tidal_dl.config.Tidal.resolve_source", lambda self, *args, **kwargs: False)
+
+    app = create_app(port=8765, job_db_path=tmp_path / "jobs.db")
+    with TestClient(app) as client:
+        _wait_for_source_restore(app)
+        deadline = time.monotonic() + 2.0
+        body = None
+        while time.monotonic() < deadline:
+            response = client.get("/api/auth/status", headers={"host": "localhost:8765"})
+            assert response.status_code == 200
+            body = response.json()
+            if body.get("auth_state") == "credentials_ready":
+                break
+            time.sleep(0.05)
+
+    assert oauth_calls == []
+    assert body == {
+        "logged_in": True,
+        "username": "",
+        "auth_state": "credentials_ready",
+        "account_quality": "HI_RES",
+    }
+
+
+def test_install_update_does_not_touch_token_json():
+    updater = Path(__file__).resolve().parents[1] / "src-tauri" / "src" / "updater.rs"
+    source = updater.read_text(encoding="utf-8")
+    assert "token.json" not in source
+    assert "MUSIC_DL_CONFIG_DIR" not in source
+    assert "path_config" not in source
+    assert "install_update" in source
 
 
 def test_tidal_restore_still_runs_after_ready(tmp_path, monkeypatch):

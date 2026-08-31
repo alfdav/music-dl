@@ -161,7 +161,7 @@ app.add_middleware(TokenRefreshMiddleware)             # 4th registered → runs
 
 | Order | Middleware | What it does |
 |-------|-----------|-------------|
-| 1 | `TokenRefreshMiddleware` | Calls `Tidal()._ensure_token_fresh()` on Tidal-facing paths (`/api/search`, `/api/download`, `/api/playlists`). Fails silently. |
+| 1 | `TokenRefreshMiddleware` | Calls `Tidal()._ensure_token_fresh()` on Tidal-facing paths (`/api/search`, `/api/download`, `/api/playlists`). Fails silently; the route retries once on a Tidal 401. |
 | 2 | `CORSMiddleware` | Allows `http://localhost:{port}` and `http://127.0.0.1:{port}` only |
 | 3 | `CSRFMiddleware` | Validates `X-CSRF-Token` header on POST/PATCH/DELETE. Uses `secrets.compare_digest()`. Exempts GET/HEAD/OPTIONS. |
 | 4 | `HostValidationMiddleware` | Rejects requests with Host header not in `{localhost, 127.0.0.1}:{port}`. DNS rebinding defense. |
@@ -712,11 +712,11 @@ _broadcast({"type": "error", ...})  # Outside the nested try — always runs
 ### Token Refresh Errors
 
 ```python
-# TokenRefreshMiddleware — fail silently, let the actual request surface the 401
+# TokenRefreshMiddleware — fail silently; the route does one refresh+retry on Tidal 401
 try:
     Tidal()._ensure_token_fresh()
 except Exception:
-    pass  # Request proceeds; if token is actually dead, the route will 401
+    pass  # Request proceeds; call_tidal retries once, then 401 only if refresh is rejected
 ```
 
 ### Config Corruption

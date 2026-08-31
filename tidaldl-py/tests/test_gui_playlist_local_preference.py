@@ -126,7 +126,7 @@ def test_playlist_tracks_include_local_path_when_isrc_matches(monkeypatch, clear
         playlist=lambda playlist_id: SimpleNamespace(tracks=lambda: [fake_track]),
     )
 
-    monkeypatch.setattr(playlists_api, "get_tidal_session", lambda: fake_session)
+    monkeypatch.setattr(playlists_api, "get_tidal", lambda: SimpleNamespace(session=fake_session, data=SimpleNamespace(access_token="a", refresh_token="r"), _ensure_token_fresh=lambda refresh_window_sec=300: True))
     _patch_playlist_library_db(
         monkeypatch,
         playlists_api,
@@ -149,7 +149,7 @@ def test_playlist_tracks_fall_back_to_stream_when_no_local_match(monkeypatch, cl
         playlist=lambda playlist_id: SimpleNamespace(tracks=lambda: [fake_track]),
     )
 
-    monkeypatch.setattr(playlists_api, "get_tidal_session", lambda: fake_session)
+    monkeypatch.setattr(playlists_api, "get_tidal", lambda: SimpleNamespace(session=fake_session, data=SimpleNamespace(access_token="a", refresh_token="r"), _ensure_token_fresh=lambda refresh_window_sec=300: True))
     _patch_playlist_library_db(monkeypatch, playlists_api, _FakePlaylistDB({}))
 
     playlists_api._playlist_tracks_cache.clear()
@@ -169,7 +169,7 @@ def test_playlist_sync_uses_same_local_match_logic_as_playlist_view(monkeypatch,
     )
     queued = []
 
-    monkeypatch.setattr(playlists_api, "get_tidal_session", lambda: fake_session)
+    monkeypatch.setattr(playlists_api, "get_tidal", lambda: SimpleNamespace(session=fake_session, data=SimpleNamespace(access_token="a", refresh_token="r"), _ensure_token_fresh=lambda refresh_window_sec=300: True))
     _patch_playlist_library_db(
         monkeypatch,
         playlists_api,
@@ -197,7 +197,7 @@ def test_playlist_sync_skips_local_track_when_library_db_has_isrc_match(monkeypa
     )
     queued = []
 
-    monkeypatch.setattr(playlists_api, "get_tidal_session", lambda: fake_session)
+    monkeypatch.setattr(playlists_api, "get_tidal", lambda: SimpleNamespace(session=fake_session, data=SimpleNamespace(access_token="a", refresh_token="r"), _ensure_token_fresh=lambda refresh_window_sec=300: True))
     _patch_playlist_library_db(
         monkeypatch,
         playlists_api,
@@ -222,7 +222,7 @@ def test_playlist_sync_downloads_when_title_artist_match_is_ambiguous(monkeypatc
     )
     queued = []
 
-    monkeypatch.setattr(playlists_api, "get_tidal_session", lambda: fake_session)
+    monkeypatch.setattr(playlists_api, "get_tidal", lambda: SimpleNamespace(session=fake_session, data=SimpleNamespace(access_token="a", refresh_token="r"), _ensure_token_fresh=lambda refresh_window_sec=300: True))
     _patch_playlist_library_db(
         monkeypatch,
         playlists_api,

@@ -1,5 +1,29 @@
 # Mistakes
 
+## 2026-08-31 — Bugbot: refresh success treated as a live session, skip treated as rejected
+
+**What happened:** PR 152 stayed merge-blocked. Startup persist after a Hi-Fi-only `resolve_source` could write an empty `token.json`. `login_token` / `call_tidal` / `require_tidal` treated `_ensure_token_fresh` True as a usable session without `load_oauth_session` / `check_login`, so `session.user` stayed unset and `list_playlists` crashed. `auth_login` mapped a non-rejected refresh to expired and aborted an in-flight device-code wait. Reset raced keepalive persist. A window skip (`False` because the token was still inside the window) was cached as `REFRESH_REJECTED` and could start `login_oauth`.
+
+**Root cause:** Persist ran on restore-true without checking that a refresh/access token still existed. Refresh-ok was confused with a loaded user. Window-skip `False` was collapsed into rejected. `logout` did not take `_token_fresh_lock`.
+
+**Prevention:** Persist after restore only if refresh_token or access_token is still present. After refresh-ok, reload the session (`_reload_oauth_session` / `check_login`) before returning success. `list_playlists` returns `[]` when `session.user` is missing. Distinguish skip vs rejected vs failed; never arm rejected backoff on a window skip; never start `login_oauth` from a cached skip. `logout`/Reset take the same lock as persist. Non-rejected refresh must not abort a pending device-code wait. Never wipe `token.json` and never start `login_oauth` while a refresh_token can still revive.
+
+## 2026-08-31 — Tidal 401 after fail-silent refresh sent the UI back to login
+
+**What happened:** `TokenRefreshMiddleware` swallowed refresh errors, then search/download/playlists/albums raised 401 `"Not logged in to Tidal"`. UI `apiTidal` / `_isTidalAuthError` treated that as login-required even when `refresh_token` was still valid. `GET /auth/status` also re-hit Tidal on every poll after a transient refresh failure.
+
+**Root cause:** Routes trusted local `check_login()` or wrapped a Tidal 401 as 502/401 without one refresh+retry. Transient refresh failure was not backed off, so status polls hammered Tidal.
+
+**Prevention:** One shared `call_tidal`: on Tidal 401, refresh once and retry. 401/expired only if refresh is rejected. Transient failure → 503 + 30s backoff so status/middleware cannot hammer Tidal. Do not wipe `token.json` and do not start `login_oauth` on this path. Only Reset deletes tokens.
+
+## 2026-08-31 — Tidal status asked for a new login while refresh_token could revive
+
+**What happened:** After one machine login, overnight or a restart could show `auth_state=expired` / "log in". Clicking login started a new device-code OAuth flow even when `token.json` still had a refresh_token. Extra device-code logins look like account sharing.
+
+**Root cause:** `GET /auth/status` reported local expiry without calling `_ensure_token_fresh`. The UI only polls status and never `/auth/keepalive`. `POST /auth/login` required `check_login()` before refresh, so a dead-looking session skipped the persisted refresh_token and called `login_oauth()`. Middleware already refreshed Tidal-facing routes, but skipped `/api/auth`, and nothing ran on an idle sidecar.
+
+**Prevention:** Status revives from refresh_token before reporting login-required. Login tries `_ensure_token_fresh` / `token_refresh` before `login_oauth()`. A refresh exception while a refresh_token exists must return `expired`, not device-code. Sidecar startup plus a 30-minute server interval call the same helper so a closed UI still persists. Tidal-facing routes refresh-and-retry once on a failed `check_login` (`ensure_tidal_logged_in`). `login_token(delete_on_failure=True)` must not unlink `token.json` while a refresh_token remains — only Reset / `logout()` wipes. `not_configured` only when both access and refresh are missing. Tokens stay in `path_file_token()` under the per-user config dir, not the download folder. A binary update (`install_update`) replaces the app and restarts the sidecar; it does not delete `token.json`. Do not rotate the bundled OAuth `clientId`s — that would force a world-wide re-login.
+
 ## 2026-08-30 — HiRes FLAC landed as `.m4a` (FLAC stuffed in MP4)
 
 **What happened:** After #149, Zeratool downloaded tidal 534789853 via Hi-Fi. ffprobe showed 24/96 FLAC plus an MJPEG cover stream, but the path ended in `.m4a`. Best quality is a real `*.flac`.

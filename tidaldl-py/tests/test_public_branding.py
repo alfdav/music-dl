@@ -3,7 +3,7 @@ import tomllib
 from unittest.mock import patch
 
 from tidal_dl import distribution_name
-from tidal_dl.helper.path import path_config_base
+from tidal_dl.helper.path import path_config_base, path_file_token
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT_PATH = PROJECT_ROOT / "pyproject.toml"
@@ -57,3 +57,20 @@ def test_path_config_base_ignores_legacy_migration_failure(monkeypatch, tmp_path
         assert path_config_base() == str(current_dir)
 
     assert legacy_dir.exists()
+
+
+def test_windows_token_path_is_stable_user_config_not_download_dir(monkeypatch):
+    """Tokens live in the per-user config dir, never next to MusicDlQA downloads."""
+    monkeypatch.delenv("MUSIC_DL_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setenv("HOMEDRIVE", "C:")
+    monkeypatch.setenv("HOMEPATH", "Users/PLEX-MINI")
+
+    base = path_config_base()
+    token = path_file_token()
+
+    assert base.endswith(str(Path(".config") / "music-dl"))
+    assert token == str(Path(base) / "token.json")
+    assert "MusicDlQA" not in token
+    assert Path(token).parent == Path(base)

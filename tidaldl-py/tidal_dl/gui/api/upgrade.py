@@ -590,12 +590,14 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
         target_rank = TIER_RANK.get(target_quality, 4)
 
         # Verify Tidal login
+        from tidal_dl.gui.api.settings import ensure_tidal_logged_in
+
         tidal = Tidal()
-        session = tidal.session
-        if not session.check_login():
+        if not ensure_tidal_logged_in(tidal):
             _scan_state.update(status="error", error="Not logged in to Tidal")
             _scan_broadcast({"type": "scan_error", "error": "Not logged in to Tidal"})
             return
+        session = tidal.session
 
         # Get all tracks with ISRCs
         all_tracks = db.upgradeable_tracks()

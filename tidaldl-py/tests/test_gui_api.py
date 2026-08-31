@@ -52,6 +52,7 @@ class _FakeTidal:
             expiry_time = time.time() + 3600 if logged_in else time.time() - 60
         self.data = SimpleNamespace(
             access_token=access_token,
+            refresh_token=None,
             expiry_time=expiry_time,
             account_quality="HI_RES" if logged_in else None,
         )

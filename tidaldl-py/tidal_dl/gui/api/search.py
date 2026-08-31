@@ -16,8 +16,15 @@ def _get_library_db():
     return get_library_db()
 
 
+def get_tidal():
+    return Tidal()
+
+
 def get_tidal_session():
-    tidal = Tidal()
+    from tidal_dl.gui.api.settings import ensure_tidal_logged_in
+
+    tidal = get_tidal()
+    ensure_tidal_logged_in(tidal)
     return tidal.session
 
 
@@ -92,14 +99,18 @@ def search(
 ) -> dict:
     from fastapi import HTTPException
 
-    session = get_tidal_session()
-    if not session.check_login():
-        raise HTTPException(status_code=401, detail="Not logged in to Tidal")
+    from tidal_dl.gui.api.settings import call_tidal
 
+    tidal = get_tidal()
     try:
-        results = session.search(
-            q, models=[_model_for_type(type)], limit=limit, offset=offset
+        results = call_tidal(
+            tidal,
+            lambda: tidal.session.search(
+                q, models=[_model_for_type(type)], limit=limit, offset=offset
+            ),
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Tidal search failed: {exc}") from exc
 

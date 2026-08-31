@@ -56,35 +56,38 @@ def stream_tidal_track(track_id: int):
 
     from tidal_dl.gui.security import validate_stream_url
 
-    tidal = Tidal()
-    session = tidal.session
+    from tidal_dl.gui.api.settings import _persisted_refresh_token, call_tidal
 
-    if session.check_login():
-        try:
-            track = session.track(track_id)
-            stream = track.get_stream()
-            manifest = stream.get_stream_manifest()
-            urls = manifest.get_urls()
-            if urls:
-                stream_url = urls[0]
-                if not validate_stream_url(stream_url):
-                    raise HTTPException(status_code=502, detail="Untrusted stream source")
-                resp = http_requests.get(
-                    stream_url, stream=True, timeout=30, allow_redirects=True
-                )
-                content_type = resp.headers.get("Content-Type", "audio/flac")
-                headers = {}
-                if resp.headers.get("Content-Length"):
-                    headers["Content-Length"] = resp.headers["Content-Length"]
-                return StreamingResponse(
-                    resp.iter_content(chunk_size=8192),
-                    media_type=content_type,
-                    headers=headers,
-                )
-        except HTTPException:
+    tidal = Tidal()
+
+    def _full_stream():
+        track = tidal.session.track(track_id)
+        stream = track.get_stream()
+        return stream.get_stream_manifest().get_urls()
+
+    try:
+        urls = call_tidal(tidal, _full_stream)
+        if urls:
+            stream_url = urls[0]
+            if not validate_stream_url(stream_url):
+                raise HTTPException(status_code=502, detail="Untrusted stream source")
+            resp = http_requests.get(
+                stream_url, stream=True, timeout=30, allow_redirects=True
+            )
+            content_type = resp.headers.get("Content-Type", "audio/flac")
+            headers = {}
+            if resp.headers.get("Content-Length"):
+                headers["Content-Length"] = resp.headers["Content-Length"]
+            return StreamingResponse(
+                resp.iter_content(chunk_size=8192),
+                media_type=content_type,
+                headers=headers,
+            )
+    except HTTPException as exc:
+        if exc.status_code != 401 or _persisted_refresh_token(tidal):
             raise
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     # Fallback: 30-second preview (host is hardcoded + track_id is int, but validate anyway)
     try:
@@ -149,15 +152,17 @@ def serve_bot_stream(token: str):
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="Invalid track_id in token")
 
+        from tidal_dl.gui.api.settings import call_tidal
+
         tidal = Tidal()
-        session = tidal.session
-        if not session.check_login():
-            raise HTTPException(status_code=401, detail="Tidal session not logged in")
-        try:
-            track = session.track(track_id)
+
+        def _bot_urls():
+            track = tidal.session.track(track_id)
             stream = track.get_stream()
-            manifest = stream.get_stream_manifest()
-            urls = manifest.get_urls()
+            return stream.get_stream_manifest().get_urls()
+
+        try:
+            urls = call_tidal(tidal, _bot_urls)
             if not urls:
                 raise HTTPException(status_code=503, detail="No stream available")
             stream_url = urls[0]
