@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-08-31 — Search hid a live Tidal album and froze the Albums pill
+
+**What happened:** Pasting `https://tidal.com/track/330865538/u` or searching the album title `Clásicos de la Provincia 30 Años (Remastered & Expanded)` returned 0 tracks even though Tidal had album 330865537 / track 330865538. Artist cards routed to local-only `/library/artist/{name}/albums`. Albums pill for `Los Grandes Del Vallenato` sat on the skeleton for ~26s.
+
+**Root cause:** Search sent the raw URL/id to `session.search`. Track search never fell back to album search. Artist drill-in ignored Tidal ids. `doSearch` awaited `/library/search` first, and album library search called `_album_cards(db)` on the whole library.
+
+**Prevention:** Parse Tidal URLs/ids and resolve with `session.track/album/artist/playlist`. Never `session.search(url)`. When track search misses a title, fetch tracks from a close album-name match. Artist view is hybrid (local + `/artists/{id}/albums`). Fire library and Tidal search in parallel and bound library album search to SQL `all_albums(q, limit)` — never full-library grouping. Truncate recent-search query text so the dismiss x stays visible.
+
 ## 2026-08-31 — Bugbot: refresh success treated as a live session, skip treated as rejected
 
 **What happened:** PR 152 stayed merge-blocked. Startup persist after a Hi-Fi-only `resolve_source` could write an empty `token.json`. `login_token` / `call_tidal` / `require_tidal` treated `_ensure_token_fresh` True as a usable session without `load_oauth_session` / `check_login`, so `session.user` stayed unset and `list_playlists` crashed. `auth_login` mapped a non-rejected refresh to expired and aborted an in-flight device-code wait. Reset raced keepalive persist. A window skip (`False` because the token was still inside the window) was cached as `REFRESH_REJECTED` and could start `login_oauth`.

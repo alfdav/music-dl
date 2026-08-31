@@ -436,11 +436,19 @@ async function api(path, options) {
     headers['Content-Type'] = 'application/json';
   }
 
-  const resp = await fetch('/api' + path, {
-    method,
-    headers,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
+  const controller = opts.timeoutMs ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), opts.timeoutMs) : null;
+  let resp;
+  try {
+    resp = await fetch('/api' + path, {
+      method,
+      headers,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      signal: controller ? controller.signal : undefined,
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 
   if (!resp.ok) {
     const detail = await resp.json().catch(() => ({}));

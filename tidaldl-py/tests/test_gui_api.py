@@ -331,9 +331,10 @@ def test_static_js_search_explains_tidal_auth_without_hiding_local_results():
         "function _greeting() {"
     )[0]
 
-    assert "tidalData = await api('/search?q='" in search_source
-    assert "tidalData = await apiTidal('/search?q='" not in search_source
-    assert "if (_isTidalAuthError(error)) {\n      tidalAuthRequired = true;\n    }" in search_source
+    assert "api('/search?q='" in search_source
+    assert "apiTidal('/search?q='" not in search_source
+    assert "Promise.all([localP, tidalP])" in search_source
+    assert "if (_isTidalAuthError(error)) {\n        tidalAuthRequired = true;\n      }" in search_source
     assert "state.searchResults = { query, type, local: localData, tidal: tidalData, tidalAuthRequired };" in search_source
     assert "renderUnifiedSearchResults(resultsArea, localData, tidalData, tidalAuthRequired);" in search_source
     assert "state.searchResults.tidalAuthRequired" in search_view_source

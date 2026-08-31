@@ -16,8 +16,25 @@ function _encodeSegment(value) {
   return encodeURIComponent(String(value ?? ''));
 }
 
-function buildArtistView(name) {
-  return `artist:${_encodeSegment(name)}`;
+function buildArtistView(name, tidalId) {
+  const base = `artist:${_encodeSegment(name)}`;
+  const id = String(tidalId ?? '').trim();
+  return /^[0-9]+$/.test(id) ? `${base}:${id}` : base;
+}
+
+function parseArtistView(view) {
+  const raw = typeof view === 'string' ? view.trim() : '';
+  if (!raw.startsWith('artist:')) return { name: '', tidalId: '' };
+  const rest = raw.slice(7);
+  const parts = rest.split(':');
+  const last = parts[parts.length - 1] || '';
+  if (parts.length > 1 && /^[0-9]+$/.test(last)) {
+    return {
+      name: decodeURIComponent(parts.slice(0, -1).join(':')),
+      tidalId: last,
+    };
+  }
+  return { name: decodeURIComponent(rest), tidalId: '' };
 }
 
 function buildAlbumView(albumId) {
@@ -66,6 +83,7 @@ const exported = {
   buildLocalReleaseView,
   normalizeLaunchView,
   normalizeView,
+  parseArtistView,
 };
 
 if (typeof module !== 'undefined' && module.exports) {

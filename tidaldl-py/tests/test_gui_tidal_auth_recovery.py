@@ -10,7 +10,7 @@ def test_tidal_auth_errors_offer_explicit_catalog_login():
     assert "async function apiTidal(path, options)" in source
     assert "toast('Tidal login required — opening sign-in…', 'error');" in source
     assert "triggerLogin();" in source
-    assert "tidalData = await api('/search?" in source
+    assert "api('/search?" in source
     assert "Connect Tidal to search, stream, and download" in source
     assert "connectButton.addEventListener('click', () => triggerLogin());" in source
     assert "await apiTidal('/download', {" in source

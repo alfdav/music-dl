@@ -924,11 +924,30 @@ describe('local album detail cover fetch', () => {
 describe('artist and album loading state', () => {
   test('artist gallery uses a visible loading hint instead of skeleton-row', () => {
     const gallery = viewsSource
-      .split('async function renderArtistGallery(container, artistName) {')[1]
+      .split('async function renderArtistGallery(')[1]
       ?.split('// ---- LOCAL ALBUM DETAIL')[0];
     if (!gallery) throw new Error('artist gallery not found');
     expect(gallery).not.toContain('skeleton-row');
     expect(gallery).toMatch(/Loading albums|home-loading-hint|skeleton-track/);
+  });
+
+  test('artist gallery is hybrid local plus Tidal, not library-only', () => {
+    const gallery = artistGallerySource();
+    expect(gallery).toContain('/library/artist/');
+    expect(gallery).toMatch(/\/artists\/|tidalArtistId/);
+    const results = viewsSource
+      .split('function renderSearchResults(')[1]
+      ?.split('function _trackKey(')[0] || '';
+    expect(results).toContain('buildArtistView(item.name, item.id)');
+  });
+
+  test('recent-search chips give query text a truncating class', () => {
+    const recent = viewsSource
+      .split('function _renderRecentSearches(')[1]
+      ?.split('function _filterTidalAlbums(')[0] || '';
+    expect(recent).toContain('recent-chip-query');
+    expect(recent).toContain('recent-chip-x');
+    expect(recent).toContain('recent-chip-type');
   });
 
   test('album detail uses a visible loading hint instead of skeleton-row', () => {
@@ -1287,7 +1306,7 @@ function loadNavStackHelpers() {
 
 function artistGallerySource() {
   return viewsSource
-    .split('async function renderArtistGallery(container, artistName) {')[1]
+    .split('async function renderArtistGallery(')[1]
     ?.split('// ---- LOCAL ALBUM DETAIL')[0] || '';
 }
 

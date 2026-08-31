@@ -1769,27 +1769,22 @@ def library_search(
         return {"tracks": [_db_row_to_track(r) for r in rows], "total": total}
 
     if type == "albums":
-        query = q.strip().casefold()
-        albums = [
-            album for album in _album_cards(db)
-            if query in album["name"].casefold()
-            or query in album["artist"].casefold()
-            or any(query in member.casefold() for member in album["members"])
-        ]
+        # SQL GROUP BY only — never _album_cards() on the whole library (26s).
+        rows = db.all_albums(q.strip())[:limit]
         return {
             "albums": [
                 {
-                    "id": a["id"],
-                    "name": a["name"],
-                    "artist": a["artist"],
-                    "track_count": a["track_count"],
-                    "cover_url": _local_cover_url(a.get("cover_path"), a.get("cover_art_available")),
+                    "id": "",
+                    "name": r.get("album") or "",
+                    "artist": r.get("artist") or "",
+                    "track_count": r.get("track_count") or 0,
+                    "cover_url": _local_cover_url(r.get("cover_path"), r.get("cover_art_available")),
                     "is_local": True,
-                    "possible_duplicate": a["possible_duplicate"],
+                    "possible_duplicate": False,
                 }
-                for a in albums[:limit]
+                for r in rows
             ],
-            "total": len(albums),
+            "total": len(rows),
         }
 
     if type == "artists":
