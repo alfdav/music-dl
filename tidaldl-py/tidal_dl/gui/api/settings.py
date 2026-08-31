@@ -315,6 +315,11 @@ def auth_login(tidal: Tidal = Depends(get_tidal_instance)) -> dict:  # noqa: B00
         if _revive_from_refresh_token(tidal, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC):
             return _mark_already_logged_in(tidal)
 
+        access_token = getattr(getattr(tidal, "data", None), "access_token", None)
+        expiry_time = _token_expiry(tidal) if getattr(tidal, "data", None) is not None else None
+        if access_token and expiry_time is not None and expiry_time > time.time():
+            return _mark_already_logged_in(tidal)
+
         if not _persisted_refresh_token(tidal):
             try:
                 if tidal.session.check_login():

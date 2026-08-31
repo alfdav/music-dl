@@ -392,6 +392,45 @@ def test_gui_auth_login_starts_oauth_only_after_refresh_failure():
     assert calls.index("login_oauth") > calls.index(("ensure", calls[0][1]))
 
 
+def test_gui_auth_login_reuses_unexpired_access_without_oauth_when_refresh_fails():
+    from tidal_dl.gui.api import settings as settings_api
+
+    calls = []
+
+    class Session:
+        refresh_token = "disk-refresh"
+
+        def login_oauth(self):
+            calls.append("login_oauth")
+            return (
+                SimpleNamespace(verification_uri_complete="", user_code="ABCD", expires_in=300),
+                _NeverCompletes(),
+            )
+
+    class Tidal:
+        session = Session()
+        data = SimpleNamespace(
+            access_token="still-good",
+            refresh_token="disk-refresh",
+            expiry_time=time.time() + 3600,
+        )
+
+        def _ensure_token_fresh(self, refresh_window_sec=300):
+            calls.append("ensure")
+            return False
+
+        def refresh_api_keys(self):
+            calls.append("refresh_api_keys")
+
+    settings_api._login_state.clear()
+    settings_api._login_state.update({"status": "idle"})
+    result = settings_api.auth_login(Tidal())
+
+    assert result == {"status": "already_logged_in"}
+    assert "login_oauth" not in calls
+    assert calls == ["ensure"]
+
+
 def test_token_keepalive_loop_calls_ensure_until_stopped(monkeypatch):
     from tidal_dl.gui.api import settings as settings_api
 

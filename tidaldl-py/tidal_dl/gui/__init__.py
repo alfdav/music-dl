@@ -70,6 +70,8 @@ def create_app(
                     lambda _message: None,
                     allow_interactive_login=False,
                 )
+                if app.state.source_restored:
+                    tidal.token_persist()
                 keep_tidal_session_alive(tidal, refresh_window_sec=TOKEN_KEEPALIVE_WINDOW_SEC)
             except Exception as exc:
                 app.state.source_restore_attempted = True

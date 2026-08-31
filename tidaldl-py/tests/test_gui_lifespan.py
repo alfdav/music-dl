@@ -129,6 +129,26 @@ def test_lifespan_refreshes_persisted_token_on_start(tmp_path, monkeypatch):
     assert any(window >= 1800 for window in ensure_calls)
 
 
+def test_lifespan_persists_session_after_successful_silent_restore(tmp_path, monkeypatch):
+    persists: list[int] = []
+
+    monkeypatch.setattr("tidal_dl.config.Tidal.resolve_source", lambda self, *args, **kwargs: True)
+    monkeypatch.setattr("tidal_dl.config.Tidal.token_persist", lambda self: persists.append(1))
+    monkeypatch.setattr("tidal_dl.config.Tidal._ensure_token_fresh", lambda self, refresh_window_sec=300: False)
+
+    app = create_app(port=8765, job_db_path=tmp_path / "jobs.db")
+    with TestClient(app) as client:
+        response = client.get("/api/server/health", headers={"host": "localhost:8765"})
+        _wait_for_source_restore(app)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not persists:
+            time.sleep(0.01)
+
+    assert response.status_code == 200
+    assert app.state.source_restored is True
+    assert persists
+
+
 def test_sidecar_start_after_binary_update_revives_refresh_token_without_oauth(tmp_path, monkeypatch):
     """First sidecar start of a new binary must revive token.json with no device-code OAuth.
 
