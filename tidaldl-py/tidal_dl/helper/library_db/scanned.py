@@ -300,8 +300,11 @@ class ScannedMixin:
         where = "status != 'unreadable' AND missing_since IS NULL"
         params: list = []
         if query:
-            where += " AND (title LIKE ? OR artist LIKE ? OR album LIKE ?)"
-            like = f"%{query}%"
+            where += (
+                " AND (fold_search(title) LIKE ? OR fold_search(artist) LIKE ?"
+                " OR fold_search(album) LIKE ?)"
+            )
+            like = f"%{fold_search_text(query)}%"
             params.extend([like, like, like])
 
         total = self._conn.execute(

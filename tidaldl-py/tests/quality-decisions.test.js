@@ -27,6 +27,13 @@ describe('local codec quality decisions', () => {
     expect(loadQualityTier()('44100Hz/16bit', 'M4A', null).tier).toBe('Unknown');
   });
 
+  test('24-bit FLAC is Hi-Res, 16-bit FLAC stays Lossless', () => {
+    const tier = loadQualityTier();
+
+    expect(tier('44100Hz/24bit', 'FLAC', 'flac').tier).toBe('Hi-Res');
+    expect(tier('44100Hz/16bit', 'FLAC', 'flac').tier).toBe('Lossless');
+  });
+
   test('track table and Now Playing pass the same persisted facts', () => {
     const args = 'track.quality, track.format, track.codec';
 

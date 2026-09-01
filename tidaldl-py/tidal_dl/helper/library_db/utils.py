@@ -6,6 +6,7 @@ import datetime
 import pathlib
 import re
 import sqlite3
+import unicodedata
 
 _SQLITE_CORRUPTION_MESSAGES = (
     "file is not a database",
@@ -42,6 +43,12 @@ def _quarantine_corrupt_db(path: pathlib.Path) -> None:
 
 def _normalize_track_text(value: str | None) -> str:
     return (value or "").strip().casefold()
+
+
+def fold_search_text(value: object | None) -> str:
+    """ASCII-fold for accent-insensitive library search (`fría` ↔ `fria`)."""
+    decomposed = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
 
 
 def _local_quality_rank(
