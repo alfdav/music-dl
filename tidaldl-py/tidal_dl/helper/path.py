@@ -1,6 +1,5 @@
 """File path formatting, sanitization, and template expansion."""
 
-import functools
 import math
 import os
 import pathlib
@@ -8,6 +7,7 @@ import posixpath
 import re
 import shutil
 import sys
+import unicodedata
 from copy import deepcopy
 from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlsplit
@@ -36,6 +36,15 @@ if TYPE_CHECKING:
 PathMedia = Track | Album | Playlist | UserPlaylist | Video | Mix
 
 _INVALID_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_BUCKET_DIRS = frozenset({"Playlists", "Mix", "Mixes", "Videos"})
+_CODEC_BRACKET = re.compile(
+    r"\s*\[(?:"
+    r"FLAC|ALAC|WAV|AIFF|APE|WV|MP3|AAC|M4A|OGG|OPUS|"
+    r"HI-?RES(?:[\s-]*(?:FLAC|LOSSLESS))?|LOSSLESS|HI-?FI|"
+    r"\d{2,3}(?:\s*k(?:bps)?)?"
+    r")\]\s*$",
+    re.IGNORECASE,
+)
 
 
 def _album_from_media(media: Track | Video) -> Album | None:
@@ -491,6 +500,140 @@ def get_format_template(
     return False
 
 
+def _fold_album_key(name: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", name)
+    plain = "".join(character for character in decomposed if not unicodedata.combining(character))
+    words: list[str] = []
+    current: list[str] = []
+    for character in plain.casefold():
+        if character.isalnum():
+            current.append(character)
+        elif current:
+            words.append("".join(current))
+            current = []
+    if current:
+        words.append("".join(current))
+    return " ".join(words)
+
+
+def _strip_codec_brackets(name: str) -> str:
+    cleaned = name
+    while True:
+        nxt = _CODEC_BRACKET.sub("", cleaned).rstrip()
+        if nxt == cleaned:
+            return cleaned
+        cleaned = nxt
+
+
+def _strip_artist_prefix(name: str, artist: str) -> str:
+    if " - " not in name:
+        return name
+    left, right = name.split(" - ", 1)
+    if right and _fold_album_key(left) == _fold_album_key(artist):
+        return right
+    return name
+
+
+def _album_identity(name: str, artist: str) -> str:
+    return _fold_album_key(_strip_artist_prefix(_strip_codec_brackets(name), artist))
+
+
+def _split_flat_album_dir(name: str) -> tuple[str, str] | None:
+    stripped = _strip_codec_brackets(name)
+    if " - " not in stripped:
+        return None
+    artist, album = stripped.split(" - ", 1)
+    if artist and album:
+        return artist, album
+    return None
+
+
+def _existing_dirs(parent: pathlib.Path) -> list[pathlib.Path]:
+    try:
+        return [child for child in parent.iterdir() if child.is_dir()]
+    except OSError:
+        return []
+
+
+def _canonicalize_album_dirs(dir_parts: list[str]) -> tuple[str, str, list[str]] | None:
+    if not dir_parts or dir_parts[0] in _BUCKET_DIRS:
+        return None
+
+    cleaned = [_strip_codec_brackets(part) for part in dir_parts]
+    if len(cleaned) == 1:
+        flat = _split_flat_album_dir(dir_parts[0])
+        if flat is None:
+            return None
+        artist, album = flat
+        return artist, album, []
+
+    artist = cleaned[0]
+    album = _strip_artist_prefix(cleaned[1], artist)
+    return artist, album, cleaned[2:]
+
+
+def _find_legacy_album_dir(base: pathlib.Path, artist: str, album: str) -> list[str] | None:
+    wanted = _fold_album_key(album)
+    if not wanted:
+        return None
+
+    artist_key = _fold_album_key(artist)
+    children = _existing_dirs(base)
+    artist_dirs = [child for child in children if _fold_album_key(child.name) == artist_key]
+    artist_dir_names = {child.name for child in artist_dirs}
+    candidates: list[tuple[int, list[str]]] = []
+
+    for artist_dir in artist_dirs:
+        for child in _existing_dirs(artist_dir):
+            if _album_identity(child.name, artist) != wanted:
+                continue
+            stripped = _strip_codec_brackets(child.name)
+            prefixed = _strip_artist_prefix(stripped, artist) != stripped
+            rank = 1 if prefixed or _CODEC_BRACKET.search(child.name) else 0
+            candidates.append((rank, [artist_dir.name, child.name]))
+
+    for child in children:
+        if child.name in artist_dir_names:
+            continue
+        if _album_identity(child.name, artist) != wanted:
+            continue
+        stripped = _strip_codec_brackets(child.name)
+        if _strip_artist_prefix(stripped, artist) == stripped and not _CODEC_BRACKET.search(child.name):
+            continue
+        candidates.append((2, [child.name]))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def resolve_library_relative(path_base: str | pathlib.Path, relative: str) -> str:
+    """Rewrite an expanded save path to Artist/Album/track.
+
+    New folders never include codec/quality brackets or an ``Artist - Album``
+    directory. If a leftover sibling already exists for the same album after
+    stripping an ``Artist - `` prefix, trailing codec brackets, and folding
+    accents, the existing folder is reused. Edition suffixes stay distinct.
+    """
+    if not relative:
+        return relative
+
+    parts = [part for part in pathlib.PurePosixPath(relative.replace("\\", "/")).parts]
+    if not parts:
+        return relative
+
+    filename = parts[-1]
+    parsed = _canonicalize_album_dirs(parts[:-1])
+    if parsed is None:
+        return relative
+
+    artist, album, extra = parsed
+    match = _find_legacy_album_dir(pathlib.Path(path_base).expanduser(), artist, album)
+    dest_dirs = match if match is not None else [artist, album]
+    return str(pathlib.PurePosixPath(*dest_dirs, *extra, filename))
+
+
 def path_file_sanitize(
     path_file: pathlib.Path,
     adapt: bool = False,
@@ -528,7 +671,7 @@ def path_file_sanitize(
         parts = stem.rsplit(" - ", 1)
         if len(parts) == 2:
             prefix, title = parts
-            sep_bytes = len(" - ".encode("utf-8"))
+            sep_bytes = len(b" - ")
             title_bytes = len(title.encode("utf-8"))
             max_prefix_bytes = FILENAME_BYTES_MAX - ext_bytes - sep_bytes - title_bytes
             if max_prefix_bytes > 10:

@@ -2,6 +2,7 @@
 
 from tidal_dl.download._common import *  # noqa: F403
 from tidal_dl.download.registry import register_downloaded_track
+from tidal_dl.helper.path import resolve_library_relative
 
 
 class ItemMixin:
@@ -255,6 +256,7 @@ class ItemMixin:
             delimiter_album_artist=self.settings.data.filename_delimiter_album_artist,
             use_primary_album_artist=self.settings.data.use_primary_album_artist,
         )
+        file_name_relative = resolve_library_relative(self.path_base, file_name_relative)
 
         path_media_dst: pathlib.Path = (
             pathlib.Path(self.path_base).expanduser() / (file_name_relative + file_extension_dummy)
@@ -280,6 +282,7 @@ class ItemMixin:
                     delimiter_album_artist=self.settings.data.filename_delimiter_album_artist,
                     use_primary_album_artist=self.settings.data.use_primary_album_artist,
                 )
+                file_name_track_dir_relative = resolve_library_relative(self.path_base, file_name_track_dir_relative)
                 path_media_track_dir: pathlib.Path = (
                     pathlib.Path(self.path_base).expanduser() / (file_name_track_dir_relative + file_extension_dummy)
                 ).absolute()

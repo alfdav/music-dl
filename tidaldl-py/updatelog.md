@@ -21,6 +21,7 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 ---
 
 ## Unreleased
+- New downloads keep `Artist/Album/track` and reuse a leftover matching album folder (accent-folded, `Artist - ` prefix and codec brackets stripped) instead of minting another layout. Remastered edition titles stay separate.
 - Give track-row source labels (`tidal` / `local`) breathing room before the download icon so they no longer sit flush.
 
 ## v1.7.8 (2026-08-31)
