@@ -96,6 +96,14 @@
 
 **Prevention:** Do not match Upgrade on ISRC alone when titles differ. Prefer title+artist+duration. Colliding ISRC across different titles is UNCERTAIN / skip. Never Upgrade All from a shared Tidal id. Sample-one remains law. Clean Up duplicates is a separate ticket.
 
+## 2026-09-01 — Root reuse treated `Album [FLAC]` as an artist match
+
+**What happened:** `_find_legacy_album_dir` reused a music-root folder if it had a trailing codec bracket, even with no `Artist - ` prefix. `Greatest Hits [FLAC]` would steal a Billy Idol download.
+
+**Root cause:** Codec brackets were treated as enough leftover signal at the library root.
+
+**Prevention:** Root reuse requires a stripped `Artist - ` prefix. Codec-only folders under an artist dir can still match.
+
 ## 2026-09-01 — ruff --fix resorted a star-import barrel
 
 **What happened:** `ruff check` on download writers auto-sorted `_common.py` `__all__` and imports because `fix = true` is set in pyproject.
