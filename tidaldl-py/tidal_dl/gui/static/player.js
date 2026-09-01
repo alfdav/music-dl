@@ -2272,7 +2272,8 @@ async function renderUpgradeScanner(container) {
 }
 
 function _upgradeQualityJump(result) {
-  return qualityTitle(result.current_quality) + ' \u2192 ' + qualityTitle(result.available_quality);
+  return qualityTitle(result.current_quality, result.current_format, result.current_codec)
+    + ' \u2192 ' + qualityTitle(result.available_quality);
 }
 
 function _renderScanResults(container, results) {

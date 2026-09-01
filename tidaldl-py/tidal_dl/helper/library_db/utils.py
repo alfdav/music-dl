@@ -44,15 +44,36 @@ def _normalize_track_text(value: str | None) -> str:
     return (value or "").strip().casefold()
 
 
+_LOSSY_CODECS = frozenset({"aac", "mp3", "ogg", "opus", "vorbis"})
+_LOSSLESS_CODECS = frozenset({"flac", "alac", "pcm"})
+
+
+def local_quality_label(
+    quality: str | None,
+    fmt: str | None = None,
+    codec: str | None = None,
+) -> str:
+    """Hz/bit is a lossless fact. Lossy AAC/M4A must not look like CD 16/44.1."""
+    family = (codec or "").casefold()
+    container = (fmt or "").casefold()
+    if family in _LOSSY_CODECS:
+        return family.upper()
+    if family in _LOSSLESS_CODECS:
+        return quality or (fmt or "").upper()
+    if container == "m4a":
+        return "M4A"
+    return quality or (fmt or "")
+
+
 def _local_quality_rank(
     quality: str | None,
     fmt: str | None,
     codec: str | None = None,
 ) -> int:
     codec_family = (codec or "").casefold()
-    if codec_family in {"aac", "mp3", "ogg", "opus", "vorbis"}:
+    if codec_family in _LOSSY_CODECS:
         return 1
-    if codec_family not in {"flac", "alac", "pcm"}:
+    if codec_family not in _LOSSLESS_CODECS:
         return 0
     if not quality:
         return 2

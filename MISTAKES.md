@@ -96,6 +96,14 @@
 
 **Prevention:** Do not match Upgrade on ISRC alone when titles differ. Prefer title+artist+duration. Colliding ISRC across different titles is UNCERTAIN / skip. Never Upgrade All from a shared Tidal id. Sample-one remains law. Clean Up duplicates is a separate ticket.
 
+## 2026-09-01 — Lossy AAC labeled as CD 16/44.1 lossless
+
+**What happened:** Live 1.7.8 upgrade scan showed Los Hermanos `04 Aylaylay.m4a` as `current_quality: "44100Hz/16bit"`. `afinfo` on disk was AAC ~292 kbps. Badge/API looked like CD lossless.
+
+**Root cause:** `_read_metadata` wrote `sample_rate/bits_per_sample` whenever mutagen exposed `bits_per_sample`. AAC MP4 still reports 44100/16. Upgrade results returned that string without codec, so the jump label echoed the CD lossless fact.
+
+**Prevention:** Codec/container first. Hz/bit only after the codec is lossless. Persist `AAC` for lossy M4A. Unknown M4A stays `M4A`, never `44100Hz/16bit`. Rewrite stored AAC Hz/bit on the way out of upgrade scan.
+
 ## 2026-08-31 — Track-row source label kissed the download icon
 
 **What happened:** Tetrarch on live 1.7.8 saw duration `3:35`, then lowercase `tidal`, then a download-tray icon sitting on the final `l`. Duration-to-source looked fine. Search, library, and album tracks share that row.
