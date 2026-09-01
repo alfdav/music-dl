@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import os
 import unicodedata
 
 from tidal_dl.helper.library_db._common import *
@@ -466,27 +465,13 @@ class ScannedMixin:
         nfd = unicodedata.normalize("NFD", nfc)
         self._conn.execute("DELETE FROM scanned WHERE path IN (?, ?)", (nfc, nfd))
 
-    def collapse_unicode_path_twins(self, *, check_inodes: bool = False) -> int:
-        """Keep one scanned row per NFC path (and per same-inode NFC twin)."""
+    def collapse_unicode_path_twins(self) -> int:
+        """Keep one scanned row per NFC path. Same-inode macOS twins are NFC-equal."""
         assert self._conn
         paths = [row["path"] for row in self._conn.execute("SELECT path FROM scanned")]
         groups: dict[str, list[str]] = {}
         for path in paths:
             groups.setdefault(canonical_library_path(path), []).append(path)
-
-        if check_inodes:
-            inode_groups: dict[tuple[int, int], list[str]] = {}
-            for path in paths:
-                try:
-                    st = os.stat(path)
-                except OSError:
-                    continue
-                inode_groups.setdefault((st.st_dev, st.st_ino), []).append(path)
-            for members in inode_groups.values():
-                nfcs = {canonical_library_path(member) for member in members}
-                if len(nfcs) != 1:
-                    continue
-                groups.setdefault(next(iter(nfcs)), []).extend(members)
 
         removed = 0
         for nfc, members in groups.items():

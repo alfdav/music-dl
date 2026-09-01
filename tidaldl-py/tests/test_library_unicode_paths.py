@@ -158,7 +158,7 @@ class TestCollapseExistingTwins:
         _insert_raw(db, nfd, artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
         db.commit()
 
-        db.collapse_unicode_path_twins(check_inodes=True)
+        db.collapse_unicode_path_twins()
         db.commit()
 
         assert db.known_paths() == {nfc}
@@ -182,6 +182,24 @@ class TestCollapseExistingTwins:
         favs = db._conn.execute("SELECT path FROM favorites").fetchall()
         assert [row["path"] for row in events] == [nfc]
         assert [row["path"] for row in favs] == [nfc]
+
+    def test_trusted_path_accepts_nfd_after_collapse(self, tmp_path):
+        from tidal_dl.gui.api.library import _path_in_library, _trusted_library_path
+
+        nfc, nfd = _hardlink_alizee_pair(tmp_path / "Music")
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        _insert_raw(db, nfc, artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
+        _insert_raw(db, nfd, artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
+        db.collapse_unicode_path_twins()
+        db.commit()
+        db.close()
+
+        assert _path_in_library(nfd) is True
+        trusted = _trusted_library_path(nfd)
+        assert trusted is not None
+        assert trusted.is_file()
+        assert os.stat(trusted).st_ino == os.stat(nfd).st_ino
 
     def test_does_not_collapse_distinct_files(self, db):
         db.record("/music/Alizée/Studio/01.flac", status="tagged", artist=ARTIST_NFC,
@@ -297,6 +315,11 @@ class TestLibrarySearchEndpoint:
             params={"q": "Alizée", "type": "albums"},
             headers=client._host_header,
         )
+        artists = client.get(
+            "/api/library/search",
+            params={"q": "Alizée", "type": "artists"},
+            headers=client._host_header,
+        )
 
         assert response.status_code == 200
         payload = response.json()
@@ -307,3 +330,8 @@ class TestLibrarySearchEndpoint:
         album_payload = albums.json()
         assert album_payload["total"] == 1
         assert album_payload["albums"][0]["track_count"] == 1
+        assert artists.status_code == 200
+        artist_payload = artists.json()
+        assert artist_payload["total"] == 1
+        assert artist_payload["artists"][0]["track_count"] == 1
+        assert artist_payload["artists"][0]["album_count"] == 1

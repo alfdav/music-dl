@@ -1566,7 +1566,7 @@ def _background_scan(rescan: bool) -> None:
         if scan_dirs:
             _migrate_volume_prefixes(db, scan_dirs)
 
-        db.collapse_unicode_path_twins(check_inodes=bool(scan_dirs))
+        db.collapse_unicode_path_twins()
         db.commit()
 
         # If no scan directories are reachable, skip scan entirely to preserve
