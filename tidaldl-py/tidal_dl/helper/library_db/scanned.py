@@ -301,11 +301,11 @@ class ScannedMixin:
         params: list = []
         if query:
             where += (
-                " AND (fold_search(title) LIKE ? OR fold_search(artist) LIKE ?"
-                " OR fold_search(album) LIKE ?)"
+                " AND fold_search("
+                "coalesce(title, '') || ' ' || coalesce(artist, '') || ' ' || coalesce(album, '')"
+                ") LIKE ?"
             )
-            like = f"%{fold_search_text(query)}%"
-            params.extend([like, like, like])
+            params.append(f"%{fold_search_text(query)}%")
 
         total = self._conn.execute(
             f"SELECT COUNT(*) FROM scanned WHERE {where}", params
