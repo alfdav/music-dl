@@ -162,7 +162,7 @@ class TestSkippedDirectoryPolicyIsCentralized:
 
 
 class TestLargeTreePrunesTrashWithoutDescent:
-    def test_large_synology_tree_never_descends_into_recycle_or_trash(
+    def test_large_nas_tree_never_descends_into_recycle_or_trash(
         self, library_scan, monkeypatch,
     ) -> None:
         library_api, library_dir, tmp_path = library_scan
@@ -720,7 +720,7 @@ def test_drop_skipped_scan_paths_still_centralized() -> None:
 
 
 def _seed_zeratool_recycle_library(db: LibraryDB, library_dir: Path) -> dict[str, Path]:
-    """Nested Synology trash plus a real file and a Recycle *title*."""
+    """Nested NAS `#recycle` trash plus a real file and a Recycle *title*."""
     keep = (
         library_dir / "Carlos Vives" / "Clasicos de la Provincia"
         / "Carlos Vives - La Gota Fria.wav"

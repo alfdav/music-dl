@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 SCAN_EXTENSIONS: frozenset[str] = frozenset({".flac", ".mp3", ".m4a", ".mp4", ".ogg"})
 
 # Directory names that are never music. Match the whole component, case-insensitive.
+# `#recycle` is NAS recycle/trash (UGreen, Synology, and any NAS that uses that name).
 _SKIPPED_SCAN_DIR_NAMES = frozenset({
     "#recycle",
     "@eadir",
@@ -69,8 +70,9 @@ _SQL_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$"
 def visible_scanned_path_sql(column: str = "path") -> str:
     """SQL predicate: *column* has no skipped directory component.
 
-    ``/#recycle/`` (after slash normalization) is trash. A title or folder
-    that merely contains Recycle is not.
+    ``/#recycle/`` (after slash normalization) is NAS recycle/trash
+    (UGreen, Synology, and any NAS that uses that path component).
+    A title or folder that merely contains Recycle is not.
     """
     if not _SQL_IDENT.fullmatch(column):
         raise ValueError(f"invalid SQL identifier: {column}")

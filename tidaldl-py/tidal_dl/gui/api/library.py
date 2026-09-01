@@ -149,7 +149,7 @@ def _get_db() -> LibraryDB:
 
 
 def _purge_skipped_library_rows(db: LibraryDB) -> None:
-    """Drop leftover NAS-trash rows on first API open, without walking disk."""
+    """Drop leftover NAS recycle/trash rows on first API open, without walking disk."""
     if getattr(db, "_skipped_paths_purged", False):
         return
     dropped = drop_skipped_scan_paths(db)

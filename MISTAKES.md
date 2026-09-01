@@ -2,11 +2,11 @@
 
 ## 2026-08-31 — 1.7.8 still served `/Volumes/Music/#recycle/...` after PR 131/136
 
-**What happened:** Live 1.7.8 still showed a `#recycle` 18-track album and trash twins of La Gota Fria. Skip on walk and the fingerprint sweep already worked.
+**What happened:** Live 1.7.8 on a UGreen NAS still showed a `#recycle` 18-track album and trash twins of La Gota Fria. Skip on walk and the fingerprint sweep already worked. `#recycle` is a NAS recycle/trash path component (UGreen, Synology, and any NAS that uses it), not a Synology-only name.
 
 **Root cause:** Sweep only ran inside Sync. Boot does not scan, and first visit only scans when the DB is empty, so leftover `#recycle` rows stayed in `scanned`. Library/albums/search/home selected those rows with no path-component filter. `MIN(path)` then preferred `#recycle` covers because `#` sorts first.
 
-**Prevention:** Drop skipped-directory rows on first library/home DB open (no walk). Filter those paths out of library/albums/search/home queries. Keep the scan/fingerprint sweep. Do not match the word Recycle in a title.
+**Prevention:** Drop skipped-directory rows on first library/home DB open (no walk). Filter those paths out of library/albums/search/home queries. Keep the scan/fingerprint sweep. Do not match the word Recycle in a title. Do not brand `#recycle` as Synology-only.
 
 ## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
 
