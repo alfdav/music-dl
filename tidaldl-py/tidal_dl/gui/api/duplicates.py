@@ -31,11 +31,19 @@ _LOSSY_CODECS = frozenset({"aac", "mp3", "ogg", "opus", "vorbis"})
 _LOSSLESS_EXTS = frozenset({".flac", ".wav", ".aiff", ".alac"})
 _EDITION_CANON = {
     "remastered": "remaster",
+    "remasters": "remaster",
     "remaster": "remaster",
+    "re-mastered": "remaster",
+    "re-master": "remaster",
+    "remasterizado": "remaster",
+    "remasterizada": "remaster",
     "deluxe": "deluxe",
     "special": "special",
     "expanded": "expanded",
+    "expandida": "expanded",
+    "extended": "expanded",
     "anniversary": "anniversary",
+    "aniversario": "anniversary",
     "bonus": "bonus",
     "digitized": "digitized",
     "digitised": "digitized",
@@ -224,6 +232,11 @@ def _is_layout_twin(path_a: str, path_b: str) -> bool:
 
 
 def _is_auto_extra(keeper: dict, extra: dict) -> bool:
+    """True only for same-edition folder-layout twins or recycle copies.
+
+    Edition tokens are compared as sets. Matching remaster/deluxe twins can
+    still be auto extras; a token on only one side is a different edition.
+    """
     if _is_playlist_path(keeper["path"]) or _is_playlist_path(extra["path"]):
         return False
     if _normalize(keeper.get("album") or "") != _normalize(extra.get("album") or ""):
