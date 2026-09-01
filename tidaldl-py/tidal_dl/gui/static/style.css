@@ -4254,6 +4254,8 @@ body {
 .dup-duplicate { opacity: 0.5; text-decoration: line-through; }
 .dup-keep-badge { font-size: 10px; font-weight: 700; color: rgba(100, 200, 100, 0.9); flex-shrink: 0; width: 60px; }
 .dup-remove-badge { font-size: 10px; font-weight: 700; color: rgba(200, 100, 100, 0.7); flex-shrink: 0; width: 60px; }
+.dup-uncertain-badge { font-size: 10px; font-weight: 700; color: rgba(220, 180, 80, 0.95); flex-shrink: 0; width: 78px; }
+.dup-group-card.dup-uncertain .dup-duplicate { opacity: 0.85; text-decoration: none; }
 .dup-tier { font-size: 11px; color: var(--text-secondary); flex-shrink: 0; width: 80px; }
 .dup-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 11px; direction: rtl; text-align: left; }
 

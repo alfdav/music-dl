@@ -112,6 +112,14 @@
 
 **Prevention:** Schedule the existing history debounce from `_dlComplete`. Keep a 2-item `/downloads/history` fixture test so both cards paint, newest first.
 
+## 2026-08-31 — Clean Up treated remasters, deluxe editions, and CD rips as extras
+
+**What happened:** Live 1.7.8 `/api/duplicates/preview` grouped 3027 ISRC+album sets and would have deleted 4513 extras. Quality-rank kept a 24-bit Tidal file over a 16-bit CD rip of the same ISRC+album, playlist FLACs were grouped with a deluxe m4a, and 34 groups had remaster/deluxe tokens that differed between keeper and extra.
+
+**Root cause:** `_find_duplicate_groups` keyed on ISRC+album (or title+artist) then sorted by `_tier_rank_for_quality`. Same ISRC is not the same edition. A unique CD rip or remaster loses to a higher-ranked twin.
+
+**Prevention:** Auto-extra only for folder-layout twins of the same edition (Artist - Album vs Artist/Album, or a `#recycle` copy) with matching edition tokens, same album, and same quality class. Remaster/deluxe/special/expanded/anniversary/bonus/digitized, bit-depth/sample-rate/format mismatch, or a `- Playlists` path marks the group UNCERTAIN and excludes it from `total_duplicates` and Clean Up. Never keep `#recycle` over a live path. Never keep lossy over lossless.
+
 ## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
 
 **What happened:** Artist-name track search (Carlos Vives) replaced real track hits with a self-titled album. Local-empty paint showed `No results found` while Tidal was still in flight. `urlparse(...).hostname` can raise `ValueError` on broken IPv6 zones / trailing `%`, which would 500 `/api/search`.
