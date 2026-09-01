@@ -96,6 +96,14 @@
 
 **Prevention:** Do not match Upgrade on ISRC alone when titles differ. Prefer title+artist+duration. Colliding ISRC across different titles is UNCERTAIN / skip. Never Upgrade All from a shared Tidal id. Sample-one remains law. Clean Up duplicates is a separate ticket.
 
+## 2026-09-01 — Clean Up preview timed out on an 11.8k library
+
+**What happened:** Live 1.7.8 Zeratool `GET /api/duplicates/preview` sat ~30s and never painted. No `POST /api/duplicates/clean` was sent.
+
+**Root cause:** `_preview_sync` called `_prune_stale`, which `os.path.exists` every scanned path. On a NAS that is a full-library stat. Grouping also mixed `#recycle` path-component trash with live extras.
+
+**Prevention:** Preview is a UI read. Do not prune/stat the library. Skip `#recycle` directory-component rows first (UGreen/Synology/any NAS trash, not a title substring). Cap returned groups. Leave Clean Up grouping and deletion on the existing `_find_duplicate_groups` default / PR 161 edition-safe law.
+
 ## 2026-08-31 — Track-row source label kissed the download icon
 
 **What happened:** Tetrarch on live 1.7.8 saw duration `3:35`, then lowercase `tidal`, then a download-tray icon sitting on the final `l`. Duration-to-source looked fine. Search, library, and album tracks share that row.

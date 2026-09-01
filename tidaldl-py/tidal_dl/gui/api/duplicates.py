@@ -25,6 +25,7 @@ logger = logging.getLogger("music-dl.duplicates")
 _TIER_NAMES = {4: "Legendary", 3: "Epic", 2: "Rare", 1: "Uncommon", 0: "Common"}
 _LOCK_FILENAME = "cleanup.lock"
 _MANIFEST_FILENAME = "manifest.json"
+_PREVIEW_GROUP_LIMIT = 80
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -112,6 +113,11 @@ def _find_active_manifest() -> dict | None:
     return best
 
 
+def _is_recycle_path(path: str) -> bool:
+    """True when ``#recycle`` is a directory component (NAS trash, any vendor)."""
+    return any(part.casefold() == "#recycle" for part in Path(path).parts[:-1])
+
+
 def _path_score(path: str) -> int:
     """Lower score = more canonical. Higher = more likely duplicate."""
     score = 0
@@ -162,8 +168,14 @@ def _prune_stale(db: LibraryDB, reachable_dirs: list[Path]) -> int:
     return pruned
 
 
-def _find_duplicate_groups(db: LibraryDB) -> list[dict]:
-    """Two-phase duplicate grouping: ISRC+album, then title+artist fallback."""
+def _find_duplicate_groups(
+    db: LibraryDB, *, skip_recycle: bool = False
+) -> list[dict]:
+    """Two-phase duplicate grouping: ISRC+album, then title+artist fallback.
+
+    ``skip_recycle`` drops ``#recycle`` path-component rows before grouping so
+    preview can return live extras without changing Clean Up's default groups.
+    """
     assert db._conn
     groups: list[dict] = []
     seen_paths: set[str] = set()
@@ -183,6 +195,8 @@ def _find_duplicate_groups(db: LibraryDB) -> list[dict]:
             (g["isrc"], g["album_key"]),
         ).fetchall()
         tracks = [dict(r) for r in rows]
+        if skip_recycle:
+            tracks = [t for t in tracks if not _is_recycle_path(t["path"])]
         if len(tracks) < 2:
             continue
 
@@ -239,6 +253,8 @@ def _find_duplicate_groups(db: LibraryDB) -> list[dict]:
     meta_groups: dict[tuple[str, str], list[dict]] = {}
     for r in no_isrc_rows:
         d = dict(r)
+        if skip_recycle and _is_recycle_path(d["path"]):
+            continue
         if d["path"] in seen_paths:
             continue
         title = _normalize(d.get("title") or "")
@@ -354,19 +370,22 @@ def _preview_sync() -> dict:
 
     db = _get_db()
     try:
-        reachable = _reachable_scan_dirs()
-        stale_count = _prune_stale(db, reachable)
-        groups = _find_duplicate_groups(db)
+        # Preview is a UI read. Do not exists() the library (NAS timeout)
+        # and do not feed #recycle path-component rows into grouping.
+        groups = _find_duplicate_groups(db, skip_recycle=True)
         total_duplicates = sum(len(g["duplicates"]) for g in groups)
+        truncated = len(groups) > _PREVIEW_GROUP_LIMIT
+        shown = groups[:_PREVIEW_GROUP_LIMIT]
 
         # Check if there's an active undo manifest (from this or a previous run)
         active_manifest = _find_active_manifest()
 
         return {
-            "stale_count": stale_count,
-            "groups": groups,
+            "stale_count": 0,
+            "groups": shown,
             "total_groups": len(groups),
             "total_duplicates": total_duplicates,
+            "truncated": truncated,
             "undo_available": active_manifest is not None,
         }
     finally:

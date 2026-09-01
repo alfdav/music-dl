@@ -764,6 +764,7 @@ class TestDuplicatesPreview:
         resp = client.get("/api/duplicates/preview", headers=client._host_header)
         data = resp.json()
         assert "stale_count" in data
+        assert "truncated" in data
 
 
 class TestSettings:
