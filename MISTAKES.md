@@ -110,7 +110,7 @@
 
 **Root cause:** `tracks_page` used ASCII `LIKE` on title/artist/album. `í` does not match `i`. The remastered row already stored the full tagged title/album/Hz-bit; search never returned it.
 
-**Prevention:** Fold query and stored text (`NFKD` + strip combining marks) in the SQL `LIKE`. Test `q=Fria` and `q=gota fria` at `tracks_page` / `GET /api/library`. Do not rewrite tagged remaster titles to the short name.
+**Prevention:** Fold query and stored text (`NFKD` + strip combining marks) in the SQL `LIKE`. Test `q=Fria` and `q=gota fria` at `tracks_page` / `GET /api/library`. Do not rewrite tagged remaster titles to the short name. One `fold_search` UDF on concatenated title/artist/album is ~40ms p95 on the 10k QA probe; raise that search ceiling instead of adding a schema column.
 
 ## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
 
