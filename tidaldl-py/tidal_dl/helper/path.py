@@ -598,7 +598,7 @@ def _find_legacy_album_dir(base: pathlib.Path, artist: str, album: str) -> list[
         if _album_identity(child.name, artist) != wanted:
             continue
         stripped = _strip_codec_brackets(child.name)
-        if _strip_artist_prefix(stripped, artist) == stripped and not _CODEC_BRACKET.search(child.name):
+        if _strip_artist_prefix(stripped, artist) == stripped:
             continue
         candidates.append((2, [child.name]))
 

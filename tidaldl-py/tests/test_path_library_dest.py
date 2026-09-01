@@ -17,6 +17,17 @@ def test_resolves_into_existing_artist_prefixed_album_folder(tmp_path: Path) -> 
     assert result == "Carlos Vives/Carlos Vives - Clasicos de la Provincia/La gota fría"
 
 
+def test_root_codec_folder_without_artist_prefix_is_not_reused(tmp_path: Path) -> None:
+    (tmp_path / "Greatest Hits [FLAC]").mkdir()
+
+    result = resolve_library_relative(
+        tmp_path,
+        "Billy Idol/Greatest Hits/White Wedding",
+    )
+
+    assert result == "Billy Idol/Greatest Hits/White Wedding"
+
+
 def test_resolves_into_existing_root_artist_album_flac_folder(tmp_path: Path) -> None:
     (tmp_path / "Billy Idol - Greatest Hits [FLAC]").mkdir()
 
