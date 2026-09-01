@@ -22,6 +22,7 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ## Unreleased
 - Give track-row source labels (`tidal` / `local`) breathing room before the download icon so they no longer sit flush.
+- Hide NAS `#recycle` trash (UGreen, Synology, and any NAS that uses that path component) from library, albums, unified search, and home — including leftover rows when Sync is skipped. Never treat `#recycle` as an artist, never rank those paths first, and do not show an album as Various Artists when it is mostly recycle files.
 
 ## v1.7.8 (2026-08-31)
 - Search accepts a pasted Tidal track, album, artist, or playlist URL (or a bare id) and resolves it for add/download instead of sending the URL to catalog search ([#154](https://github.com/alfdav/music-dl/pull/154)).

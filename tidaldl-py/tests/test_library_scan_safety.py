@@ -17,6 +17,7 @@ from tidal_dl.helper.library_scanner import (
     is_skipped_scan_dir,
     path_has_skipped_scan_dir,
     scan_directory,
+    visible_scanned_path_sql,
 )
 
 PRIOR_CACHE_ROWS = 11_974
@@ -711,3 +712,6 @@ def test_drop_skipped_scan_paths_still_centralized() -> None:
     assert callable(drop_skipped_scan_paths)
     assert is_skipped_scan_dir("#recycle")
     assert is_skipped_scan_dir(".Trash")
+    sql = visible_scanned_path_sql()
+    assert "/#recycle/" in sql
+    assert "/.trash/" in sql

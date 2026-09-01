@@ -1,6 +1,7 @@
 """Album and artist browsing queries."""
 
-from tidal_dl.helper.library_db._common import *
+from tidal_dl.helper.library_db._common import *  # noqa: F403
+from tidal_dl.helper.library_scanner import visible_scanned_path_sql
 
 
 class BrowseMixin:
@@ -12,7 +13,10 @@ class BrowseMixin:
         ) -> tuple[list[dict], int]:
         """Return paginated artists with track/album counts."""
         assert self._conn
-        where = "status != 'unreadable' AND missing_since IS NULL AND artist IS NOT NULL"
+        where = (
+            f"status != 'unreadable' AND missing_since IS NULL "
+            f"AND artist IS NOT NULL AND {visible_scanned_path_sql()}"
+        )
         params: list = []
         if query:
             where += " AND artist LIKE ?"
@@ -27,7 +31,9 @@ class BrowseMixin:
                        COUNT(DISTINCT album) as album_count,
                        MIN(s.path) as cover_path,
                        (SELECT s2.art_available FROM scanned s2
-                        WHERE s2.artist = s.artist AND s2.status != 'unreadable' AND s2.missing_since IS NULL
+                        WHERE s2.artist = s.artist AND s2.status != 'unreadable'
+                          AND s2.missing_since IS NULL
+                          AND {visible_scanned_path_sql("s2.path")}
                         ORDER BY s2.path ASC LIMIT 1) as cover_art_available
                 FROM scanned s
                 WHERE {where}
@@ -43,11 +49,12 @@ class BrowseMixin:
         assert self._conn
         grouped: dict[str, dict] = {}
         for row in self._conn.execute(
-            """SELECT release_id, album, artist, title, path, art_available, quality
+            f"""SELECT release_id, album, artist, title, path, art_available, quality
                FROM scanned
                WHERE status != 'unreadable' AND missing_since IS NULL
                  AND album IS NOT NULL
-                 AND release_id IS NOT NULL"""
+                 AND release_id IS NOT NULL
+                 AND {visible_scanned_path_sql()}"""
         ):
             card = grouped.setdefault(row["release_id"], {
                 "id": row["release_id"],
@@ -91,7 +98,10 @@ class BrowseMixin:
     def all_albums(self, query: str = "") -> list[dict]:
         """Return all albums grouped by album name. Multi-artist albums show 'Various Artists'."""
         assert self._conn
-        where = "album IS NOT NULL AND status != 'unreadable' AND missing_since IS NULL"
+        where = (
+            f"album IS NOT NULL AND status != 'unreadable' "
+            f"AND missing_since IS NULL AND {visible_scanned_path_sql()}"
+        )
         params: list = []
         if query:
             where += " AND (album LIKE ? OR artist LIKE ?)"
@@ -100,7 +110,9 @@ class BrowseMixin:
         rows = self._conn.execute(
             f"""SELECT s.album, COUNT(*) as track_count, MIN(s.path) as cover_path,
                        (SELECT s2.art_available FROM scanned s2
-                        WHERE s2.album = s.album AND s2.status != 'unreadable' AND s2.missing_since IS NULL
+                        WHERE s2.album = s.album AND s2.status != 'unreadable'
+                          AND s2.missing_since IS NULL
+                          AND {visible_scanned_path_sql("s2.path")}
                         ORDER BY s2.path ASC LIMIT 1) as cover_art_available,
                        MAX(quality) as best_quality,
                        COUNT(DISTINCT artist) as artist_count,
@@ -132,7 +144,7 @@ class BrowseMixin:
         # (~500ms local / ~3s on the NAS-backed Mac library).
         downloaded: dict[str, dict] = {}
         for row in self._conn.execute(
-            """SELECT dh.album,
+            f"""SELECT dh.album,
                       COUNT(DISTINCT s.path) AS track_count,
                       MAX(dh.finished_at) AS recent_at,
                       COUNT(DISTINCT dh.artist) AS artist_count,
@@ -143,6 +155,7 @@ class BrowseMixin:
                WHERE dh.status = 'done'
                  AND dh.finished_at IS NOT NULL
                  AND s.status != 'unreadable' AND s.missing_since IS NULL
+                 AND {visible_scanned_path_sql("s.path")}
                  AND dh.album IS NOT NULL
                GROUP BY dh.album"""
         ).fetchall():
@@ -157,7 +170,7 @@ class BrowseMixin:
 
         scanned: dict[str, dict] = {}
         for row in self._conn.execute(
-            """SELECT album,
+            f"""SELECT album,
                       COUNT(*) AS track_count,
                       MAX(scanned_at) AS recent_at,
                       COUNT(DISTINCT artist) AS artist_count,
@@ -165,6 +178,7 @@ class BrowseMixin:
                FROM scanned s
                WHERE album IS NOT NULL
                  AND status != 'unreadable' AND missing_since IS NULL
+                 AND {visible_scanned_path_sql()}
                GROUP BY album"""
         ).fetchall():
             artist = row["first_artist"] if row["artist_count"] == 1 else "Various Artists"
@@ -191,8 +205,9 @@ class BrowseMixin:
         """Return readable rows for one artist without loading the whole library."""
         assert self._conn
         rows = self._conn.execute(
-            """SELECT * FROM scanned
+            f"""SELECT * FROM scanned
                WHERE status != 'unreadable' AND missing_since IS NULL
+                 AND {visible_scanned_path_sql()}
                  AND artist = ? COLLATE NOCASE""",
             (artist,),
         ).fetchall()
@@ -202,8 +217,9 @@ class BrowseMixin:
         """Return readable rows already stamped with a grouped release id."""
         assert self._conn
         rows = self._conn.execute(
-            """SELECT * FROM scanned
+            f"""SELECT * FROM scanned
                WHERE status != 'unreadable' AND missing_since IS NULL
+                 AND {visible_scanned_path_sql()}
                  AND release_id = ?""",
             (release_id,),
         ).fetchall()
@@ -219,6 +235,7 @@ class BrowseMixin:
         rows = self._conn.execute(
             f"""SELECT * FROM scanned
                 WHERE status != 'unreadable' AND missing_since IS NULL
+                  AND {visible_scanned_path_sql()}
                   AND album IN ({placeholders})""",
             titles,
         ).fetchall()
@@ -228,10 +245,11 @@ class BrowseMixin:
         """True when every readable album row already has a grouped release id."""
         assert self._conn
         row = self._conn.execute(
-            """SELECT COUNT(*) AS album_rows,
+            f"""SELECT COUNT(*) AS album_rows,
                       SUM(CASE WHEN release_id IS NOT NULL THEN 1 ELSE 0 END) AS stamped
                FROM scanned
-               WHERE status != 'unreadable' AND missing_since IS NULL AND album IS NOT NULL"""
+               WHERE status != 'unreadable' AND missing_since IS NULL AND album IS NOT NULL
+                 AND {visible_scanned_path_sql()}"""
         ).fetchone()
         album_rows = int(row["album_rows"] or 0)
         stamped = int(row["stamped"] or 0)
@@ -241,15 +259,18 @@ class BrowseMixin:
         """Return albums for an artist with track count and a representative path for art."""
         assert self._conn
         rows = self._conn.execute(
-            """SELECT s.album, COUNT(*) as track_count, MIN(s.path) as cover_path,
+            f"""SELECT s.album, COUNT(*) as track_count, MIN(s.path) as cover_path,
                       (SELECT s2.art_available FROM scanned s2
                        WHERE s2.artist = s.artist AND s2.album = s.album
                          AND s2.status != 'unreadable' AND s2.missing_since IS NULL
+                         AND {visible_scanned_path_sql("s2.path")}
                        ORDER BY s2.path ASC LIMIT 1) as cover_art_available,
                       GROUP_CONCAT(DISTINCT genre) as genres,
                       MAX(quality) as best_quality
                FROM scanned s
-               WHERE artist = ? AND album IS NOT NULL AND status != 'unreadable' AND missing_since IS NULL
+               WHERE artist = ? AND album IS NOT NULL AND status != 'unreadable'
+                 AND missing_since IS NULL
+                 AND {visible_scanned_path_sql()}
                GROUP BY album ORDER BY album COLLATE NOCASE ASC""",
             (artist,),
         ).fetchall()
@@ -264,14 +285,18 @@ class BrowseMixin:
         assert self._conn
         if artist == "Various Artists":
             rows = self._conn.execute(
-                """SELECT * FROM scanned
-                   WHERE album = ? AND status != 'unreadable' AND missing_since IS NULL""",
+                f"""SELECT * FROM scanned
+                   WHERE album = ? AND status != 'unreadable'
+                     AND missing_since IS NULL
+                     AND {visible_scanned_path_sql()}""",
                 (album,),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                """SELECT * FROM scanned
-                   WHERE artist = ? AND album = ? AND status != 'unreadable' AND missing_since IS NULL""",
+                f"""SELECT * FROM scanned
+                   WHERE artist = ? AND album = ? AND status != 'unreadable'
+                     AND missing_since IS NULL
+                     AND {visible_scanned_path_sql()}""",
                 (artist, album),
             ).fetchall()
 

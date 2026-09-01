@@ -95,9 +95,12 @@ def _album_track_key(row: dict) -> tuple[str, str]:
     )
 
 
-def _album_track_preference(row: dict) -> tuple[int, int, int, str]:
+def _album_track_preference(row: dict) -> tuple[int, int, int, int, str]:
+    from tidal_dl.helper.library_scanner import path_has_skipped_scan_dir
+
     path = row.get("path") or ""
     return (
+        1 if path_has_skipped_scan_dir(path) else 0,
         -_local_quality_rank(
             row.get("quality"), row.get("format"), row.get("codec")
         ),

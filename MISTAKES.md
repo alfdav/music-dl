@@ -104,6 +104,14 @@
 
 **Prevention:** Flex-gap the actions cluster using the 12px track-row rhythm. Size the actions column for label + gap + icon (84px). Do not letter-space `tidal`. Cover with a CSS contract test.
 
+## 2026-08-31 — 1.7.8 still served `/Volumes/Music/#recycle/...` as artist, search, and VA
+
+**What happened:** Live 1.7.8 Zeratool 2026-08-31 still showed `GET /api/library?sort=artist` starting with `artist: "#recycle"` (untagged wavs under `/Volumes/Music/#recycle/High Bit Rate/...`), `GET /api/search?q=Carlos%20Vives%20Fria` ranking the `#recycle` La Gota Fria first, and Various Artists *Hybrid Theory* with 38 tracks (36 under `#recycle/.../Hybrid Theory 20th Anniversary Edition/`). `#recycle` is a NAS recycle/trash path component (UGreen, Synology, and any NAS that uses it), not a Synology-only name.
+
+**Root cause:** Untagged files take the first relative folder as artist, so `#recycle` wins. `tracks_by_isrc` / search attach `ORDER BY path ASC`, and `#` sorts before live copies. Album grouping counts leftover recycle rows (`#recycle` + tagged deluxe artists) as extra artists, so Hybrid Theory becomes Various Artists. Walk skip and fingerprint sweep already existed; leftover rows stayed visible until Sync, and `/api/search` never filtered them.
+
+**Prevention:** Drop skipped-directory rows on first library/home/search DB open (no walk). Filter those paths out of library/albums/search/home/`tracks_by_isrc`. Never use a skipped path component as path-fallback artist. Prefer live files in unified search. Keep Recycle *titles*. Do not brand `#recycle` as Synology-only. Do not delete disk files or POST `/api/duplicates/clean`.
+
 ## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
 
 **What happened:** Artist-name track search (Carlos Vives) replaced real track hits with a self-titled album. Local-empty paint showed `No results found` while Tidal was still in flight. `urlparse(...).hostname` can raise `ValueError` on broken IPv6 zones / trailing `%`, which would 500 `/api/search`.
