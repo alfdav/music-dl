@@ -72,6 +72,7 @@ _db: LibraryDB | None = None  # Compatibility alias for tests/debugging.
 _db_opened_at: float = 0  # Compatibility alias for tests/debugging.
 _DB_MAX_AGE = 300  # Force reconnect every 5 min to catch stale NAS handles
 _stale_purge_key: tuple | None = None
+_stale_purge_missing = False
 _scan_lock = threading.Lock()
 _scan_running = False
 _scan_progress = {
@@ -164,6 +165,9 @@ def _get_db() -> LibraryDB:
     return db
 
 
+_real_get_db = _get_db
+
+
 def _configured_music_roots() -> list[Path]:
     """Configured download + scan roots, even if a volume is currently unmounted."""
     settings = Settings()
@@ -185,20 +189,24 @@ def _configured_music_roots() -> list[Path]:
 
 def _purge_stale_library_rows(db: LibraryDB, *, check_missing: bool) -> None:
     """Drop leftover indexer rows once per DB path + configured roots."""
-    global _stale_purge_key
+    global _stale_purge_key, _stale_purge_missing
     roots = _configured_music_roots()
-    key = (str(db._path), tuple(str(root) for root in roots), check_missing)
-    if _stale_purge_key == key:
+    key = (str(db._path), tuple(str(root) for root in roots))
+    if _stale_purge_key != key:
+        _stale_purge_missing = False
+    if _stale_purge_key == key and (not check_missing or _stale_purge_missing):
         return
     drop_stale_library_rows(db, roots, check_missing=check_missing)
     _stale_purge_key = key
+    if check_missing:
+        _stale_purge_missing = True
 
 
 def _library_db(*, check_missing: bool = True) -> LibraryDB:
     """Open the library DB and drop leftover rows before serving it."""
     db = _get_db()
     # Tests replace _get_db with a fixture lambda; don't rewrite those rows.
-    if getattr(_get_db, "__name__", "") != "_get_db":
+    if _get_db is not _real_get_db:
         return db
     _purge_stale_library_rows(db, check_missing=check_missing)
     return db

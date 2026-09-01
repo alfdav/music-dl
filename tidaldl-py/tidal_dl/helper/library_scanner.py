@@ -89,6 +89,10 @@ def path_under_music_roots(path: str | pathlib.Path, roots: list[pathlib.Path]) 
     return False
 
 
+_MASS_DROP_MIN_KNOWN = 100
+_MASS_DROP_FRACTION = 0.5
+
+
 def drop_stale_library_rows(
     library_db: LibraryDB,
     roots: list[pathlib.Path],
@@ -99,32 +103,53 @@ def drop_stale_library_rows(
 
     Missing files are removed only when their owning root currently exists
     (``Path.is_dir()``). An unmounted music volume therefore keeps its
-    in-root cache. Rows are deleted from the DB only — never from disk.
-    Skipped-directory (``#recycle``) policy is unchanged.
+    in-root cache. A remount or empty mount that would remove more than
+    half of a library larger than 100 rows is skipped — same valve as
+    scan prune. ``OSError`` on ``is_file()`` keeps the row. Rows are
+    deleted from the DB only — never from disk. Skipped-directory
+    (``#recycle``) policy is unchanged.
     """
     if not roots:
         return 0
-    reachable = [root for root in roots if check_missing and pathlib.Path(root).expanduser().is_dir()]
+    known = list(library_db.known_paths())
+    if not known:
+        return 0
+    reachable = [
+        root for root in roots
+        if check_missing and pathlib.Path(root).expanduser().is_dir()
+    ]
 
-    stale: list[str] = []
-    for path in library_db.known_paths():
+    unrooted: list[str] = []
+    missing: list[str] = []
+    for path in known:
         if not path_under_music_roots(path, roots):
-            stale.append(path)
+            unrooted.append(path)
             continue
         if not check_missing or not path_under_music_roots(path, reachable):
             continue
         try:
-            missing = not pathlib.Path(path).is_file()
+            gone = not pathlib.Path(path).is_file()
         except OSError:
-            missing = True
-        if missing:
-            stale.append(path)
+            continue
+        if gone:
+            missing.append(path)
+
+    stale: list[str] = []
+    known_n = len(known)
+    if not _is_mass_drop(len(unrooted), known_n):
+        stale.extend(unrooted)
+    if not _is_mass_drop(len(missing), known_n):
+        stale.extend(missing)
     if not stale:
         return 0
     with library_db.write_transaction():
         for path in stale:
             library_db.remove(path)
     return len(stale)
+
+
+def _is_mass_drop(count: int, known_n: int) -> bool:
+    return known_n > _MASS_DROP_MIN_KNOWN and count > _MASS_DROP_FRACTION * known_n
 
 
 # ---------------------------------------------------------------------------

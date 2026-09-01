@@ -147,26 +147,90 @@ def test_library_search_and_recents_drop_stale_without_sync(tmp_path: Path, monk
     monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
     monkeypatch.setattr(home_api, "path_config_base", lambda: str(tmp_path))
     library_api._stale_purge_key = None
+    library_api._stale_purge_missing = False
     library_api._close_thread_db()
     home_api._close_thread_db()
 
-    search = library_api.library_search(q="Night Watch", type="tracks", limit=20)
     recents = home_api.recent_plays(limit=20)
-
-    search_titles = {track["name"] for track in search["tracks"]}
     recent_paths = {track["path"] for track in recents["tracks"]}
+    db = LibraryDB(tmp_path / "library.db")
+    db.open()
+    after_recents = db.known_paths()
+    db.close()
 
+    assert str(leftover) not in recent_paths
+    assert str(leftover) not in after_recents
+    assert str(missing) in after_recents
+    assert str(keep) in after_recents
+
+    search = library_api.library_search(q="Night Watch", type="tracks", limit=20)
+    search_titles = {track["name"] for track in search["tracks"]}
     db = LibraryDB(tmp_path / "library.db")
     db.open()
     paths = db.known_paths()
     db.close()
 
     assert "Night Watch" not in search_titles
-    assert str(leftover) not in recent_paths
     assert str(keep) in paths
     assert str(missing) not in paths
     assert str(leftover) not in paths
     assert keep.is_file()
+
+
+def test_drop_stale_skips_mass_unrooted_when_library_looks_remounted(tmp_path: Path) -> None:
+    music = tmp_path / "Volumes" / "Music"
+    other = tmp_path / "Volumes" / "Music 1"
+    music.mkdir(parents=True)
+    db = LibraryDB(tmp_path / "library.db")
+    db.open()
+    for index in range(150):
+        _seed(db, other / f"track{index:03d}.flac", artist="A", title=f"T{index}")
+    db.commit()
+
+    dropped = library_scanner.drop_stale_library_rows(db, [music], check_missing=False)
+    paths = db.known_paths()
+    db.close()
+
+    assert dropped == 0
+    assert len(paths) == 150
+
+
+def test_drop_stale_skips_mass_missing_on_empty_mount(tmp_path: Path) -> None:
+    music = tmp_path / "music"
+    music.mkdir()
+    db = LibraryDB(tmp_path / "library.db")
+    db.open()
+    for index in range(150):
+        _seed(db, music / f"track{index:03d}.flac", artist="A", title=f"T{index}")
+    db.commit()
+
+    dropped = library_scanner.drop_stale_library_rows(db, [music], check_missing=True)
+    paths = db.known_paths()
+    db.close()
+
+    assert dropped == 0
+    assert len(paths) == 150
+
+
+def test_drop_stale_keeps_row_when_is_file_raises(tmp_path: Path, monkeypatch) -> None:
+    music = tmp_path / "music"
+    keep = music / "Artist" / "Album" / "keep.flac"
+    _write_wav(keep)
+    db = LibraryDB(tmp_path / "library.db")
+    db.open()
+    _seed(db, keep, artist="Artist", title="Keep")
+    db.commit()
+
+    def boom(_self) -> bool:
+        raise OSError("volume flaked")
+
+    monkeypatch.setattr(Path, "is_file", boom)
+    dropped = library_scanner.drop_stale_library_rows(db, [music], check_missing=True)
+    paths = db.known_paths()
+    db.close()
+
+    assert dropped == 0
+    assert str(keep) in paths
 
 
 def test_scan_drops_outside_root_without_walking(tmp_path: Path, monkeypatch) -> None:
@@ -187,7 +251,7 @@ def test_scan_drops_outside_root_without_walking(tmp_path: Path, monkeypatch) ->
     finger = json.dumps({
         "dirs": [str(music)],
         "mtimes": [os.stat(str(music)).st_mtime],
-            "known_count": 1,
+        "known_count": 1,
     }, sort_keys=True)
     db.set_meta("scan_fingerprint", finger)
     db.commit()
@@ -209,7 +273,10 @@ def test_scan_drops_outside_root_without_walking(tmp_path: Path, monkeypatch) ->
 
     monkeypatch.setattr(os, "walk", counting_walk)
     library_api._scan_running = True
-    library_api._background_scan(rescan=False)
+    try:
+        library_api._background_scan(rescan=False)
+    finally:
+        library_api._scan_running = False
 
     db = LibraryDB(tmp_path / "library.db")
     db.open()
