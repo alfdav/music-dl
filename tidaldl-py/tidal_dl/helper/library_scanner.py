@@ -105,19 +105,17 @@ def drop_stale_library_rows(
     (``Path.is_dir()``). An unmounted music volume therefore keeps its
     in-root cache. A remount or empty mount that would remove more than
     half of a library larger than 100 rows is skipped — same valve as
-    scan prune. ``OSError`` on ``is_file()`` keeps the row. Rows are
-    deleted from the DB only — never from disk. Skipped-directory
-    (``#recycle``) policy is unchanged.
+    scan prune. ``OSError`` on ``is_dir()`` treats the root as unmounted.
+    ``OSError`` on ``is_file()`` keeps the row. Rows are deleted from the
+    DB only — never from disk. Skipped-directory (``#recycle``) policy is
+    unchanged.
     """
     if not roots:
         return 0
     known = list(library_db.known_paths())
     if not known:
         return 0
-    reachable = [
-        root for root in roots
-        if check_missing and pathlib.Path(root).expanduser().is_dir()
-    ]
+    reachable = [root for root in roots if check_missing and _root_is_dir(root)]
 
     unrooted: list[str] = []
     missing: list[str] = []
@@ -146,6 +144,14 @@ def drop_stale_library_rows(
         for path in stale:
             library_db.remove(path)
     return len(stale)
+
+
+def _root_is_dir(root: pathlib.Path) -> bool:
+    """Return whether *root* exists as a directory. OSError means unmounted."""
+    try:
+        return pathlib.Path(root).expanduser().is_dir()
+    except OSError:
+        return False
 
 
 def _is_mass_drop(count: int, known_n: int) -> bool:

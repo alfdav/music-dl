@@ -212,6 +212,75 @@ def test_drop_stale_skips_mass_missing_on_empty_mount(tmp_path: Path) -> None:
     assert len(paths) == 150
 
 
+def test_drop_stale_treats_isdir_oserror_as_unmounted(tmp_path: Path, monkeypatch) -> None:
+    music = tmp_path / "music"
+    keep = music / "Artist" / "Album" / "keep.flac"
+    missing = music / "Artist" / "Album" / "gone.flac"
+    leftover = tmp_path / "qa-cache" / "Sting" / "Night Watch.flac"
+    _write_wav(keep)
+
+    db = LibraryDB(tmp_path / "library.db")
+    db.open()
+    _seed(db, keep, artist="Artist", title="Keep")
+    _seed(db, missing, artist="Artist", title="Gone")
+    _seed(db, leftover, artist="Sting", title="Night Watch")
+    db.commit()
+
+    def boom(_self) -> bool:
+        raise OSError("nas flaked")
+
+    monkeypatch.setattr(Path, "is_dir", boom)
+    dropped = library_scanner.drop_stale_library_rows(db, [music], check_missing=True)
+    paths = db.known_paths()
+    db.close()
+
+    assert dropped == 1
+    assert str(keep) in paths
+    assert str(missing) in paths
+    assert str(leftover) not in paths
+
+
+def test_library_search_survives_root_isdir_oserror(tmp_path: Path, monkeypatch) -> None:
+    import os
+
+    import tidal_dl.gui.api.library as library_api
+
+    music = tmp_path / "Volumes" / "Music"
+    keep = music / "Local" / "Album" / "keep.flac"
+    leftover = tmp_path / "qa-cache" / "Sting" / "Night Watch.flac"
+    _write_wav(keep)
+
+    db = LibraryDB(tmp_path / "library.db")
+    db.open()
+    _seed(db, keep, artist="Local", title="Keep")
+    _seed(db, leftover, artist="Sting", title="Night Watch")
+    db.commit()
+    db.close()
+
+    class FakeSettings:
+        data = SimpleNamespace(download_base_path=str(music), scan_paths=str(music))
+
+    original = Path.is_dir
+    music_key = os.path.normpath(str(music))
+
+    def boom(self) -> bool:
+        if os.path.normpath(os.path.expanduser(str(self))) == music_key:
+            raise OSError("nas flaked")
+        return original(self)
+
+    monkeypatch.setattr(library_api, "Settings", FakeSettings)
+    monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
+    monkeypatch.setattr(Path, "is_dir", boom)
+    library_api._stale_purge_key = None
+    library_api._stale_purge_missing = False
+    library_api._close_thread_db()
+
+    search = library_api.library_search(q="Keep", type="tracks", limit=20)
+    titles = {track["name"] for track in search["tracks"]}
+
+    assert "Keep" in titles
+
+
 def test_drop_stale_keeps_row_when_is_file_raises(tmp_path: Path, monkeypatch) -> None:
     music = tmp_path / "music"
     keep = music / "Artist" / "Album" / "keep.flac"

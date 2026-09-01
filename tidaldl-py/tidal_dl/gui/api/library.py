@@ -196,7 +196,10 @@ def _purge_stale_library_rows(db: LibraryDB, *, check_missing: bool) -> None:
         _stale_purge_missing = False
     if _stale_purge_key == key and (not check_missing or _stale_purge_missing):
         return
-    drop_stale_library_rows(db, roots, check_missing=check_missing)
+    try:
+        drop_stale_library_rows(db, roots, check_missing=check_missing)
+    except OSError:
+        return
     _stale_purge_key = key
     if check_missing:
         _stale_purge_missing = True
