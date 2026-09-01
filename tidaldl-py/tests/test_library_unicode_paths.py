@@ -271,3 +271,39 @@ class TestScanDoesNotCreateTwins:
         _, total = db.tracks_page(query="Alizée", limit=20, offset=0)
         db.close()
         assert total == 1
+
+
+class TestLibrarySearchEndpoint:
+    def test_search_alizee_returns_one_row_for_nfc_nfd_twins(self, client, tmp_path):
+        import tidal_dl.gui.api.library as library_api
+        from tidal_dl.helper.path import path_config_base
+
+        nfc, nfd = _alizee_strings()
+        db = LibraryDB(Path(path_config_base()) / "library.db")
+        db.open()
+        _insert_raw(db, nfc, artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
+        _insert_raw(db, nfd, artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
+        db.commit()
+        db.close()
+        library_api._invalidate_db_cache()
+
+        response = client.get(
+            "/api/library/search",
+            params={"q": "Alizée", "type": "tracks"},
+            headers=client._host_header,
+        )
+        albums = client.get(
+            "/api/library/search",
+            params={"q": "Alizée", "type": "albums"},
+            headers=client._host_header,
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total"] == 1
+        assert len(payload["tracks"]) == 1
+        assert payload["tracks"][0]["path"] == nfc
+        assert albums.status_code == 200
+        album_payload = albums.json()
+        assert album_payload["total"] == 1
+        assert album_payload["albums"][0]["track_count"] == 1
