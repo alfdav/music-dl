@@ -96,6 +96,14 @@
 
 **Prevention:** Do not match Upgrade on ISRC alone when titles differ. Prefer title+artist+duration. Colliding ISRC across different titles is UNCERTAIN / skip. Never Upgrade All from a shared Tidal id. Sample-one remains law. Clean Up duplicates is a separate ticket.
 
+## 2026-09-01 — Flat `Artist - Album` plus a disc folder minted a leftover layout
+
+**What happened:** `_canonicalize_album_dirs` only split `Artist - Album [FLAC]` when it was the sole parent. `.../CD1/track` treated the leftover folder as the artist and `CD1` as the album, then minted `Artist - Album/CD1`.
+
+**Root cause:** Flat leftover detection was gated on `len(dir_parts) == 1`.
+
+**Prevention:** Split a first-segment `Artist - Album` (codec brackets stripped) even when later segments are disc extras. Test both reuse and mint for that shape.
+
 ## 2026-09-01 — Root reuse treated `Album [FLAC]` as an artist match
 
 **What happened:** `_find_legacy_album_dir` reused a music-root folder if it had a trailing codec bracket, even with no `Artist - ` prefix. `Greatest Hits [FLAC]` would steal a Billy Idol download.

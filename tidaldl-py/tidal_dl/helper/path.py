@@ -560,12 +560,12 @@ def _canonicalize_album_dirs(dir_parts: list[str]) -> tuple[str, str, list[str]]
         return None
 
     cleaned = [_strip_codec_brackets(part) for part in dir_parts]
-    if len(cleaned) == 1:
-        flat = _split_flat_album_dir(dir_parts[0])
-        if flat is None:
-            return None
+    flat = _split_flat_album_dir(dir_parts[0])
+    if flat is not None:
         artist, album = flat
-        return artist, album, []
+        return artist, album, cleaned[1:]
+    if len(cleaned) == 1:
+        return None
 
     artist = cleaned[0]
     album = _strip_artist_prefix(cleaned[1], artist)
