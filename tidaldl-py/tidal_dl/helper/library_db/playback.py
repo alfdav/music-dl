@@ -8,9 +8,10 @@ class PlaybackMixin:
         """Bump play_count and set last_played for a scanned track."""
         assert self._conn
         now = int(time.time())
+        nfc = canonical_library_path(path)
         self._conn.execute(
             "UPDATE scanned SET play_count = play_count + 1, last_played = ? WHERE path = ?",
-            (now, path),
+            (now, nfc),
         )
 
     def log_play_event(
@@ -25,9 +26,10 @@ class PlaybackMixin:
         """Insert a play event for activity charts."""
         assert self._conn
         ts = played_at if played_at is not None else int(time.time())
+        event_path = canonical_library_path(path) if path else path
         self._conn.execute(
             "INSERT INTO play_events (path, artist, genre, duration, played_at) VALUES (?, ?, ?, ?, ?)",
-            (path, artist, genre, duration, ts),
+            (event_path, artist, genre, duration, ts),
         )
 
     def recent_plays(self, limit: int = 50, offset: int = 0) -> list[dict]:

@@ -71,6 +71,10 @@ class LibraryDBCore:
                     self._migrate()
                     self._conn.execute(f"PRAGMA user_version = {self._SCHEMA_VERSION}")
                     self._conn.commit()
+        collapse = getattr(self, "collapse_unicode_path_twins", None)
+        if collapse is not None:
+            collapse()
+            self._conn.commit()
 
     def _migrate(self) -> None:
         assert self._conn

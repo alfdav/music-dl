@@ -21,6 +21,7 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 ---
 
 ## Unreleased
+- Library index stores NFC paths and collapses NFC/NFD twins of the same inode so search, album, and artist counts no longer double-count one file.
 - Give track-row source labels (`tidal` / `local`) breathing room before the download icon so they no longer sit flush.
 
 ## v1.7.8 (2026-08-31)

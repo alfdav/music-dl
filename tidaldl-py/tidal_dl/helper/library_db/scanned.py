@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import os
+import unicodedata
 
 from tidal_dl.helper.library_db._common import *
 
@@ -112,8 +114,10 @@ class ScannedMixin:
     def is_known(self, path: str) -> bool:
         """Return True if *path* has already been scanned."""
         assert self._conn
+        nfc = canonical_library_path(path)
+        nfd = unicodedata.normalize("NFD", nfc)
         row = self._conn.execute(
-            "SELECT 1 FROM scanned WHERE path = ?", (path,)
+            "SELECT 1 FROM scanned WHERE path IN (?, ?) LIMIT 1", (nfc, nfd)
         ).fetchone()
         return row is not None
 
@@ -193,7 +197,14 @@ class ScannedMixin:
     def get(self, path: str) -> dict | None:
         """Return full cached metadata for a single path, or None."""
         assert self._conn
-        row = self._conn.execute("SELECT * FROM scanned WHERE path = ?", (path,)).fetchone()
+        nfc = canonical_library_path(path)
+        row = self._conn.execute("SELECT * FROM scanned WHERE path = ?", (nfc,)).fetchone()
+        if not row:
+            nfd = unicodedata.normalize("NFD", nfc)
+            if nfd != nfc:
+                row = self._conn.execute(
+                    "SELECT * FROM scanned WHERE path = ?", (nfd,)
+                ).fetchone()
         if not row:
             return None
         return dict(row)
@@ -368,6 +379,7 @@ class ScannedMixin:
     ) -> None:
         """Insert or update a scan result."""
         assert self._conn
+        path = self._adopt_canonical_path(path)
         now = time.time()
         self._conn.execute(
             """INSERT INTO scanned (path, isrc, status, artist, title, album,
@@ -450,7 +462,105 @@ class ScannedMixin:
     def remove(self, path: str) -> None:
         """Remove a path from the ledger (e.g. file deleted)."""
         assert self._conn
-        self._conn.execute("DELETE FROM scanned WHERE path = ?", (path,))
+        nfc = canonical_library_path(path)
+        nfd = unicodedata.normalize("NFD", nfc)
+        self._conn.execute("DELETE FROM scanned WHERE path IN (?, ?)", (nfc, nfd))
+
+    def collapse_unicode_path_twins(self, *, check_inodes: bool = False) -> int:
+        """Keep one scanned row per NFC path (and per same-inode NFC twin)."""
+        assert self._conn
+        paths = [row["path"] for row in self._conn.execute("SELECT path FROM scanned")]
+        groups: dict[str, list[str]] = {}
+        for path in paths:
+            groups.setdefault(canonical_library_path(path), []).append(path)
+
+        if check_inodes:
+            inode_groups: dict[tuple[int, int], list[str]] = {}
+            for path in paths:
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                inode_groups.setdefault((st.st_dev, st.st_ino), []).append(path)
+            for members in inode_groups.values():
+                nfcs = {canonical_library_path(member) for member in members}
+                if len(nfcs) != 1:
+                    continue
+                groups.setdefault(next(iter(nfcs)), []).extend(members)
+
+        removed = 0
+        for nfc, members in groups.items():
+            unique = list(dict.fromkeys(members))
+            if len(unique) == 1 and unique[0] == nfc:
+                continue
+            if len(unique) == 1:
+                self._rekey_library_path(unique[0], nfc)
+                continue
+            if nfc not in unique:
+                self._rekey_library_path(unique[0], nfc)
+                unique[0] = nfc
+            for other in unique:
+                if other == nfc:
+                    continue
+                self._merge_library_path(other, nfc)
+                removed += 1
+        return removed
+
+    def _adopt_canonical_path(self, path: str) -> str:
+        nfc = canonical_library_path(path)
+        nfd = unicodedata.normalize("NFD", nfc)
+        if nfd == nfc:
+            return nfc
+        nfd_row = self._conn.execute(
+            "SELECT 1 FROM scanned WHERE path = ?", (nfd,)
+        ).fetchone()
+        if not nfd_row:
+            return nfc
+        nfc_row = self._conn.execute(
+            "SELECT 1 FROM scanned WHERE path = ?", (nfc,)
+        ).fetchone()
+        if nfc_row:
+            self._merge_library_path(nfd, nfc)
+        else:
+            self._rekey_library_path(nfd, nfc)
+        return nfc
+
+    def _rekey_library_path(self, old: str, new: str) -> None:
+        if old == new:
+            return
+        self._conn.execute("UPDATE scanned SET path = ? WHERE path = ?", (new, old))
+        self._conn.execute("UPDATE play_events SET path = ? WHERE path = ?", (new, old))
+        self._rewrite_favorite_path(old, new)
+
+    def _merge_library_path(self, drop: str, keep: str) -> None:
+        if drop == keep:
+            return
+        drop_row = self._conn.execute(
+            "SELECT play_count, last_played FROM scanned WHERE path = ?", (drop,)
+        ).fetchone()
+        keep_row = self._conn.execute(
+            "SELECT play_count, last_played FROM scanned WHERE path = ?", (keep,)
+        ).fetchone()
+        if drop_row and keep_row:
+            plays = int(keep_row["play_count"] or 0) + int(drop_row["play_count"] or 0)
+            last_values = [value for value in (keep_row["last_played"], drop_row["last_played"]) if value]
+            last = max(last_values) if last_values else None
+            self._conn.execute(
+                "UPDATE scanned SET play_count = ?, last_played = ? WHERE path = ?",
+                (plays, last, keep),
+            )
+        self._conn.execute("UPDATE play_events SET path = ? WHERE path = ?", (keep, drop))
+        self._rewrite_favorite_path(drop, keep)
+        self._conn.execute("DELETE FROM scanned WHERE path = ?", (drop,))
+
+    def _rewrite_favorite_path(self, old: str, new: str) -> None:
+        keep_fav = self._conn.execute(
+            "SELECT id FROM favorites WHERE path = ?", (new,)
+        ).fetchone()
+        if keep_fav:
+            self._conn.execute("DELETE FROM favorites WHERE path = ?", (old,))
+            return
+        self._conn.execute("UPDATE favorites SET path = ? WHERE path = ?", (new, old))
 
     def migrate_path(
         self,

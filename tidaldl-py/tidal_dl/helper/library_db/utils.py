@@ -6,11 +6,17 @@ import datetime
 import pathlib
 import re
 import sqlite3
+import unicodedata
 
 _SQLITE_CORRUPTION_MESSAGES = (
     "file is not a database",
     "database disk image is malformed",
 )
+
+
+def canonical_library_path(path: str) -> str:
+    """Index paths as NFC so macOS NFD walk strings match tag/download NFC."""
+    return unicodedata.normalize("NFC", str(path))
 
 
 def _is_sqlite_corruption(exc: sqlite3.DatabaseError) -> bool:
