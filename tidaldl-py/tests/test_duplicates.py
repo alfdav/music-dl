@@ -199,6 +199,24 @@ class TestFindDuplicateGroups:
         assert {cd_rip, tidal} <= _member_paths(groups)
         assert all(g.get("status") == "uncertain" for g in groups)
 
+    def test_same_quality_nested_different_roots_uncertain(self, db):
+        """Artist/Album vs Tidal/Artist/Album is not a layout twin."""
+        library = "/music/Artist/Album/01.flac"
+        tidal = "/music/Tidal/Artist/Album/01.flac"
+        db.record(library, status="tagged", isrc="US123",
+                  artist="Artist", title="Song", album="Album", duration=200,
+                  quality="44100Hz/16bit", fmt="FLAC", codec="flac")
+        db.record(tidal, status="tagged", isrc="US123",
+                  artist="Artist", title="Song", album="Album", duration=200,
+                  quality="44100Hz/16bit", fmt="FLAC", codec="flac")
+        db.commit()
+        groups = _find_duplicate_groups(db)
+        assert _count_cleanable_duplicates(groups) == 0
+        assert library not in _cleanable_paths(groups)
+        assert tidal not in _cleanable_paths(groups)
+        assert {library, tidal} <= _member_paths(groups)
+        assert all(g.get("status") == "uncertain" for g in groups)
+
     def test_playlist_flac_with_deluxe_m4a_is_uncertain(self, db):
         playlist = "/music/- Playlists/Mix/Amanece.flac"
         deluxe = "/music/Artist/Amanece (Deluxe)/01.m4a"
@@ -376,3 +394,31 @@ class TestPreviewAndCleanRespectUncertain:
         assert result["duplicates_moved"] == 0
         assert orig_file.exists()
         assert rem_file.exists()
+
+    def test_clean_moves_recycle_copy_only(self, tmp_path, db):
+        music = tmp_path / "music"
+        live_dir = music / "Artist" / "Album"
+        trash_dir = music / "#recycle" / "Artist" / "Album"
+        live_dir.mkdir(parents=True)
+        trash_dir.mkdir(parents=True)
+        live = live_dir / "01.flac"
+        trash = trash_dir / "01.flac"
+        live.write_bytes(b"live")
+        trash.write_bytes(b"trash")
+        db.record(str(live), status="tagged", isrc="US123",
+                  artist="Artist", title="Song", album="Album", duration=200,
+                  quality="44100Hz/16bit", fmt="FLAC", codec="flac")
+        db.record(str(trash), status="tagged", isrc="US123",
+                  artist="Artist", title="Song", album="Album", duration=200,
+                  quality="44100Hz/16bit", fmt="FLAC", codec="flac")
+        db.commit()
+        db.close = lambda: None
+        with patch("tidal_dl.gui.api.duplicates._get_db", return_value=db), \
+             patch("tidal_dl.gui.api.duplicates._reachable_scan_dirs", return_value=[]), \
+             patch("tidal_dl.gui.api.library._scan_running", False), \
+             patch("tidal_dl.gui.api.duplicates.path_config_base", return_value=str(tmp_path / "cfg")):
+            (tmp_path / "cfg").mkdir()
+            result = _clean_sync()
+        assert result["duplicates_moved"] == 1
+        assert live.exists()
+        assert not trash.exists()
