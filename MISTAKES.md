@@ -96,6 +96,14 @@
 
 **Prevention:** Do not match Upgrade on ISRC alone when titles differ. Prefer title+artist+duration. Colliding ISRC across different titles is UNCERTAIN / skip. Never Upgrade All from a shared Tidal id. Sample-one remains law. Clean Up duplicates is a separate ticket.
 
+## 2026-09-01 — ruff --fix resorted a star-import barrel
+
+**What happened:** `ruff check` on download writers auto-sorted `_common.py` `__all__` and imports because `fix = true` is set in pyproject.
+
+**Root cause:** Touching a barrel file for one export re-lints the whole unsorted list.
+
+**Prevention:** Import the new helper at the call site. Do not `--fix` files whose only job is re-export.
+
 ## 2026-08-31 — Track-row source label kissed the download icon
 
 **What happened:** Tetrarch on live 1.7.8 saw duration `3:35`, then lowercase `tidal`, then a download-tray icon sitting on the final `l`. Duration-to-source looked fine. Search, library, and album tracks share that row.
