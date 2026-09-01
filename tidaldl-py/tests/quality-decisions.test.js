@@ -36,6 +36,10 @@ describe('local codec quality decisions', () => {
     expect(aac.desc).not.toMatch(/Lossless|16-bit|44100Hz\/16bit/);
   });
 
+  test('persisted AAC quality stays Lossy even when codec is omitted', () => {
+    expect(loadQualityTier()('AAC', 'M4A', null).tier).toBe('Lossy');
+  });
+
   test('track table and Now Playing pass the same persisted facts', () => {
     const args = 'track.quality, track.format, track.codec';
 
