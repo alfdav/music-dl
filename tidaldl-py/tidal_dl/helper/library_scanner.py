@@ -75,6 +75,58 @@ def drop_skipped_scan_paths(library_db: LibraryDB) -> int:
     return len(stale)
 
 
+def path_under_music_roots(path: str | pathlib.Path, roots: list[pathlib.Path]) -> bool:
+    """Return True if *path* is the same as or inside one of *roots*.
+
+    Prefix match only — no ``stat()`` / ``resolve()`` of the file, so Home
+    can drop leftover QA rows without probing a NAS music volume.
+    """
+    raw = os.path.normpath(os.path.expanduser(str(path)))
+    for root in roots:
+        root_raw = os.path.normpath(os.path.expanduser(str(root)))
+        if raw == root_raw or raw.startswith(root_raw + os.sep):
+            return True
+    return False
+
+
+def drop_stale_library_rows(
+    library_db: LibraryDB,
+    roots: list[pathlib.Path],
+    *,
+    check_missing: bool = True,
+) -> int:
+    """Drop scanned rows outside *roots*, and optionally missing files.
+
+    Missing files are removed only when their owning root currently exists
+    (``Path.is_dir()``). An unmounted music volume therefore keeps its
+    in-root cache. Rows are deleted from the DB only — never from disk.
+    Skipped-directory (``#recycle``) policy is unchanged.
+    """
+    if not roots:
+        return 0
+    reachable = [root for root in roots if check_missing and pathlib.Path(root).expanduser().is_dir()]
+
+    stale: list[str] = []
+    for path in library_db.known_paths():
+        if not path_under_music_roots(path, roots):
+            stale.append(path)
+            continue
+        if not check_missing or not path_under_music_roots(path, reachable):
+            continue
+        try:
+            missing = not pathlib.Path(path).is_file()
+        except OSError:
+            missing = True
+        if missing:
+            stale.append(path)
+    if not stale:
+        return 0
+    with library_db.write_transaction():
+        for path in stale:
+            library_db.remove(path)
+    return len(stale)
+
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------

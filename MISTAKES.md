@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-01 — Library served leftover QA rows outside the music root
+
+**What happened:** Live 1.7.8 search (`Night Watch`) and Recents showed Sting *The Last Ship (Live at the Rijksmuseum)* at `/Users/hackbook/.cache/tactica/music-dl-pr149-qa/...flac`. The file was gone. Art returned 403 because the path was outside `/Volumes/Music`. Settings scan path was only `/Volumes/Music`.
+
+**Root cause:** `scanned` is a shared ledger. Search/Recents return every row. Sync prune waits for a successful walk, and the fingerprint fast-path only drops `#recycle` rows, so leftover rows from an isolated QA profile stayed forever.
+
+**Prevention:** On library open, drop rows whose path is outside configured `download_base_path` / `scan_paths`. Drop missing files only when that root is currently a directory, so an unmounted NAS keeps its cache. Scan start drops out-of-root rows without waiting for the walk. Do not delete files on disk. Do not change `#recycle` policy.
+
 ## 2026-09-03 — Local heal retry looped and replayed a stale track
 
 **What happened:** After 202/409/200 the player always `playTrack`ed the captured track and returned success, so `_consecutiveErrors` never advanced. A user skip during the 30s wait still restarted the old file.
