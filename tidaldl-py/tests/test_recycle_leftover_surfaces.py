@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tidal_dl.gui.api.library import _resolve_local_metadata
+from tidal_dl.gui.api.search import _live_library_row, _serialize_track, _serialize_track_hits
 from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.library_scanner import path_has_skipped_scan_dir
 
@@ -295,3 +296,82 @@ class TestZeratoolRecycleSurfaces:
         assert str(paths["gota_trash"]) not in known
         assert str(paths["untagged"]) not in known
         assert not any(path_has_skipped_scan_dir(path) for path in known)
+
+
+class TestUnpurgedRecycleRowsStayHidden:
+    """SQL / search ranking must hide leftovers even when rows are still in scanned."""
+
+    def test_tracks_page_and_albums_ignore_leftover_twins(self, tmp_path):
+        library_dir = tmp_path / "Music"
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        paths = _zeratool_paths(library_dir)
+        _seed_zeratool_library(db, paths)
+
+        known = db.known_paths()
+        assert str(paths["gota_trash"]) in known
+        assert str(paths["untagged"]) in known
+        assert any(path_has_skipped_scan_dir(path) for path in known)
+
+        rows, _total = db.tracks_page(sort="artist", limit=50, offset=0)
+        artists = [row["artist"] for row in rows]
+        assert artists
+        assert artists[0].casefold() != "#recycle"
+        assert "#recycle" not in {name.casefold() for name in artists}
+        assert not any(path_has_skipped_scan_dir(row["path"]) for row in rows)
+        assert str(paths["titled"]) in {row["path"] for row in rows}
+
+        isrc_rows = db.tracks_by_isrc("COC019300016")
+        assert [row["path"] for row in isrc_rows] == [str(paths["gota_live"])]
+
+        hybrid = [
+            row for row in db.all_albums()
+            if (row.get("album") or "").casefold() == "hybrid theory"
+        ]
+        assert hybrid
+        assert hybrid[0]["artist"] == "Linkin Park"
+        assert hybrid[0]["track_count"] == 2
+        assert str(paths["gota_trash"]) in db.known_paths()
+        db.close()
+
+    def test_search_picks_live_when_isrc_list_still_starts_with_recycle(
+        self, tmp_path, monkeypatch,
+    ):
+        from tidal_dl.gui.api import search as search_api
+
+        recycle = _write_audio(
+            tmp_path / "Music" / "#recycle" / "High Bit Rate" / "01 - La Gota Fria.flac"
+        )
+        live = _write_audio(
+            tmp_path / "Music" / "Carlos Vives" / "La Gota Fria.flac"
+        )
+
+        class RecycleFirstDB:
+            def tracks_by_isrc(self, isrc):
+                return [
+                    {"path": str(recycle), "quality": "FLAC", "format": "FLAC", "codec": "flac"},
+                    {"path": str(live), "quality": "FLAC", "format": "FLAC", "codec": "flac"},
+                ]
+
+        monkeypatch.setattr(search_api, "_get_library_db", lambda: RecycleFirstDB())
+        album = SimpleNamespace(id=1, name="Clasicos de la Provincia", image=lambda size: "")
+        track = SimpleNamespace(
+            id=99,
+            name="La Gota Fria",
+            full_name="La Gota Fria",
+            artists=[SimpleNamespace(name="Carlos Vives", id=1)],
+            album=album,
+            duration=180,
+            audio_quality="LOSSLESS",
+            isrc="COC019300016",
+            media_metadata_tags=[],
+        )
+
+        picked = _live_library_row(RecycleFirstDB(), "COC019300016")
+        result = _serialize_track(track)
+        hits = _serialize_track_hits([track])
+
+        assert picked["path"] == str(live)
+        assert result["path"] == str(live)
+        assert hits[0]["path"] == str(live)
+        assert not path_has_skipped_scan_dir(result["path"])
