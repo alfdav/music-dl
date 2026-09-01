@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-08-31 — 1.7.8 still served `/Volumes/Music/#recycle/...` after PR 131/136
+
+**What happened:** Live 1.7.8 still showed a `#recycle` 18-track album and trash twins of La Gota Fria. Skip on walk and the fingerprint sweep already worked.
+
+**Root cause:** Sweep only ran inside Sync. Boot does not scan, and first visit only scans when the DB is empty, so leftover `#recycle` rows stayed in `scanned`. Library/albums/search/home selected those rows with no path-component filter. `MIN(path)` then preferred `#recycle` covers because `#` sorts first.
+
+**Prevention:** Drop skipped-directory rows on first library/home DB open (no walk). Filter those paths out of library/albums/search/home queries. Keep the scan/fingerprint sweep. Do not match the word Recycle in a title.
+
 ## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
 
 **What happened:** Artist-name track search (Carlos Vives) replaced real track hits with a self-titled album. Local-empty paint showed `No results found` while Tidal was still in flight. `urlparse(...).hostname` can raise `ValueError` on broken IPv6 zones / trailing `%`, which would 500 `/api/search`.

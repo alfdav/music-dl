@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -60,6 +61,22 @@ def path_has_skipped_scan_dir(path: str | pathlib.Path) -> bool:
     or ``08 Menu Groove Edit`` under a real album stays eligible.
     """
     return any(is_skipped_scan_dir(part) for part in pathlib.Path(path).parts[:-1])
+
+
+_SQL_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$")
+
+
+def visible_scanned_path_sql(column: str = "path") -> str:
+    """SQL predicate: *column* has no skipped directory component.
+
+    ``/#recycle/`` (after slash normalization) is trash. A title or folder
+    that merely contains Recycle is not.
+    """
+    if not _SQL_IDENT.fullmatch(column):
+        raise ValueError(f"invalid SQL identifier: {column}")
+    norm = f"lower(replace({column}, char(92), '/'))"
+    clauses = [f"instr({norm}, '/{name}/') = 0" for name in sorted(_SKIPPED_SCAN_DIR_NAMES)]
+    return "(" + " AND ".join(clauses) + ")"
 
 
 def drop_skipped_scan_paths(library_db: LibraryDB) -> int:

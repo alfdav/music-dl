@@ -32,6 +32,7 @@ from tidal_dl.helper.library_scanner import (
     drop_skipped_scan_paths,
     is_skipped_scan_dir,
     path_has_skipped_scan_dir,
+    visible_scanned_path_sql,
 )
 from tidal_dl.helper.path import path_config_base
 
@@ -141,9 +142,20 @@ def _get_db() -> LibraryDB:
             _db_local.opened_at = now
             _db_local.generation = _db_generation
 
+    _purge_skipped_library_rows(db)
     _db = db
     _db_opened_at = getattr(_db_local, "opened_at", now)
     return db
+
+
+def _purge_skipped_library_rows(db: LibraryDB) -> None:
+    """Drop leftover NAS-trash rows on first API open, without walking disk."""
+    if getattr(db, "_skipped_paths_purged", False):
+        return
+    dropped = drop_skipped_scan_paths(db)
+    db._skipped_paths_purged = True
+    if dropped:
+        print(f"[library] Dropped {dropped} leftover rows under skipped directories")
 
 
 def get_download_path() -> str:
@@ -1791,13 +1803,15 @@ def library_search(
         assert db._conn
         like = f"%{q.strip()}%"
         rows = db._conn.execute(
-            """SELECT s.artist, COUNT(*) as track_count, COUNT(DISTINCT album) as album_count,
+            f"""SELECT s.artist, COUNT(*) as track_count, COUNT(DISTINCT album) as album_count,
                       MIN(s.path) as cover_path,
                       (SELECT s2.art_available FROM scanned s2
                        WHERE s2.artist = s.artist AND s2.status != 'unreadable'
+                         AND {visible_scanned_path_sql("s2.path")}
                        ORDER BY s2.path ASC LIMIT 1) as cover_art_available
                FROM scanned s
                WHERE artist LIKE ? AND status != 'unreadable'
+                 AND {visible_scanned_path_sql("s.path")}
                GROUP BY artist ORDER BY track_count DESC LIMIT ?""",
             (like, limit),
         ).fetchall()

@@ -17,6 +17,7 @@ from tidal_dl.helper.library_scanner import (
     is_skipped_scan_dir,
     path_has_skipped_scan_dir,
     scan_directory,
+    visible_scanned_path_sql,
 )
 
 PRIOR_CACHE_ROWS = 11_974
@@ -713,3 +714,198 @@ def test_drop_skipped_scan_paths_still_centralized() -> None:
     assert callable(drop_skipped_scan_paths)
     assert is_skipped_scan_dir("#recycle")
     assert is_skipped_scan_dir(".Trash")
+    sql = visible_scanned_path_sql()
+    assert "/#recycle/" in sql
+    assert "/.trash/" in sql
+
+
+def _seed_zeratool_recycle_library(db: LibraryDB, library_dir: Path) -> dict[str, Path]:
+    """Nested Synology trash plus a real file and a Recycle *title*."""
+    keep = (
+        library_dir / "Carlos Vives" / "Clasicos de la Provincia"
+        / "Carlos Vives - La Gota Fria.wav"
+    )
+    trash_a = (
+        library_dir / "#recycle" / "High Bit Rate" / "Carlos Vives"
+        / "Clasicos de la Provincia" / "Carlos Vives - La Gota Fria.wav"
+    )
+    trash_b = (
+        library_dir / "#recycle" / "High Bit Rate" / "Carlos Vives"
+        / "Carlos Vives - Clasicos de la Provincia" / "01 - La Gota Fria.wav"
+    )
+    titled = library_dir / "SLEEPARCHIVE" / "Recycle" / "Recycle.wav"
+    horizon_dir = (
+        library_dir / "#recycle" / "High Bit Rate" / "Barry Leitch"
+        / "Barry Leitch - Top Gear - Horizon Chase"
+    )
+    _write_wav(keep)
+    _write_wav(trash_a)
+    _write_wav(trash_b)
+    _write_wav(titled)
+    horizon = []
+    for index in range(3):
+        dest = horizon_dir / f"{index + 1:02d} Menu Groove Edit.wav"
+        _write_wav(dest)
+        horizon.append(dest)
+        _seed_row(
+            db,
+            dest,
+            artist="#recycle",
+            title=dest.stem,
+            album="Barry Leitch - Top Gear - Horizon Chase",
+        )
+    _seed_row(db, keep, artist="Carlos Vives", title="La Gota Fria", album="Clasicos de la Provincia")
+    _seed_row(db, trash_a, artist="Carlos Vives", title="La Gota Fria", album="Clasicos de la Provincia")
+    _seed_row(db, trash_b, artist="Carlos Vives", title="La Gota Fria", album="Clasicos de la Provincia")
+    _seed_row(db, titled, artist="SLEEPARCHIVE", title="Recycle", album="Recycle")
+    db.commit()
+    return {
+        "keep": keep,
+        "trash_a": trash_a,
+        "trash_b": trash_b,
+        "titled": titled,
+        "horizon": horizon[0],
+    }
+
+
+def _library_surfaces(library_api):
+    library_api._invalidate_db_cache()
+    return (
+        library_api.library(sort="title", limit=200, offset=0, q=""),
+        library_api.all_albums(q=""),
+        library_api.library_search(q="Gota", type="tracks", limit=50),
+        library_api.library_search(q="Horizon", type="albums", limit=50),
+        library_api.library_search(q="Recycle", type="tracks", limit=50),
+    )
+
+
+def _assert_recycle_absent_and_title_kept(library, albums, search_gota, search_horizon, search_recycle, paths):
+    track_paths = [row["path"] for row in library["tracks"]]
+    assert str(paths["keep"]) in track_paths
+    assert str(paths["titled"]) in track_paths
+    assert str(paths["trash_a"]) not in track_paths
+    assert str(paths["trash_b"]) not in track_paths
+    assert str(paths["horizon"]) not in track_paths
+    assert not any(path_has_skipped_scan_dir(path) for path in track_paths)
+    assert "#recycle" not in {row["artist"].casefold() for row in library["tracks"]}
+
+    gota_paths = [row["path"] for row in search_gota["tracks"]]
+    assert str(paths["keep"]) in gota_paths
+    assert str(paths["trash_a"]) not in gota_paths
+    assert str(paths["trash_b"]) not in gota_paths
+
+    recycle_titles = [row["name"] for row in search_recycle["tracks"]]
+    assert "Recycle" in recycle_titles
+    assert all(not path_has_skipped_scan_dir(row["path"]) for row in search_recycle["tracks"])
+
+    assert not any(
+        album["artist"].casefold() == "#recycle" or album["name"].casefold() == "#recycle"
+        for album in albums["albums"]
+    )
+    assert not any("#recycle" in (album.get("cover_url") or "").casefold() for album in albums["albums"])
+    assert not any("%23recycle" in (album.get("cover_url") or "").casefold() for album in albums["albums"])
+    assert not any(
+        album["artist"].casefold() == "#recycle" or "horizon" in album["name"].casefold()
+        for album in search_horizon["albums"]
+    )
+    assert any(album["name"].casefold() == "recycle" for album in albums["albums"])
+
+
+class TestNestedRecycleNeverReturned:
+    """Leftover /Music/#recycle/... rows must not be library or album hits."""
+
+    @pytest.fixture
+    def live_library(self, monkeypatch, tmp_path):
+        import tidal_dl.gui.api.library as library_api
+
+        library_dir = tmp_path / "Music"
+        library_dir.mkdir()
+
+        class FakeSettings:
+            data = SimpleNamespace(download_base_path=str(library_dir), scan_paths="")
+
+        monkeypatch.setattr(library_api, "Settings", FakeSettings)
+        monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
+        monkeypatch.setattr(library_api, "_schedule_album_enrichment", lambda: None)
+        monkeypatch.setattr("tidal_dl.helper.waveform.extract_both", lambda path: None)
+        monkeypatch.setattr(library_api, "_has_local_art", lambda path: False)
+        library_api._scan_running = False
+        library_api._scan_progress = {
+            "scanned": 0,
+            "total": 0,
+            "done": True,
+            "phase": "idle",
+            "error": None,
+        }
+        library_api._invalidate_db_cache()
+        yield library_api, library_dir, tmp_path
+        library_api._scan_running = False
+        library_api._invalidate_db_cache()
+
+    def test_path_component_matcher_sees_nested_volume_recycle(self) -> None:
+        live = (
+            "/Volumes/Music/#recycle/High Bit Rate/Barry Leitch"
+            "/Barry Leitch - Top Gear - Horizon Chase/01 Menu Groove Edit.wav"
+        )
+        keep = "/Volumes/Music/Carlos Vives/Clasicos de la Provincia/Carlos Vives - La Gota Fria.flac"
+        titled = "/Volumes/Music/SLEEPARCHIVE/Recycle/Recycle.wav"
+        assert path_has_skipped_scan_dir(live) is True
+        assert path_has_skipped_scan_dir(keep) is False
+        assert path_has_skipped_scan_dir(titled) is False
+
+    def test_leftover_rows_hidden_before_any_scan(self, live_library) -> None:
+        library_api, library_dir, tmp_path = live_library
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        paths = _seed_zeratool_recycle_library(db, library_dir)
+        db.close()
+
+        _assert_recycle_absent_and_title_kept(*_library_surfaces(library_api), paths)
+
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        known = db.known_paths()
+        db.close()
+        assert str(paths["trash_a"]) not in known
+        assert str(paths["horizon"]) not in known
+        assert str(paths["keep"]) in known
+        assert str(paths["titled"]) in known
+
+    def test_full_scan_does_not_index_nested_recycle(self, live_library) -> None:
+        library_api, library_dir, tmp_path = live_library
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        paths = _seed_zeratool_recycle_library(db, library_dir)
+        db.close()
+
+        _run_background_scan(library_api)
+        _assert_recycle_absent_and_title_kept(*_library_surfaces(library_api), paths)
+
+    def test_fingerprint_skip_rescan_drops_nested_recycle(self, live_library, monkeypatch) -> None:
+        import json
+
+        library_api, library_dir, tmp_path = live_library
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        paths = _seed_zeratool_recycle_library(db, library_dir)
+        finger = json.dumps({
+            "dirs": [str(library_dir)],
+            "mtimes": [os.stat(str(library_dir)).st_mtime],
+            "known_count": len(db.known_paths()),
+        }, sort_keys=True)
+        db.set_meta("scan_fingerprint", finger)
+        db.commit()
+        db.close()
+
+        walked = {"count": 0}
+        real_walk = os.walk
+
+        def counting_walk(*args, **kwargs):
+            walked["count"] += 1
+            yield from real_walk(*args, **kwargs)
+
+        monkeypatch.setattr(os, "walk", counting_walk)
+        _run_background_scan(library_api)
+
+        assert walked["count"] == 0
+        _assert_recycle_absent_and_title_kept(*_library_surfaces(library_api), paths)

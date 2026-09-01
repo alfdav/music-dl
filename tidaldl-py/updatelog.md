@@ -20,6 +20,9 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
+## Unreleased
+- Hide Synology `#recycle` (and other trash path components) from library, albums, search, and home, including leftover rows when Sync is skipped or the scan fingerprint is unchanged.
+
 ## v1.7.8 (2026-08-31)
 - Search accepts a pasted Tidal track, album, artist, or playlist URL (or a bare id) and resolves it for add/download instead of sending the URL to catalog search ([#154](https://github.com/alfdav/music-dl/pull/154)).
 - Track search falls back to a close album-title match when Tidal returns no tracks (Clásicos de la Provincia 30 Años); artist-name queries on the Tracks pill keep their track hits.

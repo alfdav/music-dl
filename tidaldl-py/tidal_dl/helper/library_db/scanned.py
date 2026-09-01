@@ -262,8 +262,10 @@ class ScannedMixin:
     def all_tracks(self) -> list[dict]:
         """Return all cached tracks with status != 'unreadable'."""
         assert self._conn
+        from tidal_dl.helper.library_scanner import visible_scanned_path_sql
+
         rows = self._conn.execute(
-            "SELECT * FROM scanned WHERE status != 'unreadable'"
+            f"SELECT * FROM scanned WHERE status != 'unreadable' AND {visible_scanned_path_sql()}"
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -286,7 +288,9 @@ class ScannedMixin:
         }
         order = sort_map.get(sort, sort_map["artist"])
 
-        where = "status != 'unreadable'"
+        from tidal_dl.helper.library_scanner import visible_scanned_path_sql
+
+        where = f"status != 'unreadable' AND {visible_scanned_path_sql()}"
         params: list = []
         if query:
             where += " AND (title LIKE ? OR artist LIKE ? OR album LIKE ?)"
