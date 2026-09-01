@@ -104,6 +104,28 @@ def test_cd_subdir_is_kept_when_reusing_legacy_album(tmp_path: Path) -> None:
     assert result == "Billy Idol - Greatest Hits [FLAC]/CD1/White Wedding"
 
 
+def test_flat_album_with_disc_reuses_existing_root_folder(tmp_path: Path) -> None:
+    (tmp_path / "Billy Idol - Greatest Hits [FLAC]").mkdir()
+
+    result = resolve_library_relative(
+        tmp_path,
+        "Billy Idol - Greatest Hits [FLAC]/CD1/White Wedding",
+    )
+
+    assert result == "Billy Idol - Greatest Hits [FLAC]/CD1/White Wedding"
+
+
+def test_flat_album_with_disc_is_not_minted(tmp_path: Path) -> None:
+    result = resolve_library_relative(
+        tmp_path,
+        "Billy Idol - Greatest Hits [FLAC]/CD1/White Wedding",
+    )
+
+    assert result == "Billy Idol/Greatest Hits/CD1/White Wedding"
+    assert "[FLAC]" not in result
+    assert not result.startswith("Billy Idol - ")
+
+
 def test_prefers_bare_sibling_over_prefixed_when_both_exist(tmp_path: Path) -> None:
     artist = tmp_path / "Carlos Vives"
     (artist / "Clasicos de la Provincia").mkdir(parents=True)
