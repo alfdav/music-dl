@@ -199,30 +199,25 @@ def _lexically_under_roots(path_str: str, allowed_dirs: list[str]) -> str | None
     return None
 
 
-def _scanned_path_allowlist() -> list[str]:
-    """Trusted scanned.path values from the library DB (config/DB, not the request)."""
-    import sqlite3
-
-    db_path = Path(path_config_base()) / "library.db"
-    if not db_path.exists():
-        return []
-    try:
-        conn = sqlite3.connect(str(db_path))
-        rows = conn.execute("SELECT path FROM scanned").fetchall()
-        conn.close()
-        return [row[0] for row in rows if row[0]]
-    except Exception:  # noqa: BLE001
-        return []
-
-
 def _exact_scanned_path(path: str) -> str | None:
-    """Select the allowlisted DB path that equals *path*. Never returns the request string."""
+    """Return the allowlisted DB path that equals *path*.
+
+    Indexed ``WHERE path = ?`` only. Never returns the request string, and
+    never loads the full ``scanned`` table.
+    """
     if not path or "\x00" in path:
         return None
-    for stored in _scanned_path_allowlist():
-        if stored == path:
-            return stored
-    return None
+    db_path = Path(path_config_base()) / "library.db"
+    if not db_path.is_file():
+        return None
+    try:
+        row = _get_db().get(path)
+    except Exception:  # noqa: BLE001
+        return None
+    stored = (row or {}).get("path")
+    if not stored or stored != path:
+        return None
+    return stored
 
 
 def _path_in_library(path: str) -> bool:

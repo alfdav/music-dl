@@ -221,6 +221,44 @@ class TestPathValidation:
         assert library_api._library_row_under_roots("/etc/passwd.wav") is False
         assert library_api._trusted_library_path("/etc/passwd.wav") is None
 
+    def test_exact_scanned_path_uses_indexed_lookup(self, tmp_path, monkeypatch):
+        from tidal_dl.gui.api import library as library_api
+        from tidal_dl.helper.library_db import LibraryDB
+
+        root = tmp_path / "Music"
+        audio = root / "A" / "song.wav"
+        audio.parent.mkdir(parents=True)
+        audio.write_bytes(b"RIFF")
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        db.record(str(audio), status="tagged", artist="A", title="Song", album="LP")
+        db.commit()
+        db.close()
+
+        class FakeSettings:
+            data = type("S", (), {"download_base_path": str(root), "scan_paths": ""})()
+
+        monkeypatch.setattr(library_api, "Settings", FakeSettings)
+        monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
+
+        opened = library_api._get_db()
+        sqls: list[str] = []
+        orig = opened._conn.execute
+
+        def spy(sql, *args, **kwargs):
+            sqls.append(str(sql))
+            return orig(sql, *args, **kwargs)
+
+        monkeypatch.setattr(opened._conn, "execute", spy)
+        assert library_api._exact_scanned_path("/etc/passwd") is None
+        assert library_api._exact_scanned_path(str(audio)) == str(audio)
+        assert any("WHERE path = ?" in sql for sql in sqls)
+        assert not any(
+            "FROM scanned" in sql and "WHERE" not in sql.upper()
+            for sql in sqls
+        )
+        assert not hasattr(library_api, "_scanned_path_allowlist")
+
 
 class TestLocalAudioResolution:
     def test_rejects_blank_input(self, tmp_path):

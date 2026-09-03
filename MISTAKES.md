@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-03 — Playback allowlist loaded every scanned path
+
+**What happened:** After the CodeQL path-injection fix, `_exact_scanned_path` loaded `SELECT path FROM scanned` and linearly compared, three times per CSRF-exempt GET, including for `/etc/passwd`.
+
+**Root cause:** Treating "do not `Path.resolve` the request" as "do not query by request path". Parameterized `WHERE path = ?` is safe; returning the DB column is the sanitizer.
+
+**Prevention:** Indexed `LibraryDB.get(path)` / `WHERE path = ?` only. Never `SELECT path FROM scanned` without a WHERE on the playback path.
+
 ## 2026-09-03 — Player treated 202/409 heal as a skip; Home counted missing rows
 
 **What happened:** GET `/api/playback/local` correctly returned 202/409 without a sync walk, but `audio` error still toasted and auto-skipped. Home recents and collection tiles still joined `scanned` rows with `missing_since` set.
