@@ -130,6 +130,12 @@ jobs:
         continue-on-error: true
         run: bun test
 
+      - name: Run GUI frontend tests
+        id: gui_frontend_tests
+        working-directory: tidaldl-py
+        continue-on-error: true
+        run: bun test
+
       - name: Type-check bot
         id: typescript
         working-directory: apps/discord-bot
@@ -142,7 +148,11 @@ jobs:
         env:
           START_EPOCH: ${{ steps.start.outputs.epoch }}
         run: |
-          echo "bun_tests=${{ steps.bun_tests.outcome }}" >> "$GITHUB_OUTPUT"
+          if [[ "${{ steps.bun_tests.outcome }}" == failure || "${{ steps.gui_frontend_tests.outcome }}" == failure ]]; then
+            echo "bun_tests=failure" >> "$GITHUB_OUTPUT"
+          else
+            echo "bun_tests=${{ steps.bun_tests.outcome }}" >> "$GITHUB_OUTPUT"
+          fi
           echo "typescript=${{ steps.typescript.outcome }}" >> "$GITHUB_OUTPUT"
           echo "duration=$(($(date +%s) - START_EPOCH))" >> "$GITHUB_OUTPUT"
 
