@@ -49,7 +49,7 @@ function cssRule(selector) {
 
 function loadLyricsHelpers() {
   const helperSource = playerSource.match(
-    /function _lyricsScrollTarget\(lineOffsetTop, lineHeight, viewportHeight, contentHeight\) \{[\s\S]*?\nfunction _lyricsReflowAttachedViewport\(state, viewport, list, lineEls, lines, currentTimeMs, reduceMotion\) \{[\s\S]*?\n\}/,
+    /function _lyricsScrollTarget\(lineOffsetTop, lineHeight, viewportHeight, contentHeight\) \{[\s\S]*?\nfunction _lyricsReflowAttachedViewport\(state, viewport, list, lineEls, lines, currentTimeMs, reduceMotion, schedule\) \{[\s\S]*?\n\}/,
   );
   if (!helperSource) throw new Error('lyrics helpers not found');
   return new Function(
@@ -57,7 +57,9 @@ function loadLyricsHelpers() {
     + ' _lyricsScrollTarget, _lyricsEdgeSpacerPx, _lyricsApplyListSpacer, _lyricsScrollBehavior,'
     + ' _lyricsUserScrollKey, _lyricsSyncButtonVisible, _lyricsDetachFollow, _lyricsAttachFollow,'
     + ' _lyricsMarkUserScrollIntent, _lyricsOnViewportScroll, _lyricsWriteScrollTop,'
-    + ' _lyricsFollowActiveLine, _lyricsResyncFollow, _lyricsReflowAttachedViewport,'
+    + ' _lyricsLineCenterError, _lyricsFollowActiveLine, _lyricsResyncFollow,'
+    + ' _lyricsReadingAnchor, _lyricsRestoreReadingAnchor, _lyricsAfterLayout,'
+    + ' _lyricsReflowViewport, _lyricsReflowAttachedViewport,'
     + ' _lyricsApplyActiveClasses, _lyricsActiveIndexAt, _lyricsTickActive'
     + ' };',
   )();
@@ -95,9 +97,24 @@ function makeState(overrides = {}) {
     lyricsProgrammaticGen: 0,
     lyricsUserScrollPending: false,
     lyricsFollowScrollTop: null,
+    lyricsReflowScheduled: false,
     lyricsPanelState: 'synced',
     ...overrides,
   };
+}
+
+function makeFrameScheduler() {
+  const frames = [];
+  const schedule = (cb) => { frames.push(cb); };
+  schedule.flushOne = () => {
+    const cb = frames.shift();
+    if (cb) cb();
+  };
+  schedule.flush = (n = 2) => {
+    for (let i = 0; i < n; i++) schedule.flushOne();
+  };
+  schedule.pending = () => frames.length;
+  return schedule;
 }
 
 function fakeLine(offsetTop, offsetHeight) {
@@ -379,6 +396,129 @@ describe('lyrics follow / detach state machine', () => {
     state.lyricsProgrammaticGen = 1;
     _lyricsOnViewportScroll(state, viewport);
     expect(state.lyricsFollow).toBe(true);
+  });
+
+  test('attached paused resize recenters the current line within two frames', () => {
+    const helpers = loadLyricsHelpers();
+    const H0 = 716;
+    const H1 = 516;
+    const pad0 = helpers._lyricsEdgeSpacerPx(H0, LINE_H);
+    const pad1 = helpers._lyricsEdgeSpacerPx(H1, LINE_H);
+    const index = 10;
+    const offset0 = pad0 + index * LINE_STEP;
+    const offset1 = pad1 + index * LINE_STEP;
+    const content0 = pad0 + 20 * LINE_STEP + pad0;
+    const content1 = pad1 + 20 * LINE_STEP + pad1;
+    const target0 = helpers._lyricsScrollTarget(offset0, LINE_H, H0, content0);
+    const lineEls = Array.from({ length: 20 }, (_, i) => fakeLine(pad0 + i * LINE_STEP, LINE_H));
+    const activeEl = lineEls[index];
+    const lines = lineEls.map((_, i) => ({ start_ms: i * 10000, end_ms: (i + 1) * 10000 }));
+    const currentTimeMs = index * 10000 + 250;
+    const state = makeState({ lyricsFollowScrollTop: target0 });
+    const viewport = fakeViewport(target0, H1, content1);
+    const list = fakeList();
+    const schedule = makeFrameScheduler();
+
+    helpers._lyricsReflowViewport(state, viewport, list, lineEls, lines, currentTimeMs, false, schedule);
+
+    lineEls.forEach((el, i) => { el.offsetTop = pad1 + i * LINE_STEP; });
+    viewport.scrollTop = target0 - (pad0 - pad1);
+    viewport.scrollHeight = content1;
+
+    expect(helpers._lyricsActiveIndexAt(lines, currentTimeMs)).toBe(index);
+    expect(Math.abs(helpers._lyricsLineCenterError(viewport, activeEl))).toBeGreaterThan(90);
+
+    expect(schedule.pending()).toBe(1);
+    schedule.flushOne();
+    expect(schedule.pending()).toBe(1);
+    schedule.flushOne();
+
+    expect(helpers._lyricsActiveIndexAt(lines, currentTimeMs)).toBe(index);
+    expect(Math.abs(helpers._lyricsLineCenterError(viewport, activeEl))).toBeLessThanOrEqual(2);
+    expect(state.lyricsFollow).toBe(true);
+  });
+
+  test('attached playing resize recenters the same line without waiting for the next timestamp', () => {
+    const helpers = loadLyricsHelpers();
+    const H0 = 716;
+    const H1 = 516;
+    const pad0 = helpers._lyricsEdgeSpacerPx(H0, LINE_H);
+    const pad1 = helpers._lyricsEdgeSpacerPx(H1, LINE_H);
+    const index = 10;
+    const offset0 = pad0 + index * LINE_STEP;
+    const content0 = pad0 + 20 * LINE_STEP + pad0;
+    const content1 = pad1 + 20 * LINE_STEP + pad1;
+    const target0 = helpers._lyricsScrollTarget(offset0, LINE_H, H0, content0);
+    const lineEls = Array.from({ length: 20 }, (_, i) => fakeLine(pad0 + i * LINE_STEP, LINE_H));
+    const lines = lineEls.map((_, i) => ({ start_ms: i * 10000, end_ms: (i + 1) * 10000 }));
+    const t0 = index * 10000 + 100;
+    const tLater = t0 + 400;
+    const state = makeState({ lyricsFollowScrollTop: target0 });
+    const viewport = fakeViewport(target0, H1, content1);
+    const schedule = makeFrameScheduler();
+
+    helpers._lyricsReflowViewport(state, viewport, fakeList(), lineEls, lines, t0, false, schedule);
+    lineEls.forEach((el, i) => { el.offsetTop = pad1 + i * LINE_STEP; });
+    viewport.scrollTop = target0 - (pad0 - pad1);
+    schedule.flush(2);
+
+    expect(helpers._lyricsActiveIndexAt(lines, tLater)).toBe(index);
+    expect(helpers._lyricsActiveIndexAt(lines, t0)).toBe(index);
+    expect(Math.abs(helpers._lyricsLineCenterError(viewport, lineEls[index]))).toBeLessThanOrEqual(2);
+    expect(state.lyricsFollow).toBe(true);
+  });
+
+  test('cached target skip does not block a drifted scrollTop on the same lyric', () => {
+    const helpers = loadLyricsHelpers();
+    const H0 = 716;
+    const H1 = 516;
+    const pad0 = helpers._lyricsEdgeSpacerPx(H0, LINE_H);
+    const pad1 = helpers._lyricsEdgeSpacerPx(H1, LINE_H);
+    const index = 10;
+    const offset1 = pad1 + index * LINE_STEP;
+    const content1 = pad1 + 20 * LINE_STEP + pad1;
+    const target = helpers._lyricsScrollTarget(offset1, LINE_H, H1, content1);
+    const state = makeState({ lyricsFollowScrollTop: target, lyricsProgrammaticGen: 0 });
+    const viewport = fakeViewport(target - (pad0 - pad1), H1, content1);
+    const activeEl = fakeLine(offset1, LINE_H);
+
+    expect(Math.abs(helpers._lyricsLineCenterError(viewport, activeEl))).toBeGreaterThan(90);
+    helpers._lyricsFollowActiveLine(state, viewport, activeEl, true);
+    expect(Math.abs(helpers._lyricsLineCenterError(viewport, activeEl))).toBeLessThanOrEqual(2);
+  });
+
+  test('detached resize preserves the reading anchor including Safari-like scroll anchoring', () => {
+    const helpers = loadLyricsHelpers();
+    const H0 = 716;
+    const H1 = 516;
+    const pad0 = helpers._lyricsEdgeSpacerPx(H0, LINE_H);
+    const pad1 = helpers._lyricsEdgeSpacerPx(H1, LINE_H);
+    const index = 8;
+    const viewOffset = H0 / 2 - LINE_H / 2;
+    const lineEls = Array.from({ length: 20 }, (_, i) => fakeLine(pad0 + i * LINE_STEP, LINE_H));
+    const lines = lineEls.map((_, i) => ({ start_ms: i * 1000, end_ms: (i + 1) * 1000 }));
+    const content1 = pad1 + 20 * LINE_STEP + pad1;
+    const state = makeState({ lyricsFollow: false });
+    const viewport = fakeViewport(lineEls[index].offsetTop - viewOffset, H0, pad0 + 20 * LINE_STEP + pad0);
+    const list = fakeList();
+    const schedule = makeFrameScheduler();
+
+    const anchor = helpers._lyricsReadingAnchor(viewport, lineEls);
+    expect(anchor.index).toBe(index);
+    expect(anchor.viewOffset).toBeCloseTo(viewOffset, 5);
+
+    helpers._lyricsReflowViewport(state, viewport, list, lineEls, lines, 8500, false, schedule);
+
+    lineEls.forEach((el, i) => { el.offsetTop = pad1 + i * LINE_STEP; });
+    viewport.clientHeight = H1;
+    viewport.scrollHeight = content1;
+    viewport.scrollTop += (pad1 - pad0);
+
+    schedule.flush(2);
+
+    expect(state.lyricsFollow).toBe(false);
+    expect(helpers._lyricsSyncButtonVisible('synced', state.lyricsFollow)).toBe(true);
+    expect(lineEls[index].offsetTop - viewport.scrollTop).toBeCloseTo(viewOffset, 1);
   });
 
   test('reduced motion selects instant scroll behaviour', () => {

@@ -84,6 +84,7 @@ const lyricsState = {
   lyricsProgrammaticGen: 0,
   lyricsUserScrollPending: false,
   lyricsFollowScrollTop: null,
+  lyricsReflowScheduled: false,
 };
 let _lyricsResizeObserver = null;
 const _lyricsReduceMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -291,14 +292,17 @@ function _lyricsOnViewportScroll(state, viewport) {
   }
 }
 
-function _lyricsWriteScrollTop(viewport, target, reduceMotion, state) {
+function _lyricsWriteScrollTop(viewport, target, reduceMotion, state, force) {
   if (!viewport) return false;
-  if (Math.abs(viewport.scrollTop - target) < 1) {
+  const atTarget = Math.abs(viewport.scrollTop - target) < 1;
+  if (atTarget) {
     state.lyricsFollowScrollTop = target;
     state.lyricsProgrammaticGen = 0;
     return false;
   }
-  if (state.lyricsFollowScrollTop === target) return false;
+  if (!force && state.lyricsProgrammaticGen > 0 && state.lyricsFollowScrollTop === target) {
+    return false;
+  }
   state.lyricsFollowScrollTop = target;
   state.lyricsProgrammaticGen = (state.lyricsProgrammaticGen || 0) + 1;
   const behavior = _lyricsScrollBehavior(reduceMotion);
@@ -311,7 +315,13 @@ function _lyricsWriteScrollTop(viewport, target, reduceMotion, state) {
   return true;
 }
 
-function _lyricsFollowActiveLine(state, viewport, activeEl, reduceMotion) {
+function _lyricsLineCenterError(viewport, lineEl) {
+  if (!viewport || !lineEl) return 0;
+  return (lineEl.offsetTop + lineEl.offsetHeight / 2)
+    - (viewport.scrollTop + viewport.clientHeight / 2);
+}
+
+function _lyricsFollowActiveLine(state, viewport, activeEl, reduceMotion, force) {
   if (!state.lyricsFollow || !viewport || !activeEl) return false;
   const target = _lyricsScrollTarget(
     activeEl.offsetTop,
@@ -319,7 +329,7 @@ function _lyricsFollowActiveLine(state, viewport, activeEl, reduceMotion) {
     viewport.clientHeight,
     viewport.scrollHeight,
   );
-  return _lyricsWriteScrollTop(viewport, target, reduceMotion, state);
+  return _lyricsWriteScrollTop(viewport, target, reduceMotion, state, force);
 }
 
 function _lyricsResyncFollow(state, viewport, activeEl, reduceMotion) {
@@ -350,13 +360,64 @@ function _lyricsTickActive(state, lineEls, lines, currentTimeMs, viewport, reduc
   return activeIndex;
 }
 
-function _lyricsReflowAttachedViewport(state, viewport, list, lineEls, lines, currentTimeMs, reduceMotion) {
+function _lyricsReadingAnchor(viewport, lineEls) {
+  if (!viewport || !lineEls || !lineEls.length) return null;
+  const viewMid = viewport.scrollTop + viewport.clientHeight / 2;
+  let index = 0;
+  let best = Infinity;
+  lineEls.forEach((el, i) => {
+    if (!el) return;
+    const mid = el.offsetTop + (el.offsetHeight || 0) / 2;
+    const dist = Math.abs(mid - viewMid);
+    if (dist < best) {
+      best = dist;
+      index = i;
+    }
+  });
+  const el = lineEls[index];
+  return { index: index, viewOffset: el.offsetTop - viewport.scrollTop };
+}
+
+function _lyricsRestoreReadingAnchor(viewport, lineEls, anchor, state) {
+  if (!viewport || !anchor || !lineEls || !lineEls[anchor.index]) return false;
+  const el = lineEls[anchor.index];
+  const raw = el.offsetTop - anchor.viewOffset;
+  const max = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+  const target = Math.min(Math.max(0, raw), max);
+  return _lyricsWriteScrollTop(viewport, target, true, state, true);
+}
+
+function _lyricsAfterLayout(fn, schedule) {
+  const go = typeof schedule === 'function'
+    ? schedule
+    : (typeof requestAnimationFrame === 'function' ? requestAnimationFrame : function (cb) { cb(); });
+  go(function () { go(fn); });
+}
+
+function _lyricsReflowViewport(state, viewport, list, lineEls, lines, currentTimeMs, reduceMotion, schedule) {
+  const anchor = state.lyricsFollow ? null : _lyricsReadingAnchor(viewport, lineEls);
   _lyricsApplyListSpacer(viewport, list);
-  if (!state.lyricsFollow) return;
   state.lyricsFollowScrollTop = null;
-  const activeIndex = _lyricsActiveIndexAt(lines, currentTimeMs);
-  const activeEl = activeIndex >= 0 && lineEls ? lineEls[activeIndex] : null;
-  _lyricsFollowActiveLine(state, viewport, activeEl, reduceMotion);
+  const settle = function () {
+    if (state.lyricsFollow) {
+      const activeIndex = _lyricsActiveIndexAt(lines, currentTimeMs);
+      const activeEl = activeIndex >= 0 && lineEls ? lineEls[activeIndex] : null;
+      _lyricsFollowActiveLine(state, viewport, activeEl, true, true);
+      return;
+    }
+    if (anchor) _lyricsRestoreReadingAnchor(viewport, lineEls, anchor, state);
+  };
+  settle();
+  if (state.lyricsReflowScheduled) return;
+  state.lyricsReflowScheduled = true;
+  _lyricsAfterLayout(function () {
+    state.lyricsReflowScheduled = false;
+    settle();
+  }, schedule);
+}
+
+function _lyricsReflowAttachedViewport(state, viewport, list, lineEls, lines, currentTimeMs, reduceMotion, schedule) {
+  _lyricsReflowViewport(state, viewport, list, lineEls, lines, currentTimeMs, reduceMotion, schedule);
 }
 
 function _lyricsResetFollowState() {
@@ -364,6 +425,7 @@ function _lyricsResetFollowState() {
   lyricsState.lyricsProgrammaticGen = 0;
   lyricsState.lyricsUserScrollPending = false;
   lyricsState.lyricsFollowScrollTop = null;
+  lyricsState.lyricsReflowScheduled = false;
 }
 
 function _syncLyricsSyncButton() {
@@ -424,7 +486,7 @@ function _bindLyricsViewport(viewport, list) {
   if (typeof ResizeObserver !== 'undefined') {
     _lyricsResizeObserver = new ResizeObserver(() => {
       if (!_lyricsOpen() || lyricsState.lyricsPanelState !== 'synced' || !lyricsState.lyricsData) return;
-      _lyricsReflowAttachedViewport(
+      _lyricsReflowViewport(
         lyricsState,
         viewport,
         list,
