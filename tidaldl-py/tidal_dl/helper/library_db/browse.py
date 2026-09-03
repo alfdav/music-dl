@@ -1,6 +1,7 @@
 """Album and artist browsing queries."""
 
-from tidal_dl.helper.library_db._common import *  # noqa: F403
+from tidal_dl.helper.library_db._common import *
+
 
 class BrowseMixin:
     def artists_page(
@@ -11,7 +12,7 @@ class BrowseMixin:
         ) -> tuple[list[dict], int]:
         """Return paginated artists with track/album counts."""
         assert self._conn
-        where = "status != 'unreadable' AND artist IS NOT NULL"
+        where = "status != 'unreadable' AND missing_since IS NULL AND artist IS NOT NULL"
         params: list = []
         if query:
             where += " AND artist LIKE ?"
@@ -26,7 +27,7 @@ class BrowseMixin:
                        COUNT(DISTINCT album) as album_count,
                        MIN(s.path) as cover_path,
                        (SELECT s2.art_available FROM scanned s2
-                        WHERE s2.artist = s.artist AND s2.status != 'unreadable'
+                        WHERE s2.artist = s.artist AND s2.status != 'unreadable' AND s2.missing_since IS NULL
                         ORDER BY s2.path ASC LIMIT 1) as cover_art_available
                 FROM scanned s
                 WHERE {where}
@@ -44,7 +45,7 @@ class BrowseMixin:
         for row in self._conn.execute(
             """SELECT release_id, album, artist, title, path, art_available, quality
                FROM scanned
-               WHERE status != 'unreadable'
+               WHERE status != 'unreadable' AND missing_since IS NULL
                  AND album IS NOT NULL
                  AND release_id IS NOT NULL"""
         ):
@@ -72,8 +73,7 @@ class BrowseMixin:
                 card["cover_path"] = path
                 card["cover_art_available"] = art
             quality = str(row["quality"] or "")
-            if quality > card["best_quality"]:
-                card["best_quality"] = quality
+            card["best_quality"] = max(card["best_quality"], quality)
         result = []
         for card in grouped.values():
             artists = card["artists"]
@@ -91,7 +91,7 @@ class BrowseMixin:
     def all_albums(self, query: str = "") -> list[dict]:
         """Return all albums grouped by album name. Multi-artist albums show 'Various Artists'."""
         assert self._conn
-        where = "album IS NOT NULL AND status != 'unreadable'"
+        where = "album IS NOT NULL AND status != 'unreadable' AND missing_since IS NULL"
         params: list = []
         if query:
             where += " AND (album LIKE ? OR artist LIKE ?)"
@@ -100,7 +100,7 @@ class BrowseMixin:
         rows = self._conn.execute(
             f"""SELECT s.album, COUNT(*) as track_count, MIN(s.path) as cover_path,
                        (SELECT s2.art_available FROM scanned s2
-                        WHERE s2.album = s.album AND s2.status != 'unreadable'
+                        WHERE s2.album = s.album AND s2.status != 'unreadable' AND s2.missing_since IS NULL
                         ORDER BY s2.path ASC LIMIT 1) as cover_art_available,
                        MAX(quality) as best_quality,
                        COUNT(DISTINCT artist) as artist_count,
@@ -142,7 +142,7 @@ class BrowseMixin:
                  ON s.album = dh.album
                WHERE dh.status = 'done'
                  AND dh.finished_at IS NOT NULL
-                 AND s.status != 'unreadable'
+                 AND s.status != 'unreadable' AND s.missing_since IS NULL
                  AND dh.album IS NOT NULL
                GROUP BY dh.album"""
         ).fetchall():
@@ -164,7 +164,7 @@ class BrowseMixin:
                       MIN(artist) AS first_artist
                FROM scanned s
                WHERE album IS NOT NULL
-                 AND status != 'unreadable'
+                 AND status != 'unreadable' AND missing_since IS NULL
                GROUP BY album"""
         ).fetchall():
             artist = row["first_artist"] if row["artist_count"] == 1 else "Various Artists"
@@ -192,7 +192,7 @@ class BrowseMixin:
         assert self._conn
         rows = self._conn.execute(
             """SELECT * FROM scanned
-               WHERE status != 'unreadable'
+               WHERE status != 'unreadable' AND missing_since IS NULL
                  AND artist = ? COLLATE NOCASE""",
             (artist,),
         ).fetchall()
@@ -203,7 +203,7 @@ class BrowseMixin:
         assert self._conn
         rows = self._conn.execute(
             """SELECT * FROM scanned
-               WHERE status != 'unreadable'
+               WHERE status != 'unreadable' AND missing_since IS NULL
                  AND release_id = ?""",
             (release_id,),
         ).fetchall()
@@ -218,7 +218,7 @@ class BrowseMixin:
         placeholders = ",".join("?" * len(titles))
         rows = self._conn.execute(
             f"""SELECT * FROM scanned
-                WHERE status != 'unreadable'
+                WHERE status != 'unreadable' AND missing_since IS NULL
                   AND album IN ({placeholders})""",
             titles,
         ).fetchall()
@@ -231,7 +231,7 @@ class BrowseMixin:
             """SELECT COUNT(*) AS album_rows,
                       SUM(CASE WHEN release_id IS NOT NULL THEN 1 ELSE 0 END) AS stamped
                FROM scanned
-               WHERE status != 'unreadable' AND album IS NOT NULL"""
+               WHERE status != 'unreadable' AND missing_since IS NULL AND album IS NOT NULL"""
         ).fetchone()
         album_rows = int(row["album_rows"] or 0)
         stamped = int(row["stamped"] or 0)
@@ -244,12 +244,12 @@ class BrowseMixin:
             """SELECT s.album, COUNT(*) as track_count, MIN(s.path) as cover_path,
                       (SELECT s2.art_available FROM scanned s2
                        WHERE s2.artist = s.artist AND s2.album = s.album
-                         AND s2.status != 'unreadable'
+                         AND s2.status != 'unreadable' AND s2.missing_since IS NULL
                        ORDER BY s2.path ASC LIMIT 1) as cover_art_available,
                       GROUP_CONCAT(DISTINCT genre) as genres,
                       MAX(quality) as best_quality
                FROM scanned s
-               WHERE artist = ? AND album IS NOT NULL AND status != 'unreadable'
+               WHERE artist = ? AND album IS NOT NULL AND status != 'unreadable' AND missing_since IS NULL
                GROUP BY album ORDER BY album COLLATE NOCASE ASC""",
             (artist,),
         ).fetchall()
@@ -265,13 +265,13 @@ class BrowseMixin:
         if artist == "Various Artists":
             rows = self._conn.execute(
                 """SELECT * FROM scanned
-                   WHERE album = ? AND status != 'unreadable'""",
+                   WHERE album = ? AND status != 'unreadable' AND missing_since IS NULL""",
                 (album,),
             ).fetchall()
         else:
             rows = self._conn.execute(
                 """SELECT * FROM scanned
-                   WHERE artist = ? AND album = ? AND status != 'unreadable'""",
+                   WHERE artist = ? AND album = ? AND status != 'unreadable' AND missing_since IS NULL""",
                 (artist, album),
             ).fetchall()
 

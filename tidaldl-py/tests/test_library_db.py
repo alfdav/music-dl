@@ -74,6 +74,7 @@ class TestPragmas:
             "disc_number", "disc_total", "musicbrainz_release_id",
             "musicbrainz_release_group_id", "provider_namespace",
             "provider_album_id", "barcode", "release_id",
+            "file_size", "file_mtime", "file_inode", "file_device", "missing_since",
         } <= cols
         assert row is not None
         assert row["status"] == "tagged"
@@ -712,7 +713,9 @@ class TestMigration:
         assert "provider_album_id" in cols
         assert "barcode" in cols
         assert "release_id" in cols
-        assert LibraryDB._SCHEMA_VERSION == 9
+        assert "file_size" in cols
+        assert "missing_since" in cols
+        assert LibraryDB._SCHEMA_VERSION == 10
         assert (
             db._conn.execute("PRAGMA user_version").fetchone()[0]
             == LibraryDB._SCHEMA_VERSION

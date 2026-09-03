@@ -79,6 +79,16 @@ _scan_progress = {
     "phase": "idle",
     "error": None,
 }
+_reconcile_running = False
+_reconcile_last_at = 0.0
+_reconcile_progress = {
+    "migrated": 0,
+    "indexed": 0,
+    "missing": 0,
+    "done": True,
+    "phase": "idle",
+    "error": None,
+}
 _db_local = threading.local()
 _db_generation = 0
 _db_generation_lock = threading.Lock()
@@ -519,6 +529,8 @@ def _db_row_to_track(row: dict) -> dict:
         "cover_url": _local_cover_url(row["path"], row.get("art_available")),
         "play_count": row.get("play_count") or 0,
         "is_local": True,
+        "local_path": row["path"],
+        "missing_since": row.get("missing_since"),
     }
 
 
@@ -1024,6 +1036,266 @@ def _scan_directories() -> list[Path]:
     return dirs
 
 
+def _file_identity_fields(file_path: Path) -> dict:
+    try:
+        st = file_path.stat()
+    except OSError:
+        return {}
+    return {
+        "file_size": st.st_size,
+        "file_mtime": int(st.st_mtime),
+        "file_inode": st.st_ino,
+        "file_device": st.st_dev,
+    }
+
+
+def _new_reconcile_progress(**overrides) -> dict:
+    progress = {
+        "migrated": 0,
+        "indexed": 0,
+        "missing": 0,
+        "done": False,
+        "phase": "preparing",
+        "error": None,
+    }
+    progress.update(overrides)
+    return progress
+
+
+def _update_reconcile_progress(**overrides) -> None:
+    global _reconcile_progress
+    with _scan_lock:
+        _reconcile_progress = {**_reconcile_progress, **overrides}
+
+
+def _index_reconciled_file(db: LibraryDB, file_path: Path, identity, meta: dict | None) -> None:
+    from tidal_dl.helper.waveform import extract_both, peaks_to_json
+
+    payload = meta or {}
+    waveform_json = None
+    hires_json = None
+    both = extract_both(file_path)
+    if both:
+        waveform_json = peaks_to_json(both[0])
+        hires_json = peaks_to_json(both[1])
+    db.record(
+        str(file_path),
+        status="tagged" if payload.get("isrc") else "needs_isrc",
+        isrc=payload.get("isrc") or None,
+        artist=payload.get("artist") or identity.artist,
+        title=payload.get("name") or payload.get("title") or identity.title,
+        album=payload.get("album") or identity.album,
+        album_artist=payload.get("album_artist"),
+        release_date=payload.get("release_date"),
+        track_number=payload.get("track_number"),
+        track_total=payload.get("track_total"),
+        disc_number=payload.get("disc_number"),
+        disc_total=payload.get("disc_total"),
+        musicbrainz_release_id=payload.get("musicbrainz_release_id"),
+        musicbrainz_release_group_id=payload.get("musicbrainz_release_group_id"),
+        provider_namespace=payload.get("provider_namespace"),
+        provider_album_id=payload.get("provider_album_id"),
+        barcode=payload.get("barcode"),
+        duration=payload.get("duration") if payload.get("duration") is not None else identity.duration,
+        genre=payload.get("genre"),
+        quality=payload.get("quality"),
+        fmt=payload.get("format") or payload.get("fmt"),
+        codec=payload.get("codec") or identity.codec or "unknown",
+        metadata_complete=True,
+        waveform=waveform_json,
+        waveform_hires=hires_json,
+        art_available=_has_local_art(file_path),
+        file_size=identity.size,
+        file_mtime=identity.mtime,
+        file_inode=identity.inode,
+        file_device=identity.device,
+    )
+
+
+def _path_reconciler(db: LibraryDB, scan_dirs: list[Path]):
+    from tidal_dl.helper.library_reconcile import PathReconciler
+
+    def read_metadata(file_path: Path) -> dict | None:
+        return _read_metadata(file_path, scan_dirs)
+
+    def index_file(file_path: Path, identity, meta: dict | None) -> None:
+        _index_reconciled_file(db, file_path, identity, meta)
+
+    return PathReconciler(
+        db,
+        scan_dirs,
+        read_metadata=read_metadata,
+        index_file=index_file,
+    )
+
+
+def _dir_signatures_unchanged(db: LibraryDB, scan_dirs: list[Path]) -> bool:
+    """True when every walked directory matches its stored signature."""
+    rec = _path_reconciler(db, scan_dirs)
+    current, unreadable = rec.walk_dirs()
+    if unreadable:
+        return False
+    stored = db.dir_signatures()
+    if not stored or set(stored) != set(current):
+        return False
+    return all(stored[path] == info.signature for path, info in current.items())
+
+
+def _run_path_reconcile(db: LibraryDB, scan_dirs: list[Path]):
+    """Heal moved/missing paths. Distinct from ``_reconcile_library_rows`` (metadata)."""
+    from tidal_dl.helper.library_reconcile import PathReconcileResult
+
+    if not scan_dirs:
+        return PathReconcileResult(unchanged=True)
+    return _path_reconciler(db, scan_dirs).reconcile(force=True)
+
+
+def _migrate_moved_scan_paths(
+    db: LibraryDB,
+    known: set[str],
+    disk_paths: set[str],
+    scan_dirs: list[Path],
+) -> None:
+    """Identity-migrate rows before the scan indexes new paths or prunes old ones."""
+    from tidal_dl.helper.library_reconcile import FileIdentity, identity_from_stat, plan_path_reconcile
+
+    stale = [path for path in known - disk_paths if not path_has_skipped_scan_dir(path)]
+    appeared_paths = disk_paths - known
+    if not stale or not appeared_paths:
+        return
+
+    vanished: list[FileIdentity] = []
+    for path in stale:
+        row = db.get(path)
+        if row:
+            vanished.append(FileIdentity(
+                path=row["path"],
+                size=row.get("file_size"),
+                mtime=row.get("file_mtime"),
+                inode=row.get("file_inode"),
+                device=row.get("file_device"),
+                duration=row.get("duration"),
+                codec=row.get("codec"),
+                title=row.get("title"),
+                artist=row.get("artist"),
+                album=row.get("album"),
+                isrc=row.get("isrc"),
+            ))
+
+    appeared = []
+    appeared_by_path: dict[str, FileIdentity] = {}
+    for path in appeared_paths:
+        file_path = Path(path)
+        try:
+            st = file_path.stat()
+        except OSError:
+            continue
+        meta = _read_metadata(file_path, scan_dirs)
+        identity = identity_from_stat(file_path, st, meta)
+        appeared.append(identity)
+        appeared_by_path[identity.path] = identity
+
+    plan = plan_path_reconcile(vanished, appeared)
+    if not plan.migrations:
+        return
+    with db.write_transaction():
+        for old_path, new_path in plan.migrations:
+            identity = appeared_by_path[new_path]
+            db.migrate_path(
+                old_path,
+                new_path,
+                file_size=identity.size,
+                file_mtime=identity.mtime,
+                file_inode=identity.inode,
+                file_device=identity.device,
+                duration=identity.duration,
+                codec=identity.codec,
+                title=identity.title,
+                artist=identity.artist,
+                album=identity.album,
+            )
+
+
+def request_path_reconcile(*, force: bool = False) -> dict:
+    """Debounced incremental path heal. Never runs two jobs concurrently."""
+    global _reconcile_running, _reconcile_progress
+    now = time.time()
+    with _scan_lock:
+        if _scan_running or _reconcile_running:
+            return {"status": "already_running", **_reconcile_progress}
+        if not force and _reconcile_last_at and (now - _reconcile_last_at) < 60:
+            return {"status": "debounced", **_reconcile_progress}
+        _reconcile_running = True
+        _reconcile_progress = _new_reconcile_progress(phase="preparing")
+
+    thread = threading.Thread(target=_background_path_reconcile, daemon=True)
+    thread.start()
+    return {"status": "started"}
+
+
+def _background_path_reconcile() -> None:
+    global _reconcile_running, _reconcile_last_at
+    db = None
+    _update_reconcile_progress(phase="walking")
+    try:
+        scan_dirs = _scan_directories()
+        db = LibraryDB(Path(path_config_base()) / "library.db")
+        db.open()
+        if scan_dirs:
+            _migrate_volume_prefixes(db, scan_dirs)
+        result = _run_path_reconcile(db, scan_dirs)
+        if not result.unchanged:
+            dropped = drop_skipped_scan_paths(db)
+            if dropped:
+                print(f"[library] Dropped {dropped} rows under skipped directories")
+        _update_reconcile_progress(
+            phase="done",
+            done=True,
+            migrated=len(result.migrations),
+            indexed=len(result.indexed),
+            missing=len(result.marked_missing),
+            error=None,
+        )
+        if not result.unchanged:
+            _finish_album_scan(db)
+            db = None
+        else:
+            db.close()
+            db = None
+        _reconcile_last_at = time.time()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[library] Path reconcile failed: {exc}")
+        _update_reconcile_progress(phase="error", done=True, error=str(exc))
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:  # noqa: BLE001, S110
+                pass
+        with _scan_lock:
+            _reconcile_running = False
+
+
+def heal_playback_path(path: str) -> str | None:
+    """Targeted reconcile for a missing playback path; return the live path."""
+    scan_dirs = _scan_directories()
+    if not scan_dirs:
+        return None
+    db = LibraryDB(Path(path_config_base()) / "library.db")
+    db.open()
+    try:
+        result = _run_path_reconcile(db, scan_dirs)
+        for old_path, new_path in result.migrations:
+            if old_path == path:
+                return new_path
+        row = db.get(path)
+        if row and row.get("missing_since") is None and Path(path).is_file():
+            return path
+        return None
+    finally:
+        db.close()
+
+
 def _backup_library_db(db_path: Path) -> Path:
     """Create a consistent rolling SQLite backup, including committed WAL pages."""
     backup_path = Path(str(db_path) + ".bak")
@@ -1235,41 +1507,18 @@ def _background_scan(rescan: bool) -> None:
         known = set() if rescan else db.known_paths()
         db.commit()
 
-        # --- Fast-path: skip walk if nothing changed on disk ---
-        import json as _json
-
-        try:
-            finger = _json.dumps({
-                "dirs": sorted(str(d) for d in scan_dirs),
-                "mtimes": [os.stat(str(d)).st_mtime for d in sorted(scan_dirs)],
-                "known_count": len(known),
-            }, sort_keys=True)
-        except OSError:
-            finger = None
-
-        if not rescan and finger:
-            stored = db.get_meta("scan_fingerprint")
-            db.commit()
-            if stored == finger:
-                print("[library] Scan directories unchanged — skipping walk")
-                db.stamp_complete_identity_rows()
-                dropped = drop_skipped_scan_paths(db)
-                if dropped:
-                    print(f"[library] Dropped {dropped} rows under skipped directories")
-                    try:
-                        finger = _json.dumps({
-                            "dirs": sorted(str(d) for d in scan_dirs),
-                            "mtimes": [os.stat(str(d)).st_mtime for d in sorted(scan_dirs)],
-                            "known_count": len(db.known_paths()),
-                        }, sort_keys=True)
-                        with db.write_transaction():
-                            db.set_meta("scan_fingerprint", finger)
-                    except OSError:
-                        pass
-                _update_scan_progress(phase="done", scanned=0, total=0, done=True, error=None)
-                _finish_album_scan(db)
-                db = None
-                return
+        # Per-directory signatures replace the root-only scan_fingerprint skip.
+        # Nested moves change subdirectory mtimes, not the configured root.
+        if not rescan and _dir_signatures_unchanged(db, scan_dirs):
+            print("[library] Directory signatures unchanged — skipping walk")
+            db.stamp_complete_identity_rows()
+            dropped = drop_skipped_scan_paths(db)
+            if dropped:
+                print(f"[library] Dropped {dropped} rows under skipped directories")
+            _update_scan_progress(phase="done", scanned=0, total=0, done=True, error=None)
+            _finish_album_scan(db)
+            db = None
+            return
 
         _update_scan_progress(phase="discovering", scanned=0, total=0, done=False, error=None)
         disk_paths: set[str] = set()
@@ -1297,6 +1546,11 @@ def _background_scan(rescan: bool) -> None:
         # Phase 2: Read metadata + waveform only for NEW files (the diff)
         from tidal_dl.helper.waveform import extract_both, peaks_to_json
 
+        if not rescan:
+            _migrate_moved_scan_paths(db, known, disk_paths, scan_dirs)
+            known = db.known_paths()
+            db.commit()
+
         new_paths = disk_paths - known
         pending: list[dict] = []
         indexed = 0
@@ -1310,6 +1564,7 @@ def _background_scan(rescan: bool) -> None:
             file_path = Path(path_str)
             art_available = _has_local_art(file_path)
             meta = _read_metadata(file_path, scan_dirs)
+            identity_fields = _file_identity_fields(file_path)
             if meta:
                 waveform_json = None
                 hires_json = None
@@ -1344,6 +1599,7 @@ def _background_scan(rescan: bool) -> None:
                     "waveform": waveform_json,
                     "waveform_hires": hires_json,
                     "art_available": art_available,
+                    **identity_fields,
                 })
             else:
                 pending.append({
@@ -1352,6 +1608,7 @@ def _background_scan(rescan: bool) -> None:
                     "art_available": art_available,
                     "codec": "unknown",
                     "metadata_complete": True,
+                    **identity_fields,
                 })
             indexed += 1
             if len(pending) >= 50:
@@ -1387,25 +1644,24 @@ def _background_scan(rescan: bool) -> None:
                 " — possible volume remount"
             )
         elif prune:
+            now = int(time.time())
             with db.write_transaction():
                 for path in prune:
-                    db.remove(path)
+                    db.mark_missing(path, since=now)
 
         _update_scan_progress(phase="finalizing", done=False)
 
-        # Save scan fingerprint so next scan can skip if nothing changed
-        if finger:
-            try:
-                final_known = len(db.known_paths()) if not rescan else len(disk_paths)
-                finger = _json.dumps({
-                    "dirs": sorted(str(d) for d in scan_dirs),
-                    "mtimes": [os.stat(str(d)).st_mtime for d in sorted(scan_dirs)],
-                    "known_count": final_known,
-                }, sort_keys=True)
-                with db.write_transaction():
-                    db.set_meta("scan_fingerprint", finger)
-            except OSError:
-                pass
+        try:
+            rec = _path_reconciler(db, scan_dirs)
+            current, unreadable = rec.walk_dirs()
+            with db.write_transaction():
+                db.replace_dir_signatures(
+                    {path: info.signature for path, info in current.items()},
+                    checked_at=int(time.time()),
+                    keep_dirs=unreadable,
+                )
+        except OSError:
+            pass
 
         # Genre backfill is only for leftover incomplete rows. Do not open
         # already-tagged or skipped-directory files for a tag re-read.
@@ -1795,9 +2051,10 @@ def library_search(
                       MIN(s.path) as cover_path,
                       (SELECT s2.art_available FROM scanned s2
                        WHERE s2.artist = s.artist AND s2.status != 'unreadable'
+                         AND s2.missing_since IS NULL
                        ORDER BY s2.path ASC LIMIT 1) as cover_art_available
                FROM scanned s
-               WHERE artist LIKE ? AND status != 'unreadable'
+               WHERE artist LIKE ? AND status != 'unreadable' AND missing_since IS NULL
                GROUP BY artist ORDER BY track_count DESC LIMIT ?""",
             (like, limit),
         ).fetchall()
@@ -1825,7 +2082,7 @@ def scan_library(
     """Kick off a background scan. Returns immediately."""
     global _scan_running, _scan_progress
     with _scan_lock:
-        if _scan_running:
+        if _scan_running or _reconcile_running:
             return {"status": "already_running", **_scan_progress}
         _scan_running = True
         _scan_progress = _new_scan_progress(phase="preparing")
@@ -1840,6 +2097,60 @@ def scan_status() -> dict:
     """Check background scan progress."""
     with _scan_lock:
         return {"scanning": _scan_running, **_scan_progress}
+
+
+@router.post("/library/reconcile")
+def reconcile_library_paths() -> dict:
+    """Heal moved folders without a full rescan. Returns immediately."""
+    return request_path_reconcile()
+
+
+@router.get("/library/reconcile/status")
+def reconcile_status() -> dict:
+    """Check incremental path-reconcile progress."""
+    with _scan_lock:
+        return {"reconciling": _reconcile_running, **_reconcile_progress}
+
+
+class RelocateRequest(BaseModel):
+    path: str
+    new_path: str
+
+
+@router.get("/library/missing")
+def library_missing() -> dict:
+    """Rows marked missing after an external delete or failed match."""
+    db = _get_db()
+    tracks = [_db_row_to_track(row) for row in db.missing_rows()]
+    return {"tracks": tracks, "total": len(tracks)}
+
+
+@router.post("/library/relocate")
+def relocate_library_path(req: RelocateRequest) -> dict:
+    """Manually point a missing row at a file inside a configured root."""
+    from tidal_dl.gui.security import validate_audio_path
+
+    db = _get_db()
+    row = db.get(req.path)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown library path")
+    allowed = [str(directory) for directory in _scan_directories()]
+    validated = validate_audio_path(req.new_path, allowed)
+    if validated is None:
+        raise HTTPException(status_code=400, detail="Invalid destination path")
+    identity = _file_identity_fields(validated)
+    with db.write_transaction():
+        moved = db.migrate_path(
+            req.path,
+            str(validated),
+            file_size=identity.get("file_size"),
+            file_mtime=identity.get("file_mtime"),
+            file_inode=identity.get("file_inode"),
+            file_device=identity.get("file_device"),
+        )
+    if not moved:
+        raise HTTPException(status_code=409, detail="Destination already indexed")
+    return {"status": "ok", "path": str(validated)}
 
 
 class FavoriteToggleRequest(BaseModel):

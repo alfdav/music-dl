@@ -34,7 +34,18 @@ def serve_local_file(path: str = Query(..., description="Absolute path to audio 
         library_resolved_path=_trusted_library_path(path),
     )
     if resolution.kind != "ok" or resolution.path is None:
-        raise HTTPException(status_code=403, detail="Access denied")
+        from tidal_dl.gui.api.library import heal_playback_path
+
+        healed = heal_playback_path(path)
+        if healed:
+            resolution = resolve_local_audio_path(
+                healed,
+                get_download_paths(),
+                library_trusts_raw_path=_path_in_library(healed),
+                library_resolved_path=_trusted_library_path(healed),
+            )
+        if resolution.kind != "ok" or resolution.path is None:
+            raise HTTPException(status_code=403, detail="Access denied")
     validated_path = resolution.path
 
     media_types = {
@@ -54,9 +65,8 @@ def stream_tidal_track(track_id: int):
     """Proxy a Tidal stream to the browser. Full if OAuth, preview fallback."""
     import requests as http_requests
 
-    from tidal_dl.gui.security import validate_stream_url
-
     from tidal_dl.gui.api.settings import _persisted_refresh_token, call_tidal
+    from tidal_dl.gui.security import validate_stream_url
 
     tidal = Tidal()
 

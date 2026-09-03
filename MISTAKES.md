@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-03 — Root-only scan fingerprint skipped nested folder moves
+
+**What happened:** After a live 1.7.8 user reorganized `/Volumes/Music`, 2,426 of 11,970 `scanned` rows (20.3%) pointed at deleted paths. Albums rendered as 2/16 tracks. `POST /api/library/scan` printed "Scan directories unchanged — skipping" because `scan_fingerprint` only hashed configured-root mtimes + row count.
+
+**Root cause:** `scanned.path` was the only identity. Nested moves do not change a root's mtime or the row count, so the fast-path skipped the walk. When a walk did run, vanished paths were pruned and new paths inserted, wiping `play_count` / favorites / `play_events`.
+
+**Prevention:** Persist per-directory signatures (`mtime_ns:audio_count`) in `scanned_dirs`. Reconcile only changed directories. Migrate row identity on a unique strong match. Never skip on root mtime alone. Never merge editions that differ by remaster/year tokens. Mark unresolved vanished rows missing instead of deleting them.
+
 ## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
 
 **What happened:** Artist-name track search (Carlos Vives) replaced real track hits with a self-titled album. Local-empty paint showed `No results found` while Tidal was still in flight. `urlparse(...).hostname` can raise `ValueError` on broken IPv6 zones / trailing `%`, which would 500 `/api/search`.
