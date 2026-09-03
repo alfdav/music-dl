@@ -156,33 +156,6 @@ def validate_audio_path(path_str: str, allowed_dirs: list[str]) -> Path | None:
     return None
 
 
-def path_string_under_allowed_dirs(path_str: str, allowed_dirs: list[str]) -> bool:
-    """Check a path string is under allowed dirs without opening the file.
-
-    Used for stale library rows whose files may no longer exist. Resolves the
-    path with ``strict=False`` so missing leaf files still canonicalize.
-    """
-    if not path_str or not path_str.strip():
-        return False
-    try:
-        candidate = Path(path_str).expanduser().resolve(strict=False)
-    except (OSError, ValueError):
-        return False
-    for allowed in allowed_dirs:
-        if not allowed or not str(allowed).strip():
-            continue
-        try:
-            root = Path(allowed).expanduser().resolve(strict=False)
-        except (OSError, ValueError):
-            continue
-        try:
-            if candidate.is_relative_to(root):
-                return True
-        except ValueError:
-            continue
-    return False
-
-
 def resolve_local_audio_path(
     raw_path: str | None,
     allowed_dirs: list[str],

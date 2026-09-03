@@ -720,6 +720,52 @@ class TestPlaybackBackstop:
         assert reconcile_calls == 0
         assert walk_calls == 0
 
+    def test_playback_rejects_traversal_symlink_and_encoded_paths(self, tmp_path, monkeypatch):
+        from urllib.parse import quote
+
+        root = tmp_path / "Music"
+        secret = tmp_path / "secret.flac"
+        secret.write_bytes(b"secret")
+        inside = root / "A" / "song.wav"
+        _write_wav(inside, frames=8000)
+        link = root / "escape.wav"
+        link.symlink_to(secret)
+
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        _seed(db, inside, artist="A", title="Song", album="LP", duration=1)
+        db.close()
+
+        client, headers, library_api = self._playback_client(tmp_path, monkeypatch, root)
+        reconcile_calls = 0
+
+        def boom(**kwargs):
+            nonlocal reconcile_calls
+            reconcile_calls += 1
+            return {"status": "started"}
+
+        monkeypatch.setattr(library_api, "request_path_reconcile", boom)
+        attacks = [
+            str(root / ".." / "secret.flac"),
+            str(root) + "/%2e%2e/secret.flac",
+            str(link),
+            str(tmp_path / "not-indexed.wav"),
+        ]
+        with client:
+            for attack in attacks:
+                resp = client.get(
+                    "/api/playback/local",
+                    params={"path": attack},
+                    headers=headers,
+                )
+                assert resp.status_code == 403, attack
+            encoded = client.get(
+                "/api/playback/local?path=" + quote(str(root) + "/../secret.flac", safe=""),
+                headers=headers,
+            )
+            assert encoded.status_code == 403
+        assert reconcile_calls == 0
+
     def test_playback_concurrent_missing_library_paths_coalesce(self, tmp_path, monkeypatch):
         root = tmp_path / "Music"
         src = root / "A" / "song.wav"

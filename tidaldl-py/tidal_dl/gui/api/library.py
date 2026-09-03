@@ -167,54 +167,92 @@ def get_download_path() -> str:
     return settings.data.download_base_path
 
 
-def _path_in_library(path: str) -> bool:
-    """Thread-safe check: is this path in our library DB? Opens its own connection."""
+def _lexically_under_roots(path_str: str, allowed_dirs: list[str]) -> str | None:
+    """Return *path_str* when it lexically sits under a configured root.
+
+    String checks only: no ``Path``, ``resolve``, ``stat``, or ``open``.
+    Encoded traversal, ``..``, NUL, and home-expansion are rejected before
+    any filesystem API sees the value.
+    """
+    if not path_str or not path_str.strip() or "\x00" in path_str:
+        return None
+    lowered = path_str.replace("\\", "/")
+    folded = lowered.casefold()
+    if "%2e" in folded or "%2f" in folded or "%5c" in folded:
+        return None
+    if lowered.startswith("~"):
+        return None
+    normalized = os.path.normpath(lowered)
+    parts = [part for part in normalized.split("/") if part not in ("", ".")]
+    if ".." in parts or normalized.startswith(".."):
+        return None
+    suffix = os.path.splitext(normalized)[1].casefold()
+    if suffix not in _AUDIO_EXTENSIONS:
+        return None
+    for root in allowed_dirs:
+        if not root or not str(root).strip():
+            continue
+        root_norm = os.path.normpath(str(root).replace("\\", "/"))
+        prefix = root_norm.rstrip("/") + "/"
+        if normalized.startswith(prefix) and len(normalized) > len(prefix):
+            return path_str
+    return None
+
+
+def _scanned_path_allowlist() -> list[str]:
+    """Trusted scanned.path values from the library DB (config/DB, not the request)."""
     import sqlite3
 
     db_path = Path(path_config_base()) / "library.db"
     if not db_path.exists():
-        return False
+        return []
     try:
         conn = sqlite3.connect(str(db_path))
-        row = conn.execute("SELECT 1 FROM scanned WHERE path = ? LIMIT 1", (path,)).fetchone()
+        rows = conn.execute("SELECT path FROM scanned").fetchall()
         conn.close()
-        return row is not None
+        return [row[0] for row in rows if row[0]]
     except Exception:  # noqa: BLE001
-        return False
+        return []
+
+
+def _exact_scanned_path(path: str) -> str | None:
+    """Select the allowlisted DB path that equals *path*. Never returns the request string."""
+    if not path or "\x00" in path:
+        return None
+    for stored in _scanned_path_allowlist():
+        if stored == path:
+            return stored
+    return None
+
+
+def _path_in_library(path: str) -> bool:
+    """Thread-safe check: is this path in our library DB?"""
+    return _exact_scanned_path(path) is not None
 
 
 def _trusted_library_path(path: str) -> Path | None:
-    """Return a resolved path from the library DB when the exact path is known."""
-    import sqlite3
+    """Resolve a library file only after an exact DB/config match.
 
-    from tidal_dl.gui.security import path_string_under_allowed_dirs, validate_audio_path
+    Filesystem APIs run on the allowlisted DB string via ``validate_audio_path``.
+    """
+    from tidal_dl.gui.security import validate_audio_path
 
-    db_path = Path(path_config_base()) / "library.db"
-    if not db_path.exists():
+    stored = _exact_scanned_path(path)
+    if stored is None:
         return None
     allowed = [str(directory) for directory in _scan_directories()]
-    if not path_string_under_allowed_dirs(path, allowed):
+    if _lexically_under_roots(stored, allowed) is None:
         return None
-    try:
-        conn = sqlite3.connect(str(db_path))
-        row = conn.execute("SELECT path FROM scanned WHERE path = ? LIMIT 1", (path,)).fetchone()
-        conn.close()
-        if not row:
-            return None
-        validated = validate_audio_path(row[0], allowed)
-        return validated
-    except Exception:  # noqa: BLE001
-        return None
+    return validate_audio_path(stored, allowed)
 
 
 def _library_row_under_roots(path: str) -> bool:
-    """True when *path* is a scanned row under configured library roots."""
-    from tidal_dl.gui.security import path_string_under_allowed_dirs
-
-    if not _path_in_library(path):
+    """True when an allowlisted scanned path lexically sits under configured roots."""
+    stored = _exact_scanned_path(path)
+    if stored is None:
         return False
     allowed = [str(directory) for directory in _scan_directories()]
-    return path_string_under_allowed_dirs(path, allowed)
+    return _lexically_under_roots(stored, allowed) is not None
 
 
 def playback_resolved_path(path: str) -> str | None:

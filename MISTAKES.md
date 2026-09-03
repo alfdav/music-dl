@@ -1,12 +1,20 @@
 # Mistakes
 
+## 2026-09-03 — Parallel path helper failed CodeQL py/path-injection
+
+**What happened:** `path_string_under_allowed_dirs` called `Path(user).resolve(strict=False)` so missing library rows could be bounded to configured roots. CodeQL reported seven uncontrolled-path flows at that `resolve`.
+
+**Root cause:** CodeQL treats `Path.resolve`/`stat` on request data as a sink. A second helper next to `validate_audio_path` is not a proven sanitizer, even if it later checks `is_relative_to`.
+
+**Prevention:** Exact-match the request string against the DB `scanned.path` allowlist and configured root strings first. Only then pass the selected DB value into `validate_audio_path`. Lexical `..` / encoded / `~` checks stay string-only.
+
 ## 2026-09-03 — Playback GET ran synchronous full reconcile on arbitrary paths
 
 **What happened:** `GET /api/playback/local` called `heal_playback_path`, which ran `_run_path_reconcile` synchronously for any DB-trusted path, bypassing `_scan_lock`, debounce, and single-flight guards. Forbidden or non-library paths could trigger expensive walks from a CSRF-exempt GET.
 
 **Root cause:** The backstop optimized for one-request heal and reused the full reconciler inline instead of the guarded background job.
 
-**Prevention:** Only queue reconcile for rows that exist in `scanned` and sit under configured roots. Serve moved files via an in-memory migration cache populated when background reconcile finishes. Return 202 when reconcile is queued/debounced and 409 when one is already running. Validate paths with `validate_audio_path` / `path_string_under_allowed_dirs` before any `stat`.
+**Prevention:** Only queue reconcile for rows that exist in `scanned` and sit under configured roots. Serve moved files via an in-memory migration cache populated when background reconcile finishes. Return 202 when reconcile is queued/debounced and 409 when one is already running. Compare the request string to the DB allowlist and configured roots first (no filesystem). Only then call `validate_audio_path` on the selected DB path. Never `Path.resolve` a request string in a parallel helper.
 
 ## 2026-09-03 — First-run reconcile missed whole-album directory renames
 
