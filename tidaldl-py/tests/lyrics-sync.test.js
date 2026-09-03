@@ -13,6 +13,14 @@ const CONTENT_H = 2757;
 const LINE_H = 73.5;
 const LINE0_TOP = 18;
 const LINE_COUNT = 48;
+const LINE_STEP = LINE_H + 36;
+
+const VIEWPORT_PROFILES = [
+  { label: '700x1400 narrow', height: 1281, width: 380 },
+  { label: '1100 normal', height: 620, width: 700 },
+  { label: '1280 normal', height: 620, width: 780 },
+  { label: '1440 normal', height: 620, width: 780 },
+];
 
 const PLAYER_BAR_CONTROL_IDS = [
   'now-art',
@@ -41,16 +49,15 @@ function cssRule(selector) {
 
 function loadLyricsHelpers() {
   const helperSource = playerSource.match(
-    /function _lyricsScrollTarget\(lineOffsetTop, lineHeight, viewportHeight, contentHeight\) \{[\s\S]*?\nfunction _lyricsTickActive\(state, lineEls, lines, currentTimeMs, viewport, reduceMotion\) \{[\s\S]*?\n\}/,
+    /function _lyricsScrollTarget\(lineOffsetTop, lineHeight, viewportHeight, contentHeight\) \{[\s\S]*?\nfunction _lyricsReflowAttachedViewport\(state, viewport, list, lineEls, lines, currentTimeMs, reduceMotion\) \{[\s\S]*?\n\}/,
   );
   if (!helperSource) throw new Error('lyrics helpers not found');
   return new Function(
     `${helperSource[0]}\nreturn {`
-    + ' _lyricsScrollTarget, _lyricsScrollBehavior, _lyricsUserScrollKey,'
-    + ' _lyricsSyncButtonVisible, _lyricsDetachFollow, _lyricsAttachFollow,'
-    + ' _lyricsOnUserScrollIntent, _lyricsOnViewportScroll,'
-    + ' _lyricsBeginProgrammaticScroll, _lyricsEndProgrammaticScroll,'
-    + ' _lyricsWriteScrollTop, _lyricsFollowActiveLine, _lyricsResyncFollow,'
+    + ' _lyricsScrollTarget, _lyricsEdgeSpacerPx, _lyricsApplyListSpacer, _lyricsScrollBehavior,'
+    + ' _lyricsUserScrollKey, _lyricsSyncButtonVisible, _lyricsDetachFollow, _lyricsAttachFollow,'
+    + ' _lyricsMarkUserScrollIntent, _lyricsOnViewportScroll, _lyricsWriteScrollTop,'
+    + ' _lyricsFollowActiveLine, _lyricsResyncFollow, _lyricsReflowAttachedViewport,'
     + ' _lyricsApplyActiveClasses, _lyricsActiveIndexAt, _lyricsTickActive'
     + ' };',
   )();
@@ -85,7 +92,8 @@ function makeClassList() {
 function makeState(overrides = {}) {
   return {
     lyricsFollow: true,
-    lyricsProgrammaticScroll: false,
+    lyricsProgrammaticGen: 0,
+    lyricsUserScrollPending: false,
     lyricsFollowScrollTop: null,
     lyricsPanelState: 'synced',
     ...overrides,
@@ -97,10 +105,20 @@ function fakeLine(offsetTop, offsetHeight) {
   return { offsetTop, offsetHeight, classList };
 }
 
-function fakeViewport(scrollTop = 0) {
+function fakeList(lineHeight = LINE_H) {
   return {
-    clientHeight: VIEWPORT_H,
-    scrollHeight: CONTENT_H,
+    style: {},
+    firstElementChild: {
+      offsetHeight: lineHeight,
+      getBoundingClientRect: () => ({ height: lineHeight }),
+    },
+  };
+}
+
+function fakeViewport(scrollTop = 0, clientHeight = VIEWPORT_H, scrollHeight = CONTENT_H) {
+  return {
+    clientHeight,
+    scrollHeight,
     scrollTop,
     scrollCalls: [],
     scrollTo(opts) {
@@ -110,9 +128,35 @@ function fakeViewport(scrollTop = 0) {
   };
 }
 
+function fakeViewportInFlight(scrollTop = 0, clientHeight = VIEWPORT_H, scrollHeight = CONTENT_H) {
+  return {
+    clientHeight,
+    scrollHeight,
+    scrollTop,
+    scrollCalls: [],
+    scrollTo(opts) {
+      this.scrollCalls.push(opts);
+    },
+  };
+}
+
 function lineOffset(index) {
   const last = CONTENT_H - LINE_H;
   return LINE0_TOP + (index / (LINE_COUNT - 1)) * (last - LINE0_TOP);
+}
+
+function modelLineLayout(viewportHeight) {
+  const { _lyricsEdgeSpacerPx, _lyricsScrollTarget } = loadLyricsHelpers();
+  const pad = _lyricsEdgeSpacerPx(viewportHeight, LINE_H);
+  const firstTop = pad;
+  const lastTop = pad + (LINE_COUNT - 1) * LINE_STEP;
+  const contentHeight = pad + LINE_COUNT * LINE_H + (LINE_COUNT - 1) * 36 + pad;
+  return { pad, firstTop, lastTop, contentHeight, _lyricsScrollTarget };
+}
+
+function expectLineVisible(scrollTop, lineTop, viewportHeight) {
+  expect(lineTop).toBeGreaterThanOrEqual(scrollTop);
+  expect(lineTop).toBeLessThanOrEqual(scrollTop + viewportHeight);
 }
 
 describe('lyrics scroll math', () => {
@@ -161,31 +205,83 @@ describe('lyrics scroll math', () => {
     for (let i = 0; i < LINE_COUNT; i++) {
       const top = lineOffset(i);
       const scrollTop = _lyricsScrollTarget(top, LINE_H, VIEWPORT_H, CONTENT_H);
-      expect(top).toBeGreaterThanOrEqual(scrollTop);
-      expect(top).toBeLessThanOrEqual(scrollTop + VIEWPORT_H);
+      expectLineVisible(scrollTop, top, VIEWPORT_H);
     }
   });
 });
 
+describe('lyrics edge spacer', () => {
+  test('uses viewport height, not panel width, for end padding', () => {
+    const { _lyricsEdgeSpacerPx } = loadLyricsHelpers();
+    const narrowTallPad = _lyricsEdgeSpacerPx(1281, LINE_H);
+    const widthRelativeWrong = 380 * 0.5;
+
+    expect(narrowTallPad).toBeCloseTo(603.75, 1);
+    expect(narrowTallPad).toBeGreaterThan(600);
+    expect(narrowTallPad).not.toBeCloseTo(widthRelativeWrong, 0);
+    expect(cssSource).not.toMatch(/\.lyrics-synced-list[\s\S]*padding-block:\s*50%/);
+    expect(playerSource).toContain('_lyricsApplyListSpacer');
+    expect(playerSource).toContain('_lyricsEdgeSpacerPx');
+  });
+
+  test('centers first and last lines across narrow/tall and normal widths', () => {
+    for (const profile of VIEWPORT_PROFILES) {
+      const { pad, firstTop, lastTop, contentHeight, _lyricsScrollTarget } = modelLineLayout(profile.height);
+      const firstScroll = _lyricsScrollTarget(firstTop, LINE_H, profile.height, contentHeight);
+      const lastScroll = _lyricsScrollTarget(lastTop, LINE_H, profile.height, contentHeight);
+
+      expect(pad).toBeCloseTo((profile.height - LINE_H) / 2, 1);
+      expect(firstScroll).toBe(0);
+      expectLineVisible(firstScroll, firstTop, profile.height);
+      expectLineVisible(lastScroll, lastTop, profile.height);
+      expect(lastScroll).toBe(contentHeight - profile.height);
+    }
+  });
+
+  test('writes height-relative padding on the list at runtime', () => {
+    const { _lyricsApplyListSpacer } = loadLyricsHelpers();
+    const viewport = fakeViewport(0, 1281);
+    const list = fakeList();
+
+    const pad = _lyricsApplyListSpacer(viewport, list);
+
+    expect(pad).toBeCloseTo(603.75, 1);
+    expect(list.style.paddingTop).toBe(`${pad}px`);
+    expect(list.style.paddingBottom).toBe(`${pad}px`);
+  });
+});
+
 describe('lyrics follow / detach state machine', () => {
-  test('user wheel, touch, and scroll keys detach follow', () => {
-    const {
-      _lyricsOnUserScrollIntent,
-      _lyricsUserScrollKey,
-    } = loadLyricsHelpers();
+  test('user wheel detaches follow immediately', () => {
+    expect(playerSource).toMatch(/addEventListener\('wheel'[\s\S]*?detachFromUser/);
+    expect(playerSource).toMatch(/function _bindLyricsViewport[\s\S]*?_lyricsDetachFollow/);
+    const { _lyricsDetachFollow } = loadLyricsHelpers();
     const state = makeState();
+    _lyricsDetachFollow(state);
+    expect(state.lyricsFollow).toBe(false);
+  });
+
+  test('keyboard scroll intent detaches on the next scroll event', () => {
+    const { _lyricsMarkUserScrollIntent, _lyricsOnViewportScroll, _lyricsUserScrollKey } = loadLyricsHelpers();
+    const state = makeState();
+    const viewport = fakeViewport(10);
 
     expect(_lyricsUserScrollKey('ArrowUp')).toBe(true);
-    expect(_lyricsUserScrollKey('ArrowDown')).toBe(true);
-    expect(_lyricsUserScrollKey('PageUp')).toBe(true);
-    expect(_lyricsUserScrollKey('PageDown')).toBe(true);
-    expect(_lyricsUserScrollKey('Home')).toBe(true);
-    expect(_lyricsUserScrollKey('End')).toBe(true);
     expect(_lyricsUserScrollKey('Escape')).toBe(false);
 
-    _lyricsOnUserScrollIntent(state);
+    _lyricsMarkUserScrollIntent(state);
+    _lyricsOnViewportScroll(state, viewport);
     expect(state.lyricsFollow).toBe(false);
-    expect(_lyricsSyncVisibleAfterDetach()).toBe(true);
+  });
+
+  test('layout scroll without user intent does not detach', () => {
+    const { _lyricsOnViewportScroll } = loadLyricsHelpers();
+    const state = makeState();
+    const viewport = fakeViewport(50);
+
+    _lyricsOnViewportScroll(state, viewport);
+    expect(state.lyricsFollow).toBe(true);
+    expect(state.lyricsProgrammaticGen).toBe(0);
   });
 
   test('while detached, a time change updates the active line but not scrollTop', () => {
@@ -224,23 +320,65 @@ describe('lyrics follow / detach state machine', () => {
   });
 
   test('programmatic auto-follow scroll does not self-detach', () => {
-    const {
-      _lyricsFollowActiveLine,
-      _lyricsOnViewportScroll,
-    } = loadLyricsHelpers();
+    const { _lyricsFollowActiveLine, _lyricsOnViewportScroll } = loadLyricsHelpers();
     const state = makeState();
-    const viewport = fakeViewport(0);
+    const viewport = fakeViewportInFlight(0);
     const activeEl = fakeLine(800, LINE_H);
 
     _lyricsFollowActiveLine(state, viewport, activeEl, false);
-    expect(state.lyricsProgrammaticScroll).toBe(true);
+    expect(state.lyricsProgrammaticGen).toBeGreaterThan(0);
     expect(viewport.scrollCalls).toHaveLength(1);
 
-    _lyricsOnViewportScroll(state);
+    _lyricsOnViewportScroll(state, viewport);
     expect(state.lyricsFollow).toBe(true);
+    expect(state.lyricsProgrammaticGen).toBeGreaterThan(0);
+  });
 
-    _lyricsFollowActiveLine(state, viewport, activeEl, false);
-    expect(viewport.scrollCalls).toHaveLength(1);
+  test('interrupted or no-op smooth scroll stays attached', () => {
+    const { _lyricsFollowActiveLine, _lyricsOnViewportScroll, _lyricsScrollTarget } = loadLyricsHelpers();
+    const activeEl = fakeLine(800, LINE_H);
+    const target = _lyricsScrollTarget(800, LINE_H, VIEWPORT_H, CONTENT_H);
+    const noopState = makeState();
+    const noopViewport = fakeViewport(target);
+
+    _lyricsFollowActiveLine(noopState, noopViewport, activeEl, false);
+    expect(noopState.lyricsFollow).toBe(true);
+    expect(noopState.lyricsProgrammaticGen).toBe(0);
+    expect(noopViewport.scrollCalls).toEqual([]);
+
+    const interruptedState = makeState();
+    const interruptedViewport = fakeViewportInFlight(120);
+    interruptedState.lyricsFollowScrollTop = target;
+    interruptedState.lyricsProgrammaticGen = 2;
+
+    _lyricsOnViewportScroll(interruptedState, interruptedViewport);
+    expect(interruptedState.lyricsFollow).toBe(true);
+    expect(interruptedState.lyricsProgrammaticGen).toBe(2);
+  });
+
+  test('resize while attached recenters and stays attached', () => {
+    const { _lyricsReflowAttachedViewport, _lyricsOnViewportScroll } = loadLyricsHelpers();
+    const state = makeState();
+    const viewport = fakeViewport(200, 620, CONTENT_H);
+    const list = fakeList();
+    const lineEls = [fakeLine(309, LINE_H), fakeLine(900, LINE_H)];
+    const lines = [
+      { start_ms: 0, end_ms: 1000 },
+      { start_ms: 1000, end_ms: 2000 },
+    ];
+
+    viewport.clientHeight = 1281;
+    _lyricsReflowAttachedViewport(state, viewport, list, lineEls, lines, 1500, true);
+
+    expect(state.lyricsFollow).toBe(true);
+    expect(list.style.paddingTop).toBeTruthy();
+    expect(viewport.scrollCalls.length).toBeGreaterThan(0);
+
+    viewport.scrollTop = 400;
+    state.lyricsFollowScrollTop = 500;
+    state.lyricsProgrammaticGen = 1;
+    _lyricsOnViewportScroll(state, viewport);
+    expect(state.lyricsFollow).toBe(true);
   });
 
   test('reduced motion selects instant scroll behaviour', () => {
@@ -252,6 +390,7 @@ describe('lyrics follow / detach state machine', () => {
     const viewport = fakeViewport(0);
     _lyricsFollowActiveLine(state, viewport, fakeLine(800, LINE_H), true);
     expect(viewport.scrollCalls[0].behavior).toBe('instant');
+    expect(state.lyricsProgrammaticGen).toBe(0);
   });
 
   test('no active line holds the last scroll position', () => {
@@ -266,11 +405,6 @@ describe('lyrics follow / detach state machine', () => {
     expect(state.lyricsFollow).toBe(true);
   });
 });
-
-function _lyricsSyncVisibleAfterDetach() {
-  const { _lyricsSyncButtonVisible } = loadLyricsHelpers();
-  return _lyricsSyncButtonVisible('synced', false);
-}
 
 describe('lyrics source and CSS invariants', () => {
   test('style.css no longer hides heart or download when lyrics are open', () => {
@@ -304,10 +438,13 @@ describe('lyrics source and CSS invariants', () => {
     expect(viewport).toMatch(/overflow-y:\s*auto/);
     expect(viewport).toMatch(/position:\s*relative/);
     expect(viewport).toMatch(/align-items:\s*flex-start/);
-    expect(cssRule('.lyrics-synced-list')).toMatch(/padding-block:\s*50%/);
+    expect(cssRule('.lyrics-synced-list')).not.toMatch(/padding-block:\s*50%/);
     expect(cssRule('.lyrics-synced-list')).not.toMatch(/will-change:\s*transform/);
     expect(playerSource).not.toMatch(/lyricsListEl\.style\.transform/);
     expect(playerSource).not.toContain("translateY(0px)");
+    expect(playerSource).not.toContain('scrollend');
+    expect(playerSource).toContain('ResizeObserver');
+    expect(playerSource).toContain('lyricsProgrammaticGen');
   });
 });
 

@@ -72,6 +72,14 @@
 
 **Prevention:** Drive a real scroll container (`overflow-y: auto`, no flex-center, no transform). Center with `_lyricsScrollTarget` using viewport `clientHeight`/`scrollHeight`, clamp both ends, hold position when no line is active, write `scrollTop` only when the target changes. Do not treat time-selection, playback-rate, or Tidal-vs-local as the first hypothesis when the active index is already correct.
 
+## 2026-09-03 — Programmatic lyrics scroll self-detached; padding-block was width-relative
+
+**What happened:** PR 168 click gate failed. Resizing the browser with lyrics open and playing detached auto-follow even without wheel/keys/pointer — active line went off-screen. At 700×1400, `padding-block: 50%` on `.lyrics-synced-list` resolved against panel width (380px → 182.5px spacer) instead of viewport height (~604px needed); first line sat ~347px off center.
+
+**Root cause:** (A) A single `scrollend` boolean cleared `lyricsProgrammaticScroll`; no-op/interrupted `scrollTo` or layout scroll after clear looked user-driven and detached follow. (B) CSS percentage padding on block axis used width, not height.
+
+**Prevention:** Tag programmatic writes with a generation counter + target; only detach on trusted user wheel/touch/pointer/keyboard or scroll when `lyricsUserScrollPending` is set — never on layout scroll alone. `ResizeObserver` reflows height-relative spacers via `_lyricsEdgeSpacerPx(viewport.clientHeight, lineHeight)` and recenters while attached. Do not use `padding-block: 50%` for vertical centering slack.
+
 ## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
 
 **What happened:** Artist-name track search (Carlos Vives) replaced real track hits with a self-titled album. Local-empty paint showed `No results found` while Tidal was still in flight. `urlparse(...).hostname` can raise `ValueError` on broken IPv6 zones / trailing `%`, which would 500 `/api/search`.

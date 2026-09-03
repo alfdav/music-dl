@@ -81,9 +81,11 @@ const lyricsState = {
   lyricsListEl: null,
   lyricsViewportEl: null,
   lyricsFollow: true,
-  lyricsProgrammaticScroll: false,
+  lyricsProgrammaticGen: 0,
+  lyricsUserScrollPending: false,
   lyricsFollowScrollTop: null,
 };
+let _lyricsResizeObserver = null;
 const _lyricsReduceMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 function _currentTrack() {
@@ -227,6 +229,29 @@ function _lyricsScrollTarget(lineOffsetTop, lineHeight, viewportHeight, contentH
   return Math.min(Math.max(0, raw), max);
 }
 
+function _lyricsEdgeSpacerPx(viewportHeight, lineHeight) {
+  return Math.max(0, (viewportHeight - lineHeight) / 2);
+}
+
+function _lyricsMeasureLineHeight(list) {
+  if (!list || !list.firstElementChild) return 0;
+  const el = list.firstElementChild;
+  if (typeof el.getBoundingClientRect === 'function') {
+    const rect = el.getBoundingClientRect();
+    if (rect && rect.height) return rect.height;
+  }
+  return el.offsetHeight || 0;
+}
+
+function _lyricsApplyListSpacer(viewport, list) {
+  if (!viewport || !list) return 0;
+  const lineHeight = _lyricsMeasureLineHeight(list) || 73.5;
+  const pad = _lyricsEdgeSpacerPx(viewport.clientHeight, lineHeight);
+  list.style.paddingTop = pad + 'px';
+  list.style.paddingBottom = pad + 'px';
+  return pad;
+}
+
 function _lyricsScrollBehavior(reduceMotion) {
   return reduceMotion ? 'instant' : 'smooth';
 }
@@ -248,46 +273,41 @@ function _lyricsAttachFollow(state) {
   state.lyricsFollow = true;
 }
 
-function _lyricsOnUserScrollIntent(state) {
-  _lyricsDetachFollow(state);
+function _lyricsMarkUserScrollIntent(state) {
+  state.lyricsUserScrollPending = true;
 }
 
-function _lyricsOnViewportScroll(state) {
-  if (state.lyricsProgrammaticScroll) return;
-  _lyricsDetachFollow(state);
-}
-
-function _lyricsBeginProgrammaticScroll(state) {
-  state.lyricsProgrammaticScroll = true;
-}
-
-function _lyricsEndProgrammaticScroll(state) {
-  state.lyricsProgrammaticScroll = false;
+function _lyricsOnViewportScroll(state, viewport) {
+  if (!state.lyricsFollow || !viewport) return;
+  if (state.lyricsProgrammaticGen > 0) {
+    if (Math.abs(viewport.scrollTop - state.lyricsFollowScrollTop) < 2) {
+      state.lyricsProgrammaticGen = 0;
+    }
+    return;
+  }
+  if (state.lyricsUserScrollPending) {
+    state.lyricsUserScrollPending = false;
+    _lyricsDetachFollow(state);
+  }
 }
 
 function _lyricsWriteScrollTop(viewport, target, reduceMotion, state) {
-  if (!viewport || state.lyricsFollowScrollTop === target) return false;
+  if (!viewport) return false;
+  if (Math.abs(viewport.scrollTop - target) < 1) {
+    state.lyricsFollowScrollTop = target;
+    state.lyricsProgrammaticGen = 0;
+    return false;
+  }
+  if (state.lyricsFollowScrollTop === target) return false;
   state.lyricsFollowScrollTop = target;
-  _lyricsBeginProgrammaticScroll(state);
+  state.lyricsProgrammaticGen = (state.lyricsProgrammaticGen || 0) + 1;
   const behavior = _lyricsScrollBehavior(reduceMotion);
   if (typeof viewport.scrollTo === 'function') {
     viewport.scrollTo({ top: target, behavior: behavior });
   } else {
     viewport.scrollTop = target;
   }
-  const clear = function () { _lyricsEndProgrammaticScroll(state); };
-  if (behavior === 'smooth' && viewport.addEventListener) {
-    const onEnd = function () {
-      viewport.removeEventListener('scrollend', onEnd);
-      clear();
-    };
-    viewport.addEventListener('scrollend', onEnd);
-  }
-  if (typeof requestAnimationFrame === 'function') {
-    requestAnimationFrame(function () {
-      if (behavior !== 'smooth') clear();
-    });
-  }
+  if (behavior === 'instant') state.lyricsProgrammaticGen = 0;
   return true;
 }
 
@@ -330,9 +350,19 @@ function _lyricsTickActive(state, lineEls, lines, currentTimeMs, viewport, reduc
   return activeIndex;
 }
 
+function _lyricsReflowAttachedViewport(state, viewport, list, lineEls, lines, currentTimeMs, reduceMotion) {
+  _lyricsApplyListSpacer(viewport, list);
+  if (!state.lyricsFollow) return;
+  state.lyricsFollowScrollTop = null;
+  const activeIndex = _lyricsActiveIndexAt(lines, currentTimeMs);
+  const activeEl = activeIndex >= 0 && lineEls ? lineEls[activeIndex] : null;
+  _lyricsFollowActiveLine(state, viewport, activeEl, reduceMotion);
+}
+
 function _lyricsResetFollowState() {
   lyricsState.lyricsFollow = true;
-  lyricsState.lyricsProgrammaticScroll = false;
+  lyricsState.lyricsProgrammaticGen = 0;
+  lyricsState.lyricsUserScrollPending = false;
   lyricsState.lyricsFollowScrollTop = null;
 }
 
@@ -359,26 +389,53 @@ function _syncLyricsSyncButton() {
   }
 }
 
-function _bindLyricsViewport(viewport) {
+function _disconnectLyricsViewportObserver() {
+  if (_lyricsResizeObserver) {
+    _lyricsResizeObserver.disconnect();
+    _lyricsResizeObserver = null;
+  }
+}
+
+function _bindLyricsViewport(viewport, list) {
   lyricsState.lyricsViewportEl = viewport;
   viewport.tabIndex = 0;
-  const detach = () => {
+  _lyricsApplyListSpacer(viewport, list);
+  _disconnectLyricsViewportObserver();
+  const detachFromUser = () => {
     if (!lyricsState.lyricsFollow) return;
-    _lyricsOnUserScrollIntent(lyricsState);
+    _lyricsDetachFollow(lyricsState);
+    lyricsState.lyricsUserScrollPending = false;
     _syncLyricsSyncButton();
   };
-  viewport.addEventListener('wheel', detach, { passive: true });
-  viewport.addEventListener('touchstart', detach, { passive: true });
-  viewport.addEventListener('touchmove', detach, { passive: true });
-  viewport.addEventListener('pointerdown', detach);
+  viewport.addEventListener('wheel', detachFromUser, { passive: true });
+  viewport.addEventListener('touchstart', detachFromUser, { passive: true });
+  viewport.addEventListener('touchmove', detachFromUser, { passive: true });
+  viewport.addEventListener('pointerdown', detachFromUser);
   viewport.addEventListener('keydown', (e) => {
-    if (_lyricsUserScrollKey(e.key)) detach();
+    if (!_lyricsUserScrollKey(e.key)) return;
+    _lyricsMarkUserScrollIntent(lyricsState);
+    detachFromUser();
   });
   viewport.addEventListener('scroll', () => {
     const wasFollow = lyricsState.lyricsFollow;
-    _lyricsOnViewportScroll(lyricsState);
+    _lyricsOnViewportScroll(lyricsState, viewport);
     if (wasFollow !== lyricsState.lyricsFollow) _syncLyricsSyncButton();
   });
+  if (typeof ResizeObserver !== 'undefined') {
+    _lyricsResizeObserver = new ResizeObserver(() => {
+      if (!_lyricsOpen() || lyricsState.lyricsPanelState !== 'synced' || !lyricsState.lyricsData) return;
+      _lyricsReflowAttachedViewport(
+        lyricsState,
+        viewport,
+        list,
+        lyricsState.lyricsLineEls,
+        lyricsState.lyricsData.lines,
+        Math.floor(audio.currentTime * 1000),
+        _lyricsReduceMotionQuery.matches,
+      );
+    });
+    _lyricsResizeObserver.observe(viewport);
+  }
 }
 
 function renderSyncedLyrics(payload) {
@@ -393,7 +450,7 @@ function renderSyncedLyrics(payload) {
   shell.appendChild(viewport);
   lyricsBody.appendChild(shell);
   lyricsState.lyricsListEl = list;
-  _bindLyricsViewport(viewport);
+  _bindLyricsViewport(viewport, list);
   _syncLyricsSyncButton();
   if (_lyricsAnimId) cancelAnimationFrame(_lyricsAnimId);
   _lyricsAnimId = requestAnimationFrame(syncActiveLyricLine);
@@ -556,6 +613,7 @@ function closeLyricsPanel(opts) {
   lyricsState.lyricsLineEls = null;
   lyricsState.lyricsListEl = null;
   lyricsState.lyricsViewportEl = null;
+  _disconnectLyricsViewportObserver();
   _lyricsResetFollowState();
   if (_lyricsAnimId) { cancelAnimationFrame(_lyricsAnimId); _lyricsAnimId = null; }
   _setLyricsPanelOpen(false);
