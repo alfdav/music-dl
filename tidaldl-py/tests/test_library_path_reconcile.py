@@ -1235,6 +1235,18 @@ class TestRemountAndRestoreGuards:
         assert should_skip_mass_missing(101, 50) is False
         assert should_skip_mass_missing(101, 51) is True
 
+    def test_reconcile_and_scan_do_not_delete_vanished_in_root_rows(self):
+        rec = Path(__file__).resolve().parents[1] / "tidal_dl" / "helper" / "library_reconcile.py"
+        scan = Path(__file__).resolve().parents[1] / "tidal_dl" / "gui" / "api" / "library.py"
+        rec_src = rec.read_text()
+        scan_src = scan.read_text()
+        assert "db.remove(" not in rec_src
+        assert "DELETE FROM scanned" not in rec_src
+        assert "check_missing" not in rec_src
+        assert "check_missing" not in scan_src
+        assert "db.mark_missing" in rec_src
+        assert "db.mark_missing" in scan_src
+
     def test_scan_clears_missing_when_file_returns(self, tmp_path, monkeypatch):
         import tidal_dl.gui.api.library as library_api
 

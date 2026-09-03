@@ -1129,6 +1129,52 @@ audio.addEventListener('pause', () => {
 });
 
 let _consecutiveErrors = 0;
+let _localHealInFlight = false;
+
+async function _waitForReconcileIdle() {
+  const started = Date.now();
+  while (Date.now() - started < 30000) {
+    try {
+      const status = await api('/library/reconcile/status');
+      if (status.done || !status.reconciling) return true;
+    } catch (_) { /* keep polling */ }
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  return false;
+}
+
+async function _probeLocalPlaybackStatus(track) {
+  const localPath = _currentTrackLocalPath(track);
+  if (!localPath) return 0;
+  const url = '/api/playback/local?path=' + encodeURIComponent(localPath);
+  const resp = await fetch(url, { cache: 'no-store', headers: { Range: 'bytes=0-1' } });
+  return resp.status;
+}
+
+async function _retryLocalPlaybackAfterHeal(track) {
+  if (_localHealInFlight) return true;
+  _localHealInFlight = true;
+  try {
+    let status = 0;
+    try {
+      status = await _probeLocalPlaybackStatus(track);
+    } catch (_) {
+      return false;
+    }
+    if (status === 202 || status === 409) {
+      await _waitForReconcileIdle();
+      playTrack(track);
+      return true;
+    }
+    if (status === 200 || status === 206) {
+      playTrack(track);
+      return true;
+    }
+    return false;
+  } finally {
+    _localHealInFlight = false;
+  }
+}
 
 audio.addEventListener('error', () => {
   state.playing = false;
@@ -1144,17 +1190,20 @@ audio.addEventListener('error', () => {
     toast('Tidal stream unavailable \u2014 try again later', 'error');
     return;
   }
-  _consecutiveErrors++;
-  const label = current ? (current.name || 'Track') : 'Track';
-  if (_consecutiveErrors >= 3) {
-    toast('Multiple local files failed \u2014 check file access', 'error');
-    return;
-  }
-  const canAutoSkip = state.queueIndex < state.queue.length - 1;
-  toast(label + ' unavailable', 'error');
-  if (canAutoSkip) {
-    setTimeout(() => { state.queueIndex++; playTrack(state.queue[state.queueIndex]); }, 800);
-  }
+  void (async () => {
+    if (await _retryLocalPlaybackAfterHeal(current)) return;
+    _consecutiveErrors++;
+    const label = current.name || 'Track';
+    if (_consecutiveErrors >= 3) {
+      toast('Multiple local files failed \u2014 check file access', 'error');
+      return;
+    }
+    const canAutoSkip = state.queueIndex < state.queue.length - 1;
+    toast(label + ' unavailable', 'error');
+    if (canAutoSkip) {
+      setTimeout(() => { state.queueIndex++; playTrack(state.queue[state.queueIndex]); }, 800);
+    }
+  })();
 });
 
 audio.addEventListener('play', () => {

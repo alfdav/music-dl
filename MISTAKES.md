@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-03 — Player treated 202/409 heal as a skip; Home counted missing rows
+
+**What happened:** GET `/api/playback/local` correctly returned 202/409 without a sync walk, but `audio` error still toasted and auto-skipped. Home recents and collection tiles still joined `scanned` rows with `missing_since` set.
+
+**Root cause:** The player never probed the playback status or polled reconcile. Home stats reused unfiltered `scanned` counts.
+
+**Prevention:** On local media error, probe GET status. 202/409 poll `/library/reconcile/status` then retry the same track. 403 after that may skip. Filter `missing_since IS NULL` on Home/recents `scanned` queries. Do not DELETE vanished in-root rows.
+
 ## 2026-09-03 — Reconcile/scan missed remount, restore, and force-refresh
 
 **What happened:** Bugbot found startup reconcile could hide a library on a readable empty mount (no 50% prune guard), Sync left `missing_since` set after a file returned at the same path, scan migrations skipped the playback cache, and the Refresh button inherited the 60s debounce.

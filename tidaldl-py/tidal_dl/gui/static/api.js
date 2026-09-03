@@ -417,8 +417,12 @@ const _origFetch = window.fetch;
 window.fetch = async (...args) => {
   const resp = await _origFetch(...args);
   if (resp.status === 409) {
-    const data = await resp.clone().json().catch(() => null);
-    toast(data?.detail || 'Operation in progress \u2014 try again shortly.', 'error');
+    const raw = args[0];
+    const url = typeof raw === 'string' ? raw : (raw && raw.url) || '';
+    if (!String(url).includes('/api/playback/local')) {
+      const data = await resp.clone().json().catch(() => null);
+      toast(data?.detail || 'Operation in progress \u2014 try again shortly.', 'error');
+    }
   }
   return resp;
 };

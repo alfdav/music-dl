@@ -13,6 +13,9 @@ def test_local_errors_skip_but_remote_errors_stop_without_queue_traversal():
     assert "toast(label + ' unavailable', 'error');" in source
     assert "const canAutoSkip = state.queueIndex < state.queue.length - 1;" in source
     assert "setTimeout(() => { state.queueIndex++; playTrack(state.queue[state.queueIndex]); }, 800);" in source
+    assert "async function _retryLocalPlaybackAfterHeal(track)" in source
+    assert "if (status === 202 || status === 409)" in source
+    assert "await _waitForReconcileIdle();" in source
 
 
 def test_shuffle_uses_queue_order_instead_of_random_next():

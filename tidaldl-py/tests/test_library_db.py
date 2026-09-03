@@ -249,6 +249,18 @@ class TestRecentPlays:
 
         assert [track["path"] for track in recent] == ["/music/a.flac"]
 
+    def test_recent_plays_hides_missing_since_rows(self, db):
+        db.record("/music/a.flac", status="tagged", artist="A", title="Alpha")
+        db.record("/music/gone.flac", status="tagged", artist="B", title="Gone")
+        db.log_play_event("/music/a.flac", artist="A", played_at=400)
+        db.log_play_event("/music/gone.flac", artist="B", played_at=500)
+        db.mark_missing("/music/gone.flac", since=600)
+        db.commit()
+
+        recent = db.recent_plays(limit=10)
+
+        assert [track["path"] for track in recent] == ["/music/a.flac"]
+
 
 class TestPagination:
     def _seed(self, db, n=10):
