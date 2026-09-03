@@ -241,23 +241,22 @@ class TestPathValidation:
         monkeypatch.setattr(library_api, "Settings", FakeSettings)
         monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
 
-        opened = library_api._get_db()
-        sqls: list[str] = []
-        orig = opened._conn.execute
+        lookups: list[str] = []
+        orig = LibraryDB.get
 
-        def spy(sql, *args, **kwargs):
-            sqls.append(str(sql))
-            return orig(sql, *args, **kwargs)
+        def spy(self, lookup_path):
+            lookups.append(lookup_path)
+            return orig(self, lookup_path)
 
-        monkeypatch.setattr(opened._conn, "execute", spy)
+        monkeypatch.setattr(LibraryDB, "get", spy)
         assert library_api._exact_scanned_path("/etc/passwd") is None
         assert library_api._exact_scanned_path(str(audio)) == str(audio)
-        assert any("WHERE path = ?" in sql for sql in sqls)
-        assert not any(
-            "FROM scanned" in sql and "WHERE" not in sql.upper()
-            for sql in sqls
-        )
-        assert not hasattr(library_api, "_scanned_path_allowlist")
+        assert lookups == ["/etc/passwd", str(audio)]
+        source = Path(library_api.__file__).read_text()
+        assert "def _scanned_path_allowlist" not in source
+        helper = source.split("def _exact_scanned_path", 1)[1].split("def _path_in_library", 1)[0]
+        assert "_get_db().get(path)" in helper
+        assert "SELECT path FROM scanned" not in helper
 
 
 class TestLocalAudioResolution:
