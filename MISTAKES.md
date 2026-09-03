@@ -64,6 +64,14 @@
 
 **Prevention:** Persist per-directory signatures (`mtime_ns:audio_count`) in `scanned_dirs`. Reconcile only changed directories. Migrate row identity on a unique strong match. Never skip on root mtime alone. Never merge editions that differ by remaster/year tokens. Mark unresolved vanished rows missing instead of deleting them.
 
+## 2026-09-03 — Synced lyrics looked desynced because auto-scroll geometry was wrong
+
+**What happened:** Live 1.7.8 Adele "Hello" (Tidal track 165814026, `tidal-synced`, 48 lines) highlighted the correct line from `audio.currentTime`, but that line was off-screen for 14/15 probes. The panel sat on line 23 for the first ~35s, which users reported as lyrics desync.
+
+**Root cause:** `.lyrics-synced-viewport` flex-centered a tall list, then JS added a list-relative `translateY` from `activeEl.offsetTop`. It also used `lyricsBody.clientHeight` (padding included, 716px) instead of the viewport (620px), and `Math.max(0, …)` plus `translateY(0)` on gaps froze or snapped the list.
+
+**Prevention:** Drive a real scroll container (`overflow-y: auto`, no flex-center, no transform). Center with `_lyricsScrollTarget` using viewport `clientHeight`/`scrollHeight`, clamp both ends, hold position when no line is active, write `scrollTop` only when the target changes. Do not treat time-selection, playback-rate, or Tidal-vs-local as the first hypothesis when the active index is already correct.
+
 ## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
 
 **What happened:** Artist-name track search (Carlos Vives) replaced real track hits with a self-titled album. Local-empty paint showed `No results found` while Tidal was still in flight. `urlparse(...).hostname` can raise `ValueError` on broken IPv6 zones / trailing `%`, which would 500 `/api/search`.
