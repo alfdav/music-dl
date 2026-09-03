@@ -123,6 +123,16 @@ class ScannedMixin:
         rows = self._conn.execute("SELECT path FROM scanned").fetchall()
         return {r["path"] for r in rows}
 
+    def identity_rows(self) -> list[dict]:
+        """Return identity columns for every scanned row in one query."""
+        assert self._conn
+        rows = self._conn.execute(
+            """SELECT path, file_size, file_mtime, file_inode, file_device,
+                      duration, codec, title, artist, album, isrc, missing_since
+               FROM scanned"""
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def complete_paths(self) -> set[str]:
         """Return paths that have full metadata (album, duration, quality populated)."""
         assert self._conn
@@ -192,7 +202,8 @@ class ScannedMixin:
         """Return all scanned rows for one ISRC."""
         assert self._conn
         rows = self._conn.execute(
-            "SELECT * FROM scanned WHERE isrc = ? AND status != 'unreadable' ORDER BY path ASC",
+            "SELECT * FROM scanned WHERE isrc = ? AND status != 'unreadable' "
+            "AND missing_since IS NULL ORDER BY path ASC",
             (isrc,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -263,7 +274,7 @@ class ScannedMixin:
         """Return all cached tracks with status != 'unreadable'."""
         assert self._conn
         rows = self._conn.execute(
-            "SELECT * FROM scanned WHERE status != 'unreadable'"
+            "SELECT * FROM scanned WHERE status != 'unreadable' AND missing_since IS NULL"
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -286,7 +297,7 @@ class ScannedMixin:
         }
         order = sort_map.get(sort, sort_map["artist"])
 
-        where = "status != 'unreadable'"
+        where = "status != 'unreadable' AND missing_since IS NULL"
         params: list = []
         if query:
             where += " AND (title LIKE ? OR artist LIKE ? OR album LIKE ?)"
@@ -350,6 +361,10 @@ class ScannedMixin:
         art_available: bool | None = None,
         codec: str | None = None,
         metadata_complete: bool | None = None,
+        file_size: int | None = None,
+        file_mtime: int | None = None,
+        file_inode: int | None = None,
+        file_device: int | None = None,
     ) -> None:
         """Insert or update a scan result."""
         assert self._conn
@@ -363,9 +378,10 @@ class ScannedMixin:
                                     provider_namespace, provider_album_id, barcode,
                                     duration, quality, format, genre, waveform,
                                     waveform_hires, art_available, codec,
-                                    metadata_complete, scanned_at)
+                                    metadata_complete, file_size, file_mtime,
+                                    file_inode, file_device, missing_since, scanned_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
                ON CONFLICT(path) DO UPDATE SET
                    isrc = excluded.isrc,
                    status = excluded.status,
@@ -394,6 +410,11 @@ class ScannedMixin:
                    metadata_complete = COALESCE(
                        excluded.metadata_complete, scanned.metadata_complete
                    ),
+                   file_size = COALESCE(excluded.file_size, scanned.file_size),
+                   file_mtime = COALESCE(excluded.file_mtime, scanned.file_mtime),
+                   file_inode = COALESCE(excluded.file_inode, scanned.file_inode),
+                   file_device = COALESCE(excluded.file_device, scanned.file_device),
+                   missing_since = NULL,
                    scanned_at = excluded.scanned_at""",
             (
                 path, isrc, status, artist, title, album, album_artist,
@@ -401,7 +422,8 @@ class ScannedMixin:
                 musicbrainz_release_id, musicbrainz_release_group_id,
                 provider_namespace, provider_album_id, barcode, duration, quality,
                 fmt, genre, waveform, waveform_hires, art_available, codec,
-                metadata_complete, now,
+                metadata_complete, file_size, file_mtime, file_inode, file_device,
+                now,
             ),
         )
 
@@ -429,6 +451,152 @@ class ScannedMixin:
         """Remove a path from the ledger (e.g. file deleted)."""
         assert self._conn
         self._conn.execute("DELETE FROM scanned WHERE path = ?", (path,))
+
+    def migrate_path(
+        self,
+        old_path: str,
+        new_path: str,
+        *,
+        file_size: int | None = None,
+        file_mtime: int | None = None,
+        file_inode: int | None = None,
+        file_device: int | None = None,
+        duration: int | None = None,
+        codec: str | None = None,
+        title: str | None = None,
+        artist: str | None = None,
+        album: str | None = None,
+    ) -> bool:
+        """Move a scanned row and its path-keyed user data to *new_path*."""
+        assert self._conn
+        if old_path == new_path:
+            return True
+        if self.get(new_path) is not None:
+            return False
+        favorite_collision = self._conn.execute(
+            "SELECT 1 FROM favorites WHERE path = ?", (new_path,)
+        ).fetchone()
+        if favorite_collision:
+            return False
+        cursor = self._conn.execute(
+            """UPDATE scanned SET
+                   path = ?,
+                   file_size = COALESCE(?, file_size),
+                   file_mtime = COALESCE(?, file_mtime),
+                   file_inode = COALESCE(?, file_inode),
+                   file_device = COALESCE(?, file_device),
+                   duration = COALESCE(?, duration),
+                   codec = COALESCE(?, codec),
+                   title = COALESCE(?, title),
+                   artist = COALESCE(?, artist),
+                   album = COALESCE(?, album),
+                   missing_since = NULL
+               WHERE path = ?""",
+            (
+                new_path, file_size, file_mtime, file_inode, file_device,
+                duration, codec, title, artist, album, old_path,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return False
+        self._conn.execute(
+            "UPDATE favorites SET path = ? WHERE path = ?",
+            (new_path, old_path),
+        )
+        self._conn.execute(
+            "UPDATE play_events SET path = ? WHERE path = ?",
+            (new_path, old_path),
+        )
+        return True
+
+    def mark_missing(self, path: str, *, since: int | None = None) -> None:
+        assert self._conn
+        ts = int(since if since is not None else time.time())
+        self._conn.execute(
+            "UPDATE scanned SET missing_since = ? WHERE path = ? AND missing_since IS NULL",
+            (ts, path),
+        )
+
+    def clear_missing(self, path: str) -> None:
+        assert self._conn
+        self._conn.execute(
+            "UPDATE scanned SET missing_since = NULL WHERE path = ?",
+            (path,),
+        )
+
+    def missing_rows(self) -> list[dict]:
+        assert self._conn
+        rows = self._conn.execute(
+            "SELECT * FROM scanned WHERE missing_since IS NOT NULL ORDER BY path ASC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def rows_in_directory(self, directory: str) -> list[dict]:
+        """Return rows whose immediate parent directory is *directory*."""
+        assert self._conn
+        parent = pathlib.Path(directory)
+        like = str(parent / "%")
+        rows = self._conn.execute(
+            "SELECT * FROM scanned WHERE path LIKE ?", (like,)
+        ).fetchall()
+        return [dict(row) for row in rows if pathlib.Path(row["path"]).parent == parent]
+
+    def rows_under_directory(self, directory: str) -> list[dict]:
+        """Return rows stored under *directory*, including nested folders."""
+        assert self._conn
+        parent = pathlib.Path(directory)
+        like = str(parent / "%")
+        rows = self._conn.execute(
+            "SELECT * FROM scanned WHERE path LIKE ?", (like,)
+        ).fetchall()
+        result = []
+        for row in rows:
+            try:
+                if pathlib.Path(row["path"]).is_relative_to(parent):
+                    result.append(dict(row))
+            except (ValueError, OSError):
+                continue
+        return result
+
+    def dir_signatures(self) -> dict[str, str]:
+        assert self._conn
+        rows = self._conn.execute("SELECT dir, signature FROM scanned_dirs").fetchall()
+        return {row["dir"]: row["signature"] for row in rows}
+
+    def touch_dir_signatures(self, directories: list[str], *, checked_at: int) -> None:
+        assert self._conn
+        self._conn.executemany(
+            "UPDATE scanned_dirs SET checked_at = ? WHERE dir = ?",
+            [(checked_at, directory) for directory in directories],
+        )
+
+    def replace_dir_signatures(
+        self,
+        signatures: dict[str, str],
+        *,
+        checked_at: int,
+        keep_dirs: set[str] | None = None,
+    ) -> None:
+        """Upsert current signatures and drop vanished readable directories."""
+        assert self._conn
+        keep = set(keep_dirs or ())
+        keep.update(signatures)
+        stored = {row["dir"] for row in self._conn.execute("SELECT dir FROM scanned_dirs")}
+        stale = stored - keep
+        if stale:
+            self._conn.executemany(
+                "DELETE FROM scanned_dirs WHERE dir = ?",
+                [(directory,) for directory in stale],
+            )
+        if signatures:
+            self._conn.executemany(
+                """INSERT INTO scanned_dirs (dir, signature, checked_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(dir) DO UPDATE SET
+                       signature = excluded.signature,
+                       checked_at = excluded.checked_at""",
+                [(directory, signature, checked_at) for directory, signature in signatures.items()],
+            )
 
     def commit(self) -> None:
         assert self._conn

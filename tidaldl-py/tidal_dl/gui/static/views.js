@@ -186,6 +186,12 @@ navItems.forEach(n => {
   a11yClick(n);
 });
 
+window.addEventListener('focus', () => {
+  if (state.view === 'library' || state.view === 'recent-added') {
+    api('/library/reconcile', { method: 'POST' }).catch(() => {});
+  }
+});
+
 window.addEventListener('hashchange', () => {
   const hash = normalizeView(location.hash.slice(1) || 'home');
   const top = _navStack.length ? _navStack[_navStack.length - 1].view : '';
@@ -3417,6 +3423,13 @@ function renderLibrary(container) {
   dupBtn.addEventListener('click', () => _showDuplicatePreview(resultsArea));
   pills.appendChild(dupBtn);
 
+  const refreshBtn = h('button', { className: 'pill' });
+  refreshBtn.textContent = 'Refresh changed folders';
+  refreshBtn.addEventListener('click', () => triggerReconcile(refreshBtn, resultsArea));
+  pills.appendChild(refreshBtn);
+
+  api('/library/reconcile', { method: 'POST' }).catch(() => {});
+
   searchArea.appendChild(pills);
   container.appendChild(searchArea);
 
@@ -3573,6 +3586,39 @@ function _scanStatusLabel(status) {
   return ' Scanning...';
 }
 
+async function triggerReconcile(btn, resultsArea) {
+  if (!btn) return;
+  const origLabel = btn.textContent;
+  btn.textContent = 'Refreshing...';
+  btn.disabled = true;
+  try {
+    await api('/library/reconcile?force=true', { method: 'POST' });
+  } catch (_) { /* already running or debounced is fine */ }
+  const poll = setInterval(async () => {
+    try {
+      const status = await api('/library/reconcile/status');
+      if (status.done || !status.reconciling) {
+        clearInterval(poll);
+        btn.textContent = origLabel;
+        btn.disabled = false;
+        libraryOffset = 0;
+        _libraryAlbumCache.clear();
+        await loadLibrary(resultsArea, false);
+        const moved = (status.migrated || 0) + (status.indexed || 0);
+        if (status.phase === 'error' || status.error) {
+          toast('Folder refresh failed', 'error');
+        } else if (moved > 0) {
+          toast('Updated ' + moved + ' moved or new files', 'success');
+        }
+      }
+    } catch (_) {
+      clearInterval(poll);
+      btn.textContent = origLabel;
+      btn.disabled = false;
+    }
+  }, 1500);
+}
+
 async function triggerScan(btn, resultsArea, rescan) {
   if (!btn) return;
   const textNode = _navText(btn);
@@ -3634,7 +3680,6 @@ async function loadLibrary(resultsArea, append) {
         textEl('div', 'Library', 'results-title'),
         textEl('div', libraryTotal + ' tracks', 'results-count')
       ));
-
       if (tracks.length === 0) {
         const emptyTitle = libraryQuery ? 'Nothing for "' + libraryQuery + '"' : 'No music here yet';
         const emptySub = libraryQuery ? 'Try different words or check the spelling.' : 'Hit Sync Library in the sidebar to bring in your collection.';

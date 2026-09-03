@@ -172,6 +172,92 @@ class TestPathValidation:
         # Nonexistent should be rejected
         assert validate_download_path("/nonexistent/path") is False
 
+    def test_lexically_under_roots_rejects_traversal_and_encoding(self, tmp_path):
+        from tidal_dl.gui.api.library import _lexically_under_roots
+
+        root = tmp_path / "Music"
+        root.mkdir()
+        inside = f"{root}/Artist/Album/song.flac"
+        assert _lexically_under_roots(inside, [str(root)]) == inside
+        assert _lexically_under_roots("/etc/passwd", [str(root)]) is None
+        assert _lexically_under_roots(f"{root}/../escape.flac", [str(root)]) is None
+        assert _lexically_under_roots(f"{root}/%2e%2e/escape.flac", [str(root)]) is None
+        assert _lexically_under_roots(f"{root}/%2e%2e%2fescape.flac", [str(root)]) is None
+        assert _lexically_under_roots(f"{root}/song.flac\x00.flac", [str(root)]) is None
+        assert _lexically_under_roots("~/Music/song.flac", [str(root)]) is None
+        assert _lexically_under_roots(f"{root}/notes.txt", [str(root)]) is None
+
+    def test_trusted_library_path_uses_allowlisted_db_value(self, tmp_path, monkeypatch):
+        from tidal_dl.gui.api import library as library_api
+        from tidal_dl.helper.library_db import LibraryDB
+
+        root = tmp_path / "Music"
+        audio = root / "A" / "song.wav"
+        audio.parent.mkdir(parents=True)
+        audio.write_bytes(b"RIFF")
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        db.record(str(audio), status="tagged", artist="A", title="Song", album="LP")
+        db.commit()
+        db.close()
+
+        class FakeSettings:
+            data = type("S", (), {"download_base_path": str(root), "scan_paths": ""})()
+
+        monkeypatch.setattr(library_api, "Settings", FakeSettings)
+        monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
+
+        stored = library_api._exact_scanned_path(str(audio))
+        assert stored == str(audio)
+        assert library_api._trusted_library_path(str(audio)) == audio.resolve()
+        assert library_api._trusted_library_path(str(root / ".." / "escape.wav")) is None
+        assert library_api._library_row_under_roots("/etc/passwd") is False
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        db.record("/etc/passwd.wav", status="tagged", artist="X", title="X", album="X")
+        db.commit()
+        db.close()
+        assert library_api._exact_scanned_path("/etc/passwd.wav") == "/etc/passwd.wav"
+        assert library_api._library_row_under_roots("/etc/passwd.wav") is False
+        assert library_api._trusted_library_path("/etc/passwd.wav") is None
+
+    def test_exact_scanned_path_uses_indexed_lookup(self, tmp_path, monkeypatch):
+        from tidal_dl.gui.api import library as library_api
+        from tidal_dl.helper.library_db import LibraryDB
+
+        root = tmp_path / "Music"
+        audio = root / "A" / "song.wav"
+        audio.parent.mkdir(parents=True)
+        audio.write_bytes(b"RIFF")
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        db.record(str(audio), status="tagged", artist="A", title="Song", album="LP")
+        db.commit()
+        db.close()
+
+        class FakeSettings:
+            data = type("S", (), {"download_base_path": str(root), "scan_paths": ""})()
+
+        monkeypatch.setattr(library_api, "Settings", FakeSettings)
+        monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
+
+        lookups: list[str] = []
+        orig = LibraryDB.get
+
+        def spy(self, lookup_path):
+            lookups.append(lookup_path)
+            return orig(self, lookup_path)
+
+        monkeypatch.setattr(LibraryDB, "get", spy)
+        assert library_api._exact_scanned_path("/etc/passwd") is None
+        assert library_api._exact_scanned_path(str(audio)) == str(audio)
+        assert lookups == ["/etc/passwd", str(audio)]
+        source = Path(library_api.__file__).read_text()
+        assert "def _scanned_path_allowlist" not in source
+        helper = source.split("def _exact_scanned_path", 1)[1].split("def _path_in_library", 1)[0]
+        assert "_get_db().get(path)" in helper
+        assert "SELECT path FROM scanned" not in helper
+
 
 class TestLocalAudioResolution:
     def test_rejects_blank_input(self, tmp_path):

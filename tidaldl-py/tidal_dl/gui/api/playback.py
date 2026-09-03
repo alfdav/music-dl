@@ -21,22 +21,7 @@ def get_download_paths() -> list[str]:
     return paths
 
 
-@router.get("/local")
-def serve_local_file(path: str = Query(..., description="Absolute path to audio file")):
-    """Serve a local audio file. Path must be within a configured download directory."""
-    from tidal_dl.gui.api.library import _path_in_library, _trusted_library_path
-    from tidal_dl.gui.security import resolve_local_audio_path
-
-    resolution = resolve_local_audio_path(
-        path,
-        get_download_paths(),
-        library_trusts_raw_path=_path_in_library(path),
-        library_resolved_path=_trusted_library_path(path),
-    )
-    if resolution.kind != "ok" or resolution.path is None:
-        raise HTTPException(status_code=403, detail="Access denied")
-    validated_path = resolution.path
-
+def _local_media_type(path: Path) -> str:
     media_types = {
         ".flac": "audio/flac",
         ".mp3": "audio/mpeg",
@@ -45,8 +30,52 @@ def serve_local_file(path: str = Query(..., description="Absolute path to audio 
         ".wav": "audio/wav",
         ".aac": "audio/aac",
     }
-    media_type = media_types.get(validated_path.suffix.lower(), "audio/flac")
-    return FileResponse(validated_path, media_type=media_type)
+    return media_types.get(path.suffix.lower(), "audio/flac")
+
+
+def _resolve_local_playback_path(path: str):
+    from tidal_dl.gui.api.library import (
+        _library_row_under_roots,
+        _path_in_library,
+        _trusted_library_path,
+        playback_resolved_path,
+        request_playback_path_heal,
+    )
+    from tidal_dl.gui.security import resolve_local_audio_path
+
+    allowed = get_download_paths()
+    candidates = [path]
+    cached = playback_resolved_path(path)
+    if cached and cached not in candidates:
+        candidates.append(cached)
+
+    for candidate in candidates:
+        resolution = resolve_local_audio_path(
+            candidate,
+            allowed,
+            library_trusts_raw_path=_path_in_library(candidate),
+            library_resolved_path=_trusted_library_path(candidate),
+        )
+        if resolution.kind == "ok" and resolution.path is not None:
+            return resolution.path
+
+    if not _library_row_under_roots(path):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    heal = request_playback_path_heal(path)
+    status = heal.get("status")
+    if status == "already_running":
+        raise HTTPException(status_code=409, detail="Library reconcile in progress")
+    if status in {"started", "debounced"}:
+        raise HTTPException(status_code=202, detail="Library reconcile queued")
+    raise HTTPException(status_code=403, detail="Access denied")
+
+
+@router.get("/local")
+def serve_local_file(path: str = Query(..., description="Absolute path to audio file")):
+    """Serve a local audio file. Path must be within a configured download directory."""
+    validated_path = _resolve_local_playback_path(path)
+    return FileResponse(validated_path, media_type=_local_media_type(validated_path))
 
 
 @router.get("/stream/{track_id}")
@@ -54,9 +83,8 @@ def stream_tidal_track(track_id: int):
     """Proxy a Tidal stream to the browser. Full if OAuth, preview fallback."""
     import requests as http_requests
 
-    from tidal_dl.gui.security import validate_stream_url
-
     from tidal_dl.gui.api.settings import _persisted_refresh_token, call_tidal
+    from tidal_dl.gui.security import validate_stream_url
 
     tidal = Tidal()
 
@@ -86,8 +114,8 @@ def stream_tidal_track(track_id: int):
     except HTTPException as exc:
         if exc.status_code != 401 or _persisted_refresh_token(tidal):
             raise
-    except Exception:
-        pass
+    except Exception:  # noqa: BLE001
+        pass  # noqa: S110
 
     # Fallback: 30-second preview (host is hardcoded + track_id is int, but validate anyway)
     try:
@@ -100,8 +128,8 @@ def stream_tidal_track(track_id: int):
                 resp.iter_content(chunk_size=8192),
                 media_type=resp.headers.get("Content-Type", "audio/mp4"),
             )
-    except Exception:
-        pass
+    except Exception:  # noqa: BLE001
+        pass  # noqa: S110
 
     raise HTTPException(status_code=503, detail="Unable to stream track")
 

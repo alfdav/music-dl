@@ -1,5 +1,69 @@
 # Mistakes
 
+## 2026-09-03 — Local heal retry looped and replayed a stale track
+
+**What happened:** After 202/409/200 the player always `playTrack`ed the captured track and returned success, so `_consecutiveErrors` never advanced. A user skip during the 30s wait still restarted the old file.
+
+**Root cause:** One-shot heal was not one-shot. In-flight was treated as handled for every error. Reconcile `done` was treated as "file is playable".
+
+**Prevention:** One retry per path. After 202/409, probe again; only play on 200/206. Abort if the queue track changed. A second error on the same path skips.
+
+## 2026-09-03 — Playback allowlist loaded every scanned path
+
+**What happened:** After the CodeQL path-injection fix, `_exact_scanned_path` loaded `SELECT path FROM scanned` and linearly compared, three times per CSRF-exempt GET, including for `/etc/passwd`.
+
+**Root cause:** Treating "do not `Path.resolve` the request" as "do not query by request path". Parameterized `WHERE path = ?` is safe; returning the DB column is the sanitizer.
+
+**Prevention:** Indexed `LibraryDB.get(path)` / `WHERE path = ?` only. Never `SELECT path FROM scanned` without a WHERE on the playback path.
+
+## 2026-09-03 — Player treated 202/409 heal as a skip; Home counted missing rows
+
+**What happened:** GET `/api/playback/local` correctly returned 202/409 without a sync walk, but `audio` error still toasted and auto-skipped. Home recents and collection tiles still joined `scanned` rows with `missing_since` set.
+
+**Root cause:** The player never probed the playback status or polled reconcile. Home stats reused unfiltered `scanned` counts.
+
+**Prevention:** On local media error, probe GET status. 202/409 poll `/library/reconcile/status` then retry the same track. 403 after that may skip. Filter `missing_since IS NULL` on Home/recents `scanned` queries. Do not DELETE vanished in-root rows.
+
+## 2026-09-03 — Reconcile/scan missed remount, restore, and force-refresh
+
+**What happened:** Bugbot found startup reconcile could hide a library on a readable empty mount (no 50% prune guard), Sync left `missing_since` set after a file returned at the same path, scan migrations skipped the playback cache, and the Refresh button inherited the 60s debounce.
+
+**Root cause:** Scan already had remount/restore-adjacent logic; reconcile and the playback cache were wired only to the background job. POST reconcile defaulted to `force=False`.
+
+**Prevention:** Same 50% / 100-row remount skip for mark_missing (and do not replace signatures). Clear `missing_since` for any missing row still on disk after scan, and clear resurfaced rows on the unchanged-signature reconcile exit. Record scan migrations in the playback cache. Refresh POSTs `?force=true`; startup, focus, and library-view paint stay `force=False`.
+
+## 2026-09-03 — Parallel path helper failed CodeQL py/path-injection
+
+**What happened:** `path_string_under_allowed_dirs` called `Path(user).resolve(strict=False)` so missing library rows could be bounded to configured roots. CodeQL reported seven uncontrolled-path flows at that `resolve`.
+
+**Root cause:** CodeQL treats `Path.resolve`/`stat` on request data as a sink. A second helper next to `validate_audio_path` is not a proven sanitizer, even if it later checks `is_relative_to`.
+
+**Prevention:** Exact-match the request string against the DB `scanned.path` allowlist and configured root strings first. Only then pass the selected DB value into `validate_audio_path`. Lexical `..` / encoded / `~` checks stay string-only.
+
+## 2026-09-03 — Playback GET ran synchronous full reconcile on arbitrary paths
+
+**What happened:** `GET /api/playback/local` called `heal_playback_path`, which ran `_run_path_reconcile` synchronously for any DB-trusted path, bypassing `_scan_lock`, debounce, and single-flight guards. Forbidden or non-library paths could trigger expensive walks from a CSRF-exempt GET.
+
+**Root cause:** The backstop optimized for one-request heal and reused the full reconciler inline instead of the guarded background job.
+
+**Prevention:** Only queue reconcile for rows that exist in `scanned` and sit under configured roots. Serve moved files via an in-memory migration cache populated when background reconcile finishes. Return 202 when reconcile is queued/debounced and 409 when one is already running. Compare the request string to the DB allowlist and configured roots first (no filesystem). Only then call `validate_audio_path` on the selected DB path. Never `Path.resolve` a request string in a parallel helper.
+
+## 2026-09-03 — First-run reconcile missed whole-album directory renames
+
+**What happened:** After a live 1.7.8 reorg, 2,426 of 7,634 audio files were stale rows and 1,594 on-disk files had no row. The dominant pattern was whole-album directory renames (strip a redundant `Artist - ` prefix), with vanished and appeared directory counts matching 1:1. The first reconciler only collected vanished rows from stored `scanned_dirs` keys. On upgrade that table is empty, so the 2,426 stale paths were never candidates. Per-file matching was also O(vanished × appeared) and applied every migration in one transaction.
+
+**Root cause:** Change detection treated "no stored signatures" as "every current dir is new" and never set-diffed known paths against the walk. Album-scale renames were then planned as N independent file searches.
+
+**Prevention:** Collect vanished/appeared as a known-vs-walk path set (one `identity_rows` query, walk `audio_names`, no extra file `stat`). Try a directory-move fast path first: unique 1:1 parent dirs with the same member count and basename+size (or basename+duration for legacy `NULL` size). Refuse when directory edition tokens differ. Fall back to an indexed per-file ladder. Commit directory moves atomically, then leftover work in batches of 50, on a background thread with status progress.
+
+## 2026-09-03 — Root-only scan fingerprint skipped nested folder moves
+
+**What happened:** After a live 1.7.8 user reorganized `/Volumes/Music`, 2,426 of 11,970 `scanned` rows (20.3%) pointed at deleted paths. Albums rendered as 2/16 tracks. `POST /api/library/scan` printed "Scan directories unchanged — skipping" because `scan_fingerprint` only hashed configured-root mtimes + row count.
+
+**Root cause:** `scanned.path` was the only identity. Nested moves do not change a root's mtime or the row count, so the fast-path skipped the walk. When a walk did run, vanished paths were pruned and new paths inserted, wiping `play_count` / favorites / `play_events`.
+
+**Prevention:** Persist per-directory signatures (`mtime_ns:audio_count`) in `scanned_dirs`. Reconcile only changed directories. Migrate row identity on a unique strong match. Never skip on root mtime alone. Never merge editions that differ by remaster/year tokens. Mark unresolved vanished rows missing instead of deleting them.
+
 ## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
 
 **What happened:** Artist-name track search (Carlos Vives) replaced real track hits with a self-titled album. Local-empty paint showed `No results found` while Tidal was still in flight. `urlparse(...).hostname` can raise `ValueError` on broken IPv6 zones / trailing `%`, which would 500 `/api/search`.

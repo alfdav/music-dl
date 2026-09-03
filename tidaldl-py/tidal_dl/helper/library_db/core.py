@@ -40,7 +40,7 @@ def write_lock_for(db_path: pathlib.Path | str) -> threading.Lock:
 class LibraryDBCore:
     """Thin wrapper around a SQLite scan ledger."""
 
-    _SCHEMA_VERSION = 9
+    _SCHEMA_VERSION = 10
 
     def __init__(self, db_path: pathlib.Path) -> None:
         self._path = db_path
@@ -64,9 +64,13 @@ class LibraryDBCore:
         self._conn.execute("PRAGMA busy_timeout=5000")
         version = self._conn.execute("PRAGMA user_version").fetchone()[0]
         if version < self._SCHEMA_VERSION:
-            self._migrate()
-            self._conn.execute(f"PRAGMA user_version = {self._SCHEMA_VERSION}")
-            self._conn.commit()
+            lock = write_lock_for(self._path)
+            with lock:
+                version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+                if version < self._SCHEMA_VERSION:
+                    self._migrate()
+                    self._conn.execute(f"PRAGMA user_version = {self._SCHEMA_VERSION}")
+                    self._conn.commit()
 
     def _migrate(self) -> None:
         assert self._conn
@@ -197,6 +201,34 @@ class LibraryDBCore:
             self._conn.execute("ALTER TABLE scanned ADD COLUMN release_id TEXT")
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_scanned_release_id ON scanned(release_id)"
+        )
+
+        # v9 → v10: file identity for cheap move detection + missing marker.
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(scanned)")}
+        for col, coltype in [
+            ("file_size", "INTEGER"),
+            ("file_mtime", "INTEGER"),
+            ("file_inode", "INTEGER"),
+            ("file_device", "INTEGER"),
+            ("missing_since", "INTEGER"),
+        ]:
+            if col not in cols:
+                self._conn.execute(f"ALTER TABLE scanned ADD COLUMN {col} {coltype}")
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS scanned_dirs (
+                dir TEXT PRIMARY KEY,
+                signature TEXT NOT NULL,
+                checked_at INTEGER NOT NULL
+            )"""
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scanned_inode ON scanned(file_device, file_inode)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scanned_size_duration ON scanned(file_size, duration)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scanned_missing ON scanned(missing_since)"
         )
 
         # Backfill codecs that are unambiguous from their native file type.

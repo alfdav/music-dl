@@ -10,14 +10,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import hmac
 import json
 import os
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
 
 # Type alias: a resolver returns the currently-expected bot shared secret
 # (empty string when unconfigured). Exposed as a type so tests and FastAPI
@@ -256,8 +255,8 @@ def validate_stream_url(url: str) -> bool:
 
 
 def resolve_bot_shared_token(
-    env_getter: Optional[Callable[[str, str], str]] = None,
-    path_resolver: Optional[Callable[[], Path]] = None,
+    env_getter: Callable[[str, str], str] | None = None,
+    path_resolver: Callable[[], Path] | None = None,
 ) -> str:
     """Resolve the expected bot shared secret.
 

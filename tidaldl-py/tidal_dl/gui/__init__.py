@@ -1,7 +1,7 @@
 """music-dl GUI — FastAPI application factory."""
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
-import threading
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -119,6 +119,27 @@ def create_app(
                 daemon=True,
             )
         )
+
+        def _startup_path_reconcile() -> None:
+            if shutting_down.is_set():
+                return
+            try:
+                from tidal_dl.gui.api.library import request_path_reconcile
+                from tidal_dl.helper.path import path_config_base
+
+                if not (Path(path_config_base()) / "library.db").is_file():
+                    return
+                request_path_reconcile()
+            except Exception:  # noqa: BLE001, S110
+                pass
+
+        after_ready.append(
+            threading.Thread(
+                target=_startup_path_reconcile,
+                name="library-path-reconcile",
+                daemon=True,
+            )
+        )
         for thread in after_ready:
             thread.start()
         try:
@@ -155,7 +176,7 @@ def create_app(
     class TokenRefreshMiddleware(BaseHTTPMiddleware):
         _SKIP_PREFIXES = (
             "/api/settings", "/api/setup",
-            "/api/library/scan", "/api/queue",
+            "/api/library/scan", "/api/library/reconcile", "/api/queue",
         )
 
         async def dispatch(self, request: Request, call_next):
