@@ -94,6 +94,7 @@ _reconcile_progress = {
     "phase": "idle",
     "error": None,
 }
+_playback_migration_cache: dict[str, str] = {}
 _db_local = threading.local()
 _db_generation = 0
 _db_generation_lock = threading.Lock()
@@ -186,8 +187,13 @@ def _trusted_library_path(path: str) -> Path | None:
     """Return a resolved path from the library DB when the exact path is known."""
     import sqlite3
 
+    from tidal_dl.gui.security import path_string_under_allowed_dirs, validate_audio_path
+
     db_path = Path(path_config_base()) / "library.db"
     if not db_path.exists():
+        return None
+    allowed = [str(directory) for directory in _scan_directories()]
+    if not path_string_under_allowed_dirs(path, allowed):
         return None
     try:
         conn = sqlite3.connect(str(db_path))
@@ -195,9 +201,39 @@ def _trusted_library_path(path: str) -> Path | None:
         conn.close()
         if not row:
             return None
-        return Path(row[0]).resolve(strict=True)
+        validated = validate_audio_path(row[0], allowed)
+        return validated
     except Exception:  # noqa: BLE001
         return None
+
+
+def _library_row_under_roots(path: str) -> bool:
+    """True when *path* is a scanned row under configured library roots."""
+    from tidal_dl.gui.security import path_string_under_allowed_dirs
+
+    if not _path_in_library(path):
+        return False
+    allowed = [str(directory) for directory in _scan_directories()]
+    return path_string_under_allowed_dirs(path, allowed)
+
+
+def playback_resolved_path(path: str) -> str | None:
+    """Return a cached post-reconcile path for playback retries."""
+    with _scan_lock:
+        return _playback_migration_cache.get(path)
+
+
+def _remember_playback_migrations(migrations: list[tuple[str, str]]) -> None:
+    with _scan_lock:
+        for old_path, new_path in migrations:
+            _playback_migration_cache[old_path] = new_path
+
+
+def request_playback_path_heal(path: str) -> dict:
+    """Queue guarded background reconcile for one known library row."""
+    if not _library_row_under_roots(path):
+        return {"status": "forbidden"}
+    return request_path_reconcile(force=False)
 
 
 def _codec_family(info: object | None) -> str:
@@ -1041,9 +1077,14 @@ def _scan_directories() -> list[Path]:
     return dirs
 
 
-def _file_identity_fields(file_path: Path) -> dict:
+def _file_identity_fields(file_path: Path, *, allowed_dirs: list[str]) -> dict:
+    from tidal_dl.gui.security import validate_audio_path
+
+    validated = validate_audio_path(str(file_path), allowed_dirs)
+    if validated is None:
+        return {}
     try:
-        st = file_path.stat()
+        st = validated.stat()
     except OSError:
         return {}
     return {
@@ -1262,6 +1303,7 @@ def _background_path_reconcile() -> None:
             directory_moves=len(result.directory_moves),
             error=None,
         )
+        _remember_playback_migrations(result.migrations)
         if not result.unchanged:
             _finish_album_scan(db)
             db = None
@@ -1280,26 +1322,6 @@ def _background_path_reconcile() -> None:
                 pass
         with _scan_lock:
             _reconcile_running = False
-
-
-def heal_playback_path(path: str) -> str | None:
-    """Targeted reconcile for a missing playback path; return the live path."""
-    scan_dirs = _scan_directories()
-    if not scan_dirs:
-        return None
-    db = LibraryDB(Path(path_config_base()) / "library.db")
-    db.open()
-    try:
-        result = _run_path_reconcile(db, scan_dirs)
-        for old_path, new_path in result.migrations:
-            if old_path == path:
-                return new_path
-        row = db.get(path)
-        if row and row.get("missing_since") is None and Path(path).is_file():
-            return path
-        return None
-    finally:
-        db.close()
 
 
 def _backup_library_db(db_path: Path) -> Path:
@@ -1570,7 +1592,8 @@ def _background_scan(rescan: bool) -> None:
             file_path = Path(path_str)
             art_available = _has_local_art(file_path)
             meta = _read_metadata(file_path, scan_dirs)
-            identity_fields = _file_identity_fields(file_path)
+            allowed = [str(directory) for directory in scan_dirs]
+            identity_fields = _file_identity_fields(file_path, allowed_dirs=allowed)
             if meta:
                 waveform_json = None
                 hires_json = None
@@ -2116,47 +2139,6 @@ def reconcile_status() -> dict:
     """Check incremental path-reconcile progress."""
     with _scan_lock:
         return {"reconciling": _reconcile_running, **_reconcile_progress}
-
-
-class RelocateRequest(BaseModel):
-    path: str
-    new_path: str
-
-
-@router.get("/library/missing")
-def library_missing() -> dict:
-    """Rows marked missing after an external delete or failed match."""
-    db = _get_db()
-    tracks = [_db_row_to_track(row) for row in db.missing_rows()]
-    return {"tracks": tracks, "total": len(tracks)}
-
-
-@router.post("/library/relocate")
-def relocate_library_path(req: RelocateRequest) -> dict:
-    """Manually point a missing row at a file inside a configured root."""
-    from tidal_dl.gui.security import validate_audio_path
-
-    db = _get_db()
-    row = db.get(req.path)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Unknown library path")
-    allowed = [str(directory) for directory in _scan_directories()]
-    validated = validate_audio_path(req.new_path, allowed)
-    if validated is None:
-        raise HTTPException(status_code=400, detail="Invalid destination path")
-    identity = _file_identity_fields(validated)
-    with db.write_transaction():
-        moved = db.migrate_path(
-            req.path,
-            str(validated),
-            file_size=identity.get("file_size"),
-            file_mtime=identity.get("file_mtime"),
-            file_inode=identity.get("file_inode"),
-            file_device=identity.get("file_device"),
-        )
-    if not moved:
-        raise HTTPException(status_code=409, detail="Destination already indexed")
-    return {"status": "ok", "path": str(validated)}
 
 
 class FavoriteToggleRequest(BaseModel):

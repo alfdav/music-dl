@@ -10,14 +10,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import hmac
 import json
 import os
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
 
 # Type alias: a resolver returns the currently-expected bot shared secret
 # (empty string when unconfigured). Exposed as a type so tests and FastAPI
@@ -157,6 +156,33 @@ def validate_audio_path(path_str: str, allowed_dirs: list[str]) -> Path | None:
     return None
 
 
+def path_string_under_allowed_dirs(path_str: str, allowed_dirs: list[str]) -> bool:
+    """Check a path string is under allowed dirs without opening the file.
+
+    Used for stale library rows whose files may no longer exist. Resolves the
+    path with ``strict=False`` so missing leaf files still canonicalize.
+    """
+    if not path_str or not path_str.strip():
+        return False
+    try:
+        candidate = Path(path_str).expanduser().resolve(strict=False)
+    except (OSError, ValueError):
+        return False
+    for allowed in allowed_dirs:
+        if not allowed or not str(allowed).strip():
+            continue
+        try:
+            root = Path(allowed).expanduser().resolve(strict=False)
+        except (OSError, ValueError):
+            continue
+        try:
+            if candidate.is_relative_to(root):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def resolve_local_audio_path(
     raw_path: str | None,
     allowed_dirs: list[str],
@@ -256,8 +282,8 @@ def validate_stream_url(url: str) -> bool:
 
 
 def resolve_bot_shared_token(
-    env_getter: Optional[Callable[[str, str], str]] = None,
-    path_resolver: Optional[Callable[[], Path]] = None,
+    env_getter: Callable[[str, str], str] | None = None,
+    path_resolver: Callable[[], Path] | None = None,
 ) -> str:
     """Resolve the expected bot shared secret.
 

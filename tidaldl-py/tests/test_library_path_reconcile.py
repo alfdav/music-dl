@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import wave
 from pathlib import Path
 from types import SimpleNamespace
@@ -573,7 +574,7 @@ class TestScanFingerprintRegression:
 
 
 class TestPlaybackBackstop:
-    def test_playback_of_missing_path_reconciles_and_retries(self, tmp_path, monkeypatch):
+    def _playback_client(self, tmp_path, monkeypatch, root):
         import re
 
         from fastapi.testclient import TestClient
@@ -582,17 +583,19 @@ class TestPlaybackBackstop:
         import tidal_dl.gui.api.playback as playback_api
         from tidal_dl.gui import create_app
 
-        root = tmp_path / "Music"
-        src = root / "A" / "song.wav"
-        dest = root / "B" / "song.wav"
-        _write_wav(src, frames=8000)
-
         class FakeSettings:
             data = SimpleNamespace(download_base_path=str(root), scan_paths="")
 
         monkeypatch.setattr(library_api, "Settings", FakeSettings)
         monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
-        monkeypatch.setattr(library_api, "request_path_reconcile", lambda **_kw: {"status": "debounced"})
+        orig_init = threading.Thread.__init__
+
+        def patched_thread_init(self, *args, **kwargs):
+            if kwargs.get("name") == "library-path-reconcile":
+                kwargs = dict(kwargs, target=lambda: None)
+            return orig_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(threading.Thread, "__init__", patched_thread_init)
         monkeypatch.setattr(playback_api, "get_download_paths", lambda: [str(root)])
         monkeypatch.setattr(library_api, "_schedule_album_enrichment", lambda: None)
         monkeypatch.setattr("tidal_dl.helper.waveform.extract_both", lambda path: None)
@@ -615,6 +618,24 @@ class TestPlaybackBackstop:
                 "is_local": True,
             },
         )
+        library_api._reconcile_running = False
+        library_api._scan_running = False
+        library_api._reconcile_last_at = 0.0
+        library_api._playback_migration_cache.clear()
+
+        client = TestClient(create_app(port=8765, job_db_path=tmp_path / "jobs.db"))
+        index = client.get("/", headers={"host": "localhost:8765"})
+        match = re.search(r'name="csrf-token" content="([^"]+)"', index.text)
+        headers = {"host": "localhost:8765"}
+        if match:
+            headers["X-CSRF-Token"] = match.group(1)
+        return client, headers, library_api
+
+    def test_playback_serves_cached_migration_after_reconcile(self, tmp_path, monkeypatch):
+        root = tmp_path / "Music"
+        src = root / "A" / "song.wav"
+        dest = root / "B" / "song.wav"
+        _write_wav(src, frames=8000)
 
         db = LibraryDB(tmp_path / "library.db")
         db.open()
@@ -626,20 +647,115 @@ class TestPlaybackBackstop:
         rec.reconcile(force=True)
         dest.parent.mkdir(parents=True)
         src.rename(dest)
+        result = rec.reconcile(force=True)
         db.close()
 
-        with TestClient(create_app(port=8765, job_db_path=tmp_path / "jobs.db")) as client:
-            index = client.get("/", headers={"host": "localhost:8765"})
-            match = re.search(r'name="csrf-token" content="([^"]+)"', index.text)
-            headers = {"host": "localhost:8765"}
-            if match:
-                headers["X-CSRF-Token"] = match.group(1)
+        client, headers, library_api = self._playback_client(tmp_path, monkeypatch, root)
+        library_api._remember_playback_migrations(result.migrations)
+        with client:
             resp = client.get(
                 "/api/playback/local",
                 params={"path": str(src)},
                 headers=headers,
             )
         assert resp.status_code == 200
+
+    def test_playback_queues_guarded_reconcile_for_known_missing_row(self, tmp_path, monkeypatch):
+        root = tmp_path / "Music"
+        src = root / "A" / "song.wav"
+        _write_wav(src, frames=8000)
+
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        _seed(db, src, artist="A", title="Song", album="LP", duration=1)
+        db.close()
+        src.unlink()
+
+        client, headers, library_api = self._playback_client(tmp_path, monkeypatch, root)
+        reconcile_calls: list[dict] = []
+
+        def track_reconcile(**kwargs):
+            reconcile_calls.append(kwargs)
+            return {"status": "started"}
+
+        monkeypatch.setattr(library_api, "request_path_reconcile", track_reconcile)
+        with client:
+            resp = client.get(
+                "/api/playback/local",
+                params={"path": str(src)},
+                headers=headers,
+            )
+        playback_calls = [call for call in reconcile_calls if call.get("force") is False]
+        assert resp.status_code == 202
+        assert len(playback_calls) == 1
+
+    def test_playback_forbidden_path_never_triggers_reconcile(self, tmp_path, monkeypatch):
+        root = tmp_path / "Music"
+        root.mkdir()
+        client, headers, library_api = self._playback_client(tmp_path, monkeypatch, root)
+        reconcile_calls = 0
+        walk_calls = 0
+
+        def boom(**kwargs):
+            nonlocal reconcile_calls
+            reconcile_calls += 1
+            return {"status": "started"}
+
+        class SpyReconciler:
+            def reconcile(self, **kwargs):
+                nonlocal walk_calls
+                walk_calls += 1
+                raise AssertionError("walk should not run")
+
+        monkeypatch.setattr(library_api, "request_path_reconcile", boom)
+        monkeypatch.setattr(library_api, "_path_reconciler", lambda db, scan_dirs: SpyReconciler())
+        with client:
+            for _ in range(5):
+                resp = client.get(
+                    "/api/playback/local",
+                    params={"path": "/etc/passwd"},
+                    headers=headers,
+                )
+                assert resp.status_code == 403
+        assert reconcile_calls == 0
+        assert walk_calls == 0
+
+    def test_playback_concurrent_missing_library_paths_coalesce(self, tmp_path, monkeypatch):
+        root = tmp_path / "Music"
+        src = root / "A" / "song.wav"
+        _write_wav(src, frames=8000)
+
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        _seed(db, src, artist="A", title="Song", album="LP", duration=1)
+        db.close()
+        src.unlink()
+
+        client, headers, library_api = self._playback_client(tmp_path, monkeypatch, root)
+        orig_init = threading.Thread.__init__
+
+        def patched_thread_init(self, *args, **kwargs):
+            if kwargs.get("target") is library_api._background_path_reconcile:
+                kwargs = dict(kwargs, target=lambda: None)
+            if kwargs.get("name") == "library-path-reconcile":
+                kwargs = dict(kwargs, target=lambda: None)
+            return orig_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(threading.Thread, "__init__", patched_thread_init)
+        with client:
+            first = client.get(
+                "/api/playback/local",
+                params={"path": str(src)},
+                headers=headers,
+            )
+            second = client.get(
+                "/api/playback/local",
+                params={"path": str(src)},
+                headers=headers,
+            )
+        library_api._reconcile_running = False
+        assert first.status_code == 202
+        assert second.status_code == 409
 
 
 class TestReconcileApi:

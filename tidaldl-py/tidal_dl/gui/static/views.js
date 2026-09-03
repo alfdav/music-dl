@@ -2141,15 +2141,6 @@ function renderTrackRow(track, num, allTracks) {
     });
     actions.appendChild(btn);
   }
-  if (track.missing_since) {
-    const relocateBtn = h('button', { className: 'pill relocate-btn', title: 'Point this row at the moved file' });
-    relocateBtn.textContent = 'Relocate';
-    relocateBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      _relocateMissingTrack(track);
-    });
-    actions.appendChild(relocateBtn);
-  }
   row.appendChild(actions);
 
   // Heart button
@@ -3672,38 +3663,6 @@ async function triggerScan(btn, resultsArea, rescan) {
   }, 2000);
 }
 
-async function _relocateMissingTrack(track) {
-  const next = window.prompt('Absolute path to the moved file:', track.path || '');
-  if (!next) return;
-  try {
-    await api('/library/relocate', { method: 'POST', body: { path: track.path, new_path: next } });
-    toast('Relocated', 'success');
-    navigate('library');
-  } catch (err) {
-    toast('Relocate failed: ' + (err.message || err), 'error');
-  }
-}
-
-async function _renderMissingFilesBanner(parent) {
-  try {
-    const data = await api('/library/missing');
-    const tracks = data.tracks || [];
-    if (!tracks.length) return;
-    const banner = h('div', { className: 'missing-files-banner' });
-    banner.appendChild(textEl('div', tracks.length + ' file' + (tracks.length === 1 ? '' : 's') + ' missing from disk', 'missing-files-title'));
-    tracks.slice(0, 8).forEach((track) => {
-      const row = h('div', { className: 'missing-file-row' });
-      row.appendChild(textEl('span', (track.artist || '') + ' — ' + (track.name || track.path), 'missing-file-label'));
-      const btn = h('button', { className: 'pill relocate-btn' });
-      btn.textContent = 'Relocate';
-      btn.addEventListener('click', () => _relocateMissingTrack(track));
-      row.appendChild(btn);
-      banner.appendChild(row);
-    });
-    parent.appendChild(banner);
-  } catch (_) { /* listing stays usable if missing endpoint fails */ }
-}
-
 async function loadLibrary(resultsArea, append) {
   const reqId = ++_libRequestId;
   try {
@@ -3721,8 +3680,6 @@ async function loadLibrary(resultsArea, append) {
         textEl('div', 'Library', 'results-title'),
         textEl('div', libraryTotal + ' tracks', 'results-count')
       ));
-      await _renderMissingFilesBanner(resultsArea);
-
       if (tracks.length === 0) {
         const emptyTitle = libraryQuery ? 'Nothing for "' + libraryQuery + '"' : 'No music here yet';
         const emptySub = libraryQuery ? 'Try different words or check the spelling.' : 'Hit Sync Library in the sidebar to bring in your collection.';

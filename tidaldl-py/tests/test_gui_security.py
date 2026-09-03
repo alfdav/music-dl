@@ -172,6 +172,16 @@ class TestPathValidation:
         # Nonexistent should be rejected
         assert validate_download_path("/nonexistent/path") is False
 
+    def test_path_string_under_allowed_dirs_without_opening_file(self, tmp_path):
+        from tidal_dl.gui.security import path_string_under_allowed_dirs
+
+        root = tmp_path / "Music"
+        root.mkdir()
+        inside = root / "Artist" / "Album" / "song.flac"
+        assert path_string_under_allowed_dirs(str(inside), [str(root)]) is True
+        assert path_string_under_allowed_dirs("/etc/passwd", [str(root)]) is False
+        assert path_string_under_allowed_dirs(str(root / ".." / "escape.flac"), [str(root)]) is False
+
 
 class TestLocalAudioResolution:
     def test_rejects_blank_input(self, tmp_path):

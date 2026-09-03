@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-03 — Playback GET ran synchronous full reconcile on arbitrary paths
+
+**What happened:** `GET /api/playback/local` called `heal_playback_path`, which ran `_run_path_reconcile` synchronously for any DB-trusted path, bypassing `_scan_lock`, debounce, and single-flight guards. Forbidden or non-library paths could trigger expensive walks from a CSRF-exempt GET.
+
+**Root cause:** The backstop optimized for one-request heal and reused the full reconciler inline instead of the guarded background job.
+
+**Prevention:** Only queue reconcile for rows that exist in `scanned` and sit under configured roots. Serve moved files via an in-memory migration cache populated when background reconcile finishes. Return 202 when reconcile is queued/debounced and 409 when one is already running. Validate paths with `validate_audio_path` / `path_string_under_allowed_dirs` before any `stat`.
+
 ## 2026-09-03 — First-run reconcile missed whole-album directory renames
 
 **What happened:** After a live 1.7.8 reorg, 2,426 of 7,634 audio files were stale rows and 1,594 on-disk files had no row. The dominant pattern was whole-album directory renames (strip a redundant `Artist - ` prefix), with vanished and appeared directory counts matching 1:1. The first reconciler only collected vanished rows from stored `scanned_dirs` keys. On upgrade that table is empty, so the 2,426 stale paths were never candidates. Per-file matching was also O(vanished × appeared) and applied every migration in one transaction.
