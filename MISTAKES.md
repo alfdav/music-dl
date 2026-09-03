@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-03 — Local heal retry looped and replayed a stale track
+
+**What happened:** After 202/409/200 the player always `playTrack`ed the captured track and returned success, so `_consecutiveErrors` never advanced. A user skip during the 30s wait still restarted the old file.
+
+**Root cause:** One-shot heal was not one-shot. In-flight was treated as handled for every error. Reconcile `done` was treated as "file is playable".
+
+**Prevention:** One retry per path. After 202/409, probe again; only play on 200/206. Abort if the queue track changed. A second error on the same path skips.
+
 ## 2026-09-03 — Playback allowlist loaded every scanned path
 
 **What happened:** After the CodeQL path-injection fix, `_exact_scanned_path` loaded `SELECT path FROM scanned` and linearly compared, three times per CSRF-exempt GET, including for `/etc/passwd`.

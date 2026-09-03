@@ -1130,10 +1130,23 @@ audio.addEventListener('pause', () => {
 
 let _consecutiveErrors = 0;
 let _localHealInFlight = false;
+let _localHealToken = 0;
+let _localHealTrackKey = null;
+let _localHealAttempted = null;
 
-async function _waitForReconcileIdle() {
+function _trackHealKey(track) {
+  return _currentTrackLocalPath(track) || '';
+}
+
+function _sameQueueTrack(track) {
+  const current = state.queue[state.queueIndex];
+  return !!(current && track && _trackHealKey(current) && _trackHealKey(current) === _trackHealKey(track));
+}
+
+async function _waitForReconcileIdle(token, track) {
   const started = Date.now();
   while (Date.now() - started < 30000) {
+    if (token !== _localHealToken || !_sameQueueTrack(track)) return false;
     try {
       const status = await api('/library/reconcile/status');
       if (status.done || !status.reconciling) return true;
@@ -1152,8 +1165,14 @@ async function _probeLocalPlaybackStatus(track) {
 }
 
 async function _retryLocalPlaybackAfterHeal(track) {
-  if (_localHealInFlight) return true;
+  const key = _trackHealKey(track);
+  if (!key) return false;
+  if (_localHealInFlight) return key === _localHealTrackKey;
+  if (_localHealAttempted === key) return false;
+
   _localHealInFlight = true;
+  _localHealTrackKey = key;
+  const token = ++_localHealToken;
   try {
     let status = 0;
     try {
@@ -1162,17 +1181,26 @@ async function _retryLocalPlaybackAfterHeal(track) {
       return false;
     }
     if (status === 202 || status === 409) {
-      await _waitForReconcileIdle();
-      playTrack(track);
-      return true;
+      await _waitForReconcileIdle(token, track);
+      if (token !== _localHealToken || !_sameQueueTrack(track)) return true;
+      try {
+        status = await _probeLocalPlaybackStatus(track);
+      } catch (_) {
+        return false;
+      }
     }
+    if (token !== _localHealToken || !_sameQueueTrack(track)) return true;
     if (status === 200 || status === 206) {
+      _localHealAttempted = key;
       playTrack(track);
       return true;
     }
     return false;
   } finally {
-    _localHealInFlight = false;
+    if (token === _localHealToken) {
+      _localHealInFlight = false;
+      _localHealTrackKey = null;
+    }
   }
 }
 
@@ -1181,6 +1209,11 @@ audio.addEventListener('error', () => {
   updatePlayButton();
   setWaveformPlaying(false);
   const current = state.queue[state.queueIndex];
+  if (_localHealInFlight && current && _trackHealKey(current) !== _localHealTrackKey) {
+    _localHealToken++;
+    _localHealInFlight = false;
+    _localHealTrackKey = null;
+  }
   if (!current || !current.is_local) {
     if (current) {
       _setRemotePlaybackUnavailable(true);
@@ -1213,6 +1246,7 @@ audio.addEventListener('play', () => {
     _refreshTidalStatus();
   }
   _consecutiveErrors = 0;
+  _localHealAttempted = null;
   state.playing = true;
   updatePlayButton();
   setWaveformPlaying(true);

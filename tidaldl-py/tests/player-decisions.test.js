@@ -804,13 +804,14 @@ describe('local playback decisions', () => {
     const polls = [];
     const toasts = [];
     const skips = [];
+    let probes = 0;
     const { events } = loadPlaybackStatusEvents(state, sessionStorage, () => {}, {
       playTrack: (item) => playCalls.push(item),
       api: async (path) => {
         polls.push(path);
         return { done: true, reconciling: false };
       },
-      fetch: async () => ({ status: 202 }),
+      fetch: async () => ({ status: ++probes === 1 ? 202 : 200 }),
       toast: (msg) => toasts.push(msg),
       setTimeout: (fn) => skips.push(fn),
     });
@@ -821,9 +822,94 @@ describe('local playback decisions', () => {
 
     expect(playCalls).toEqual([track]);
     expect(polls).toContain('/library/reconcile/status');
+    expect(probes).toBe(2);
     expect(state.queueIndex).toBe(0);
     expect(skips).toEqual([]);
     expect(toasts).toEqual([]);
+  });
+
+  test('heal retry does not loop when the file is still missing after poll', async () => {
+    const storage = new Map();
+    const sessionStorage = {
+      getItem: key => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key),
+    };
+    const track = { is_local: true, name: 'Song', local_path: '/music/song.wav' };
+    const next = { is_local: true, name: 'Next', local_path: '/music/next.wav' };
+    const state = { playing: true, queue: [track, next], queueIndex: 0 };
+    const playCalls = [];
+    const { events } = loadPlaybackStatusEvents(state, sessionStorage, () => {}, {
+      playTrack: (item) => playCalls.push(item),
+      api: async () => ({ done: true, reconciling: false }),
+      fetch: async () => ({ status: 202 }),
+      setTimeout: (fn) => fn(),
+    });
+
+    events.error();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(playCalls).toEqual([next]);
+    expect(state.queueIndex).toBe(1);
+  });
+
+  test('a second error after a 200 heal retry skips', async () => {
+    const storage = new Map();
+    const sessionStorage = {
+      getItem: key => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key),
+    };
+    const track = { is_local: true, name: 'Broken', local_path: '/music/broken.wav' };
+    const next = { is_local: true, name: 'Next', local_path: '/music/next.wav' };
+    const state = { playing: true, queue: [track, next], queueIndex: 0 };
+    const playCalls = [];
+    const { events } = loadPlaybackStatusEvents(state, sessionStorage, () => {}, {
+      playTrack: (item) => playCalls.push(item),
+      fetch: async () => ({ status: 200 }),
+      setTimeout: (fn) => fn(),
+    });
+
+    events.error();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(playCalls).toEqual([track]);
+
+    events.error();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(playCalls).toEqual([track, next]);
+    expect(state.queueIndex).toBe(1);
+  });
+
+  test('heal retry does not restart a track after the user moves on', async () => {
+    const storage = new Map();
+    const sessionStorage = {
+      getItem: key => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key),
+    };
+    const track = { is_local: true, name: 'Song', local_path: '/music/song.wav' };
+    const next = { is_local: true, name: 'Next', local_path: '/music/next.wav' };
+    const state = { playing: true, queue: [track, next], queueIndex: 0 };
+    const playCalls = [];
+    const { events } = loadPlaybackStatusEvents(state, sessionStorage, () => {}, {
+      playTrack: (item) => playCalls.push(item),
+      api: async () => {
+        state.queueIndex = 1;
+        return { done: true, reconciling: false };
+      },
+      fetch: async () => ({ status: 202 }),
+      setTimeout: (fn) => fn(),
+    });
+
+    events.error();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(playCalls).toEqual([]);
+    expect(state.queueIndex).toBe(1);
   });
 
   test('403 after a completed heal may skip the local track', async () => {
