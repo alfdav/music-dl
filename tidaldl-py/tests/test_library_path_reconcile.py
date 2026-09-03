@@ -660,6 +660,55 @@ class TestPlaybackBackstop:
             )
         assert resp.status_code == 200
 
+    def test_playback_serves_scan_time_move_from_cache(self, tmp_path, monkeypatch):
+        root = tmp_path / "Music"
+        src = root / "A" / "song.wav"
+        dest = root / "B" / "song.wav"
+        _write_wav(src, frames=8000)
+
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        _seed(db, src, artist="A", title="Song", album="LP", duration=1)
+        rec = _reconciler(db, [root], metadata={
+            str(src): _metadata_for(src, name="Song", artist="A", album="LP", duration=1),
+            str(dest): _metadata_for(dest, name="Song", artist="A", album="LP", duration=1),
+        })
+        rec.reconcile(force=True)
+        dest.parent.mkdir(parents=True)
+        src.rename(dest)
+        db.close()
+
+        client, headers, library_api = self._playback_client(tmp_path, monkeypatch, root)
+        library_api._scan_running = True
+        library_api._background_scan(False)
+        assert library_api.playback_resolved_path(str(src)) == str(dest)
+
+        reconcile_calls = 0
+        walk_calls = 0
+
+        def boom(**kwargs):
+            nonlocal reconcile_calls
+            reconcile_calls += 1
+            return {"status": "started"}
+
+        class SpyReconciler:
+            def reconcile(self, **kwargs):
+                nonlocal walk_calls
+                walk_calls += 1
+                raise AssertionError("GET playback must not sync-reconcile")
+
+        monkeypatch.setattr(library_api, "request_path_reconcile", boom)
+        monkeypatch.setattr(library_api, "_path_reconciler", lambda db, scan_dirs: SpyReconciler())
+        with client:
+            resp = client.get(
+                "/api/playback/local",
+                params={"path": str(src)},
+                headers=headers,
+            )
+        assert resp.status_code == 200
+        assert reconcile_calls == 0
+        assert walk_calls == 0
+
     def test_playback_queues_guarded_reconcile_for_known_missing_row(self, tmp_path, monkeypatch):
         root = tmp_path / "Music"
         src = root / "A" / "song.wav"
@@ -816,6 +865,61 @@ class TestReconcileApi:
         assert "reconciling" in data
         assert "done" in data
         assert "phase" in data
+
+    def test_manual_refresh_forces_reconcile(self, monkeypatch):
+        import tidal_dl.gui.api.library as library_api
+
+        calls = []
+
+        def capture(*, force=False):
+            calls.append(force)
+            return {"status": "started"}
+
+        monkeypatch.setattr(library_api, "request_path_reconcile", capture)
+        assert library_api.reconcile_library_paths(force=True) == {"status": "started"}
+        assert calls == [True]
+
+    def test_focus_and_unforced_post_keep_debounce(self, monkeypatch):
+        import tidal_dl.gui.api.library as library_api
+
+        calls = []
+
+        def capture(*, force=False):
+            calls.append(force)
+            return {"status": "debounced"}
+
+        monkeypatch.setattr(library_api, "request_path_reconcile", capture)
+        assert library_api.reconcile_library_paths() == {"status": "debounced"}
+        assert library_api.reconcile_library_paths(force=False) == {"status": "debounced"}
+        assert calls == [False, False]
+
+    def test_http_refresh_query_forces_focus_does_not(self, client, monkeypatch):
+        import tidal_dl.gui.api.library as library_api
+
+        calls = []
+
+        def capture(*, force=False):
+            calls.append(force)
+            return {"status": "started"}
+
+        monkeypatch.setattr(library_api, "request_path_reconcile", capture)
+        unforced = client.post("/api/library/reconcile", headers=client._headers)
+        forced = client.post("/api/library/reconcile?force=true", headers=client._headers)
+        assert unforced.status_code == 200
+        assert forced.status_code == 200
+        assert unforced.json() == {"status": "started"}
+        assert forced.json() == {"status": "started"}
+        assert calls == [False, True]
+
+        views = Path(__file__).resolve().parents[1] / "tidal_dl" / "gui" / "static" / "views.js"
+        source = views.read_text()
+        assert "api('/library/reconcile?force=true', { method: 'POST' })" in source
+        assert source.count("api('/library/reconcile', { method: 'POST' })") >= 2
+        gui_init = Path(__file__).resolve().parents[1] / "tidal_dl" / "gui" / "__init__.py"
+        assert "request_path_reconcile()" in gui_init.read_text()
+        assert "request_path_reconcile(force=False)" in Path(
+            library_api.__file__
+        ).read_text()
 
 
 def _album_identities(old_dir: str, new_dir: str, names: list[str], *, size: int = 1000):
@@ -1066,4 +1170,222 @@ class TestDirectoryMoveFastPath:
             assert new_row is not None
             assert new_row["missing_since"] is None
             assert new_row["play_count"] in (None, 0)
+        db.close()
+
+
+class TestRemountAndRestoreGuards:
+    def test_empty_readable_root_does_not_hide_library(self, tmp_path, monkeypatch):
+        from tidal_dl.helper import library_reconcile as rec_mod
+
+        monkeypatch.setattr(rec_mod, "RECONCILE_REMOUNT_MIN_ROWS", 2)
+        root = tmp_path / "Music"
+        files = [
+            _write_wav(root / "A" / f"{i}.wav", frames=2000)
+            for i in range(4)
+        ]
+        db = _open_db(tmp_path)
+        metadata = {}
+        for path in files:
+            metadata[str(path)] = _metadata_for(path, name=path.stem, artist="A", album="LP", duration=1)
+            _seed(db, path, artist="A", title=path.stem, album="LP", duration=1)
+        rec = _reconciler(db, [root], metadata=metadata)
+        rec.reconcile(force=True)
+        for path in files:
+            path.unlink()
+
+        result = rec.reconcile(force=True)
+        assert result.marked_missing == []
+        for path in files:
+            row = db.get(str(path))
+            assert row is not None
+            assert row["missing_since"] is None
+        assert db.tracks_page()[1] == 4
+        db.close()
+
+    def test_partial_vanished_files_still_marked_missing(self, tmp_path, monkeypatch):
+        from tidal_dl.helper import library_reconcile as rec_mod
+
+        monkeypatch.setattr(rec_mod, "RECONCILE_REMOUNT_MIN_ROWS", 2)
+        root = tmp_path / "Music"
+        files = [
+            _write_wav(root / "A" / f"{i}.wav", frames=2000)
+            for i in range(4)
+        ]
+        db = _open_db(tmp_path)
+        metadata = {}
+        for path in files:
+            metadata[str(path)] = _metadata_for(path, name=path.stem, artist="A", album="LP", duration=1)
+            _seed(db, path, artist="A", title=path.stem, album="LP", duration=1)
+        rec = _reconciler(db, [root], metadata=metadata)
+        rec.reconcile(force=True)
+        files[0].unlink()
+
+        result = rec.reconcile(force=True)
+        assert result.marked_missing == [str(files[0])]
+        assert db.get(str(files[0]))["missing_since"] is not None
+        for path in files[1:]:
+            assert db.get(str(path))["missing_since"] is None
+        assert db.tracks_page()[1] == 3
+        db.close()
+
+    def test_should_skip_mass_missing_thresholds(self):
+        from tidal_dl.helper.library_reconcile import should_skip_mass_missing
+
+        assert should_skip_mass_missing(100, 100) is False
+        assert should_skip_mass_missing(101, 50) is False
+        assert should_skip_mass_missing(101, 51) is True
+
+    def test_scan_clears_missing_when_file_returns(self, tmp_path, monkeypatch):
+        import tidal_dl.gui.api.library as library_api
+
+        root = tmp_path / "Music"
+        path = root / "A" / "song.wav"
+        _write_wav(path, frames=4000)
+        db = _open_db(tmp_path)
+        _seed(db, path, artist="A", title="Song", album="LP", duration=1)
+        rec = _reconciler(db, [root], metadata={
+            str(path): _metadata_for(path, name="Song", artist="A", album="LP", duration=1),
+        })
+        rec.reconcile(force=True)
+        path.unlink()
+        rec.reconcile(force=True)
+        assert db.get(str(path))["missing_since"] is not None
+        _write_wav(path, frames=4000)
+
+        class FakeSettings:
+            data = SimpleNamespace(download_base_path=str(root), scan_paths="")
+
+        monkeypatch.setattr(library_api, "Settings", FakeSettings)
+        monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
+        monkeypatch.setattr(library_api, "_schedule_album_enrichment", lambda: None)
+        monkeypatch.setattr(library_api, "_album_cards", lambda db, *args, **kwargs: [])
+        monkeypatch.setattr("tidal_dl.helper.waveform.extract_both", lambda path: None)
+        monkeypatch.setattr(library_api, "_has_local_art", lambda path: False)
+        monkeypatch.setattr(
+            library_api,
+            "_read_metadata",
+            lambda file_path, scan_dirs=None: {
+                "path": str(file_path),
+                "name": "Song",
+                "artist": "A",
+                "album": "LP",
+                "duration": 1,
+                "isrc": "",
+                "genre": None,
+                "quality": "WAV",
+                "format": "WAV",
+                "codec": "pcm",
+                "metadata_complete": True,
+                "is_local": True,
+            },
+        )
+        library_api._scan_running = True
+        library_api._background_scan(False)
+        db.close()
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        assert db.get(str(path))["missing_since"] is None
+        assert db.tracks_page()[1] == 1
+        db.close()
+
+    def test_scan_migrate_populates_playback_cache(self, tmp_path, monkeypatch):
+        import tidal_dl.gui.api.library as library_api
+
+        root = tmp_path / "Music"
+        src = root / "A" / "song.wav"
+        dest = root / "B" / "song.wav"
+        _write_wav(src, frames=4000)
+        db = _open_db(tmp_path)
+        _seed(db, src, artist="A", title="Song", album="LP", duration=1)
+        rec = _reconciler(db, [root], metadata={
+            str(src): _metadata_for(src, name="Song", artist="A", album="LP", duration=1),
+            str(dest): _metadata_for(dest, name="Song", artist="A", album="LP", duration=1),
+        })
+        rec.reconcile(force=True)
+        dest.parent.mkdir(parents=True)
+        src.rename(dest)
+
+        class FakeSettings:
+            data = SimpleNamespace(download_base_path=str(root), scan_paths="")
+
+        monkeypatch.setattr(library_api, "Settings", FakeSettings)
+        monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
+        monkeypatch.setattr(library_api, "_schedule_album_enrichment", lambda: None)
+        monkeypatch.setattr(library_api, "_album_cards", lambda db, *args, **kwargs: [])
+        monkeypatch.setattr("tidal_dl.helper.waveform.extract_both", lambda path: None)
+        monkeypatch.setattr(library_api, "_has_local_art", lambda path: False)
+        monkeypatch.setattr(
+            library_api,
+            "_read_metadata",
+            lambda file_path, scan_dirs=None: {
+                "path": str(file_path),
+                "name": "Song",
+                "artist": "A",
+                "album": "LP",
+                "duration": 1,
+                "isrc": "",
+                "genre": None,
+                "quality": "WAV",
+                "format": "WAV",
+                "codec": "pcm",
+                "metadata_complete": True,
+                "is_local": True,
+            },
+        )
+        library_api._playback_migration_cache.clear()
+        library_api._scan_running = True
+        library_api._background_scan(False)
+        assert library_api.playback_resolved_path(str(src)) == str(dest)
+        db.close()
+
+    def test_reconcile_clears_missing_when_file_returns(self, tmp_path):
+        root = tmp_path / "Music"
+        path = root / "A" / "song.wav"
+        _write_wav(path, frames=4000)
+        db = _open_db(tmp_path)
+        rec = _reconciler(db, [root], metadata={
+            str(path): _metadata_for(path, name="Song", artist="A", album="LP", duration=1),
+        })
+        _seed(db, path, artist="A", title="Song", album="LP", duration=1)
+        rec.reconcile(force=True)
+        path.unlink()
+        rec.reconcile(force=True)
+        assert db.get(str(path))["missing_since"] is not None
+        assert db.tracks_page()[1] == 0
+
+        _write_wav(path, frames=4000)
+        result = rec.reconcile(force=True)
+        assert str(path) in result.cleared_missing
+        assert db.get(str(path))["missing_since"] is None
+        assert db.tracks_page()[1] == 1
+        db.close()
+
+    def test_unchanged_signatures_still_clear_restored_file(self, tmp_path):
+        root = tmp_path / "Music"
+        path = root / "A" / "song.wav"
+        _write_wav(path, frames=4000)
+        db = _open_db(tmp_path)
+        rec = _reconciler(db, [root], metadata={
+            str(path): _metadata_for(path, name="Song", artist="A", album="LP", duration=1),
+        })
+        _seed(db, path, artist="A", title="Song", album="LP", duration=1)
+        rec.reconcile(force=True)
+        path.unlink()
+        rec.reconcile(force=True)
+        assert db.get(str(path))["missing_since"] is not None
+        assert db.tracks_page()[1] == 0
+
+        _write_wav(path, frames=4000)
+        current, _unreadable = rec.walk_dirs()
+        db.replace_dir_signatures(
+            {directory: info.signature for directory, info in current.items()},
+            checked_at=1,
+        )
+        db.commit()
+
+        result = rec.reconcile(force=True)
+        assert str(path) in result.cleared_missing
+        assert result.unchanged is False
+        assert db.get(str(path))["missing_since"] is None
+        assert db.tracks_page()[1] == 1
         db.close()

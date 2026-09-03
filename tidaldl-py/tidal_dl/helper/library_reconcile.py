@@ -24,6 +24,16 @@ AUDIO_EXTENSIONS = {".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac"}
 DURATION_TOLERANCE_SEC = 2
 RECONCILE_MIN_INTERVAL_SEC = 60
 RECONCILE_COMMIT_BATCH = 50
+RECONCILE_REMOUNT_FRACTION = 0.5
+RECONCILE_REMOUNT_MIN_ROWS = 100
+
+
+def should_skip_mass_missing(known_count: int, missing_count: int) -> bool:
+    """True when a readable-but-empty mount would hide most of the library."""
+    return (
+        known_count > RECONCILE_REMOUNT_MIN_ROWS
+        and missing_count > RECONCILE_REMOUNT_FRACTION * known_count
+    )
 
 _EDITION_WORDS = frozenset({
     "remaster",
@@ -722,16 +732,36 @@ class PathReconciler:
             enriched.append(identity)
         return enriched
 
-    def _collect_pools(
-        self,
-        current: dict[str, _DirInfo],
-        skip_prefixes: set[str],
-    ) -> tuple[list[FileIdentity], list[FileIdentity], dict[str, dict | None], list[str]]:
+    def _on_disk_by_canon(self, current: dict[str, _DirInfo]) -> dict[str, str]:
         on_disk: dict[str, str] = {}
         for directory, info in current.items():
             for name in info.audio_names:
                 actual = str(Path(directory) / name)
                 on_disk[canon_path(actual)] = actual
+        return on_disk
+
+    def _resurfaced_present_paths(
+        self,
+        current: dict[str, _DirInfo],
+        skip_prefixes: set[str],
+    ) -> list[str]:
+        """Missing rows whose stored path is on disk again. Walk names only."""
+        on_disk = self._on_disk_by_canon(current)
+        found: list[str] = []
+        for row in self.db.missing_rows():
+            path = row["path"]
+            if path_has_skipped_scan_dir(path) or _is_under(path, skip_prefixes):
+                continue
+            if canon_path(path) in on_disk:
+                found.append(path)
+        return found
+
+    def _collect_pools(
+        self,
+        current: dict[str, _DirInfo],
+        skip_prefixes: set[str],
+    ) -> tuple[list[FileIdentity], list[FileIdentity], dict[str, dict | None], list[str]]:
+        on_disk = self._on_disk_by_canon(current)
 
         vanished_rows: list[FileIdentity] = []
         known_by_canon: dict[str, dict] = {}
@@ -810,9 +840,18 @@ class PathReconciler:
 
         if not vanished_dirs and not new_dirs and not changed_dirs:
             now = self.now_fn()
+            resurfaced = self._resurfaced_present_paths(current, skip_prefixes)
+            if resurfaced:
+                with self.db.write_transaction():
+                    for path in resurfaced:
+                        self.db.clear_missing(path)
             self.db.touch_dir_signatures(list(current_keys), checked_at=now)
             self.db.commit()
-            return PathReconcileResult(unchanged=True, skipped_dirs=sorted(unreadable))
+            return PathReconcileResult(
+                unchanged=not bool(resurfaced),
+                skipped_dirs=sorted(unreadable),
+                cleared_missing=list(resurfaced),
+            )
 
         vanished_rows, appeared, appeared_meta, resurfaced = self._collect_pools(
             current, skip_prefixes,
@@ -857,31 +896,43 @@ class PathReconciler:
         for old_path, new_path in failed:
             mark_missing.append(old_path)
             index_new.append(new_path)
+        known_count = len(self.db.known_paths())
+        skip_mass_missing = should_skip_mass_missing(known_count, len(mark_missing))
 
-        for offset in range(0, len(mark_missing), RECONCILE_COMMIT_BATCH):
-            chunk = mark_missing[offset:offset + RECONCILE_COMMIT_BATCH]
-            with self.db.write_transaction():
-                for old_path in chunk:
-                    self.db.mark_missing(old_path, since=now)
+        if skip_mass_missing:
+            mark_missing = []
             self._emit(
                 on_progress,
-                phase="marking_missing",
-                scanned=min(offset + len(chunk), len(mark_missing)),
-                total=len(mark_missing),
-                missing=min(offset + len(chunk), len(mark_missing)),
+                phase="remount_guard",
+                missing=0,
+                total=known_count,
             )
+        else:
+            for offset in range(0, len(mark_missing), RECONCILE_COMMIT_BATCH):
+                chunk = mark_missing[offset:offset + RECONCILE_COMMIT_BATCH]
+                with self.db.write_transaction():
+                    for old_path in chunk:
+                        self.db.mark_missing(old_path, since=now)
+                self._emit(
+                    on_progress,
+                    phase="marking_missing",
+                    scanned=min(offset + len(chunk), len(mark_missing)),
+                    total=len(mark_missing),
+                    missing=min(offset + len(chunk), len(mark_missing)),
+                )
 
         if resurfaced:
             with self.db.write_transaction():
                 for path in resurfaced:
                     self.db.clear_missing(path)
 
-        with self.db.write_transaction():
-            self.db.replace_dir_signatures(
-                {path: info.signature for path, info in current.items()},
-                checked_at=now,
-                keep_dirs={directory for directory in stored_keys if _is_under(directory, skip_prefixes)},
-            )
+        if not skip_mass_missing:
+            with self.db.write_transaction():
+                self.db.replace_dir_signatures(
+                    {path: info.signature for path, info in current.items()},
+                    checked_at=now,
+                    keep_dirs={directory for directory in stored_keys if _is_under(directory, skip_prefixes)},
+                )
 
         index_identities = self._enrich_tags(
             [appeared_by_path[path] for path in index_new if path in appeared_by_path],

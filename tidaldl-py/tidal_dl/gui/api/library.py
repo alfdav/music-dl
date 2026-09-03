@@ -1292,12 +1292,13 @@ def _migrate_moved_scan_paths(
     plan = plan_path_reconcile(vanished, appeared)
     if not plan.migrations:
         return
-    apply_path_migrations(
+    kept, _failed = apply_path_migrations(
         db,
         plan.migrations,
         appeared_by_path,
         directory_moves=plan.directory_moves,
     )
+    _remember_playback_migrations(kept)
 
 
 def request_path_reconcile(*, force: bool = False) -> dict:
@@ -1715,6 +1716,15 @@ def _background_scan(rescan: bool) -> None:
             with db.write_transaction():
                 for path in prune:
                     db.mark_missing(path, since=now)
+
+        restored = [
+            row["path"] for row in db.missing_rows()
+            if row["path"] in disk_paths
+        ]
+        if restored:
+            with db.write_transaction():
+                for path in restored:
+                    db.clear_missing(path)
 
         _update_scan_progress(phase="finalizing", done=False)
 
@@ -2167,9 +2177,13 @@ def scan_status() -> dict:
 
 
 @router.post("/library/reconcile")
-def reconcile_library_paths() -> dict:
-    """Heal moved folders without a full rescan. Returns immediately."""
-    return request_path_reconcile()
+def reconcile_library_paths(force: bool = Query(False)) -> dict:
+    """Heal moved folders without a full rescan. Returns immediately.
+
+    ``force=true`` is for the Refresh button. Startup, window-focus, and
+    library-view paint omit it so they keep the 60s debounce.
+    """
+    return request_path_reconcile(force=force)
 
 
 @router.get("/library/reconcile/status")

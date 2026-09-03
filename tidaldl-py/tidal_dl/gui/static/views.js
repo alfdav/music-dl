@@ -3592,7 +3592,7 @@ async function triggerReconcile(btn, resultsArea) {
   btn.textContent = 'Refreshing...';
   btn.disabled = true;
   try {
-    await api('/library/reconcile', { method: 'POST' });
+    await api('/library/reconcile?force=true', { method: 'POST' });
   } catch (_) { /* already running or debounced is fine */ }
   const poll = setInterval(async () => {
     try {

@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-03 — Reconcile/scan missed remount, restore, and force-refresh
+
+**What happened:** Bugbot found startup reconcile could hide a library on a readable empty mount (no 50% prune guard), Sync left `missing_since` set after a file returned at the same path, scan migrations skipped the playback cache, and the Refresh button inherited the 60s debounce.
+
+**Root cause:** Scan already had remount/restore-adjacent logic; reconcile and the playback cache were wired only to the background job. POST reconcile defaulted to `force=False`.
+
+**Prevention:** Same 50% / 100-row remount skip for mark_missing (and do not replace signatures). Clear `missing_since` for any missing row still on disk after scan, and clear resurfaced rows on the unchanged-signature reconcile exit. Record scan migrations in the playback cache. Refresh POSTs `?force=true`; startup, focus, and library-view paint stay `force=False`.
+
 ## 2026-09-03 — Parallel path helper failed CodeQL py/path-injection
 
 **What happened:** `path_string_under_allowed_dirs` called `Path(user).resolve(strict=False)` so missing library rows could be bounded to configured roots. CodeQL reported seven uncontrolled-path flows at that `resolve`.
