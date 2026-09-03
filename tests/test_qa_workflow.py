@@ -28,7 +28,7 @@ CHECK_STEPS = {
         "Run security tests",
         "Build Python package",
     ),
-    "bot": ("Run bot tests", "Type-check bot"),
+    "bot": ("Run bot tests", "Run GUI frontend tests", "Type-check bot"),
     "contracts": (
         "Validate release and installers",
         "Validate documentation contracts",

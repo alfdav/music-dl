@@ -64,6 +64,30 @@
 
 **Prevention:** Persist per-directory signatures (`mtime_ns:audio_count`) in `scanned_dirs`. Reconcile only changed directories. Migrate row identity on a unique strong match. Never skip on root mtime alone. Never merge editions that differ by remaster/year tokens. Mark unresolved vanished rows missing instead of deleting them.
 
+## 2026-09-03 — Synced lyrics looked desynced because auto-scroll geometry was wrong
+
+**What happened:** Live 1.7.8 Adele "Hello" (Tidal track 165814026, `tidal-synced`, 48 lines) highlighted the correct line from `audio.currentTime`, but that line was off-screen for 14/15 probes. The panel sat on line 23 for the first ~35s, which users reported as lyrics desync.
+
+**Root cause:** `.lyrics-synced-viewport` flex-centered a tall list, then JS added a list-relative `translateY` from `activeEl.offsetTop`. It also used `lyricsBody.clientHeight` (padding included, 716px) instead of the viewport (620px), and `Math.max(0, …)` plus `translateY(0)` on gaps froze or snapped the list.
+
+**Prevention:** Drive a real scroll container (`overflow-y: auto`, no flex-center, no transform). Center with `_lyricsScrollTarget` using viewport `clientHeight`/`scrollHeight`, clamp both ends, hold position when no line is active, write `scrollTop` only when the target changes. Do not treat time-selection, playback-rate, or Tidal-vs-local as the first hypothesis when the active index is already correct.
+
+## 2026-09-03 — Programmatic lyrics scroll self-detached; padding-block was width-relative
+
+**What happened:** PR 168 click gate failed. Resizing the browser with lyrics open and playing detached auto-follow even without wheel/keys/pointer — active line went off-screen. At 700×1400, `padding-block: 50%` on `.lyrics-synced-list` resolved against panel width (380px → 182.5px spacer) instead of viewport height (~604px needed); first line sat ~347px off center.
+
+**Root cause:** (A) A single `scrollend` boolean cleared `lyricsProgrammaticScroll`; no-op/interrupted `scrollTo` or layout scroll after clear looked user-driven and detached follow. (B) CSS percentage padding on block axis used width, not height.
+
+**Prevention:** Tag programmatic writes with a generation counter + target; only detach on trusted user wheel/touch/pointer/keyboard or scroll when `lyricsUserScrollPending` is set — never on layout scroll alone. `ResizeObserver` reflows height-relative spacers via `_lyricsEdgeSpacerPx(viewport.clientHeight, lineHeight)` and recenters while attached. Do not use `padding-block: 50%` for vertical centering slack.
+
+## 2026-09-03 — Attached resize left the current lyric 101px above center until the next line
+
+**What happened:** Click gate on PR 168 (`ec50ac9`): 1280×900 → 1000×700 stayed attached and the active line stayed on-screen, but it sat ~101px above center for >8s while paused. Playing trials only recentered when the next lyric activated 5.49–5.66s later.
+
+**Root cause:** With height-relative end padding, `_lyricsScrollTarget` for a mid-list line is `index * step` and does not change with viewport height. `_lyricsWriteScrollTop` skipped whenever the cached target matched, even after scroll-anchoring drifted `scrollTop` by Δpad ≈ Δviewport/2 (~100px). rAF ticks kept skipping until the active index (and therefore the target number) changed.
+
+**Prevention:** Skip a write only when `scrollTop` is already at the target, or when a programmatic write toward that target is in flight. On resize, invalidate the cached target, recompute spacers, then force an instant recenter after two layout frames while attached. While detached, restore the captured reading anchor — do not recenter.
+
 ## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
 
 **What happened:** Artist-name track search (Carlos Vives) replaced real track hits with a self-titled album. Local-empty paint showed `No results found` while Tidal was still in flight. `urlparse(...).hostname` can raise `ValueError` on broken IPv6 zones / trailing `%`, which would 500 `/api/search`.
