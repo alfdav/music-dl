@@ -654,3 +654,254 @@ class TestReconcileApi:
         assert "reconciling" in data
         assert "done" in data
         assert "phase" in data
+
+
+def _album_identities(old_dir: str, new_dir: str, names: list[str], *, size: int = 1000):
+    from tidal_dl.helper.library_reconcile import FileIdentity
+
+    vanished = [
+        FileIdentity(
+            path=f"{old_dir}/{name}",
+            size=size + index,
+            duration=200 + index,
+            codec="flac",
+            title=f"Track {index + 1}",
+            artist="Linkin Park",
+            album="Hybrid Theory",
+        )
+        for index, name in enumerate(names)
+    ]
+    appeared = [
+        FileIdentity(
+            path=f"{new_dir}/{name}",
+            size=size + index,
+            duration=200 + index,
+            codec="flac",
+            title=f"Track {index + 1}",
+            artist="Linkin Park",
+            album="Hybrid Theory",
+        )
+        for index, name in enumerate(names)
+    ]
+    return vanished, appeared
+
+
+class TestDirectoryMoveFastPath:
+    def test_whole_directory_rename_is_one_directory_match(self):
+        from tidal_dl.helper.library_reconcile import plan_path_reconcile
+
+        names = [f"{i:02d} Track {i}.flac" for i in range(1, 9)]
+        old_dir = "/Volumes/Music/Linkin Park/Linkin Park - Hybrid Theory (20th Anniversary Edition)"
+        new_dir = "/Volumes/Music/Linkin Park/Hybrid Theory (20th Anniversary Edition)"
+        vanished, appeared = _album_identities(old_dir, new_dir, names)
+
+        plan = plan_path_reconcile(vanished, appeared)
+
+        assert plan.directory_moves == [(old_dir, new_dir)]
+        assert plan.file_match_comparisons == 0
+        assert len(plan.migrations) == 8
+        assert {(Path(old).name, Path(new).name) for old, new in plan.migrations} == {
+            (name, name) for name in names
+        }
+        assert plan.mark_missing == []
+        assert plan.index_new == []
+
+    def test_directory_rename_different_edition_is_not_merged(self):
+        from tidal_dl.helper.library_reconcile import FileIdentity, plan_path_reconcile
+
+        names = [f"{i:02d} Hit {i}.flac" for i in range(1, 5)]
+        old_dir = "/Volumes/Music/Billy Idol/Greatest Hits"
+        new_dir = "/Volumes/Music/Billy Idol/Greatest Hits (Remastered)"
+        vanished = [
+            FileIdentity(
+                path=f"{old_dir}/{name}",
+                size=4000 + index,
+                duration=180 + index,
+                codec="flac",
+                title=f"Hit {index + 1}",
+                artist="Billy Idol",
+                album="Greatest Hits",
+            )
+            for index, name in enumerate(names)
+        ]
+        appeared = [
+            FileIdentity(
+                path=f"{new_dir}/{name}",
+                size=4000 + index,
+                duration=180 + index,
+                codec="flac",
+                title=f"Hit {index + 1}",
+                artist="Billy Idol",
+                album="Greatest Hits (Remastered)",
+            )
+            for index, name in enumerate(names)
+        ]
+
+        plan = plan_path_reconcile(vanished, appeared)
+
+        assert plan.directory_moves == []
+        assert plan.migrations == []
+        assert set(plan.mark_missing) == {row.path for row in vanished}
+        assert set(plan.index_new) == {row.path for row in appeared}
+
+    def test_whole_album_directory_rename_migrates_history(self, tmp_path):
+        root = tmp_path / "Music"
+        old_dir = root / "Linkin Park" / "Linkin Park - Hybrid Theory (20th Anniversary Edition)"
+        new_dir = root / "Linkin Park" / "Hybrid Theory (20th Anniversary Edition)"
+        names = [f"{i:02d} Track {i}.wav" for i in range(1, 7)]
+        files = [_write_wav(old_dir / name, frames=8000 + i * 100) for i, name in enumerate(names)]
+        db = _open_db(tmp_path)
+        metadata = {}
+        for index, path in enumerate(files):
+            metadata[str(path)] = _metadata_for(
+                path,
+                name=f"Track {index + 1}",
+                artist="Linkin Park",
+                album="Hybrid Theory",
+                duration=1,
+            )
+            _seed(
+                db,
+                path,
+                artist="Linkin Park",
+                title=f"Track {index + 1}",
+                album="Hybrid Theory",
+                duration=1,
+                play_count=10 + index,
+            )
+            db.log_play_event(str(path), artist="Linkin Park", duration=1, played_at=1700000000 + index)
+        db.commit()
+
+        rec = _reconciler(db, [root], metadata=metadata)
+        rec.reconcile(force=True)
+        old_dir.rename(new_dir)
+        for index, path in enumerate(files):
+            dest = new_dir / path.name
+            metadata[str(dest)] = _metadata_for(
+                dest,
+                name=f"Track {index + 1}",
+                artist="Linkin Park",
+                album="Hybrid Theory",
+                duration=1,
+            )
+
+        progress = []
+        result = rec.reconcile(force=True, on_progress=lambda **kw: progress.append(kw))
+
+        assert result.directory_moves == [(str(old_dir), str(new_dir))]
+        assert result.file_match_comparisons == 0
+        assert len(result.migrations) == 6
+        for index, name in enumerate(names):
+            dest = new_dir / name
+            row = db.get(str(dest))
+            assert row is not None
+            assert row["play_count"] == 10 + index
+            assert db.get(str(old_dir / name)) is None
+        events = db._conn.execute("SELECT path FROM play_events ORDER BY played_at").fetchall()
+        assert [Path(row["path"]).name for row in events] == names
+        assert any(item.get("phase") == "migrating" for item in progress)
+        db.close()
+
+    def test_first_run_without_dir_signatures_heals_renamed_album(self, tmp_path):
+        root = tmp_path / "Music"
+        old_dir = root / "Cuphead" / "Official Soundtrack FLAC"
+        new_dir = root / "Cuphead" / "Official Soundtrack"
+        names = [f"{i:02d} Cue {i}.wav" for i in range(1, 5)]
+        files = [_write_wav(old_dir / name, frames=6000 + i * 50) for i, name in enumerate(names)]
+        db = _open_db(tmp_path)
+        metadata = {}
+        for index, path in enumerate(files):
+            db.record(
+                str(path),
+                status="tagged",
+                artist="Cuphead",
+                title=f"Cue {index + 1}",
+                album="Official Soundtrack",
+                duration=1,
+                codec="pcm",
+                metadata_complete=True,
+            )
+            db._conn.execute(
+                "UPDATE scanned SET play_count = ? WHERE path = ?",
+                (3 + index, str(path)),
+            )
+            metadata[str(path)] = _metadata_for(
+                path, name=f"Cue {index + 1}", artist="Cuphead", album="Official Soundtrack", duration=1,
+            )
+        db.commit()
+        assert db.dir_signatures() == {}
+        assert db.get(str(files[0]))["file_size"] is None
+
+        old_dir.rename(new_dir)
+        for path in files:
+            dest = new_dir / path.name
+            metadata[str(dest)] = _metadata_for(
+                dest, name=path.stem, artist="Cuphead", album="Official Soundtrack", duration=1,
+            )
+
+        rec = _reconciler(db, [root], metadata=metadata)
+        result = rec.reconcile(force=True)
+
+        assert result.directory_moves == [(str(old_dir), str(new_dir))]
+        assert result.file_match_comparisons == 0
+        for index, name in enumerate(names):
+            row = db.get(str(new_dir / name))
+            assert row is not None
+            assert row["play_count"] == 3 + index
+        db.close()
+
+    def test_copied_remaster_directory_is_not_merged(self, tmp_path):
+        root = tmp_path / "Music"
+        old_dir = root / "Billy Idol" / "Greatest Hits"
+        new_dir = root / "Billy Idol" / "Greatest Hits (Remastered)"
+        names = [f"{i:02d} Hit {i}.wav" for i in range(1, 5)]
+        files = [
+            _write_wav(old_dir / name, frames=8000 + i * 400, extra=bytes([i + 1]))
+            for i, name in enumerate(names)
+        ]
+        db = _open_db(tmp_path)
+        metadata = {}
+        for index, path in enumerate(files):
+            metadata[str(path)] = _metadata_for(
+                path, name=f"Hit {index + 1}", artist="Billy Idol", album="Greatest Hits", duration=1,
+            )
+            _seed(
+                db,
+                path,
+                artist="Billy Idol",
+                title=f"Hit {index + 1}",
+                album="Greatest Hits",
+                duration=1,
+                play_count=5,
+            )
+        rec = _reconciler(db, [root], metadata=metadata)
+        rec.reconcile(force=True)
+
+        new_dir.mkdir(parents=True)
+        for path in files:
+            dest = new_dir / path.name
+            dest.write_bytes(path.read_bytes())
+            metadata[str(dest)] = _metadata_for(
+                dest,
+                name=f"Hit {names.index(path.name) + 1}",
+                artist="Billy Idol",
+                album="Greatest Hits (Remastered)",
+                duration=1,
+            )
+        for path in files:
+            path.unlink()
+
+        result = rec.reconcile(force=True)
+
+        assert result.directory_moves == []
+        assert result.migrations == []
+        for name in names:
+            old_row = db.get(str(old_dir / name))
+            new_row = db.get(str(new_dir / name))
+            assert old_row is not None
+            assert old_row["missing_since"] is not None
+            assert old_row["play_count"] == 5
+            assert new_row is not None
+            assert new_row["missing_since"] is None
+            assert new_row["play_count"] in (None, 0)
+        db.close()

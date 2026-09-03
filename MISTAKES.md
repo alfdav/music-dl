@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-03 — First-run reconcile missed whole-album directory renames
+
+**What happened:** After a live 1.7.8 reorg, 2,426 of 7,634 audio files were stale rows and 1,594 on-disk files had no row. The dominant pattern was whole-album directory renames (strip a redundant `Artist - ` prefix), with vanished and appeared directory counts matching 1:1. The first reconciler only collected vanished rows from stored `scanned_dirs` keys. On upgrade that table is empty, so the 2,426 stale paths were never candidates. Per-file matching was also O(vanished × appeared) and applied every migration in one transaction.
+
+**Root cause:** Change detection treated "no stored signatures" as "every current dir is new" and never set-diffed known paths against the walk. Album-scale renames were then planned as N independent file searches.
+
+**Prevention:** Collect vanished/appeared as a known-vs-walk path set (one `identity_rows` query, walk `audio_names`, no extra file `stat`). Try a directory-move fast path first: unique 1:1 parent dirs with the same member count and basename+size (or basename+duration for legacy `NULL` size). Refuse when directory edition tokens differ. Fall back to an indexed per-file ladder. Commit directory moves atomically, then leftover work in batches of 50, on a background thread with status progress.
+
 ## 2026-09-03 — Root-only scan fingerprint skipped nested folder moves
 
 **What happened:** After a live 1.7.8 user reorganized `/Volumes/Music`, 2,426 of 11,970 `scanned` rows (20.3%) pointed at deleted paths. Albums rendered as 2/16 tracks. `POST /api/library/scan` printed "Scan directories unchanged — skipping" because `scan_fingerprint` only hashed configured-root mtimes + row count.

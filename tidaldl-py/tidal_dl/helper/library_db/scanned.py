@@ -123,6 +123,16 @@ class ScannedMixin:
         rows = self._conn.execute("SELECT path FROM scanned").fetchall()
         return {r["path"] for r in rows}
 
+    def identity_rows(self) -> list[dict]:
+        """Return identity columns for every scanned row in one query."""
+        assert self._conn
+        rows = self._conn.execute(
+            """SELECT path, file_size, file_mtime, file_inode, file_device,
+                      duration, codec, title, artist, album, isrc, missing_since
+               FROM scanned"""
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def complete_paths(self) -> set[str]:
         """Return paths that have full metadata (album, duration, quality populated)."""
         assert self._conn

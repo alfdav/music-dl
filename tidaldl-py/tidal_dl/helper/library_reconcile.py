@@ -12,6 +12,7 @@ import os
 import re
 import time
 import unicodedata
+from collections import defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
@@ -22,6 +23,7 @@ from tidal_dl.helper.library_scanner import is_skipped_scan_dir, path_has_skippe
 AUDIO_EXTENSIONS = {".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac"}
 DURATION_TOLERANCE_SEC = 2
 RECONCILE_MIN_INTERVAL_SEC = 60
+RECONCILE_COMMIT_BATCH = 50
 
 _EDITION_WORDS = frozenset({
     "remaster",
@@ -81,11 +83,25 @@ def edition_tokens(*texts: str | None) -> frozenset[str]:
     return frozenset(tokens)
 
 
+def parent_directory(path: str) -> str:
+    return canon_path(str(Path(path.replace("\\", "/")).parent))
+
+
+def directory_editions_compatible(old_dir: str, new_dir: str) -> bool:
+    return edition_tokens(Path(old_dir).name) == edition_tokens(Path(new_dir).name)
+
+
 def editions_compatible(left: FileIdentity, right: FileIdentity) -> bool:
     return edition_tokens(
-        left.title, left.album, left.basename or left.path,
+        left.title,
+        left.album,
+        left.basename or left.path,
+        Path(left.path.replace("\\", "/")).parent.name,
     ) == edition_tokens(
-        right.title, right.album, right.basename or right.path,
+        right.title,
+        right.album,
+        right.basename or right.path,
+        Path(right.path.replace("\\", "/")).parent.name,
     )
 
 
@@ -120,6 +136,8 @@ class PathReconcilePlan:
     migrations: list[tuple[str, str]] = field(default_factory=list)
     mark_missing: list[str] = field(default_factory=list)
     index_new: list[str] = field(default_factory=list)
+    directory_moves: list[tuple[str, str]] = field(default_factory=list)
+    file_match_comparisons: int = 0
 
 
 @dataclass
@@ -130,6 +148,8 @@ class PathReconcileResult:
     indexed: list[str] = field(default_factory=list)
     skipped_dirs: list[str] = field(default_factory=list)
     cleared_missing: list[str] = field(default_factory=list)
+    directory_moves: list[tuple[str, str]] = field(default_factory=list)
+    file_match_comparisons: int = 0
 
 
 @dataclass
@@ -155,17 +175,159 @@ def _row_identity(row: dict) -> FileIdentity:
     )
 
 
+def _group_by_parent(items: Sequence[FileIdentity]) -> dict[str, list[FileIdentity]]:
+    grouped: dict[str, list[FileIdentity]] = defaultdict(list)
+    for item in items:
+        grouped[parent_directory(item.path)].append(item)
+    return grouped
+
+
+def _dir_fingerprint(members: Sequence[FileIdentity], *, mode: str) -> tuple | None:
+    keys: list[tuple[str, int]] = []
+    for item in members:
+        if mode == "size":
+            if item.size is None:
+                return None
+            keys.append((item.basename, int(item.size)))
+        else:
+            if item.duration is None:
+                return None
+            keys.append((item.basename, int(item.duration)))
+    return (len(members), tuple(sorted(keys)))
+
+
+def _pair_dir_members(
+    old_rows: Sequence[FileIdentity],
+    new_files: Sequence[FileIdentity],
+) -> list[tuple[FileIdentity, FileIdentity]] | None:
+    if len(old_rows) != len(new_files) or not old_rows:
+        return None
+    by_base: dict[str, list[FileIdentity]] = defaultdict(list)
+    for item in new_files:
+        by_base[item.basename].append(item)
+    pairs: list[tuple[FileIdentity, FileIdentity]] = []
+    used: set[str] = set()
+    for old in old_rows:
+        hits: list[FileIdentity] = []
+        for item in by_base.get(old.basename, ()):
+            if item.path in used:
+                continue
+            if old.size is not None:
+                if item.size is not None and old.size == item.size:
+                    hits.append(item)
+            elif _duration_equal(old.duration, item.duration):
+                hits.append(item)
+        if len(hits) != 1:
+            return None
+        pairs.append((old, hits[0]))
+        used.add(hits[0].path)
+    return pairs
+
+
+def _index_by_fingerprint(
+    dirs: dict[str, list[FileIdentity]],
+    *,
+    mode: str,
+) -> dict[tuple, list[str]]:
+    index: dict[tuple, list[str]] = defaultdict(list)
+    for directory, members in dirs.items():
+        fingerprint = _dir_fingerprint(members, mode=mode)
+        if fingerprint is not None:
+            index[fingerprint].append(directory)
+    return index
+
+
+def plan_directory_moves(
+    vanished: Sequence[FileIdentity],
+    appeared: Sequence[FileIdentity],
+) -> tuple[
+    list[tuple[str, str]],
+    list[FileIdentity],
+    list[FileIdentity],
+    list[tuple[str, str]],
+]:
+    """Match whole vanished directories to appeared directories. 1:1 only."""
+    v_dirs = _group_by_parent(vanished)
+    a_dirs = _group_by_parent(appeared)
+    by_size = _index_by_fingerprint(a_dirs, mode="size")
+    by_duration = _index_by_fingerprint(a_dirs, mode="duration")
+
+    candidates: dict[str, tuple[str, list[tuple[FileIdentity, FileIdentity]]]] = {}
+    for v_dir, v_members in v_dirs.items():
+        a_dir = None
+        size_fp = _dir_fingerprint(v_members, mode="size")
+        if size_fp is not None:
+            hits = by_size.get(size_fp, ())
+            if len(hits) == 1:
+                a_dir = hits[0]
+        if a_dir is None and all(item.size is None for item in v_members):
+            duration_fp = _dir_fingerprint(v_members, mode="duration")
+            if duration_fp is not None:
+                hits = by_duration.get(duration_fp, ())
+                if len(hits) == 1:
+                    a_dir = hits[0]
+        if a_dir is None or a_dir == v_dir:
+            continue
+        if not directory_editions_compatible(v_dir, a_dir):
+            continue
+        pairs = _pair_dir_members(v_members, a_dirs[a_dir])
+        if pairs is None:
+            continue
+        candidates[v_dir] = (a_dir, pairs)
+
+    claimed_new: dict[str, list[str]] = defaultdict(list)
+    for v_dir, (a_dir, _pairs) in candidates.items():
+        claimed_new[a_dir].append(v_dir)
+
+    migrations: list[tuple[str, str]] = []
+    directory_moves: list[tuple[str, str]] = []
+    used_v: set[str] = set()
+    used_a: set[str] = set()
+    for v_dir, (a_dir, pairs) in candidates.items():
+        if len(claimed_new[a_dir]) != 1:
+            continue
+        directory_moves.append((v_dir, a_dir))
+        for old, new in pairs:
+            migrations.append((old.path, new.path))
+            used_v.add(old.path)
+            used_a.add(new.path)
+
+    pending_v = [row for row in vanished if row.path not in used_v]
+    pending_a = [row for row in appeared if row.path not in used_a]
+    return migrations, pending_v, pending_a, directory_moves
+
+
 def _unique_pairs(
     vanished: Sequence[FileIdentity],
     appeared: Sequence[FileIdentity],
     matches: Callable[[FileIdentity, FileIdentity], bool],
+    key_fn: Callable[[FileIdentity], object | None],
+    comparisons: list[int],
 ) -> list[tuple[FileIdentity, FileIdentity]]:
+    buckets: dict[object, list[FileIdentity]] = defaultdict(list)
+    for item in appeared:
+        key = key_fn(item)
+        if key is None:
+            continue
+        buckets[key].append(item)
+
     v_hits: dict[str, list[FileIdentity]] = {}
-    a_hits: dict[str, list[FileIdentity]] = {}
     for vanished_row in vanished:
-        v_hits[vanished_row.path] = [item for item in appeared if matches(vanished_row, item)]
-    for appeared_file in appeared:
-        a_hits[appeared_file.path] = [item for item in vanished if matches(item, appeared_file)]
+        key = key_fn(vanished_row)
+        if key is None:
+            v_hits[vanished_row.path] = []
+            continue
+        hits: list[FileIdentity] = []
+        for item in buckets.get(key, ()):
+            comparisons[0] += 1
+            if matches(vanished_row, item):
+                hits.append(item)
+        v_hits[vanished_row.path] = hits
+
+    a_hits: dict[str, list[FileIdentity]] = defaultdict(list)
+    for vanished_row in vanished:
+        for item in v_hits[vanished_row.path]:
+            a_hits[item.path].append(vanished_row)
 
     pairs: list[tuple[FileIdentity, FileIdentity]] = []
     for vanished_row in vanished:
@@ -173,12 +335,49 @@ def _unique_pairs(
         if len(hits) != 1:
             continue
         candidate = hits[0]
-        if len(a_hits[candidate.path]) != 1:
-            continue
-        if a_hits[candidate.path][0].path != vanished_row.path:
+        reverse = a_hits[candidate.path]
+        if len(reverse) != 1 or reverse[0].path != vanished_row.path:
             continue
         pairs.append((vanished_row, candidate))
     return pairs
+
+
+def _inode_key(item: FileIdentity) -> object | None:
+    if not inode_usable(item.inode, item.device) or item.size is None:
+        return None
+    return ("ino", item.device, item.inode, item.size)
+
+
+def _tags_key(item: FileIdentity) -> object | None:
+    if item.size is None or item.duration is None:
+        return None
+    return (
+        "tags",
+        item.size,
+        item.duration,
+        normalize_compare_text(item.codec),
+        normalize_compare_text(item.title),
+        normalize_compare_text(item.artist),
+        normalize_compare_text(item.album),
+    )
+
+
+def _basename_key(item: FileIdentity) -> object | None:
+    if item.size is None or item.duration is None:
+        return None
+    return ("base", item.size, item.duration, item.basename)
+
+
+def _legacy_key(item: FileIdentity) -> object | None:
+    if item.duration is None or not item.basename:
+        return None
+    return (
+        "legacy",
+        item.basename,
+        normalize_compare_text(item.title),
+        normalize_compare_text(item.artist),
+        normalize_compare_text(item.album),
+    )
 
 
 def _match_inode(vanished: FileIdentity, appeared: FileIdentity) -> bool:
@@ -241,30 +440,128 @@ def _match_legacy(vanished: FileIdentity, appeared: FileIdentity) -> bool:
     return editions_compatible(vanished, appeared)
 
 
-def plan_path_reconcile(
+def plan_file_matches(
     vanished: Sequence[FileIdentity],
     appeared: Sequence[FileIdentity],
-) -> PathReconcilePlan:
-    """Match vanished rows to appeared files. Ambiguity is never guessed."""
+) -> tuple[list[tuple[str, str]], list[FileIdentity], list[FileIdentity], int]:
     pending_v = list(vanished)
     pending_a = list(appeared)
     migrations: list[tuple[str, str]] = []
-
-    for matcher in (_match_inode, _match_tags, _match_basename, _match_legacy):
+    comparisons = [0]
+    ladders = (
+        (_match_inode, _inode_key),
+        (_match_tags, _tags_key),
+        (_match_basename, _basename_key),
+        (_match_legacy, _legacy_key),
+    )
+    for matcher, key_fn in ladders:
         if not pending_v or not pending_a:
             break
-        pairs = _unique_pairs(pending_v, pending_a, matcher)
+        pairs = _unique_pairs(pending_v, pending_a, matcher, key_fn, comparisons)
         used_v = {left.path for left, _right in pairs}
         used_a = {right.path for _left, right in pairs}
         migrations.extend((left.path, right.path) for left, right in pairs)
         pending_v = [row for row in pending_v if row.path not in used_v]
         pending_a = [row for row in pending_a if row.path not in used_a]
+    return migrations, pending_v, pending_a, comparisons[0]
 
+
+def plan_path_reconcile(
+    vanished: Sequence[FileIdentity],
+    appeared: Sequence[FileIdentity],
+) -> PathReconcilePlan:
+    """Match vanished rows to appeared files. Directory moves run first."""
+    dir_migrations, pending_v, pending_a, directory_moves = plan_directory_moves(
+        vanished, appeared,
+    )
+    file_migrations, pending_v, pending_a, comparisons = plan_file_matches(
+        pending_v, pending_a,
+    )
     return PathReconcilePlan(
-        migrations=migrations,
+        migrations=dir_migrations + file_migrations,
         mark_missing=[row.path for row in pending_v],
         index_new=[row.path for row in pending_a],
+        directory_moves=directory_moves,
+        file_match_comparisons=comparisons,
     )
+
+
+class _DirectoryMoveFailed(Exception):
+    pass
+
+
+def apply_path_migrations(
+    db,
+    migrations: Sequence[tuple[str, str]],
+    appeared_by_path: dict[str, FileIdentity],
+    *,
+    directory_moves: Sequence[tuple[str, str]] = (),
+    on_progress: Callable[..., None] | None = None,
+    batch_size: int = RECONCILE_COMMIT_BATCH,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Apply planned migrations in per-directory transactions, then batches of 50."""
+
+    def emit(**payload: object) -> None:
+        if on_progress is not None:
+            on_progress(**payload)
+
+    def migrate_one(old_path: str, new_path: str) -> bool:
+        identity = appeared_by_path[new_path]
+        return db.migrate_path(
+            old_path,
+            new_path,
+            file_size=identity.size,
+            file_mtime=identity.mtime,
+            file_inode=identity.inode,
+            file_device=identity.device,
+            duration=identity.duration,
+            codec=identity.codec,
+            title=identity.title,
+            artist=identity.artist,
+            album=identity.album,
+        )
+
+    dir_old = {canon_path(old_dir) for old_dir, _new_dir in directory_moves}
+    grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    leftover: list[tuple[str, str]] = []
+    for old_path, new_path in migrations:
+        parent = parent_directory(old_path)
+        if parent in dir_old:
+            grouped[parent].append((old_path, new_path))
+        else:
+            leftover.append((old_path, new_path))
+
+    kept: list[tuple[str, str]] = []
+    failed: list[tuple[str, str]] = []
+    done = 0
+    total = len(migrations)
+    emit(phase="migrating", scanned=0, total=total, migrated=0)
+
+    for pairs in grouped.values():
+        try:
+            with db.write_transaction():
+                for old_path, new_path in pairs:
+                    if not migrate_one(old_path, new_path):
+                        raise _DirectoryMoveFailed(old_path)
+        except _DirectoryMoveFailed:
+            leftover.extend(pairs)
+        else:
+            kept.extend(pairs)
+            done += len(pairs)
+            emit(phase="migrating", scanned=done, total=total, migrated=done)
+
+    for offset in range(0, len(leftover), batch_size):
+        chunk = leftover[offset:offset + batch_size]
+        with db.write_transaction():
+            for old_path, new_path in chunk:
+                if migrate_one(old_path, new_path):
+                    kept.append((old_path, new_path))
+                else:
+                    failed.append((old_path, new_path))
+        done += len(chunk)
+        emit(phase="migrating", scanned=done, total=total, migrated=len(kept))
+
+    return kept, failed
 
 
 def _is_under(path: str, prefixes: Iterable[str]) -> bool:
@@ -402,11 +699,96 @@ class PathReconciler:
             file_device=identity.device,
         )
 
-    def reconcile(self, *, force: bool = False) -> PathReconcileResult:
+    def _emit(self, on_progress: Callable[..., None] | None, **payload: object) -> None:
+        if on_progress is not None:
+            on_progress(**payload)
+
+    def _enrich_tags(
+        self,
+        items: Sequence[FileIdentity],
+        appeared_meta: dict[str, dict | None],
+    ) -> list[FileIdentity]:
+        enriched: list[FileIdentity] = []
+        for item in items:
+            if item.duration is not None and item.title is not None:
+                enriched.append(item)
+                continue
+            packed = self._file_identity(Path(item.path), read_tags=True)
+            if packed is None:
+                enriched.append(item)
+                continue
+            identity, meta = packed
+            appeared_meta[identity.path] = meta
+            enriched.append(identity)
+        return enriched
+
+    def _collect_pools(
+        self,
+        current: dict[str, _DirInfo],
+        skip_prefixes: set[str],
+    ) -> tuple[list[FileIdentity], list[FileIdentity], dict[str, dict | None], list[str]]:
+        on_disk: dict[str, str] = {}
+        for directory, info in current.items():
+            for name in info.audio_names:
+                actual = str(Path(directory) / name)
+                on_disk[canon_path(actual)] = actual
+
+        vanished_rows: list[FileIdentity] = []
+        known_by_canon: dict[str, dict] = {}
+        for row in self.db.identity_rows():
+            path = row["path"]
+            known_by_canon[canon_path(path)] = row
+            if path_has_skipped_scan_dir(path):
+                continue
+            if _is_under(path, skip_prefixes):
+                continue
+            if not _under_configured_roots(path, self.roots):
+                continue
+            if canon_path(path) not in on_disk:
+                vanished_rows.append(_row_identity(row))
+
+        appeared: list[FileIdentity] = []
+        appeared_meta: dict[str, dict | None] = {}
+        resurfaced: list[str] = []
+        for canon, actual in on_disk.items():
+            if path_has_skipped_scan_dir(actual):
+                continue
+            if not _under_configured_roots(actual, self.roots):
+                continue
+            known = known_by_canon.get(canon)
+            if known is not None:
+                if known.get("missing_since") is not None:
+                    resurfaced.append(known["path"])
+                continue
+            packed = self._file_identity(Path(actual), read_tags=False)
+            if packed is None:
+                continue
+            identity, _meta = packed
+            appeared.append(identity)
+
+        if any(row.size is None for row in vanished_rows):
+            v_counts = {len(members) for members in _group_by_parent(vanished_rows).values()}
+            a_groups = _group_by_parent(appeared)
+            needs = [
+                item for item in appeared
+                if len(a_groups.get(parent_directory(item.path), ())) in v_counts
+            ]
+            need_paths = {item.path for item in needs}
+            others = [item for item in appeared if item.path not in need_paths]
+            appeared = others + self._enrich_tags(needs, appeared_meta)
+        return vanished_rows, appeared, appeared_meta, resurfaced
+
+    def reconcile(
+        self,
+        *,
+        force: bool = False,
+        on_progress: Callable[..., None] | None = None,
+    ) -> PathReconcileResult:
         del force
         if not self.roots:
             return PathReconcileResult(unchanged=True)
 
+        self._emit(on_progress, phase="walking")
         current, unreadable = self.walk_dirs()
         if not current and unreadable:
             return PathReconcileResult(unchanged=True, skipped_dirs=sorted(unreadable))
@@ -432,107 +814,113 @@ class PathReconciler:
             self.db.commit()
             return PathReconcileResult(unchanged=True, skipped_dirs=sorted(unreadable))
 
-        work_dirs = changed_dirs | new_dirs
-        vanished_rows: list[FileIdentity] = []
-        seen_vanished: set[str] = set()
+        vanished_rows, appeared, appeared_meta, resurfaced = self._collect_pools(
+            current, skip_prefixes,
+        )
+        self._emit(
+            on_progress,
+            phase="matching",
+            vanished=len(vanished_rows),
+            appeared=len(appeared),
+            total=len(vanished_rows) + len(appeared),
+        )
 
-        for directory in work_dirs:
-            for row in self.db.rows_in_directory(directory):
-                if path_has_skipped_scan_dir(row["path"]):
-                    continue
-                name = Path(row["path"]).name
-                if name not in current[directory].audio_names and row["path"] not in seen_vanished:
-                    vanished_rows.append(_row_identity(row))
-                    seen_vanished.add(row["path"])
+        dir_migrations, pending_v, pending_a, directory_moves = plan_directory_moves(
+            vanished_rows, appeared,
+        )
+        pending_a = self._enrich_tags(pending_a, appeared_meta)
+        file_migrations, pending_v, pending_a, comparisons = plan_file_matches(
+            pending_v, pending_a,
+        )
+        plan = PathReconcilePlan(
+            migrations=dir_migrations + file_migrations,
+            mark_missing=[row.path for row in pending_v],
+            index_new=[row.path for row in pending_a],
+            directory_moves=directory_moves,
+            file_match_comparisons=comparisons,
+        )
 
-        for directory in vanished_dirs:
-            for row in self.db.rows_under_directory(directory):
-                if path_has_skipped_scan_dir(row["path"]):
-                    continue
-                if _is_under(row["path"], skip_prefixes):
-                    continue
-                if row["path"] not in seen_vanished:
-                    vanished_rows.append(_row_identity(row))
-                    seen_vanished.add(row["path"])
-
-        appeared: list[FileIdentity] = []
-        appeared_meta: dict[str, dict | None] = {}
-        resurfaced: list[str] = []
-        known_by_canon = {canon_path(path): path for path in self.db.known_paths()}
-        for directory in work_dirs:
-            info = current[directory]
-            for name in info.audio_names:
-                file_path = Path(directory) / name
-                if path_has_skipped_scan_dir(file_path):
-                    continue
-                known_path = known_by_canon.get(canon_path(file_path))
-                if known_path is not None:
-                    row = self.db.get(known_path)
-                    if row and row.get("missing_since") is not None:
-                        resurfaced.append(known_path)
-                    continue
-                packed = self._file_identity(file_path, read_tags=True)
-                if packed is None:
-                    continue
-                identity, meta = packed
-                if not _under_configured_roots(identity.path, self.roots):
-                    continue
-                appeared.append(identity)
-                appeared_meta[identity.path] = meta
-
-        vanished_rows = [
-            row for row in vanished_rows if _under_configured_roots(row.path, self.roots)
-        ]
-        plan = plan_path_reconcile(vanished_rows, appeared)
         now = self.now_fn()
         appeared_by_path = {item.path: item for item in appeared}
-        migrations = list(plan.migrations)
+        for item in pending_a:
+            appeared_by_path[item.path] = item
         mark_missing = list(plan.mark_missing)
         index_new = list(plan.index_new)
 
+        kept_migrations, failed = apply_path_migrations(
+            self.db,
+            plan.migrations,
+            appeared_by_path,
+            directory_moves=plan.directory_moves,
+            on_progress=on_progress,
+        )
+        for old_path, new_path in failed:
+            mark_missing.append(old_path)
+            index_new.append(new_path)
+
+        for offset in range(0, len(mark_missing), RECONCILE_COMMIT_BATCH):
+            chunk = mark_missing[offset:offset + RECONCILE_COMMIT_BATCH]
+            with self.db.write_transaction():
+                for old_path in chunk:
+                    self.db.mark_missing(old_path, since=now)
+            self._emit(
+                on_progress,
+                phase="marking_missing",
+                scanned=min(offset + len(chunk), len(mark_missing)),
+                total=len(mark_missing),
+                missing=min(offset + len(chunk), len(mark_missing)),
+            )
+
+        if resurfaced:
+            with self.db.write_transaction():
+                for path in resurfaced:
+                    self.db.clear_missing(path)
+
         with self.db.write_transaction():
-            kept_migrations: list[tuple[str, str]] = []
-            for old_path, new_path in migrations:
-                identity = appeared_by_path[new_path]
-                if not self.db.migrate_path(
-                    old_path,
-                    new_path,
-                    file_size=identity.size,
-                    file_mtime=identity.mtime,
-                    file_inode=identity.inode,
-                    file_device=identity.device,
-                    duration=identity.duration,
-                    codec=identity.codec,
-                    title=identity.title,
-                    artist=identity.artist,
-                    album=identity.album,
-                ):
-                    mark_missing.append(old_path)
-                    index_new.append(new_path)
-                    continue
-                kept_migrations.append((old_path, new_path))
-            for old_path in mark_missing:
-                self.db.mark_missing(old_path, since=now)
-            for path in resurfaced:
-                self.db.clear_missing(path)
             self.db.replace_dir_signatures(
                 {path: info.signature for path, info in current.items()},
                 checked_at=now,
                 keep_dirs={directory for directory in stored_keys if _is_under(directory, skip_prefixes)},
             )
 
-        for new_path in index_new:
-            identity = appeared_by_path[new_path]
-            self._index_appeared(Path(new_path), identity, appeared_meta.get(new_path))
+        index_identities = self._enrich_tags(
+            [appeared_by_path[path] for path in index_new if path in appeared_by_path],
+            appeared_meta,
+        )
+        indexed_paths: list[str] = []
+        for identity in index_identities:
+            self._index_appeared(
+                Path(identity.path), identity, appeared_meta.get(identity.path),
+            )
+            indexed_paths.append(identity.path)
+            if len(indexed_paths) % RECONCILE_COMMIT_BATCH == 0:
+                self.db.commit()
+                self._emit(
+                    on_progress,
+                    phase="indexing",
+                    scanned=len(indexed_paths),
+                    total=len(index_identities),
+                    indexed=len(indexed_paths),
+                )
+        if index_identities:
             self.db.commit()
+            self._emit(
+                on_progress,
+                phase="indexing",
+                scanned=len(indexed_paths),
+                total=len(index_identities),
+                indexed=len(indexed_paths),
+            )
 
         return PathReconcileResult(
             unchanged=False,
             migrations=kept_migrations,
             marked_missing=list(mark_missing),
-            indexed=list(index_new),
+            indexed=indexed_paths,
             skipped_dirs=sorted(unreadable),
             cleared_missing=list(resurfaced),
+            directory_moves=list(plan.directory_moves),
+            file_match_comparisons=plan.file_match_comparisons,
         )
 
 

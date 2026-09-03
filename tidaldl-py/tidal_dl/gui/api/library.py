@@ -85,6 +85,11 @@ _reconcile_progress = {
     "migrated": 0,
     "indexed": 0,
     "missing": 0,
+    "vanished": 0,
+    "appeared": 0,
+    "total": 0,
+    "scanned": 0,
+    "directory_moves": 0,
     "done": True,
     "phase": "idle",
     "error": None,
@@ -1054,6 +1059,11 @@ def _new_reconcile_progress(**overrides) -> dict:
         "migrated": 0,
         "indexed": 0,
         "missing": 0,
+        "vanished": 0,
+        "appeared": 0,
+        "total": 0,
+        "scanned": 0,
+        "directory_moves": 0,
         "done": False,
         "phase": "preparing",
         "error": None,
@@ -1141,13 +1151,13 @@ def _dir_signatures_unchanged(db: LibraryDB, scan_dirs: list[Path]) -> bool:
     return all(stored[path] == info.signature for path, info in current.items())
 
 
-def _run_path_reconcile(db: LibraryDB, scan_dirs: list[Path]):
+def _run_path_reconcile(db: LibraryDB, scan_dirs: list[Path], on_progress=None):
     """Heal moved/missing paths. Distinct from ``_reconcile_library_rows`` (metadata)."""
     from tidal_dl.helper.library_reconcile import PathReconcileResult
 
     if not scan_dirs:
         return PathReconcileResult(unchanged=True)
-    return _path_reconciler(db, scan_dirs).reconcile(force=True)
+    return _path_reconciler(db, scan_dirs).reconcile(force=True, on_progress=on_progress)
 
 
 def _migrate_moved_scan_paths(
@@ -1157,7 +1167,12 @@ def _migrate_moved_scan_paths(
     scan_dirs: list[Path],
 ) -> None:
     """Identity-migrate rows before the scan indexes new paths or prunes old ones."""
-    from tidal_dl.helper.library_reconcile import FileIdentity, identity_from_stat, plan_path_reconcile
+    from tidal_dl.helper.library_reconcile import (
+        FileIdentity,
+        apply_path_migrations,
+        identity_from_stat,
+        plan_path_reconcile,
+    )
 
     stale = [path for path in known - disk_paths if not path_has_skipped_scan_dir(path)]
     appeared_paths = disk_paths - known
@@ -1198,22 +1213,12 @@ def _migrate_moved_scan_paths(
     plan = plan_path_reconcile(vanished, appeared)
     if not plan.migrations:
         return
-    with db.write_transaction():
-        for old_path, new_path in plan.migrations:
-            identity = appeared_by_path[new_path]
-            db.migrate_path(
-                old_path,
-                new_path,
-                file_size=identity.size,
-                file_mtime=identity.mtime,
-                file_inode=identity.inode,
-                file_device=identity.device,
-                duration=identity.duration,
-                codec=identity.codec,
-                title=identity.title,
-                artist=identity.artist,
-                album=identity.album,
-            )
+    apply_path_migrations(
+        db,
+        plan.migrations,
+        appeared_by_path,
+        directory_moves=plan.directory_moves,
+    )
 
 
 def request_path_reconcile(*, force: bool = False) -> dict:
@@ -1243,7 +1248,7 @@ def _background_path_reconcile() -> None:
         db.open()
         if scan_dirs:
             _migrate_volume_prefixes(db, scan_dirs)
-        result = _run_path_reconcile(db, scan_dirs)
+        result = _run_path_reconcile(db, scan_dirs, on_progress=_update_reconcile_progress)
         if not result.unchanged:
             dropped = drop_skipped_scan_paths(db)
             if dropped:
@@ -1254,6 +1259,7 @@ def _background_path_reconcile() -> None:
             migrated=len(result.migrations),
             indexed=len(result.indexed),
             missing=len(result.marked_missing),
+            directory_moves=len(result.directory_moves),
             error=None,
         )
         if not result.unchanged:
