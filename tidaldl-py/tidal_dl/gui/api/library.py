@@ -2177,7 +2177,7 @@ def scan_status() -> dict:
 
 
 @router.post("/library/reconcile")
-def reconcile_library_paths(force: bool = Query(False)) -> dict:
+def reconcile_library_paths(force: bool = False) -> dict:
     """Heal moved folders without a full rescan. Returns immediately.
 
     ``force=true`` is for the Refresh button. Startup, window-focus, and
