@@ -60,6 +60,7 @@ class LibraryDBCore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self._path))
         self._conn.row_factory = sqlite3.Row
+        self._conn.create_function("fold_search", 1, fold_search_text, deterministic=True)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         version = self._conn.execute("PRAGMA user_version").fetchone()[0]
@@ -71,6 +72,10 @@ class LibraryDBCore:
                     self._migrate()
                     self._conn.execute(f"PRAGMA user_version = {self._SCHEMA_VERSION}")
                     self._conn.commit()
+        collapse = getattr(self, "collapse_unicode_path_twins", None)
+        if collapse is not None:
+            collapse()
+            self._conn.commit()
 
     def _migrate(self) -> None:
         assert self._conn

@@ -1521,6 +1521,23 @@ function libraryMountSource() {
     ?.split('\nasync function _showDuplicatePreview')[0] || '';
 }
 
+function duplicatePreviewSource() {
+  return viewsSource
+    .split('async function _showDuplicatePreview(container) {')[1]
+    ?.split('\nfunction _navText(')[0] || '';
+}
+
+describe('duplicate preview', () => {
+  test('shows a truncated note and does not add a second clean route', () => {
+    const source = duplicatePreviewSource();
+    expect(source).toContain("data.truncated");
+    expect(source).toContain("Showing the first ");
+    expect(source).toContain("api('/duplicates/preview')");
+    expect(source).toContain("api('/duplicates/clean', { method: 'POST' })");
+    expect(source.match(/api\('\/duplicates\/clean'/g) || []).toHaveLength(1);
+  });
+});
+
 describe('navigation stack', () => {
   test('back from a Plays album restores library sort, query, and scroll', () => {
     const nav = loadNavStackHelpers();

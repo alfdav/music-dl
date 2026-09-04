@@ -11,12 +11,26 @@ from fastapi import APIRouter, Query
 from tidal_dl.config import Tidal
 from tidal_dl.gui.services.db import get_library_db
 from tidal_dl.gui.tidal_ref import TidalRef, looks_like_web_url, parse_tidal_ref
+from tidal_dl.helper.library_scanner import path_has_skipped_scan_dir
 
 router = APIRouter()
 
 
 def _get_library_db():
     return get_library_db()
+
+
+def _live_library_row(db: Any, isrc: str) -> dict | None:
+    """Prefer a live library file. Never rank a `#recycle` / trash path first."""
+    if not isrc:
+        return None
+    for row in db.tracks_by_isrc(isrc):
+        path = row.get("path") or ""
+        if path_has_skipped_scan_dir(path):
+            continue
+        if Path(path).is_file():
+            return row
+    return None
 
 
 def get_tidal():
@@ -50,10 +64,7 @@ def _serialize_track(track: Any, isrc_index: Any = None) -> dict:
     local_row = None
     if isrc:
         db = _get_library_db()
-        local_row = next(
-            (row for row in db.tracks_by_isrc(isrc) if Path(row.get("path") or "").is_file()),
-            None,
-        )
+        local_row = _live_library_row(db, isrc)
         if local_row:
             local_path = local_row["path"]
     is_local = bool(local_path)
@@ -281,7 +292,10 @@ def _album_tracks_for_query(tidal: Any, query: str, limit: int) -> list[Any] | N
 
 def _serialize_track_hits(tracks: list[Any]) -> list[dict]:
     serialized = [_serialize_track(track) for track in tracks]
-    serialized.sort(key=lambda item: (not item["is_local"],))
+    serialized.sort(key=lambda item: (
+        path_has_skipped_scan_dir(item.get("path") or item.get("local_path") or ""),
+        not item["is_local"],
+    ))
     return serialized
 
 

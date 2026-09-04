@@ -73,7 +73,12 @@ def _best_local_row(
     candidates: list[dict] = []
 
     if isrc:
-        candidates = db.tracks_by_isrc(isrc)
+        from tidal_dl.helper.library_scanner import path_has_skipped_scan_dir
+
+        candidates = [
+            row for row in db.tracks_by_isrc(isrc)
+            if not path_has_skipped_scan_dir(row.get("path") or "")
+        ]
 
     target_album = _normalize(track_data.get("album"))
 

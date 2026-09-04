@@ -282,6 +282,40 @@ class TestPagination:
         assert total == 1
         assert rows[0]["title"] == "Track 5"
 
+    def test_tracks_page_search_folds_accents(self, db):
+        remastered = (
+            "/music/Carlos Vives/"
+            "Clásicos de la Provincia 30 Años (Remastered & Expanded)/"
+            "La gota fría (Remastered 30 años).flac"
+        )
+        db.record(
+            remastered,
+            status="tagged",
+            artist="Carlos Vives",
+            title="La gota fría (Remastered 30 años)",
+            album="Clásicos de la Provincia 30 Años (Remastered & Expanded)",
+            quality="44100Hz/24bit",
+            fmt="FLAC",
+            codec="flac",
+        )
+        db.record(
+            "/music/Carlos Vives/Clasicos de la Provincia/Carlos Vives - La Gota Fria.flac",
+            status="tagged",
+            artist="Carlos Vives",
+            title="La Gota Fria",
+            album="Clasicos de la Provincia",
+            quality="44100Hz/16bit",
+            fmt="FLAC",
+            codec="flac",
+        )
+        db.commit()
+
+        for query in ("Fria", "gota fria"):
+            rows, total = db.tracks_page(query=query, limit=50, offset=0)
+            titles = [row["title"] for row in rows]
+            assert total == 2, query
+            assert "La gota fría (Remastered 30 años)" in titles, query
+
     def test_artists_page(self, db):
         self._seed(db)
         _rows, total = db.artists_page(limit=50, offset=0)

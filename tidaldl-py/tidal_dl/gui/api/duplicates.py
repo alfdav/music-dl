@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException
 
 from tidal_dl.gui.api.upgrade import _tier_rank_for_quality
 from tidal_dl.helper.library_db import LibraryDB
+from tidal_dl.helper.library_scanner import is_skipped_scan_dir
 from tidal_dl.helper.path import path_config_base
 
 router = APIRouter()
@@ -25,6 +26,29 @@ logger = logging.getLogger("music-dl.duplicates")
 _TIER_NAMES = {4: "Legendary", 3: "Epic", 2: "Rare", 1: "Uncommon", 0: "Common"}
 _LOCK_FILENAME = "cleanup.lock"
 _MANIFEST_FILENAME = "manifest.json"
+_PREVIEW_GROUP_LIMIT = 80
+_LOSSLESS_CODECS = frozenset({"flac", "alac", "pcm", "wav", "aiff"})
+_LOSSY_CODECS = frozenset({"aac", "mp3", "ogg", "opus", "vorbis"})
+_LOSSLESS_EXTS = frozenset({".flac", ".wav", ".aiff", ".alac"})
+_EDITION_CANON = {
+    "remastered": "remaster",
+    "remasters": "remaster",
+    "remaster": "remaster",
+    "re-mastered": "remaster",
+    "re-master": "remaster",
+    "remasterizado": "remaster",
+    "remasterizada": "remaster",
+    "deluxe": "deluxe",
+    "special": "special",
+    "expanded": "expanded",
+    "expandida": "expanded",
+    "extended": "expanded",
+    "anniversary": "anniversary",
+    "aniversario": "anniversary",
+    "bonus": "bonus",
+    "digitized": "digitized",
+    "digitised": "digitized",
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -112,6 +136,11 @@ def _find_active_manifest() -> dict | None:
     return best
 
 
+def _is_recycle_path(path: str) -> bool:
+    """True when ``#recycle`` is a directory component (NAS trash, any vendor)."""
+    return any(part.casefold() == "#recycle" for part in Path(path).parts[:-1])
+
+
 def _path_score(path: str) -> int:
     """Lower score = more canonical. Higher = more likely duplicate."""
     score = 0
@@ -129,6 +158,157 @@ def _path_score(path: str) -> int:
 def _normalize(s: str) -> str:
     """Normalize a string for fuzzy matching."""
     return " ".join(s.lower().strip().split())
+
+
+def _is_playlist_path(path: str) -> bool:
+    lowered = path.lower()
+    return "- playlists" in lowered or "/playlists/" in lowered
+
+
+def _edition_tokens(*texts: str) -> frozenset[str]:
+    blob = " ".join(texts).lower()
+    found: set[str] = set()
+    for raw, canon in _EDITION_CANON.items():
+        if re.search(rf"(?<![a-z0-9]){re.escape(raw)}(?![a-z0-9])", blob):
+            found.add(canon)
+    return frozenset(found)
+
+
+def _track_edition_tokens(track: dict) -> frozenset[str]:
+    return _edition_tokens(
+        track.get("path") or "",
+        track.get("title") or "",
+        track.get("album") or "",
+    )
+
+
+def _is_lossless(track: dict) -> bool:
+    codec = (track.get("codec") or "").casefold()
+    if codec in _LOSSLESS_CODECS:
+        return True
+    if codec in _LOSSY_CODECS:
+        return False
+    fmt = (track.get("format") or "").casefold()
+    if fmt in {ext.lstrip(".") for ext in _LOSSLESS_EXTS}:
+        return True
+    suffix = Path(track.get("path") or "").suffix.casefold()
+    return suffix in _LOSSLESS_EXTS
+
+
+def _quality_class(track: dict) -> tuple[bool, int | None, int | None]:
+    quality = track.get("quality") or ""
+    match = re.match(r"(\d+)Hz/(\d+)bit", quality, re.IGNORECASE)
+    sample_rate = int(match.group(1)) if match else None
+    bit_depth = int(match.group(2)) if match else None
+    return (_is_lossless(track), sample_rate, bit_depth)
+
+
+def _folder_album_identity(path: str) -> tuple[str, str] | None:
+    parts = [part for part in Path(path).parts if not is_skipped_scan_dir(part)]
+    if len(parts) < 2:
+        return None
+    parent = parts[-2]
+    if " - " in parent:
+        artist, album = parent.split(" - ", 1)
+        return (_normalize(artist), _normalize(album))
+    if len(parts) >= 3:
+        return (_normalize(parts[-3]), _normalize(parent))
+    return None
+
+
+def _layout_style(path: str) -> str:
+    parts = [part for part in Path(path).parts if not is_skipped_scan_dir(part)]
+    if len(parts) >= 2 and " - " in parts[-2]:
+        return "flat"
+    return "nested"
+
+
+def _is_layout_twin(path_a: str, path_b: str) -> bool:
+    identity_a = _folder_album_identity(path_a)
+    identity_b = _folder_album_identity(path_b)
+    if not identity_a or not identity_b or identity_a != identity_b:
+        return False
+    if _is_recycle_path(path_a) != _is_recycle_path(path_b):
+        return True
+    return _layout_style(path_a) != _layout_style(path_b)
+
+
+def _is_auto_extra(keeper: dict, extra: dict) -> bool:
+    """True only for same-edition folder-layout twins or recycle copies.
+
+    Edition tokens are compared as sets. Matching remaster/deluxe twins can
+    still be auto extras; a token on only one side is a different edition.
+    """
+    if _is_playlist_path(keeper["path"]) or _is_playlist_path(extra["path"]):
+        return False
+    if _normalize(keeper.get("album") or "") != _normalize(extra.get("album") or ""):
+        return False
+    if _track_edition_tokens(keeper) != _track_edition_tokens(extra):
+        return False
+    if _quality_class(keeper) != _quality_class(extra):
+        return False
+    return _is_layout_twin(keeper["path"], extra["path"])
+
+
+def _keeper_sort_key(track: dict) -> tuple:
+    return (
+        1 if _is_recycle_path(track["path"]) else 0,
+        0 if _is_lossless(track) else 1,
+        -_tier_rank_for_quality(
+            track.get("quality"), track.get("format"), track.get("codec")
+        ),
+        _path_score(track["path"]),
+        len(track["path"]),
+    )
+
+
+def _serialize_member(track: dict) -> dict:
+    rank = _tier_rank_for_quality(
+        track.get("quality"), track.get("format"), track.get("codec")
+    )
+    return {
+        "path": track["path"],
+        "quality": track.get("quality"),
+        "format": track.get("format"),
+        "tier": _TIER_NAMES.get(rank, "Common"),
+    }
+
+
+def _serialize_group(key: str, keeper: dict, extras: list[dict], status: str) -> dict:
+    return {
+        "key": key,
+        "status": status,
+        "keeper": _serialize_member(keeper),
+        "duplicates": [_serialize_member(track) for track in extras],
+    }
+
+
+def _groups_from_tracks(key: str, tracks: list[dict]) -> list[dict]:
+    if len(tracks) < 2:
+        return []
+    ranked = sorted(tracks, key=_keeper_sort_key)
+    keeper = ranked[0]
+    auto: list[dict] = []
+    uncertain: list[dict] = []
+    for extra in ranked[1:]:
+        if _is_auto_extra(keeper, extra):
+            auto.append(extra)
+        else:
+            uncertain.append(extra)
+    groups: list[dict] = []
+    if auto:
+        groups.append(_serialize_group(key, keeper, auto, "auto"))
+    if uncertain:
+        groups.append(_serialize_group(key, keeper, uncertain, "uncertain"))
+    return groups
+
+
+def _count_cleanable_duplicates(groups: list[dict]) -> int:
+    return sum(
+        len(group["duplicates"])
+        for group in groups
+        if group.get("status") != "uncertain"
+    )
 
 
 def _reachable_scan_dirs() -> list[Path]:
@@ -162,8 +342,14 @@ def _prune_stale(db: LibraryDB, reachable_dirs: list[Path]) -> int:
     return pruned
 
 
-def _find_duplicate_groups(db: LibraryDB) -> list[dict]:
-    """Two-phase duplicate grouping: ISRC+album, then title+artist fallback."""
+def _find_duplicate_groups(
+    db: LibraryDB, *, skip_recycle: bool = False
+) -> list[dict]:
+    """Two-phase duplicate grouping: ISRC+album, then title+artist fallback.
+
+    ``skip_recycle`` drops ``#recycle`` path-component rows before grouping so
+    preview can return live extras without changing Clean Up's default groups.
+    """
     assert db._conn
     groups: list[dict] = []
     seen_paths: set[str] = set()
@@ -183,49 +369,12 @@ def _find_duplicate_groups(db: LibraryDB) -> list[dict]:
             (g["isrc"], g["album_key"]),
         ).fetchall()
         tracks = [dict(r) for r in rows]
+        if skip_recycle:
+            tracks = [t for t in tracks if not _is_recycle_path(t["path"])]
         if len(tracks) < 2:
             continue
 
-        # Rank: best quality first, then most canonical path, then shortest path
-        tracks.sort(
-            key=lambda t: (
-                -_tier_rank_for_quality(
-                    t.get("quality"), t.get("format"), t.get("codec")
-                ),
-                _path_score(t["path"]),
-                len(t["path"]),
-            )
-        )
-
-        keeper = tracks[0]
-        duplicates = tracks[1:]
-
-        keeper_rank = _tier_rank_for_quality(
-            keeper.get("quality"), keeper.get("format"), keeper.get("codec")
-        )
-        groups.append({
-            "key": f"isrc:{g['isrc']}|{g['album_key']}",
-            "keeper": {
-                "path": keeper["path"],
-                "quality": keeper.get("quality"),
-                "format": keeper.get("format"),
-                "tier": _TIER_NAMES.get(keeper_rank, "Common"),
-            },
-            "duplicates": [
-                {
-                    "path": d["path"],
-                    "quality": d.get("quality"),
-                    "format": d.get("format"),
-                    "tier": _TIER_NAMES.get(
-                        _tier_rank_for_quality(
-                            d.get("quality"), d.get("format"), d.get("codec")
-                        ),
-                        "Common",
-                    ),
-                }
-                for d in duplicates
-            ],
-        })
+        groups.extend(_groups_from_tracks(f"isrc:{g['isrc']}|{g['album_key']}", tracks))
         for t in tracks:
             seen_paths.add(t["path"])
 
@@ -239,6 +388,8 @@ def _find_duplicate_groups(db: LibraryDB) -> list[dict]:
     meta_groups: dict[tuple[str, str], list[dict]] = {}
     for r in no_isrc_rows:
         d = dict(r)
+        if skip_recycle and _is_recycle_path(d["path"]):
+            continue
         if d["path"] in seen_paths:
             continue
         title = _normalize(d.get("title") or "")
@@ -270,43 +421,7 @@ def _find_duplicate_groups(db: LibraryDB) -> list[dict]:
             duration_groups.append(current_group)
 
         for dg in duration_groups:
-            dg.sort(
-                key=lambda t: (
-                    -_tier_rank_for_quality(
-                        t.get("quality"), t.get("format"), t.get("codec")
-                    ),
-                    _path_score(t["path"]),
-                    len(t["path"]),
-                )
-            )
-            keeper = dg[0]
-            duplicates = dg[1:]
-            keeper_rank = _tier_rank_for_quality(
-                keeper.get("quality"), keeper.get("format"), keeper.get("codec")
-            )
-            groups.append({
-                "key": f"meta:{title}|{artist}",
-                "keeper": {
-                    "path": keeper["path"],
-                    "quality": keeper.get("quality"),
-                    "format": keeper.get("format"),
-                    "tier": _TIER_NAMES.get(keeper_rank, "Common"),
-                },
-                "duplicates": [
-                    {
-                        "path": d["path"],
-                        "quality": d.get("quality"),
-                        "format": d.get("format"),
-                        "tier": _TIER_NAMES.get(
-                            _tier_rank_for_quality(
-                                d.get("quality"), d.get("format"), d.get("codec")
-                            ),
-                            "Common",
-                        ),
-                    }
-                    for d in duplicates
-                ],
-            })
+            groups.extend(_groups_from_tracks(f"meta:{title}|{artist}", dg))
 
     return groups
 
@@ -354,19 +469,23 @@ def _preview_sync() -> dict:
 
     db = _get_db()
     try:
-        reachable = _reachable_scan_dirs()
-        stale_count = _prune_stale(db, reachable)
-        groups = _find_duplicate_groups(db)
-        total_duplicates = sum(len(g["duplicates"]) for g in groups)
+        # Preview is a UI read. Do not exists() the library (NAS timeout)
+        # and do not feed #recycle path-component rows into grouping.
+        # Cleanable count still follows PR 161 edition-safe law.
+        groups = _find_duplicate_groups(db, skip_recycle=True)
+        total_duplicates = _count_cleanable_duplicates(groups)
+        truncated = len(groups) > _PREVIEW_GROUP_LIMIT
+        shown = groups[:_PREVIEW_GROUP_LIMIT]
 
         # Check if there's an active undo manifest (from this or a previous run)
         active_manifest = _find_active_manifest()
 
         return {
-            "stale_count": stale_count,
-            "groups": groups,
+            "stale_count": 0,
+            "groups": shown,
             "total_groups": len(groups),
             "total_duplicates": total_duplicates,
+            "truncated": truncated,
             "undo_available": active_manifest is not None,
         }
     finally:
@@ -400,7 +519,8 @@ def _clean_sync() -> dict:
         staging = _staging_dir(ts)
         moved_files: list[dict[str, Any]] = []
 
-        for group in groups:
+        auto_groups = [group for group in groups if group.get("status") != "uncertain"]
+        for group in auto_groups:
             for dup in group["duplicates"]:
                 original_path = dup["path"]
                 if not os.path.exists(original_path):
@@ -434,7 +554,7 @@ def _clean_sync() -> dict:
 
         return {
             "stale_pruned": stale_pruned,
-            "groups_cleaned": len(groups),
+            "groups_cleaned": len(auto_groups),
             "duplicates_moved": len(moved_files),
             "undo_available": len(moved_files) > 0,
             "undo_expires_at": expires_at,

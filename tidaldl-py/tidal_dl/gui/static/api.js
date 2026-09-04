@@ -110,6 +110,8 @@ function _qualityTier(q, fmt, codec) {
     return { tier: 'Lossless', cls: 'quality-lossless', desc: q + ' · Lossless', rank: 2 };
   if (ql === 'MP3' || ql === 'AAC' || ql === 'OGG')
     return { tier: 'Lossy', cls: 'quality-lossy', desc: q + ' · Lossy', rank: 1 };
+  if ((fmt || '').toLowerCase() === 'm4a')
+    return { tier: 'Unknown', cls: 'quality-unknown', desc: 'M4A · Unknown', rank: 0 };
 
   return { tier: 'Unknown', cls: 'quality-unknown', desc: q || fmt || 'Unknown quality', rank: 0 };
 }

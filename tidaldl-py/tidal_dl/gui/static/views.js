@@ -3484,17 +3484,24 @@ async function _showDuplicatePreview(container) {
       return;
     }
     summary.appendChild(textEl('div', 'Found ' + data.total_groups + ' duplicate groups (' + data.total_duplicates + ' extra copies)', 'dup-summary-text'));
+    if (data.truncated) {
+      summary.appendChild(textEl('div', 'Showing the first ' + (data.groups || []).length + ' groups.', 'dup-stale-note'));
+    }
     container.appendChild(summary);
 
-    // Clean Up button
-    const cleanBtn = h('button', { className: 'pill active dup-clean-btn' });
-    cleanBtn.textContent = 'Clean Up ' + data.total_duplicates + ' Duplicates';
-    container.appendChild(cleanBtn);
+    // Clean Up button — only auto extras, never UNCERTAIN edition/quality pairs
+    let cleanBtn = null;
+    if (data.total_duplicates > 0) {
+      cleanBtn = h('button', { className: 'pill active dup-clean-btn' });
+      cleanBtn.textContent = 'Clean Up ' + data.total_duplicates + ' Duplicates';
+      container.appendChild(cleanBtn);
+    }
 
     // Group list
     const groupList = h('div', { className: 'dup-groups' });
     (data.groups || []).forEach(g => {
-      const card = h('div', { className: 'dup-group-card' });
+      const uncertain = g.status === 'uncertain';
+      const card = h('div', { className: 'dup-group-card' + (uncertain ? ' dup-uncertain' : '') });
       // Keeper
       const keeperRow = h('div', { className: 'dup-keeper' });
       keeperRow.appendChild(textEl('span', '\u2713 KEEP', 'dup-keep-badge'));
@@ -3504,7 +3511,11 @@ async function _showDuplicatePreview(container) {
       // Duplicates
       (g.duplicates || []).forEach(d => {
         const dupRow = h('div', { className: 'dup-duplicate' });
-        dupRow.appendChild(textEl('span', '\u2717 REMOVE', 'dup-remove-badge'));
+        dupRow.appendChild(textEl(
+          'span',
+          uncertain ? 'UNCERTAIN' : '\u2717 REMOVE',
+          uncertain ? 'dup-uncertain-badge' : 'dup-remove-badge',
+        ));
         dupRow.appendChild(textEl('span', (d.tier || '') + ' \u00B7 ' + (d.format || ''), 'dup-tier'));
         dupRow.appendChild(textEl('span', d.path, 'dup-path'));
         card.appendChild(dupRow);
@@ -3512,6 +3523,10 @@ async function _showDuplicatePreview(container) {
       groupList.appendChild(card);
     });
     container.appendChild(groupList);
+
+    if (!cleanBtn) {
+      return;
+    }
 
     // Wire clean button
     cleanBtn.addEventListener('click', async () => {

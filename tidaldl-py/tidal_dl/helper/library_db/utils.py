@@ -6,11 +6,23 @@ import datetime
 import pathlib
 import re
 import sqlite3
+import unicodedata
 
 _SQLITE_CORRUPTION_MESSAGES = (
     "file is not a database",
     "database disk image is malformed",
 )
+
+
+def canonical_library_path(path: str) -> str:
+    """Index paths as NFC so macOS NFD walk strings match tag/download NFC."""
+    return unicodedata.normalize("NFC", str(path))
+
+
+def library_path_forms(path: str) -> tuple[str, str]:
+    """Return (NFC, NFD) spellings of *path* for indexed twin lookups."""
+    nfc = canonical_library_path(path)
+    return nfc, unicodedata.normalize("NFD", nfc)
 
 
 def _is_sqlite_corruption(exc: sqlite3.DatabaseError) -> bool:
@@ -44,15 +56,42 @@ def _normalize_track_text(value: str | None) -> str:
     return (value or "").strip().casefold()
 
 
+def fold_search_text(value: object | None) -> str:
+    """ASCII-fold for accent-insensitive library search (`fría` ↔ `fria`)."""
+    decomposed = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
+
+
+_LOSSY_CODECS = frozenset({"aac", "mp3", "ogg", "opus", "vorbis"})
+_LOSSLESS_CODECS = frozenset({"flac", "alac", "pcm"})
+
+
+def local_quality_label(
+    quality: str | None,
+    fmt: str | None = None,
+    codec: str | None = None,
+) -> str:
+    """Hz/bit is a lossless fact. Lossy AAC/M4A must not look like CD 16/44.1."""
+    family = (codec or "").casefold()
+    container = (fmt or "").casefold()
+    if family in _LOSSY_CODECS:
+        return family.upper()
+    if family in _LOSSLESS_CODECS:
+        return quality or (fmt or "").upper()
+    if container == "m4a":
+        return "M4A"
+    return quality or (fmt or "")
+
+
 def _local_quality_rank(
     quality: str | None,
     fmt: str | None,
     codec: str | None = None,
 ) -> int:
     codec_family = (codec or "").casefold()
-    if codec_family in {"aac", "mp3", "ogg", "opus", "vorbis"}:
+    if codec_family in _LOSSY_CODECS:
         return 1
-    if codec_family not in {"flac", "alac", "pcm"}:
+    if codec_family not in _LOSSLESS_CODECS:
         return 0
     if not quality:
         return 2
@@ -95,9 +134,12 @@ def _album_track_key(row: dict) -> tuple[str, str]:
     )
 
 
-def _album_track_preference(row: dict) -> tuple[int, int, int, str]:
+def _album_track_preference(row: dict) -> tuple[int, int, int, int, str]:
+    from tidal_dl.helper.library_scanner import path_has_skipped_scan_dir
+
     path = row.get("path") or ""
     return (
+        1 if path_has_skipped_scan_dir(path) else 0,
         -_local_quality_rank(
             row.get("quality"), row.get("format"), row.get("codec")
         ),

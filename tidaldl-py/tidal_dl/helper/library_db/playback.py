@@ -1,6 +1,7 @@
 """Play events and home dashboard stats."""
 
 from tidal_dl.helper.library_db._common import *
+from tidal_dl.helper.library_scanner import visible_scanned_path_sql
 
 
 class PlaybackMixin:
@@ -8,9 +9,10 @@ class PlaybackMixin:
         """Bump play_count and set last_played for a scanned track."""
         assert self._conn
         now = int(time.time())
+        nfc, nfd = library_path_forms(path)
         self._conn.execute(
-            "UPDATE scanned SET play_count = play_count + 1, last_played = ? WHERE path = ?",
-            (now, path),
+            "UPDATE scanned SET play_count = play_count + 1, last_played = ? WHERE path IN (?, ?)",
+            (now, nfc, nfd),
         )
 
     def log_play_event(
@@ -25,9 +27,10 @@ class PlaybackMixin:
         """Insert a play event for activity charts."""
         assert self._conn
         ts = played_at if played_at is not None else int(time.time())
+        event_path = canonical_library_path(path) if path else path
         self._conn.execute(
             "INSERT INTO play_events (path, artist, genre, duration, played_at) VALUES (?, ?, ?, ?, ?)",
-            (path, artist, genre, duration, ts),
+            (event_path, artist, genre, duration, ts),
         )
 
     def recent_plays(self, limit: int = 50, offset: int = 0) -> list[dict]:
@@ -36,7 +39,7 @@ class PlaybackMixin:
         safe_limit = max(1, min(int(limit), 100))
         safe_offset = max(0, int(offset))
         rows = self._conn.execute(
-            """SELECT s.path, s.isrc, s.artist, s.title, s.album, s.duration,
+            f"""SELECT s.path, s.isrc, s.artist, s.title, s.album, s.duration,
                       s.quality, s.format, s.codec, s.genre, s.play_count, s.last_played,
                       s.art_available,
                       latest.played_at
@@ -48,6 +51,7 @@ class PlaybackMixin:
                ) latest
                JOIN scanned s ON s.path = latest.path
                WHERE s.status != 'unreadable' AND s.missing_since IS NULL
+                 AND {visible_scanned_path_sql("s.path")}
                ORDER BY latest.played_at DESC
                LIMIT ? OFFSET ?""",
             (safe_limit, safe_offset),

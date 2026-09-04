@@ -24,7 +24,27 @@ describe('local codec quality decisions', () => {
   });
 
   test('unknown M4A codec is not guessed from container or bit depth', () => {
-    expect(loadQualityTier()('44100Hz/16bit', 'M4A', null).tier).toBe('Unknown');
+    const unknown = loadQualityTier()('44100Hz/16bit', 'M4A', null);
+    expect(unknown.tier).toBe('Unknown');
+    expect(unknown.desc).not.toMatch(/Lossless|16-bit/);
+    expect(unknown.desc).not.toBe('44100Hz/16bit');
+  });
+
+  test('Hz/bit is never CD lossless for AAC', () => {
+    const aac = loadQualityTier()('44100Hz/16bit', 'M4A', 'aac');
+    expect(aac.tier).toBe('Lossy');
+    expect(aac.desc).not.toMatch(/Lossless|16-bit|44100Hz\/16bit/);
+  });
+
+  test('persisted AAC quality stays Lossy even when codec is omitted', () => {
+    expect(loadQualityTier()('AAC', 'M4A', null).tier).toBe('Lossy');
+  });
+
+  test('24-bit FLAC is Hi-Res, 16-bit FLAC stays Lossless', () => {
+    const tier = loadQualityTier();
+
+    expect(tier('44100Hz/24bit', 'FLAC', 'flac').tier).toBe('Hi-Res');
+    expect(tier('44100Hz/16bit', 'FLAC', 'flac').tier).toBe('Lossless');
   });
 
   test('track table and Now Playing pass the same persisted facts', () => {

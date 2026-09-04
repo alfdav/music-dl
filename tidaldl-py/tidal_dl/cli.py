@@ -1017,7 +1017,7 @@ def isrc_tag(
     import mutagen.oggvorbis
     from mutagen.id3 import TSRC
 
-    from tidal_dl.helper.library_db import LibraryDB
+    from tidal_dl.helper.library_db import LibraryDB, canonical_library_path
     from tidal_dl.helper.library_scanner import (
         SCAN_EXTENSIONS,
         _extract_isrc,
@@ -1039,7 +1039,7 @@ def isrc_tag(
     db.open()
 
     # ── Phase 1: Scan ──────────────────────────────────────────────
-    known_paths = set() if rescan else db.known_paths()
+    known_paths = set() if rescan else {canonical_library_path(path) for path in db.known_paths()}
     console.print(f"[cyan]Scanning {dir_path} (skipping {len(known_paths)} known files)...[/cyan]")
 
     new_files = 0
@@ -1068,7 +1068,7 @@ def isrc_tag(
             if file_path.suffix.lower() not in SCAN_EXTENSIONS:
                 continue
 
-            path_str = str(file_path)
+            path_str = canonical_library_path(str(file_path))
 
             if path_str in known_paths:
                 skipped_known += 1

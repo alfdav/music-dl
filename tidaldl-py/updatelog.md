@@ -22,7 +22,11 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ## Unreleased
 - History reloads after a download finishes so a new done row paints without restarting the app.
+- New downloads keep `Artist/Album/track` and reuse a leftover matching album folder (accent-folded, `Artist - ` prefix and codec brackets stripped) instead of minting another layout. Remastered edition titles stay separate.
+- Library index stores NFC paths and collapses NFC/NFD twins of the same inode so search, album, and artist counts no longer double-count one file.
 - Give track-row source labels (`tidal` / `local`) breathing room before the download icon so they no longer sit flush.
+- Local library search matches accented titles (`Fria` finds `fría`) and keeps tagged remaster titles, albums, and Hz/bit quality in the list.
+- Hide NAS `#recycle` trash (UGreen, Synology, and any NAS that uses that path component) from library, albums, unified search, and home — including leftover rows when Sync is skipped. Never treat `#recycle` as an artist, never rank those paths first, and do not show an album as Various Artists when it is mostly recycle files.
 
 ## v1.7.8 (2026-08-31)
 - Search accepts a pasted Tidal track, album, artist, or playlist URL (or a bare id) and resolves it for add/download instead of sending the URL to catalog search ([#154](https://github.com/alfdav/music-dl/pull/154)).

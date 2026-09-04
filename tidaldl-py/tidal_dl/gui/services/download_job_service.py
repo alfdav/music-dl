@@ -87,7 +87,9 @@ def _prepare_downloaded_file(file_path: Path, roots: list[Path], known: set[str]
         return None
     if file_path.suffix.lower() not in _AUDIO_EXTENSIONS:
         return None
-    path_str = str(file_path)
+    from tidal_dl.helper.library_db.utils import canonical_library_path
+
+    path_str = canonical_library_path(str(file_path))
     if path_str in known:
         return None
     meta = _read_metadata(file_path, roots)
@@ -133,7 +135,9 @@ def scan_new_downloads(db, settings, paths: Iterable[Path] | None = None) -> Non
 
     dl_path = Path(settings.data.download_base_path).expanduser()
     roots = [dl_path]
-    known = db.known_paths()
+    from tidal_dl.helper.library_db.utils import canonical_library_path
+
+    known = {canonical_library_path(path) for path in db.known_paths()}
     pending: list[dict] = []
 
     if paths is not None:

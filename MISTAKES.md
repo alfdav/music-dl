@@ -1,5 +1,21 @@
 # Mistakes
 
+## 2026-09-04 — 165 Alizée search test looked unrooted after 167
+
+**What happened:** Bag integration of #165 + #167 made `GET /api/library/search?q=Alizée` return `total=0`. The 165 fixture inserted `/Volumes/Music/Alizée/...` NFC/NFD twins into the pytest library DB.
+
+**Root cause:** #167 `_library_db()` drops rows outside configured roots. Pytest Settings default to `~/download`, so the live-shaped `/Volumes/Music` twins were treated as leftover QA paths.
+
+**Prevention:** Endpoint tests for in-root NFC/NFD twins must pin `download_base_path` / `scan_paths` to that music root. Do not skip the unrooted purge. Vanished in-root rows stay on `missing_since`.
+
+## 2026-09-01 — Library served leftover QA rows outside the music root
+
+**What happened:** Live 1.7.8 search (`Night Watch`) and Recents showed Sting *The Last Ship (Live at the Rijksmuseum)* at `/Users/hackbook/.cache/tactica/music-dl-pr149-qa/...flac`. The file was gone. Art returned 403 because the path was outside `/Volumes/Music`. Settings scan path was only `/Volumes/Music`.
+
+**Root cause:** `scanned` is a shared ledger. Search/Recents return every row. Sync prune waits for a successful walk, and the fingerprint fast-path only drops `#recycle` rows, so leftover rows from an isolated QA profile stayed forever.
+
+**Prevention:** On library open, Recents, and scan start, drop rows whose path is outside configured `download_base_path` / `scan_paths`. Never DELETE vanished in-root rows (or their play history) — those use `missing_since` + reconcile migrate. Skip an unrooted drop when it would remove more than half of a library larger than 100 rows (empty mount / remount). `OSError` on `is_dir()` treats the root as unmounted; a purge `OSError` must not 500 library/search/Recents. Do not delete files on disk. Do not change `#recycle` policy.
+
 ## 2026-09-03 — Local heal retry looped and replayed a stale track
 
 **What happened:** After 202/409/200 the player always `playTrack`ed the captured track and returned success, so `_consecutiveErrors` never advanced. A user skip during the 30s wait still restarted the old file.
@@ -88,6 +104,14 @@
 
 **Prevention:** Skip a write only when `scrollTop` is already at the target, or when a programmatic write toward that target is in flight. On resize, invalidate the cached target, recompute spacers, then force an instant recenter after two layout frames while attached. While detached, restore the captured reading anchor — do not recenter.
 
+## 2026-09-01 — NFC/NFD path twins double-counted one inode
+
+**What happened:** Live 1.7.8 Zeratool `GET /api/library/search?q=Alizée` returned two rows for one FLAC. `os.stat` inodes matched. Album/artist counts were 2x.
+
+**Root cause:** macOS `os.walk` yields NFD (`Alizée`). Tags/downloads record NFC (`Alizée`). `scanned.path` is a raw-string PK, so both rows survived. `known_paths()` set-diff treated them as different files.
+
+**Prevention:** Index `unicodedata.normalize("NFC", path)`. Collapse existing NFC/NFD (or same-inode NFC-equal) twins on open/scan. Do not rewrite files or rename artist folders. Teach 169 allowlist / `_exact_scanned_path` / path lookups to accept both forms without treating them as a move.
+
 ## 2026-09-01 — Upgrade treated a cloned playlist ISRC as identity
 
 **What happened:** Live 1.7.8 `GET /api/upgrade/scan/status?include_results=true` showed Aylaylay, Golpe De Alabanza, La Hermanda, and Patras all with `isrc: USJ3V1497673` / `tidal_track_id: 241908392`. Distinct playlist rips would have upgraded to one Tidal track.
@@ -95,6 +119,46 @@
 **Root cause:** Probe cache and match are ISRC-keyed. Playlist dumps clone one ISRC onto many titles. `_probe_tidal_isrc` accepted the first ISRC hit without a title check, then scan/status/start reused that one Tidal id.
 
 **Prevention:** Do not match Upgrade on ISRC alone when titles differ. Prefer title+artist+duration. Colliding ISRC across different titles is UNCERTAIN / skip. Never Upgrade All from a shared Tidal id. Sample-one remains law. Clean Up duplicates is a separate ticket.
+
+## 2026-09-01 — Flat `Artist - Album` plus a disc folder minted a leftover layout
+
+**What happened:** `_canonicalize_album_dirs` only split `Artist - Album [FLAC]` when it was the sole parent. `.../CD1/track` treated the leftover folder as the artist and `CD1` as the album, then minted `Artist - Album/CD1`.
+
+**Root cause:** Flat leftover detection was gated on `len(dir_parts) == 1`.
+
+**Prevention:** Split a first-segment `Artist - Album` (codec brackets stripped) even when later segments are disc extras. Test both reuse and mint for that shape.
+
+## 2026-09-01 — Root reuse treated `Album [FLAC]` as an artist match
+
+**What happened:** `_find_legacy_album_dir` reused a music-root folder if it had a trailing codec bracket, even with no `Artist - ` prefix. `Greatest Hits [FLAC]` would steal a Billy Idol download.
+
+**Root cause:** Codec brackets were treated as enough leftover signal at the library root.
+
+**Prevention:** Root reuse requires a stripped `Artist - ` prefix. Codec-only folders under an artist dir can still match.
+
+## 2026-09-01 — ruff --fix resorted a star-import barrel
+
+**What happened:** `ruff check` on download writers auto-sorted `_common.py` `__all__` and imports because `fix = true` is set in pyproject.
+
+**Root cause:** Touching a barrel file for one export re-lints the whole unsorted list.
+
+**Prevention:** Import the new helper at the call site. Do not `--fix` files whose only job is re-export.
+
+## 2026-09-01 — Lossy AAC labeled as CD 16/44.1 lossless
+
+**What happened:** Live 1.7.8 upgrade scan showed Los Hermanos `04 Aylaylay.m4a` as `current_quality: "44100Hz/16bit"`. `afinfo` on disk was AAC ~292 kbps. Badge/API looked like CD lossless.
+
+**Root cause:** `_read_metadata` wrote `sample_rate/bits_per_sample` whenever mutagen exposed `bits_per_sample`. AAC MP4 still reports 44100/16. Upgrade results returned that string without codec, so the jump label echoed the CD lossless fact.
+
+**Prevention:** Codec/container first. Hz/bit only after the codec is lossless. Persist `AAC` for lossy M4A. Unknown M4A stays `M4A`, never `44100Hz/16bit`. Rewrite stored AAC Hz/bit on the way out of upgrade scan.
+
+## 2026-09-01 — Clean Up preview timed out on an 11.8k library
+
+**What happened:** Live 1.7.8 Zeratool `GET /api/duplicates/preview` sat ~30s and never painted. No `POST /api/duplicates/clean` was sent.
+
+**Root cause:** `_preview_sync` called `_prune_stale`, which `os.path.exists` every scanned path. On a NAS that is a full-library stat. Grouping also mixed `#recycle` path-component trash with live extras.
+
+**Prevention:** Preview is a UI read. Do not prune/stat the library. Skip `#recycle` directory-component rows first (UGreen/Synology/any NAS trash, not a title substring). Cap returned groups. Leave Clean Up grouping and deletion on the existing `_find_duplicate_groups` default / PR 161 edition-safe law.
 
 ## 2026-08-31 — Track-row source label kissed the download icon
 
@@ -111,6 +175,30 @@
 **Root cause:** v1.7.5 moved Active updates to the queue snapshot. SSE `complete`/`error`/`cancelled` call `_dlComplete` + `refreshActiveDownloads`, and never `updateActiveDownload`, so `_scheduleHistoryReload` (only wired from that dead path, Cancel All, and `queue_cancelled`) never ran.
 
 **Prevention:** Schedule the existing history debounce from `_dlComplete`. Keep a 2-item `/downloads/history` fixture test so both cards paint, newest first.
+
+## 2026-08-31 — Library search missed `fría` and hid the remaster
+
+**What happened:** Tetrarch searched Library for `Fria` and got four identical 16-bit `La Gota Fria` / `Clasicos de la Provincia` rows. The 24-bit remaster `La gota fría (Remastered 30 años)` was in the DB but did not match.
+
+**Root cause:** `tracks_page` used ASCII `LIKE` on title/artist/album. `í` does not match `i`. The remastered row already stored the full tagged title/album/Hz-bit; search never returned it.
+
+**Prevention:** Fold query and stored text (`NFKD` + strip combining marks) in the SQL `LIKE`. Test `q=Fria` and `q=gota fria` at `tracks_page` / `GET /api/library`. Do not rewrite tagged remaster titles to the short name. One `fold_search` UDF on concatenated title/artist/album is ~40ms p95 on the 10k QA probe; raise that search ceiling instead of adding a schema column.
+
+## 2026-08-31 — Clean Up treated remasters, deluxe editions, and CD rips as extras
+
+**What happened:** Live 1.7.8 `/api/duplicates/preview` grouped 3027 ISRC+album sets and would have deleted 4513 extras. Quality-rank kept a 24-bit Tidal file over a 16-bit CD rip of the same ISRC+album, playlist FLACs were grouped with a deluxe m4a, and 34 groups had remaster/deluxe tokens that differed between keeper and extra.
+
+**Root cause:** `_find_duplicate_groups` keyed on ISRC+album (or title+artist) then sorted by `_tier_rank_for_quality`. Same ISRC is not the same edition. A unique CD rip or remaster loses to a higher-ranked twin.
+
+**Prevention:** Auto-extra only for folder-layout twins of the same edition (Artist - Album vs Artist/Album, or a `#recycle` copy) with matching edition tokens, same album, and same quality class. Remaster/deluxe/special/expanded/anniversary/bonus/digitized, bit-depth/sample-rate/format mismatch, or a `- Playlists` path marks the group UNCERTAIN and excludes it from `total_duplicates` and Clean Up. Never keep `#recycle` over a live path. Never keep lossy over lossless.
+
+## 2026-08-31 — 1.7.8 still served `/Volumes/Music/#recycle/...` as artist, search, and VA
+
+**What happened:** Live 1.7.8 Zeratool 2026-08-31 still showed `GET /api/library?sort=artist` starting with `artist: "#recycle"` (untagged wavs under `/Volumes/Music/#recycle/High Bit Rate/...`), `GET /api/search?q=Carlos%20Vives%20Fria` ranking the `#recycle` La Gota Fria first, and Various Artists *Hybrid Theory* with 38 tracks (36 under `#recycle/.../Hybrid Theory 20th Anniversary Edition/`). `#recycle` is a NAS recycle/trash path component (UGreen, Synology, and any NAS that uses it), not a Synology-only name.
+
+**Root cause:** Untagged files take the first relative folder as artist, so `#recycle` wins. `tracks_by_isrc` / search attach `ORDER BY path ASC`, and `#` sorts before live copies. Album grouping counts leftover recycle rows (`#recycle` + tagged deluxe artists) as extra artists, so Hybrid Theory becomes Various Artists. Walk skip and fingerprint sweep already existed; leftover rows stayed visible until Sync, and `/api/search` never filtered them.
+
+**Prevention:** Drop skipped-directory rows on first library/home/search DB open (no walk). Filter those paths out of library/albums/search/home/`tracks_by_isrc`. Never use a skipped path component as path-fallback artist. Prefer live files in unified search. Keep Recycle *titles*. Do not brand `#recycle` as Synology-only. Do not delete disk files or POST `/api/duplicates/clean`.
 
 ## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
 

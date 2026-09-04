@@ -27,11 +27,20 @@ from pydantic import BaseModel
 
 from tidal_dl.config import Settings
 from tidal_dl.helper.library_db import LibraryDB
-from tidal_dl.helper.library_db.utils import _album_track_key, _album_track_preference
+from tidal_dl.helper.library_db.utils import (
+    _album_track_key,
+    _album_track_preference,
+    canonical_library_path,
+    library_path_forms,
+    local_quality_label,
+)
 from tidal_dl.helper.library_scanner import (
     drop_skipped_scan_paths,
+    drop_stale_library_rows,
     is_skipped_scan_dir,
     path_has_skipped_scan_dir,
+    purge_skipped_library_rows,
+    visible_scanned_path_sql,
 )
 from tidal_dl.helper.path import path_config_base
 
@@ -70,6 +79,7 @@ def _normalize_genre(raw: str | None) -> str | None:
 _db: LibraryDB | None = None  # Compatibility alias for tests/debugging.
 _db_opened_at: float = 0  # Compatibility alias for tests/debugging.
 _DB_MAX_AGE = 300  # Force reconnect every 5 min to catch stale NAS handles
+_stale_purge_key: tuple | None = None
 _scan_lock = threading.Lock()
 _scan_running = False
 _scan_progress = {
@@ -157,8 +167,55 @@ def _get_db() -> LibraryDB:
             _db_local.opened_at = now
             _db_local.generation = _db_generation
 
+    purge_skipped_library_rows(db)
     _db = db
     _db_opened_at = getattr(_db_local, "opened_at", now)
+    return db
+
+
+_real_get_db = _get_db
+
+
+def _configured_music_roots() -> list[Path]:
+    """Configured download + scan roots, even if a volume is currently unmounted."""
+    settings = Settings()
+    roots: list[Path] = []
+    seen: set[str] = set()
+    raw_scan = settings.data.scan_paths or ""
+    for raw in (settings.data.download_base_path, *raw_scan.split(",")):
+        text = (raw or "").strip()
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(path)
+    return roots
+
+
+def _purge_stale_library_rows(db: LibraryDB) -> None:
+    """Drop leftover out-of-root indexer rows once per DB path + roots."""
+    global _stale_purge_key
+    roots = _configured_music_roots()
+    key = (str(db._path), tuple(str(root) for root in roots))
+    if _stale_purge_key == key:
+        return
+    try:
+        drop_stale_library_rows(db, roots)
+    except OSError:
+        return
+    _stale_purge_key = key
+
+
+def _library_db() -> LibraryDB:
+    """Open the library DB and drop leftover out-of-root rows first."""
+    db = _get_db()
+    # Tests replace _get_db with a fixture lambda; don't rewrite those rows.
+    if _get_db is not _real_get_db:
+        return db
+    _purge_stale_library_rows(db)
     return db
 
 
@@ -203,7 +260,8 @@ def _exact_scanned_path(path: str) -> str | None:
     """Return the allowlisted DB path that equals *path*.
 
     Indexed ``WHERE path = ?`` only. Never returns the request string, and
-    never loads the full ``scanned`` table.
+    never loads the full ``scanned`` table. NFC and NFD twins of a stored
+    path are the same allowlist row; reconciler identity stays on ``canon_path``.
     """
     if not path or "\x00" in path:
         return None
@@ -215,7 +273,9 @@ def _exact_scanned_path(path: str) -> str | None:
     except Exception:  # noqa: BLE001
         return None
     stored = (row or {}).get("path")
-    if not stored or stored != path:
+    if not stored:
+        return None
+    if stored != path and canonical_library_path(stored) != canonical_library_path(path):
         return None
     return stored
 
@@ -252,14 +312,21 @@ def _library_row_under_roots(path: str) -> bool:
 
 def playback_resolved_path(path: str) -> str | None:
     """Return a cached post-reconcile path for playback retries."""
+    nfc, nfd = library_path_forms(path)
     with _scan_lock:
-        return _playback_migration_cache.get(path)
+        for key in (path, nfc, nfd):
+            hit = _playback_migration_cache.get(key)
+            if hit is not None:
+                return hit
+        return None
 
 
 def _remember_playback_migrations(migrations: list[tuple[str, str]]) -> None:
     with _scan_lock:
         for old_path, new_path in migrations:
-            _playback_migration_cache[old_path] = new_path
+            nfc, nfd = library_path_forms(old_path)
+            for key in dict.fromkeys((old_path, nfc, nfd)):
+                _playback_migration_cache[key] = new_path
 
 
 def request_playback_path_heal(path: str) -> dict:
@@ -318,6 +385,8 @@ def _meaningful_title(value: str | None) -> bool:
 
 
 def _structured_path_metadata(file_path: Path, scan_dirs: list[Path]) -> tuple[str, str] | None:
+    if path_has_skipped_scan_dir(file_path):
+        return None
     resolved_file = file_path.resolve(strict=False)
     roots = sorted(
         (root.resolve(strict=False) for root in scan_dirs),
@@ -330,7 +399,11 @@ def _structured_path_metadata(file_path: Path, scan_dirs: list[Path]) -> tuple[s
         except ValueError:
             continue
         if len(relative.parts) >= 3:
-            return relative.parts[0].strip(), relative.parts[-2].strip()
+            artist = relative.parts[0].strip()
+            album = relative.parts[-2].strip()
+            if is_skipped_scan_dir(artist) or is_skipped_scan_dir(album):
+                return None
+            return artist, album
     return None
 
 
@@ -344,6 +417,10 @@ def _resolve_local_metadata(
 ) -> dict:
     structured = _structured_path_metadata(file_path, scan_dirs)
     path_artist, path_album = structured or ("", "")
+    if is_skipped_scan_dir(path_artist):
+        path_artist = ""
+    if is_skipped_scan_dir(path_album):
+        path_album = ""
     resolved_artist = artist.strip() if _meaningful(artist, "Unknown Artist") else path_artist
     resolved_artist = resolved_artist or "Unknown Artist"
 
@@ -486,11 +563,6 @@ def _read_metadata(file_path: Path, scan_dirs: list[Path] | None = None) -> dict
                 return str(val[0])
             return str(val) if val else fallback
 
-        # Need raw audio for info (bitrate, sample rate) — easy mode still has .info
-        quality = file_path.suffix[1:].upper()
-        if audio.info and hasattr(audio.info, "bits_per_sample"):
-            quality = f"{audio.info.sample_rate}Hz/{audio.info.bits_per_sample}bit"
-
         # ISRC and release identities may require raw MP4 or ID3 tags.
         raw = MutagenFile(file_path)
         isrc = _tag("isrc")
@@ -518,6 +590,12 @@ def _read_metadata(file_path: Path, scan_dirs: list[Path] | None = None) -> dict
         if codec == "unknown":
             codec = _native_codec_from_extension(file_path) or "unknown"
 
+        fmt = file_path.suffix[1:].upper()
+        quality = fmt
+        if audio.info and getattr(audio.info, "bits_per_sample", None):
+            quality = f"{audio.info.sample_rate}Hz/{audio.info.bits_per_sample}bit"
+        quality = local_quality_label(quality, fmt, codec)
+
         return {
             "path": str(file_path),
             **resolved,
@@ -526,7 +604,7 @@ def _read_metadata(file_path: Path, scan_dirs: list[Path] | None = None) -> dict
             "isrc": isrc,
             "genre": _normalize_genre(_tag("genre")),
             "quality": quality,
-            "format": file_path.suffix[1:].upper(),
+            "format": fmt,
             "codec": codec,
             "metadata_complete": True,
             "is_local": True,
@@ -1558,6 +1636,16 @@ def _background_scan(rescan: bool) -> None:
         if scan_dirs:
             _migrate_volume_prefixes(db, scan_dirs)
 
+        db.collapse_unicode_path_twins()
+        db.commit()
+
+        # Leftover rows from another profile / old download root can be dropped
+        # before the walk. This is prefix-only — not missing-file prune — so an
+        # interrupted scan cannot empty an in-root cache.
+        dropped_unrooted = drop_stale_library_rows(db, _configured_music_roots())
+        if dropped_unrooted:
+            print(f"[library] Dropped {dropped_unrooted} rows outside music roots")
+
         # If no scan directories are reachable, skip scan entirely to preserve
         # the cached library data.  Without this guard the prune logic would
         # delete every row because disk_paths would be empty.
@@ -1566,7 +1654,7 @@ def _background_scan(rescan: bool) -> None:
             _update_scan_progress(phase="done", scanned=0, total=0, done=True, error=None)
             return
 
-        known = set() if rescan else db.known_paths()
+        known = set() if rescan else {canonical_library_path(path) for path in db.known_paths()}
         db.commit()
 
         # Per-directory signatures replace the root-only scan_fingerprint skip.
@@ -1597,7 +1685,7 @@ def _background_scan(rescan: bool) -> None:
                         continue
                     if f.suffix.lower() not in _AUDIO_EXTENSIONS:
                         continue
-                    disk_paths.add(str(f))
+                    disk_paths.add(canonical_library_path(str(f)))
                     _update_scan_progress(
                         phase="discovering",
                         scanned=len(disk_paths),
@@ -1850,7 +1938,7 @@ def library_recent_albums(
     limit: int = Query(12, ge=1, le=50),
     offset: int = Query(0, ge=0),
 ) -> dict:
-    db = _get_db()
+    db = _library_db()
     page, total = db.recent_albums_page(limit=limit, offset=offset)
     titles = [row["album"] for row in page if row.get("album")]
     rows_by_path: dict[str, dict] = {}
@@ -2077,7 +2165,7 @@ def library(
     q: str = Query("", description="Search query (matches title, artist, album)"),
 ) -> dict:
     """Return a page of cached library from DB. Instant, no disk I/O."""
-    db = _get_db()
+    db = _library_db()
     rows, total = db.tracks_page(sort=sort, limit=limit, offset=offset, query=q.strip())
     tracks = [_db_row_to_track(row) for row in rows]
     return {"tracks": tracks, "total": total, "scanning": _scan_running}
@@ -2090,7 +2178,7 @@ def library_search(
     limit: int = Query(20, ge=1, le=50),
 ) -> dict:
     """Search the local library by title, artist, or album."""
-    db = _get_db()
+    db = _library_db()
 
     if type == "tracks":
         rows, total = db.tracks_page(sort="artist", limit=limit, offset=0, query=q.strip())
@@ -2119,14 +2207,16 @@ def library_search(
         assert db._conn
         like = f"%{q.strip()}%"
         rows = db._conn.execute(
-            """SELECT s.artist, COUNT(*) as track_count, COUNT(DISTINCT album) as album_count,
+            f"""SELECT s.artist, COUNT(*) as track_count, COUNT(DISTINCT album) as album_count,
                       MIN(s.path) as cover_path,
                       (SELECT s2.art_available FROM scanned s2
                        WHERE s2.artist = s.artist AND s2.status != 'unreadable'
                          AND s2.missing_since IS NULL
+                         AND {visible_scanned_path_sql("s2.path")}
                        ORDER BY s2.path ASC LIMIT 1) as cover_art_available
                FROM scanned s
                WHERE artist LIKE ? AND status != 'unreadable' AND missing_since IS NULL
+                 AND {visible_scanned_path_sql("s.path")}
                GROUP BY artist ORDER BY track_count DESC LIMIT ?""",
             (like, limit),
         ).fetchall()
