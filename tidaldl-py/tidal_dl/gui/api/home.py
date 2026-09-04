@@ -98,6 +98,9 @@ def _get_db() -> LibraryDB:
     return db
 
 
+_real_get_db = _get_db
+
+
 class PlayEvent(BaseModel):
     path: Optional[str] = None
     artist: Optional[str] = None
@@ -178,6 +181,10 @@ def record_play(event: PlayEvent):
 def recent_plays(limit: int = Query(50, ge=1, le=100)):
     """Return persisted recently played local tracks."""
     db = _get_db()
+    if _get_db is _real_get_db:
+        from tidal_dl.gui.api.library import _purge_stale_library_rows
+
+        _purge_stale_library_rows(db)
     tracks = db.recent_plays(limit=limit)
 
     from tidal_dl.gui.api.library import _local_cover_url

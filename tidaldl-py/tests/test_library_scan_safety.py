@@ -207,7 +207,7 @@ class TestInterruptedScanPreservesCache:
         db = LibraryDB(tmp_path / "library.db")
         db.open()
         for index in range(80):
-            _seed_row(db, tmp_path / "prior" / f"track{index:04d}.wav", title=f"Prior {index}")
+            _seed_row(db, library_dir / "prior" / f"track{index:04d}.wav", title=f"Prior {index}")
         _seed_row(db, recycle, artist="#recycle", title="08 Menu Groove Edit")
         db.commit()
         prior_count = len(db.known_paths())
@@ -470,7 +470,7 @@ class TestConcurrentReadsDuringScan:
         db = LibraryDB(tmp_path / "library.db")
         db.open()
         for index in range(40):
-            _seed_row(db, tmp_path / "cached" / f"old{index:02d}.wav", title=f"Cached {index}")
+            _seed_row(db, library_dir / "cached" / f"old{index:02d}.wav", title=f"Cached {index}")
         db.commit()
         db.close()
 

@@ -105,6 +105,67 @@ def drop_skipped_scan_paths(library_db: LibraryDB) -> int:
     return len(stale)
 
 
+def path_under_music_roots(path: str | pathlib.Path, roots: list[pathlib.Path]) -> bool:
+    """Return True if *path* is the same as or inside one of *roots*.
+
+    Prefix match only — no ``stat()`` / ``resolve()`` of the file, so Home
+    can drop leftover QA rows without probing a NAS music volume.
+    """
+    raw = os.path.normpath(os.path.expanduser(str(path)))
+    for root in roots:
+        root_raw = os.path.normpath(os.path.expanduser(str(root)))
+        if raw == root_raw or raw.startswith(root_raw + os.sep):
+            return True
+    return False
+
+
+_MASS_DROP_MIN_KNOWN = 100
+_MASS_DROP_FRACTION = 0.5
+
+
+def drop_stale_library_rows(
+    library_db: LibraryDB,
+    roots: list[pathlib.Path],
+) -> int:
+    """Drop scanned rows whose path is outside configured *roots*.
+
+    Prefix match only. Vanished in-root files stay in the ledger so
+    reconcile can migrate identity via ``missing_since`` — this helper
+    never deletes those rows. ``OSError`` on ``is_dir()`` treats that
+    root as unmounted and does not abort. A remount that would remove
+    more than half of a library larger than 100 rows is skipped. Rows
+    are deleted from the DB only — never from disk. Skipped-directory
+    (``#recycle``) policy is unchanged.
+    """
+    if not roots:
+        return 0
+    # Absorb flaky NAS is_dir() so library/search/Recents cannot 500.
+    for root in roots:
+        _root_is_dir(root)
+    known = list(library_db.known_paths())
+    if not known:
+        return 0
+    unrooted = [path for path in known if not path_under_music_roots(path, roots)]
+    if not unrooted or _is_mass_drop(len(unrooted), len(known)):
+        return 0
+    with library_db.write_transaction():
+        for path in unrooted:
+            library_db.remove(path)
+    return len(unrooted)
+
+
+def _root_is_dir(root: pathlib.Path) -> bool:
+    """Return whether *root* exists as a directory. OSError means unmounted."""
+    try:
+        return pathlib.Path(root).expanduser().is_dir()
+    except OSError:
+        return False
+
+
+def _is_mass_drop(count: int, known_n: int) -> bool:
+    return known_n > _MASS_DROP_MIN_KNOWN and count > _MASS_DROP_FRACTION * known_n
+
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------

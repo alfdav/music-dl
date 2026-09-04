@@ -36,6 +36,7 @@ from tidal_dl.helper.library_db.utils import (
 )
 from tidal_dl.helper.library_scanner import (
     drop_skipped_scan_paths,
+    drop_stale_library_rows,
     is_skipped_scan_dir,
     path_has_skipped_scan_dir,
     purge_skipped_library_rows,
@@ -78,6 +79,7 @@ def _normalize_genre(raw: str | None) -> str | None:
 _db: LibraryDB | None = None  # Compatibility alias for tests/debugging.
 _db_opened_at: float = 0  # Compatibility alias for tests/debugging.
 _DB_MAX_AGE = 300  # Force reconnect every 5 min to catch stale NAS handles
+_stale_purge_key: tuple | None = None
 _scan_lock = threading.Lock()
 _scan_running = False
 _scan_progress = {
@@ -168,6 +170,52 @@ def _get_db() -> LibraryDB:
     purge_skipped_library_rows(db)
     _db = db
     _db_opened_at = getattr(_db_local, "opened_at", now)
+    return db
+
+
+_real_get_db = _get_db
+
+
+def _configured_music_roots() -> list[Path]:
+    """Configured download + scan roots, even if a volume is currently unmounted."""
+    settings = Settings()
+    roots: list[Path] = []
+    seen: set[str] = set()
+    raw_scan = settings.data.scan_paths or ""
+    for raw in (settings.data.download_base_path, *raw_scan.split(",")):
+        text = (raw or "").strip()
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(path)
+    return roots
+
+
+def _purge_stale_library_rows(db: LibraryDB) -> None:
+    """Drop leftover out-of-root indexer rows once per DB path + roots."""
+    global _stale_purge_key
+    roots = _configured_music_roots()
+    key = (str(db._path), tuple(str(root) for root in roots))
+    if _stale_purge_key == key:
+        return
+    try:
+        drop_stale_library_rows(db, roots)
+    except OSError:
+        return
+    _stale_purge_key = key
+
+
+def _library_db() -> LibraryDB:
+    """Open the library DB and drop leftover out-of-root rows first."""
+    db = _get_db()
+    # Tests replace _get_db with a fixture lambda; don't rewrite those rows.
+    if _get_db is not _real_get_db:
+        return db
+    _purge_stale_library_rows(db)
     return db
 
 
@@ -1591,6 +1639,13 @@ def _background_scan(rescan: bool) -> None:
         db.collapse_unicode_path_twins()
         db.commit()
 
+        # Leftover rows from another profile / old download root can be dropped
+        # before the walk. This is prefix-only — not missing-file prune — so an
+        # interrupted scan cannot empty an in-root cache.
+        dropped_unrooted = drop_stale_library_rows(db, _configured_music_roots())
+        if dropped_unrooted:
+            print(f"[library] Dropped {dropped_unrooted} rows outside music roots")
+
         # If no scan directories are reachable, skip scan entirely to preserve
         # the cached library data.  Without this guard the prune logic would
         # delete every row because disk_paths would be empty.
@@ -1883,7 +1938,7 @@ def library_recent_albums(
     limit: int = Query(12, ge=1, le=50),
     offset: int = Query(0, ge=0),
 ) -> dict:
-    db = _get_db()
+    db = _library_db()
     page, total = db.recent_albums_page(limit=limit, offset=offset)
     titles = [row["album"] for row in page if row.get("album")]
     rows_by_path: dict[str, dict] = {}
@@ -2110,7 +2165,7 @@ def library(
     q: str = Query("", description="Search query (matches title, artist, album)"),
 ) -> dict:
     """Return a page of cached library from DB. Instant, no disk I/O."""
-    db = _get_db()
+    db = _library_db()
     rows, total = db.tracks_page(sort=sort, limit=limit, offset=offset, query=q.strip())
     tracks = [_db_row_to_track(row) for row in rows]
     return {"tracks": tracks, "total": total, "scanning": _scan_running}
@@ -2123,7 +2178,7 @@ def library_search(
     limit: int = Query(20, ge=1, le=50),
 ) -> dict:
     """Search the local library by title, artist, or album."""
-    db = _get_db()
+    db = _library_db()
 
     if type == "tracks":
         rows, total = db.tracks_page(sort="artist", limit=limit, offset=0, query=q.strip())
