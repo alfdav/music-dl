@@ -20,6 +20,7 @@ from tidal_dl.constants import TIER_RANK
 from tidal_dl.gui.services.job_models import UpgradeJobInput
 from tidal_dl.gui.services.upgrade_jobs import tier_rank_for_quality as _tier_rank_for_quality
 from tidal_dl.helper.library_db import LibraryDB
+from tidal_dl.helper.library_db.utils import local_quality_label
 from tidal_dl.helper.path import path_config_base
 
 
@@ -802,7 +803,11 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
                         "title": t.get("title", ""),
                         "artist": t.get("artist", ""),
                         "album": t.get("album", ""),
-                        "current_quality": t.get("quality", ""),
+                        "current_quality": local_quality_label(
+                            t.get("quality"), t.get("format"), t.get("codec")
+                        ),
+                        "current_format": t.get("format", ""),
+                        "current_codec": t.get("codec", ""),
                         "available_quality": probe["max_quality"],
                         "isrc": isrc,
                         "tidal_track_id": probe["tidal_track_id"],
@@ -891,7 +896,11 @@ def _rebuild_results_from_db() -> list[dict]:
                     "title": t.get("title", ""),
                     "artist": t.get("artist", ""),
                     "album": t.get("album", ""),
-                    "current_quality": t.get("quality", ""),
+                    "current_quality": local_quality_label(
+                        t.get("quality"), t.get("format"), t.get("codec")
+                    ),
+                    "current_format": t.get("format", ""),
+                    "current_codec": t.get("codec", ""),
                     "available_quality": probe["max_quality"],
                     "isrc": isrc,
                     "tidal_track_id": probe["tidal_track_id"],

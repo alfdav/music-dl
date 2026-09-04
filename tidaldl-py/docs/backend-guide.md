@@ -377,7 +377,7 @@ Pattern: check `PRAGMA table_info()`, `ALTER TABLE ADD COLUMN` if missing. Never
 
 ### Local scan facts
 
-The scanner is the authority for local display metadata and quality. Codec, not container extension or decoded bit depth, decides whether a local file is lossy or lossless. `M4A` may contain AAC or ALAC, so an uninspected M4A remains Unknown.
+The scanner is the authority for local display metadata and quality. Codec, not container extension or decoded bit depth, decides whether a local file is lossy or lossless. Persist `AAC` for lossy M4A; `44100Hz/16bit` is only for lossless codecs. AAC still reports 16/44.1 from the stream header. `M4A` may contain AAC or ALAC, so an uninspected M4A remains Unknown.
 
 Library cache rows are not deleted until a scan traversal succeeds. Do not clear, age, or prune `scanned` rows at scan start. Mark-and-sweep skipped trash paths (`#recycle`, `.Trash`, and the shared skip list in `library_scanner.py`) and missing files only after a complete walk. An interrupted or failed scan must leave the previous good cache intact. Stage metadata outside a writer transaction and commit short batches; never hold a writer lock across filesystem walks or tag reads. Scan status must expose a named `phase` and increment `scanned` during discovery so the UI cannot sit on `scanned:0,total:0` with no explanation. Do not mutagen already-tagged rows that already have a real artist/title/album — a leftover `metadata_complete=0` from a schema migration is not a reason to re-read thousands of NAS files. Discover/walk first; leftover repair is a cheap DB filter plus placeholder rows only. Never open skipped-directory paths for repair.
 

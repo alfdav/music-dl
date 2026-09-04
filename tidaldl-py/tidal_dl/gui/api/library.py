@@ -27,7 +27,11 @@ from pydantic import BaseModel
 
 from tidal_dl.config import Settings
 from tidal_dl.helper.library_db import LibraryDB
-from tidal_dl.helper.library_db.utils import _album_track_key, _album_track_preference
+from tidal_dl.helper.library_db.utils import (
+    _album_track_key,
+    _album_track_preference,
+    local_quality_label,
+)
 from tidal_dl.helper.library_scanner import (
     drop_skipped_scan_paths,
     is_skipped_scan_dir,
@@ -486,11 +490,6 @@ def _read_metadata(file_path: Path, scan_dirs: list[Path] | None = None) -> dict
                 return str(val[0])
             return str(val) if val else fallback
 
-        # Need raw audio for info (bitrate, sample rate) — easy mode still has .info
-        quality = file_path.suffix[1:].upper()
-        if audio.info and hasattr(audio.info, "bits_per_sample"):
-            quality = f"{audio.info.sample_rate}Hz/{audio.info.bits_per_sample}bit"
-
         # ISRC and release identities may require raw MP4 or ID3 tags.
         raw = MutagenFile(file_path)
         isrc = _tag("isrc")
@@ -518,6 +517,12 @@ def _read_metadata(file_path: Path, scan_dirs: list[Path] | None = None) -> dict
         if codec == "unknown":
             codec = _native_codec_from_extension(file_path) or "unknown"
 
+        fmt = file_path.suffix[1:].upper()
+        quality = fmt
+        if audio.info and getattr(audio.info, "bits_per_sample", None):
+            quality = f"{audio.info.sample_rate}Hz/{audio.info.bits_per_sample}bit"
+        quality = local_quality_label(quality, fmt, codec)
+
         return {
             "path": str(file_path),
             **resolved,
@@ -526,7 +531,7 @@ def _read_metadata(file_path: Path, scan_dirs: list[Path] | None = None) -> dict
             "isrc": isrc,
             "genre": _normalize_genre(_tag("genre")),
             "quality": quality,
-            "format": file_path.suffix[1:].upper(),
+            "format": fmt,
             "codec": codec,
             "metadata_complete": True,
             "is_local": True,

@@ -691,6 +691,21 @@ describe('local playback decisions', () => {
     })).toBe('44100Hz/24bit · Hi-Res → Hi-Res Lossless · 24-bit FLAC');
   });
 
+  test('upgrade jump does not present stored AAC Hz/bit as CD lossless', () => {
+    const qualityJump = loadUpgradeQualityJump((q, fmt, codec) => {
+      if ((codec || '').toLowerCase() === 'aac') return 'aac · Lossy';
+      if (q === 'HI_RES_LOSSLESS') return 'Hi-Res Lossless · 24-bit FLAC';
+      return q;
+    });
+
+    expect(qualityJump({
+      current_quality: '44100Hz/16bit',
+      current_format: 'M4A',
+      current_codec: 'aac',
+      available_quality: 'HI_RES_LOSSLESS',
+    })).toBe('aac · Lossy → Hi-Res Lossless · 24-bit FLAC');
+  });
+
   test('presents a connected Tidal session as ready', () => {
     const storage = new Map();
     const helpers = loadTidalStatusHelpers({
