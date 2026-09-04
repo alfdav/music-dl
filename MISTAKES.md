@@ -96,6 +96,30 @@
 
 **Prevention:** Do not match Upgrade on ISRC alone when titles differ. Prefer title+artist+duration. Colliding ISRC across different titles is UNCERTAIN / skip. Never Upgrade All from a shared Tidal id. Sample-one remains law. Clean Up duplicates is a separate ticket.
 
+## 2026-09-01 — Flat `Artist - Album` plus a disc folder minted a leftover layout
+
+**What happened:** `_canonicalize_album_dirs` only split `Artist - Album [FLAC]` when it was the sole parent. `.../CD1/track` treated the leftover folder as the artist and `CD1` as the album, then minted `Artist - Album/CD1`.
+
+**Root cause:** Flat leftover detection was gated on `len(dir_parts) == 1`.
+
+**Prevention:** Split a first-segment `Artist - Album` (codec brackets stripped) even when later segments are disc extras. Test both reuse and mint for that shape.
+
+## 2026-09-01 — Root reuse treated `Album [FLAC]` as an artist match
+
+**What happened:** `_find_legacy_album_dir` reused a music-root folder if it had a trailing codec bracket, even with no `Artist - ` prefix. `Greatest Hits [FLAC]` would steal a Billy Idol download.
+
+**Root cause:** Codec brackets were treated as enough leftover signal at the library root.
+
+**Prevention:** Root reuse requires a stripped `Artist - ` prefix. Codec-only folders under an artist dir can still match.
+
+## 2026-09-01 — ruff --fix resorted a star-import barrel
+
+**What happened:** `ruff check` on download writers auto-sorted `_common.py` `__all__` and imports because `fix = true` is set in pyproject.
+
+**Root cause:** Touching a barrel file for one export re-lints the whole unsorted list.
+
+**Prevention:** Import the new helper at the call site. Do not `--fix` files whose only job is re-export.
+
 ## 2026-08-31 — Track-row source label kissed the download icon
 
 **What happened:** Tetrarch on live 1.7.8 saw duration `3:35`, then lowercase `tidal`, then a download-tray icon sitting on the final `l`. Duration-to-source looked fine. Search, library, and album tracks share that row.
