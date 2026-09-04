@@ -88,6 +88,14 @@
 
 **Prevention:** Skip a write only when `scrollTop` is already at the target, or when a programmatic write toward that target is in flight. On resize, invalidate the cached target, recompute spacers, then force an instant recenter after two layout frames while attached. While detached, restore the captured reading anchor — do not recenter.
 
+## 2026-08-31 — Track-row source label kissed the download icon
+
+**What happened:** Tetrarch on live 1.7.8 saw duration `3:35`, then lowercase `tidal`, then a download-tray icon sitting on the final `l`. Duration-to-source looked fine. Search, library, and album tracks share that row.
+
+**Root cause:** `.track-actions` is a 40px grid column holding both the source-tag and a 40px `.dl-btn`, with `display: flex` and no `gap`.
+
+**Prevention:** Flex-gap the actions cluster using the 12px track-row rhythm. Size the actions column for label + gap + icon (84px). Do not letter-space `tidal`. Cover with a CSS contract test.
+
 ## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
 
 **What happened:** Artist-name track search (Carlos Vives) replaced real track hits with a self-titled album. Local-empty paint showed `No results found` while Tidal was still in flight. `urlparse(...).hostname` can raise `ValueError` on broken IPv6 zones / trailing `%`, which would 500 `/api/search`.

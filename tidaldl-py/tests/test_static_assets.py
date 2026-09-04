@@ -526,6 +526,60 @@ class TestAppJsFeatureMarkers:
         assert "error_message: us.error_message || us.error || ''" in js
 
 
+def _css_gap_px(body: str) -> int | None:
+    match = re.search(r"(?<![-\w])gap:\s*(\d+)px", body)
+    return int(match.group(1)) if match else None
+
+
+def _grid_columns(body: str) -> list[str] | None:
+    match = re.search(r"grid-template-columns:\s*([^;]+)", body)
+    if not match:
+        return None
+    return match.group(1).split()
+
+
+class TestTrackRowActionSpacing:
+    """Source label + download icon sit in .track-actions on every track row."""
+
+    def test_actions_cluster_has_horizontal_gap_and_column_room(self):
+        css = (STATIC_DIR / "style.css").read_text()
+        js = read_gui_js()
+
+        assert "className: 'track-actions visible'" in js
+        assert "className: 'source-tag ' + (track.is_local ? 'local-tag' : 'tidal-tag')" in js
+        assert "className: 'dl-btn'" in js
+
+        actions = _css_rule_bodies(css, ".track-actions")
+        assert actions, ".track-actions rule is missing"
+        assert any(
+            "display: flex" in body
+            and "align-items: center" in body
+            and (_css_gap_px(body) or 0) >= 8
+            for body in actions
+        ), "source-tag and sibling action icons need >= 8px flex gap"
+
+        source = _css_rule_bodies(css, ".source-tag")
+        assert source, ".source-tag rule is missing"
+        assert all("letter-spacing: 0.5px" in body for body in source)
+
+        dl_btn = _css_rule_bodies(css, ".dl-btn")
+        assert any("width: 40px" in body and "height: 40px" in body for body in dl_btn)
+
+        for selector in (".track", ".track-header"):
+            columns = [
+                cols for body in _css_rule_bodies(css, selector)
+                if (cols := _grid_columns(body)) and len(cols) >= 9
+            ]
+            assert columns, f"{selector} grid-template-columns is missing"
+            for cols in columns:
+                actions_col = cols[8]
+                assert actions_col.endswith("px"), f"{selector} actions column must be a fixed px width"
+                assert int(actions_col[:-2]) >= 80, (
+                    f"{selector} actions column {actions_col} is too narrow "
+                    "for source label + gap + download icon"
+                )
+
+
 class TestNavBackControl:
     def test_nav_back_is_a_quiet_chevron_not_a_toolbar(self):
         css = (STATIC_DIR / "style.css").read_text()

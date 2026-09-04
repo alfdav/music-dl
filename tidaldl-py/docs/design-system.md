@@ -289,7 +289,8 @@ padding: 0;
 - Background: `rgba(22, 20, 19, 0.95)` + blur(40px)
 
 ### Track List
-- Grid: `40px 44px 1fr 1fr 72px 52px 44px 52px 40px 32px`
+- Grid: `40px 44px 1fr 1fr 72px 52px 44px 52px 84px 32px`
+- `.track-actions` is a flex row (`gap: 12px`, same as the track grid) so the source-tag (`tidal` / `local`) does not sit flush against the download icon. The 84px column is label + gap + 40px `.dl-btn`. Do not letter-space the source word.
 - Playing state: `--accent-glow` bg, gold left bar, accent track name
 - Min height: 44px per row
 
