@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # Cargo security/version updates for the Tauri desktop crate.
+  # glib cannot be unlocked on Tauri 2.x — see ignore rationale below.
+  - package-ecosystem: cargo
+    directory: /tidaldl-py/src-tauri
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      # GHSA-wrw7-89jp-8q8g / RUSTSEC-2024-0429 (glib VariantStrIter unsoundness).
+      # Affected: >=0.15.0,<0.20.0; earliest fixed: 0.20.0.
+      #
+      # Parent chain on Linux is Tauri 2 → wry 0.55 / tao 0.35 →
+      # webkit2gtk 2.0 + gtk 0.18 (gtk3-rs). gtk3-rs is unmaintained and
+      # requires glib ^0.18. glib 0.20 is gtk4-rs only.
+      #
+      # Taking glib >=0.20 means migrating the Linux webview from
+      # GTK3/WebKitGTK 4.1 to GTK4/WebKitGTK 6.0 (Tauri 3 / wry gtk4).
+      # That is a Linux ABI + distro-package break (libwebkit2gtk-4.1-dev
+      # → libwebkitgtk-6.0-dev + libgtk-4-dev). Do not cargo-update -p glib
+      # and do not [patch] glib 0.20 onto gtk 0.18.
+      #
+      # Ignore the whole dependency (not just the affected range). A
+      # versions filter of ">=0.15,<0.20" does not silence Dependabot
+      # security unlocks toward 0.20.0, so security_update_not_possible
+      # would keep retrying. Drop this ignore when Tauri 3 ships GTK4.
+      - dependency-name: glib
