@@ -20,13 +20,20 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
-## Unreleased
-- History reloads after a download finishes so a new done row paints without restarting the app.
-- New downloads keep `Artist/Album/track` and reuse a leftover matching album folder (accent-folded, `Artist - ` prefix and codec brackets stripped) instead of minting another layout. Remastered edition titles stay separate.
-- Library index stores NFC paths and collapses NFC/NFD twins of the same inode so search, album, and artist counts no longer double-count one file.
-- Give track-row source labels (`tidal` / `local`) breathing room before the download icon so they no longer sit flush.
-- Local library search matches accented titles (`Fria` finds `fría`) and keeps tagged remaster titles, albums, and Hz/bit quality in the list.
-- Hide NAS `#recycle` trash (UGreen, Synology, and any NAS that uses that path component) from library, albums, unified search, and home — including leftover rows when Sync is skipped. Never treat `#recycle` as an artist, never rank those paths first, and do not show an album as Various Artists when it is mostly recycle files.
+## v1.7.9 (2026-09-04)
+- Keep the current lyric on-screen as it plays and add a manual Sync control; opening lyrics no longer hides heart/download or shifts the player bar ([#168](https://github.com/alfdav/music-dl/pull/168)).
+- Heal moved library folders in the background without wiping play history. Vanished in-root rows stay on `missing_since` until reconcile migrates them; local playback retries once after 202/409 ([#169](https://github.com/alfdav/music-dl/pull/169)).
+- History reloads after a download finishes so a new done row paints without restarting the app ([#157](https://github.com/alfdav/music-dl/pull/157)).
+- Local library search matches accented titles (`Fria` finds `fría`) and keeps tagged remaster titles, albums, and Hz/bit quality in the list ([#158](https://github.com/alfdav/music-dl/pull/158)).
+- New downloads keep `Artist/Album/track` and reuse a leftover matching album folder (accent-folded, `Artist - ` prefix and codec brackets stripped) instead of minting another layout. Remastered edition titles stay separate ([#159](https://github.com/alfdav/music-dl/pull/159)).
+- Clean Up no longer treats remasters, deluxe/special/expanded editions, or CD rips as duplicates of the original. Same ISRC is not enough; only same-edition folder-layout twins stay auto-cleanable ([#161](https://github.com/alfdav/music-dl/pull/161)).
+- Never label lossy AAC as CD lossless. AAC in M4A that reports 44100/16 stays Lossy, not `44100Hz/16bit` ([#162](https://github.com/alfdav/music-dl/pull/162)).
+- Skip Upgrade when a cloned ISRC maps to different titles. Playlist dumps that share one ISRC no longer all upgrade to one Tidal track ([#163](https://github.com/alfdav/music-dl/pull/163)).
+- Clean Up preview returns in a couple of seconds on large libraries by skipping a full-library `exists()` walk and capping groups ([#164](https://github.com/alfdav/music-dl/pull/164)).
+- Library index stores NFC paths and collapses NFC/NFD twins of the same inode so search, album, and artist counts no longer double-count one file ([#165](https://github.com/alfdav/music-dl/pull/165)).
+- Hide NAS `#recycle` trash (UGreen, Synology, and any NAS that uses that path component) from library, albums, unified search, and home — including leftover rows when Sync is skipped. Never treat `#recycle` as an artist, never rank those paths first, and do not show an album as Various Artists when it is mostly recycle files ([#166](https://github.com/alfdav/music-dl/pull/166)).
+- Drop leftover library rows whose path is outside configured music roots without waiting for a full Sync. Vanished in-root files stay so the path reconciler can heal them ([#167](https://github.com/alfdav/music-dl/pull/167)).
+- Give track-row source labels (`tidal` / `local`) breathing room before the download icon so they no longer sit flush ([#156](https://github.com/alfdav/music-dl/pull/156)).
 
 ## v1.7.8 (2026-08-31)
 - Search accepts a pasted Tidal track, album, artist, or playlist URL (or a bare id) and resolves it for add/download instead of sending the URL to catalog search ([#154](https://github.com/alfdav/music-dl/pull/154)).
