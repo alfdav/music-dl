@@ -342,10 +342,62 @@ function loadDownloadHistoryRenderer(api) {
     'h',
     'textEl',
     '_dlArtThumb',
+    'qualityClass',
+    'qualityLabel',
+    'qualityTitle',
+    '_timeAgo',
     `const ICONS = {};
 ${rendererSource[0]}
 return loadDownloadHistory;`,
-  )(api, h, textEl, () => element('div'));
+  )(
+    api,
+    h,
+    textEl,
+    () => element('div'),
+    () => 'hires',
+    () => 'HI-RES',
+    () => '',
+    ts => (ts ? String(ts) : ''),
+  );
+}
+
+function historyPaintContainer() {
+  return {
+    children: [],
+    appendChild(child) { this.children.push(child); return child; },
+    get firstChild() { return this.children[0] || null; },
+    removeChild(child) {
+      const index = this.children.indexOf(child);
+      if (index >= 0) this.children.splice(index, 1);
+    },
+  };
+}
+
+function zeratoolHistoryPayload() {
+  return {
+    downloads: [
+      {
+        id: 2083,
+        track_id: 330865538,
+        status: 'done',
+        name: 'La gota fría (Remastered 30 años)',
+        artist: 'Carlos Vives',
+        album: 'Clásicos de la Provincia 30 Años (Remastered & Expanded)',
+        finished_at: 1788220450,
+        quality: 'HI_RES_LOSSLESS',
+      },
+      {
+        id: 2082,
+        track_id: 118,
+        status: 'done',
+        name: 'The Call',
+        artist: 'Backstreet Boys',
+        album: 'The Hits--Chapter One',
+        finished_at: 1787062484,
+        quality: 'HI_RES_LOSSLESS',
+      },
+    ],
+  };
 }
 
 describe('album grouping review decisions', () => {
@@ -374,7 +426,7 @@ describe('download history decisions', () => {
     const loadDownloadHistory = loadDownloadHistoryRenderer(async () => ({
       downloads: [{ track_id: 118, name: 'Song', status: 'error', error: reason }],
     }));
-    const container = { children: [], appendChild(child) { this.children.push(child); }, get firstChild() { return this.children[0] || null; }, removeChild() {} };
+    const container = historyPaintContainer();
 
     await loadDownloadHistory(container);
 
@@ -387,11 +439,34 @@ describe('download history decisions', () => {
     const loadDownloadHistory = loadDownloadHistoryRenderer(async () => ({
       downloads: [{ track_id: 118, name: 'Song', status: 'error', error: '' }],
     }));
-    const container = { children: [], appendChild(child) { this.children.push(child); }, get firstChild() { return this.children[0] || null; }, removeChild() {} };
+    const container = historyPaintContainer();
 
     await loadDownloadHistory(container);
 
     expect(container.children[0].textContent).toBe('SongFailedRetry');
+  });
+
+  test('history payload with two done items paints both cards, newest first', async () => {
+    const loadDownloadHistory = loadDownloadHistoryRenderer(async () => zeratoolHistoryPayload());
+    const container = historyPaintContainer();
+
+    await loadDownloadHistory(container);
+
+    const cards = container.children.filter(child =>
+      String(child.className || '').includes('dl-history-card'),
+    );
+    expect(cards).toHaveLength(2);
+    expect(cards[0].textContent).toContain('La gota fría (Remastered 30 años)');
+    expect(cards[0].textContent).toContain('Carlos Vives');
+    expect(cards[1].textContent).toContain('The Call');
+    expect(cards[1].textContent).toContain('Backstreet Boys');
+  });
+
+  test('finished downloads schedule a history reload so a new done row can paint', () => {
+    const completeFn = viewsSource.split('function _dlComplete(trackId, success) {')[1];
+    expect(completeFn).toBeTruthy();
+    const completeBody = completeFn.split('function _ensureGlobalSSE')[0];
+    expect(completeBody).toContain('_scheduleHistoryReload()');
   });
 });
 

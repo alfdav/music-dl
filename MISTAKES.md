@@ -104,6 +104,14 @@
 
 **Prevention:** Flex-gap the actions cluster using the 12px track-row rhythm. Size the actions column for label + gap + icon (84px). Do not letter-space `tidal`. Cover with a CSS contract test.
 
+## 2026-08-31 — History stayed on the old card after a successful download
+
+**What happened:** Live `/api/downloads/history` returned two done rows (La gota fría + The Call) but Downloads History still painted only the old The Call card until a full app restart.
+
+**Root cause:** v1.7.5 moved Active updates to the queue snapshot. SSE `complete`/`error`/`cancelled` call `_dlComplete` + `refreshActiveDownloads`, and never `updateActiveDownload`, so `_scheduleHistoryReload` (only wired from that dead path, Cancel All, and `queue_cancelled`) never ran.
+
+**Prevention:** Schedule the existing history debounce from `_dlComplete`. Keep a 2-item `/downloads/history` fixture test so both cards paint, newest first.
+
 ## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
 
 **What happened:** Artist-name track search (Carlos Vives) replaced real track hits with a self-titled album. Local-empty paint showed `No results found` while Tidal was still in flight. `urlparse(...).hostname` can raise `ValueError` on broken IPv6 zones / trailing `%`, which would 500 `/api/search`.
