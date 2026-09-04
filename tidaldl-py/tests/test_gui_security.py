@@ -258,6 +258,44 @@ class TestPathValidation:
         assert "_get_db().get(path)" in helper
         assert "SELECT path FROM scanned" not in helper
 
+    def test_exact_scanned_path_accepts_nfd_of_nfc_row(self, tmp_path, monkeypatch):
+        import unicodedata
+
+        from tidal_dl.gui.api import library as library_api
+        from tidal_dl.helper.library_db import LibraryDB
+
+        root = tmp_path / "Music"
+        audio = root / "Alizée" / "song.wav"
+        audio.parent.mkdir(parents=True)
+        audio.write_bytes(b"RIFF")
+        nfc = str(audio)
+        nfd = unicodedata.normalize("NFD", nfc)
+        assert nfc != nfd
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        db.record(nfc, status="tagged", artist="Alizée", title="Song", album="LP")
+        db.commit()
+        db.close()
+
+        class FakeSettings:
+            data = type("S", (), {"download_base_path": str(root), "scan_paths": ""})()
+
+        monkeypatch.setattr(library_api, "Settings", FakeSettings)
+        monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
+
+        lookups: list[str] = []
+        orig = LibraryDB.get
+
+        def spy(self, lookup_path):
+            lookups.append(lookup_path)
+            return orig(self, lookup_path)
+
+        monkeypatch.setattr(LibraryDB, "get", spy)
+        assert library_api._exact_scanned_path(nfd) == nfc
+        assert lookups == [nfd]
+        assert library_api._path_in_library(nfd) is True
+        assert library_api._trusted_library_path(nfd) == audio.resolve()
+
 
 class TestLocalAudioResolution:
     def test_rejects_blank_input(self, tmp_path):

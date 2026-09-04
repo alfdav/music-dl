@@ -30,6 +30,8 @@ from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.library_db.utils import (
     _album_track_key,
     _album_track_preference,
+    canonical_library_path,
+    library_path_forms,
     local_quality_label,
 )
 from tidal_dl.helper.library_scanner import (
@@ -207,7 +209,8 @@ def _exact_scanned_path(path: str) -> str | None:
     """Return the allowlisted DB path that equals *path*.
 
     Indexed ``WHERE path = ?`` only. Never returns the request string, and
-    never loads the full ``scanned`` table.
+    never loads the full ``scanned`` table. NFC and NFD twins of a stored
+    path are the same allowlist row; reconciler identity stays on ``canon_path``.
     """
     if not path or "\x00" in path:
         return None
@@ -219,7 +222,9 @@ def _exact_scanned_path(path: str) -> str | None:
     except Exception:  # noqa: BLE001
         return None
     stored = (row or {}).get("path")
-    if not stored or stored != path:
+    if not stored:
+        return None
+    if stored != path and canonical_library_path(stored) != canonical_library_path(path):
         return None
     return stored
 
@@ -256,14 +261,21 @@ def _library_row_under_roots(path: str) -> bool:
 
 def playback_resolved_path(path: str) -> str | None:
     """Return a cached post-reconcile path for playback retries."""
+    nfc, nfd = library_path_forms(path)
     with _scan_lock:
-        return _playback_migration_cache.get(path)
+        for key in (path, nfc, nfd):
+            hit = _playback_migration_cache.get(key)
+            if hit is not None:
+                return hit
+        return None
 
 
 def _remember_playback_migrations(migrations: list[tuple[str, str]]) -> None:
     with _scan_lock:
         for old_path, new_path in migrations:
-            _playback_migration_cache[old_path] = new_path
+            nfc, nfd = library_path_forms(old_path)
+            for key in dict.fromkeys((old_path, nfc, nfd)):
+                _playback_migration_cache[key] = new_path
 
 
 def request_playback_path_heal(path: str) -> dict:
@@ -1563,6 +1575,9 @@ def _background_scan(rescan: bool) -> None:
         if scan_dirs:
             _migrate_volume_prefixes(db, scan_dirs)
 
+        db.collapse_unicode_path_twins()
+        db.commit()
+
         # If no scan directories are reachable, skip scan entirely to preserve
         # the cached library data.  Without this guard the prune logic would
         # delete every row because disk_paths would be empty.
@@ -1571,7 +1586,7 @@ def _background_scan(rescan: bool) -> None:
             _update_scan_progress(phase="done", scanned=0, total=0, done=True, error=None)
             return
 
-        known = set() if rescan else db.known_paths()
+        known = set() if rescan else {canonical_library_path(path) for path in db.known_paths()}
         db.commit()
 
         # Per-directory signatures replace the root-only scan_fingerprint skip.
@@ -1602,7 +1617,7 @@ def _background_scan(rescan: bool) -> None:
                         continue
                     if f.suffix.lower() not in _AUDIO_EXTENSIONS:
                         continue
-                    disk_paths.add(str(f))
+                    disk_paths.add(canonical_library_path(str(f)))
                     _update_scan_progress(
                         phase="discovering",
                         scanned=len(disk_paths),

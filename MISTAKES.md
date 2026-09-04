@@ -88,6 +88,14 @@
 
 **Prevention:** Skip a write only when `scrollTop` is already at the target, or when a programmatic write toward that target is in flight. On resize, invalidate the cached target, recompute spacers, then force an instant recenter after two layout frames while attached. While detached, restore the captured reading anchor — do not recenter.
 
+## 2026-09-01 — NFC/NFD path twins double-counted one inode
+
+**What happened:** Live 1.7.8 Zeratool `GET /api/library/search?q=Alizée` returned two rows for one FLAC. `os.stat` inodes matched. Album/artist counts were 2x.
+
+**Root cause:** macOS `os.walk` yields NFD (`Alizée`). Tags/downloads record NFC (`Alizée`). `scanned.path` is a raw-string PK, so both rows survived. `known_paths()` set-diff treated them as different files.
+
+**Prevention:** Index `unicodedata.normalize("NFC", path)`. Collapse existing NFC/NFD (or same-inode NFC-equal) twins on open/scan. Do not rewrite files or rename artist folders. Teach 169 allowlist / `_exact_scanned_path` / path lookups to accept both forms without treating them as a move.
+
 ## 2026-09-01 — Upgrade treated a cloned playlist ISRC as identity
 
 **What happened:** Live 1.7.8 `GET /api/upgrade/scan/status?include_results=true` showed Aylaylay, Golpe De Alabanza, La Hermanda, and Patras all with `isrc: USJ3V1497673` / `tidal_track_id: 241908392`. Distinct playlist rips would have upgraded to one Tidal track.
