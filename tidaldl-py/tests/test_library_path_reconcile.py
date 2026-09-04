@@ -1401,3 +1401,42 @@ class TestRemountAndRestoreGuards:
         assert db.get(str(path))["missing_since"] is None
         assert db.tracks_page()[1] == 1
         db.close()
+
+
+class TestUnicodePathIdentity:
+    def test_nfc_row_and_nfd_walk_are_not_a_move(self, tmp_path):
+        import unicodedata
+
+        from tidal_dl.helper.library_reconcile import canon_path
+
+        artist_nfc = "Alizée"
+        artist_nfd = unicodedata.normalize("NFD", artist_nfc)
+        album_nfc = "Mes Courants Électriques"
+        album_nfd = unicodedata.normalize("NFD", album_nfc)
+        root = tmp_path / "Music"
+        nfc = root / artist_nfc / album_nfc / "01 J'en ai marre !.wav"
+        nfd = root / artist_nfd / album_nfd / "01 J'en ai marre !.wav"
+        _write_wav(nfc)
+        nfd.parent.mkdir(parents=True, exist_ok=True)
+        if nfc.resolve() != nfd.resolve():
+            os.link(nfc, nfd)
+        assert str(nfc) != str(nfd)
+        assert canon_path(str(nfc)) == canon_path(str(nfd))
+
+        db = _open_db(tmp_path)
+        _seed(
+            db, nfc, artist=artist_nfc, title="J'en ai marre !",
+            album=album_nfc, duration=1, play_count=9,
+        )
+        rec = _reconciler(db, [root], metadata={
+            str(nfc): _metadata_for(nfc, name="J'en ai marre !", artist=artist_nfc, album=album_nfc, duration=1),
+            str(nfd): _metadata_for(nfd, name="J'en ai marre !", artist=artist_nfc, album=album_nfc, duration=1),
+        })
+        result = rec.reconcile(force=True)
+
+        assert result.migrations == []
+        assert db.tracks_page()[1] == 1
+        assert db.get(str(nfc))["path"] == str(nfc)
+        assert db.get(str(nfd))["path"] == str(nfc)
+        assert db.get(str(nfc))["play_count"] == 9
+        db.close()

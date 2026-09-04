@@ -15,6 +15,7 @@ from tidal_dl.helper.library_db.utils import (
     _is_sqlite_corruption,
     _quarantine_corrupt_db,
     canonical_library_path,
+    library_path_forms,
 )
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "_is_sqlite_corruption",
     "_quarantine_corrupt_db",
     "canonical_library_path",
+    "library_path_forms",
     "datetime",
     "pathlib",
     "sqlite3",

@@ -183,10 +183,11 @@ class TestCollapseExistingTwins:
         assert [row["path"] for row in events] == [nfc]
         assert [row["path"] for row in favs] == [nfc]
 
-    def test_trusted_path_accepts_nfd_after_collapse(self, tmp_path):
-        from tidal_dl.gui.api.library import _path_in_library, _trusted_library_path
+    def test_trusted_path_accepts_nfd_after_collapse(self, tmp_path, monkeypatch):
+        import tidal_dl.gui.api.library as library_api
 
-        nfc, nfd = _hardlink_alizee_pair(tmp_path / "Music")
+        library_dir = tmp_path / "Music"
+        nfc, nfd = _hardlink_alizee_pair(library_dir)
         db = LibraryDB(tmp_path / "library.db")
         db.open()
         _insert_raw(db, nfc, artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
@@ -195,8 +196,16 @@ class TestCollapseExistingTwins:
         db.commit()
         db.close()
 
-        assert _path_in_library(nfd) is True
-        trusted = _trusted_library_path(nfd)
+        class FakeSettings:
+            data = SimpleNamespace(download_base_path=str(library_dir), scan_paths="")
+
+        monkeypatch.setattr(library_api, "Settings", FakeSettings)
+        monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
+        library_api._invalidate_db_cache()
+
+        assert library_api._exact_scanned_path(nfd) == nfc
+        assert library_api._path_in_library(nfd) is True
+        trusted = library_api._trusted_library_path(nfd)
         assert trusted is not None
         assert trusted.is_file()
         assert os.stat(trusted).st_ino == os.stat(nfd).st_ino
@@ -212,6 +221,60 @@ class TestCollapseExistingTwins:
         db.commit()
 
         assert len(db.known_paths()) == 2
+
+
+class TestReconcilerLookupsAcceptTwins:
+    def test_migrate_path_nfc_to_nfd_is_identity_noop(self, db):
+        nfc, nfd = _alizee_strings()
+        db.record(nfc, status="tagged", artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
+        db.commit()
+
+        assert db.migrate_path(nfc, nfd) is True
+        assert db.known_paths() == {nfc}
+        assert db.get(nfd)["path"] == nfc
+
+    def test_migrate_path_still_moves_distinct_paths(self, db):
+        nfc, _nfd = _alizee_strings()
+        moved = "/Volumes/Music/Moved/song.flac"
+        db.record(nfc, status="tagged", artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
+        db.commit()
+
+        assert db.migrate_path(nfc, moved) is True
+        assert db.known_paths() == {moved}
+        assert db.get(nfc) is None
+        assert db.get(moved)["path"] == moved
+
+    def test_mark_and_clear_missing_accept_nfd_of_nfc_row(self, db):
+        nfc, nfd = _alizee_strings()
+        db.record(nfc, status="tagged", artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
+        db.commit()
+
+        db.mark_missing(nfd, since=123)
+        assert db.get(nfc)["missing_since"] == 123
+        db.clear_missing(nfd)
+        assert db.get(nfc)["missing_since"] is None
+
+    def test_mark_missing_accepts_nfc_request_for_leftover_nfd_row(self, db):
+        nfc, nfd = _alizee_strings()
+        _insert_raw(db, nfd, artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
+        db.commit()
+
+        db.mark_missing(nfc, since=456)
+        row = db.get(nfc)
+        assert row is not None
+        assert row["path"] == nfd
+        assert row["missing_since"] == 456
+
+    def test_playback_cache_resolves_nfd_of_old_path(self, tmp_path, monkeypatch):
+        import tidal_dl.gui.api.library as library_api
+
+        nfc, nfd = _alizee_strings()
+        dest = "/Volumes/Music/Moved/song.flac"
+        monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
+        library_api._playback_migration_cache.clear()
+        library_api._remember_playback_migrations([(nfc, dest)])
+        assert library_api.playback_resolved_path(nfd) == dest
+        assert library_api.playback_resolved_path(nfc) == dest
 
 
 class TestScanDoesNotCreateTwins:

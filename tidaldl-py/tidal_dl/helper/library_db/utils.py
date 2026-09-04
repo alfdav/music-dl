@@ -19,6 +19,12 @@ def canonical_library_path(path: str) -> str:
     return unicodedata.normalize("NFC", str(path))
 
 
+def library_path_forms(path: str) -> tuple[str, str]:
+    """Return (NFC, NFD) spellings of *path* for indexed twin lookups."""
+    nfc = canonical_library_path(path)
+    return nfc, unicodedata.normalize("NFD", nfc)
+
+
 def _is_sqlite_corruption(exc: sqlite3.DatabaseError) -> bool:
     message = str(exc).casefold()
     return any(fragment in message for fragment in _SQLITE_CORRUPTION_MESSAGES)

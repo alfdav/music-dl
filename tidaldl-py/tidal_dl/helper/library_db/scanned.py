@@ -564,12 +564,19 @@ class ScannedMixin:
     ) -> bool:
         """Move a scanned row and its path-keyed user data to *new_path*."""
         assert self._conn
-        if old_path == new_path:
+        old_nfc, old_nfd = library_path_forms(old_path)
+        new_nfc, new_nfd = library_path_forms(new_path)
+        if old_nfc == new_nfc:
             return True
-        if self.get(new_path) is not None:
+        old_row = self.get(old_path)
+        if old_row is None:
+            return False
+        old_stored = old_row["path"]
+        existing_new = self.get(new_nfc)
+        if existing_new is not None and existing_new["path"] != old_stored:
             return False
         favorite_collision = self._conn.execute(
-            "SELECT 1 FROM favorites WHERE path = ?", (new_path,)
+            "SELECT 1 FROM favorites WHERE path IN (?, ?)", (new_nfc, new_nfd)
         ).fetchone()
         if favorite_collision:
             return False
@@ -588,35 +595,37 @@ class ScannedMixin:
                    missing_since = NULL
                WHERE path = ?""",
             (
-                new_path, file_size, file_mtime, file_inode, file_device,
-                duration, codec, title, artist, album, old_path,
+                new_nfc, file_size, file_mtime, file_inode, file_device,
+                duration, codec, title, artist, album, old_stored,
             ),
         )
         if cursor.rowcount != 1:
             return False
         self._conn.execute(
-            "UPDATE favorites SET path = ? WHERE path = ?",
-            (new_path, old_path),
+            "UPDATE favorites SET path = ? WHERE path IN (?, ?)",
+            (new_nfc, old_stored, old_nfd),
         )
         self._conn.execute(
-            "UPDATE play_events SET path = ? WHERE path = ?",
-            (new_path, old_path),
+            "UPDATE play_events SET path = ? WHERE path IN (?, ?)",
+            (new_nfc, old_stored, old_nfd),
         )
         return True
 
     def mark_missing(self, path: str, *, since: int | None = None) -> None:
         assert self._conn
         ts = int(since if since is not None else time.time())
+        nfc, nfd = library_path_forms(path)
         self._conn.execute(
-            "UPDATE scanned SET missing_since = ? WHERE path = ? AND missing_since IS NULL",
-            (ts, path),
+            "UPDATE scanned SET missing_since = ? WHERE path IN (?, ?) AND missing_since IS NULL",
+            (ts, nfc, nfd),
         )
 
     def clear_missing(self, path: str) -> None:
         assert self._conn
+        nfc, nfd = library_path_forms(path)
         self._conn.execute(
-            "UPDATE scanned SET missing_since = NULL WHERE path = ?",
-            (path,),
+            "UPDATE scanned SET missing_since = NULL WHERE path IN (?, ?)",
+            (nfc, nfd),
         )
 
     def missing_rows(self) -> list[dict]:

@@ -15,7 +15,6 @@ import re
 import sqlite3
 import threading
 import time
-import unicodedata
 from base64 import b64decode
 from collections import Counter, defaultdict
 from collections.abc import Callable
@@ -32,6 +31,7 @@ from tidal_dl.helper.library_db.utils import (
     _album_track_key,
     _album_track_preference,
     canonical_library_path,
+    library_path_forms,
 )
 from tidal_dl.helper.library_scanner import (
     drop_skipped_scan_paths,
@@ -260,14 +260,21 @@ def _library_row_under_roots(path: str) -> bool:
 
 def playback_resolved_path(path: str) -> str | None:
     """Return a cached post-reconcile path for playback retries."""
+    nfc, nfd = library_path_forms(path)
     with _scan_lock:
-        return _playback_migration_cache.get(path)
+        for key in (path, nfc, nfd):
+            hit = _playback_migration_cache.get(key)
+            if hit is not None:
+                return hit
+        return None
 
 
 def _remember_playback_migrations(migrations: list[tuple[str, str]]) -> None:
     with _scan_lock:
         for old_path, new_path in migrations:
-            _playback_migration_cache[old_path] = new_path
+            nfc, nfd = library_path_forms(old_path)
+            for key in dict.fromkeys((old_path, nfc, nfd)):
+                _playback_migration_cache[key] = new_path
 
 
 def request_playback_path_heal(path: str) -> dict:

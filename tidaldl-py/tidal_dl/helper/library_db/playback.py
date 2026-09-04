@@ -8,10 +8,10 @@ class PlaybackMixin:
         """Bump play_count and set last_played for a scanned track."""
         assert self._conn
         now = int(time.time())
-        nfc = canonical_library_path(path)
+        nfc, nfd = library_path_forms(path)
         self._conn.execute(
-            "UPDATE scanned SET play_count = play_count + 1, last_played = ? WHERE path = ?",
-            (now, nfc),
+            "UPDATE scanned SET play_count = play_count + 1, last_played = ? WHERE path IN (?, ?)",
+            (now, nfc, nfd),
         )
 
     def log_play_event(
