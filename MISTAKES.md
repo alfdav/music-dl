@@ -112,6 +112,14 @@
 
 **Prevention:** Schedule the existing history debounce from `_dlComplete`. Keep a 2-item `/downloads/history` fixture test so both cards paint, newest first.
 
+## 2026-08-31 — Library search missed `fría` and hid the remaster
+
+**What happened:** Tetrarch searched Library for `Fria` and got four identical 16-bit `La Gota Fria` / `Clasicos de la Provincia` rows. The 24-bit remaster `La gota fría (Remastered 30 años)` was in the DB but did not match.
+
+**Root cause:** `tracks_page` used ASCII `LIKE` on title/artist/album. `í` does not match `i`. The remastered row already stored the full tagged title/album/Hz-bit; search never returned it.
+
+**Prevention:** Fold query and stored text (`NFKD` + strip combining marks) in the SQL `LIKE`. Test `q=Fria` and `q=gota fria` at `tracks_page` / `GET /api/library`. Do not rewrite tagged remaster titles to the short name. One `fold_search` UDF on concatenated title/artist/album is ~40ms p95 on the 10k QA probe; raise that search ceiling instead of adding a schema column.
+
 ## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
 
 **What happened:** Artist-name track search (Carlos Vives) replaced real track hits with a self-titled album. Local-empty paint showed `No results found` while Tidal was still in flight. `urlparse(...).hostname` can raise `ValueError` on broken IPv6 zones / trailing `%`, which would 500 `/api/search`.

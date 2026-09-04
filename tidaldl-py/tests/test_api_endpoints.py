@@ -38,6 +38,56 @@ class TestLibraryTracks:
         resp = client.get("/api/library?q=test", headers=client._host_header)
         assert resp.status_code == 200
 
+    def test_search_returns_tagged_remaster_for_ascii_fria(self, tmp_path, monkeypatch):
+        import tidal_dl.gui.api.library as library_api
+
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        remastered = (
+            "/music/Carlos Vives/"
+            "Clásicos de la Provincia 30 Años (Remastered & Expanded)/"
+            "La gota fría (Remastered 30 años).flac"
+        )
+        db.record(
+            remastered,
+            status="tagged",
+            artist="Carlos Vives",
+            title="La gota fría (Remastered 30 años)",
+            album="Clásicos de la Provincia 30 Años (Remastered & Expanded)",
+            quality="44100Hz/24bit",
+            fmt="FLAC",
+            codec="flac",
+        )
+        db.record(
+            "/music/Carlos Vives/Clasicos de la Provincia/Carlos Vives - La Gota Fria.flac",
+            status="tagged",
+            artist="Carlos Vives",
+            title="La Gota Fria",
+            album="Clasicos de la Provincia",
+            quality="44100Hz/16bit",
+            fmt="FLAC",
+            codec="flac",
+        )
+        db.commit()
+        monkeypatch.setattr(library_api, "_get_db", lambda: db)
+
+        try:
+            for query in ("Fria", "gota fria"):
+                payload = library_api.library(sort="title", limit=50, offset=0, q=query)
+                by_name = {track["name"]: track for track in payload["tracks"]}
+                remaster = by_name.get("La gota fría (Remastered 30 años)")
+                assert remaster is not None, query
+                assert remaster["album"] == (
+                    "Clásicos de la Provincia 30 Años (Remastered & Expanded)"
+                )
+                assert remaster["quality"] == "44100Hz/24bit"
+                short = by_name.get("La Gota Fria")
+                assert short is not None, query
+                assert short["album"] == "Clasicos de la Provincia"
+                assert short["quality"] == "44100Hz/16bit"
+        finally:
+            db.close()
+
     def test_sort_params_accepted(self, client):
         for sort in ("recent", "artist", "album", "title"):
             resp = client.get(f"/api/library?sort={sort}", headers=client._host_header)
