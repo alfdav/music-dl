@@ -382,9 +382,9 @@ jobs:
           mapfile -d '' -t changed_paths < "$RUNNER_TEMP/changed-paths.txt"
           for path in "${changed_paths[@]}"; do
             case "$path" in
-              tidaldl-py/src-tauri/*) rust=true ;;
+              tidaldl-py/src-tauri/*) rust=true; tauri_package=true ;;
               docker/*|docker-compose.yml|tidaldl-py/pyproject.toml) docker=true ;;
-              tidaldl-py/package.json) tauri_package=true ;;
+              tidaldl-py/package.json|tidaldl-py/package-lock.json) tauri_package=true ;;
             esac
           done
           echo "rust=$rust" >> "$GITHUB_OUTPUT"
@@ -425,7 +425,9 @@ jobs:
         if: steps.affected.outputs.tauri_package == 'true'
         working-directory: tidaldl-py
         continue-on-error: true
-        run: bun install && bunx tauri --version
+        run: |
+          bun install
+          python3 "$GITHUB_WORKSPACE/scripts/check_tauri_cli_plugin_versions.py"
 
       - name: Collect affected-build result
         id: results
