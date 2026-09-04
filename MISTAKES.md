@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-04 — Rust Tauri plugin bump left JS packages behind
+
+**What happened:** After PR #172, edge-desktop aborted on macOS, Windows, and Linux before compile: `tauri-plugin-updater (v2.11.0) : @tauri-apps/plugin-updater (v2.10.1)`.
+
+**Root cause:** The Tauri bump updated Rust `tauri-plugin-*` crates in `Cargo.toml` / `Cargo.lock` but left `@tauri-apps/plugin-updater` at 2.10.1. `bunx tauri build` checks major/minor lockstep first. qa.yml only ran `bunx tauri --version` when `package.json` changed, so a Cargo-only bump never hit that check.
+
+**Prevention:** After bumping Rust Tauri plugins, bump matching `@tauri-apps/*` JS packages (and the lockfile) to the same major.minor. `edge-desktop` / `bunx tauri build` fails before compile if they drift.
+
 ## 2026-09-04 — Dependabot could not unlock glib 0.18.5 or rand 0.7.3
 
 **What happened:** Dependabot security updater failed `security_update_not_possible` on master @1d3d780 for transitive `glib` 0.18.5 (GHSA-wrw7-89jp-8q8g) and `rand` 0.7.3 (GHSA-cq8v-f236-94qc). Neither is a direct `Cargo.toml` dep.
