@@ -21,7 +21,8 @@ updates:
       # → libwebkitgtk-6.0-dev + libgtk-4-dev). Do not cargo-update -p glib
       # and do not [patch] glib 0.20 onto gtk 0.18.
       #
-      # Re-evaluate when Tauri 3 ships the GTK4 Linux backend.
-      # Until then Dependabot security_update_not_possible for glib is expected.
+      # Ignore the whole dependency (not just the affected range). A
+      # versions filter of ">=0.15,<0.20" does not silence Dependabot
+      # security unlocks toward 0.20.0, so security_update_not_possible
+      # would keep retrying. Drop this ignore when Tauri 3 ships GTK4.
       - dependency-name: glib
-        versions: [">=0.15.0, <0.20.0"]
