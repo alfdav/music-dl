@@ -91,6 +91,9 @@ def _get_db() -> LibraryDB:
             _db_local.db = db
             _db_local.generation = _db_generation
 
+    from tidal_dl.helper.library_scanner import purge_skipped_library_rows
+
+    purge_skipped_library_rows(db)
     _db = db
     return db
 

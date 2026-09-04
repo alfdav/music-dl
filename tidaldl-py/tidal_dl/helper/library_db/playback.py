@@ -1,6 +1,7 @@
 """Play events and home dashboard stats."""
 
 from tidal_dl.helper.library_db._common import *
+from tidal_dl.helper.library_scanner import visible_scanned_path_sql
 
 
 class PlaybackMixin:
@@ -38,7 +39,7 @@ class PlaybackMixin:
         safe_limit = max(1, min(int(limit), 100))
         safe_offset = max(0, int(offset))
         rows = self._conn.execute(
-            """SELECT s.path, s.isrc, s.artist, s.title, s.album, s.duration,
+            f"""SELECT s.path, s.isrc, s.artist, s.title, s.album, s.duration,
                       s.quality, s.format, s.codec, s.genre, s.play_count, s.last_played,
                       s.art_available,
                       latest.played_at
@@ -50,6 +51,7 @@ class PlaybackMixin:
                ) latest
                JOIN scanned s ON s.path = latest.path
                WHERE s.status != 'unreadable' AND s.missing_since IS NULL
+                 AND {visible_scanned_path_sql("s.path")}
                ORDER BY latest.played_at DESC
                LIMIT ? OFFSET ?""",
             (safe_limit, safe_offset),

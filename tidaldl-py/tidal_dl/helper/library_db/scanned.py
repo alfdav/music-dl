@@ -211,9 +211,14 @@ class ScannedMixin:
     def tracks_by_isrc(self, isrc: str) -> list[dict]:
         """Return all scanned rows for one ISRC."""
         assert self._conn
+        from tidal_dl.helper.library_scanner import visible_scanned_path_sql
+
         rows = self._conn.execute(
-            "SELECT * FROM scanned WHERE isrc = ? AND status != 'unreadable' "
-            "AND missing_since IS NULL ORDER BY path ASC",
+            f"""SELECT * FROM scanned
+                WHERE isrc = ? AND status != 'unreadable'
+                  AND missing_since IS NULL
+                  AND {visible_scanned_path_sql()}
+                ORDER BY path ASC""",
             (isrc,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -283,8 +288,11 @@ class ScannedMixin:
     def all_tracks(self) -> list[dict]:
         """Return all cached tracks with status != 'unreadable'."""
         assert self._conn
+        from tidal_dl.helper.library_scanner import visible_scanned_path_sql
+
         rows = self._conn.execute(
-            "SELECT * FROM scanned WHERE status != 'unreadable' AND missing_since IS NULL"
+            f"SELECT * FROM scanned WHERE status != 'unreadable' "
+            f"AND missing_since IS NULL AND {visible_scanned_path_sql()}"
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -307,7 +315,12 @@ class ScannedMixin:
         }
         order = sort_map.get(sort, sort_map["artist"])
 
-        where = "status != 'unreadable' AND missing_since IS NULL"
+        from tidal_dl.helper.library_scanner import visible_scanned_path_sql
+
+        where = (
+            f"status != 'unreadable' AND missing_since IS NULL "
+            f"AND {visible_scanned_path_sql()}"
+        )
         params: list = []
         if query:
             where += (

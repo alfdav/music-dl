@@ -38,6 +38,8 @@ from tidal_dl.helper.library_scanner import (
     drop_skipped_scan_paths,
     is_skipped_scan_dir,
     path_has_skipped_scan_dir,
+    purge_skipped_library_rows,
+    visible_scanned_path_sql,
 )
 from tidal_dl.helper.path import path_config_base
 
@@ -163,6 +165,7 @@ def _get_db() -> LibraryDB:
             _db_local.opened_at = now
             _db_local.generation = _db_generation
 
+    purge_skipped_library_rows(db)
     _db = db
     _db_opened_at = getattr(_db_local, "opened_at", now)
     return db
@@ -334,6 +337,8 @@ def _meaningful_title(value: str | None) -> bool:
 
 
 def _structured_path_metadata(file_path: Path, scan_dirs: list[Path]) -> tuple[str, str] | None:
+    if path_has_skipped_scan_dir(file_path):
+        return None
     resolved_file = file_path.resolve(strict=False)
     roots = sorted(
         (root.resolve(strict=False) for root in scan_dirs),
@@ -346,7 +351,11 @@ def _structured_path_metadata(file_path: Path, scan_dirs: list[Path]) -> tuple[s
         except ValueError:
             continue
         if len(relative.parts) >= 3:
-            return relative.parts[0].strip(), relative.parts[-2].strip()
+            artist = relative.parts[0].strip()
+            album = relative.parts[-2].strip()
+            if is_skipped_scan_dir(artist) or is_skipped_scan_dir(album):
+                return None
+            return artist, album
     return None
 
 
@@ -360,6 +369,10 @@ def _resolve_local_metadata(
 ) -> dict:
     structured = _structured_path_metadata(file_path, scan_dirs)
     path_artist, path_album = structured or ("", "")
+    if is_skipped_scan_dir(path_artist):
+        path_artist = ""
+    if is_skipped_scan_dir(path_album):
+        path_album = ""
     resolved_artist = artist.strip() if _meaningful(artist, "Unknown Artist") else path_artist
     resolved_artist = resolved_artist or "Unknown Artist"
 
@@ -2139,14 +2152,16 @@ def library_search(
         assert db._conn
         like = f"%{q.strip()}%"
         rows = db._conn.execute(
-            """SELECT s.artist, COUNT(*) as track_count, COUNT(DISTINCT album) as album_count,
+            f"""SELECT s.artist, COUNT(*) as track_count, COUNT(DISTINCT album) as album_count,
                       MIN(s.path) as cover_path,
                       (SELECT s2.art_available FROM scanned s2
                        WHERE s2.artist = s.artist AND s2.status != 'unreadable'
                          AND s2.missing_since IS NULL
+                         AND {visible_scanned_path_sql("s2.path")}
                        ORDER BY s2.path ASC LIMIT 1) as cover_art_available
                FROM scanned s
                WHERE artist LIKE ? AND status != 'unreadable' AND missing_since IS NULL
+                 AND {visible_scanned_path_sql("s.path")}
                GROUP BY artist ORDER BY track_count DESC LIMIT ?""",
             (like, limit),
         ).fetchall()

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
 SCAN_EXTENSIONS: frozenset[str] = frozenset({".flac", ".mp3", ".m4a", ".mp4", ".ogg"})
 
 # Directory names that are never music. Match the whole component, case-insensitive.
+# `#recycle` is NAS recycle/trash (UGreen, Synology, and any NAS that uses that name).
 _SKIPPED_SCAN_DIR_NAMES = frozenset({
     "#recycle",
     "@eadir",
@@ -60,6 +62,34 @@ def path_has_skipped_scan_dir(path: str | pathlib.Path) -> bool:
     or ``08 Menu Groove Edit`` under a real album stays eligible.
     """
     return any(is_skipped_scan_dir(part) for part in pathlib.Path(path).parts[:-1])
+
+
+_SQL_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$")
+
+
+def visible_scanned_path_sql(column: str = "path") -> str:
+    """SQL predicate: *column* has no skipped directory component.
+
+    ``/#recycle/`` (after slash normalization) is NAS recycle/trash
+    (UGreen, Synology, and any NAS that uses that path component).
+    A title or folder that merely contains Recycle is not.
+    """
+    if not _SQL_IDENT.fullmatch(column):
+        raise ValueError(f"invalid SQL identifier: {column}")
+    norm = f"'/' || trim(lower(replace({column}, char(92), '/')), '/') || '/'"
+    clauses = [f"instr({norm}, '/{name}/') = 0" for name in sorted(_SKIPPED_SCAN_DIR_NAMES)]
+    return "(" + " AND ".join(clauses) + ")"
+
+
+def purge_skipped_library_rows(library_db: LibraryDB) -> int:
+    """Drop leftover NAS recycle/trash rows on first API open, without walking disk."""
+    if getattr(library_db, "_skipped_paths_purged", False):
+        return 0
+    dropped = drop_skipped_scan_paths(library_db)
+    library_db._skipped_paths_purged = True
+    if dropped:
+        print(f"[library] Dropped {dropped} leftover rows under skipped directories")
+    return dropped
 
 
 def drop_skipped_scan_paths(library_db: LibraryDB) -> int:
