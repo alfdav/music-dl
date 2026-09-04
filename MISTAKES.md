@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-04 — 165 Alizée search test looked unrooted after 167
+
+**What happened:** Bag integration of #165 + #167 made `GET /api/library/search?q=Alizée` return `total=0`. The 165 fixture inserted `/Volumes/Music/Alizée/...` NFC/NFD twins into the pytest library DB.
+
+**Root cause:** #167 `_library_db()` drops rows outside configured roots. Pytest Settings default to `~/download`, so the live-shaped `/Volumes/Music` twins were treated as leftover QA paths.
+
+**Prevention:** Endpoint tests for in-root NFC/NFD twins must pin `download_base_path` / `scan_paths` to that music root. Do not skip the unrooted purge. Vanished in-root rows stay on `missing_since`.
+
 ## 2026-09-01 — Library served leftover QA rows outside the music root
 
 **What happened:** Live 1.7.8 search (`Night Watch`) and Recents showed Sting *The Last Ship (Live at the Rijksmuseum)* at `/Users/hackbook/.cache/tactica/music-dl-pr149-qa/...flac`. The file was gone. Art returned 403 because the path was outside `/Volumes/Music`. Settings scan path was only `/Volumes/Music`.

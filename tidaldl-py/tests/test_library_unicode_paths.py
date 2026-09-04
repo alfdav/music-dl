@@ -355,11 +355,18 @@ class TestScanDoesNotCreateTwins:
 
 
 class TestLibrarySearchEndpoint:
-    def test_search_alizee_returns_one_row_for_nfc_nfd_twins(self, client, tmp_path):
+    def test_search_alizee_returns_one_row_for_nfc_nfd_twins(self, client, tmp_path, monkeypatch):
         import tidal_dl.gui.api.library as library_api
         from tidal_dl.helper.path import path_config_base
 
         nfc, nfd = _alizee_strings()
+        # #167 drops leftover rows outside configured roots on search open.
+        # Live Alizée twins sit under the music root, so pin that root here.
+        class FakeSettings:
+            data = SimpleNamespace(download_base_path="/Volumes/Music", scan_paths="/Volumes/Music")
+
+        monkeypatch.setattr(library_api, "Settings", FakeSettings)
+        library_api._stale_purge_key = None
         db = LibraryDB(Path(path_config_base()) / "library.db")
         db.open()
         _insert_raw(db, nfc, artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
