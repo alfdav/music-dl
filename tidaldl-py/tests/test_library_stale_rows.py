@@ -1,4 +1,8 @@
-"""Stale scanned rows outside music roots or missing on disk must drop on open."""
+"""Stale scanned rows outside music roots must drop on open.
+
+Vanished in-root files stay in the ledger so reconcile can migrate
+identity via missing_since. This module must not DELETE those rows.
+"""
 
 from __future__ import annotations
 
@@ -44,7 +48,7 @@ def test_path_under_music_roots_rejects_qa_cache_path(tmp_path: Path) -> None:
     assert library_scanner.path_under_music_roots(leftover, [music]) is False
 
 
-def test_drop_stale_removes_missing_file_under_root(tmp_path: Path) -> None:
+def test_drop_stale_keeps_missing_file_under_root_and_play_history(tmp_path: Path) -> None:
     music = tmp_path / "music"
     keep = music / "Artist" / "Album" / "keep.flac"
     missing = music / "Artist" / "Album" / "gone.flac"
@@ -54,15 +58,23 @@ def test_drop_stale_removes_missing_file_under_root(tmp_path: Path) -> None:
     db.open()
     _seed(db, keep, artist="Artist", title="Keep")
     _seed(db, missing, artist="Artist", title="Gone")
+    db.log_play_event(path=str(missing), artist="Artist", duration=1, played_at=200)
     db.commit()
 
-    dropped = library_scanner.drop_stale_library_rows(db, [music], check_missing=True)
+    dropped = library_scanner.drop_stale_library_rows(db, [music])
     paths = db.known_paths()
+    row = db.get(str(missing))
+    plays = db._conn.execute(
+        "SELECT COUNT(*) FROM play_events WHERE path = ?", (str(missing),)
+    ).fetchone()[0]
     db.close()
 
-    assert dropped == 1
+    assert dropped == 0
     assert str(keep) in paths
-    assert str(missing) not in paths
+    assert str(missing) in paths
+    assert row is not None
+    assert row.get("missing_since") is None
+    assert plays == 1
     assert keep.is_file()
 
 
@@ -84,7 +96,7 @@ def test_drop_stale_removes_path_outside_root_and_leaves_disk_file(tmp_path: Pat
     )
     db.commit()
 
-    dropped = library_scanner.drop_stale_library_rows(db, [music], check_missing=True)
+    dropped = library_scanner.drop_stale_library_rows(db, [music])
     paths = db.known_paths()
     db.close()
 
@@ -102,7 +114,7 @@ def test_drop_stale_keeps_missing_row_when_root_is_unmounted(tmp_path: Path) -> 
     _seed(db, missing, artist="Sting", title="Night Watch")
     db.commit()
 
-    dropped = library_scanner.drop_stale_library_rows(db, [music], check_missing=True)
+    dropped = library_scanner.drop_stale_library_rows(db, [music])
     paths = db.known_paths()
     db.close()
 
@@ -110,7 +122,7 @@ def test_drop_stale_keeps_missing_row_when_root_is_unmounted(tmp_path: Path) -> 
     assert str(missing) in paths
 
 
-def test_library_search_and_recents_drop_stale_without_sync(tmp_path: Path, monkeypatch) -> None:
+def test_library_search_and_recents_drop_unrooted_without_sync(tmp_path: Path, monkeypatch) -> None:
     import tidal_dl.gui.api.home as home_api
     import tidal_dl.gui.api.library as library_api
 
@@ -137,6 +149,7 @@ def test_library_search_and_recents_drop_stale_without_sync(tmp_path: Path, monk
     )
     db.log_play_event(path=str(leftover), artist="Sting", duration=1, played_at=200)
     db.log_play_event(path=str(keep), artist="Local", duration=1, played_at=100)
+    db.log_play_event(path=str(missing), artist="Local", duration=1, played_at=50)
     db.commit()
     db.close()
 
@@ -147,7 +160,6 @@ def test_library_search_and_recents_drop_stale_without_sync(tmp_path: Path, monk
     monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
     monkeypatch.setattr(home_api, "path_config_base", lambda: str(tmp_path))
     library_api._stale_purge_key = None
-    library_api._stale_purge_missing = False
     library_api._close_thread_db()
     home_api._close_thread_db()
 
@@ -156,12 +168,16 @@ def test_library_search_and_recents_drop_stale_without_sync(tmp_path: Path, monk
     db = LibraryDB(tmp_path / "library.db")
     db.open()
     after_recents = db.known_paths()
+    missing_plays = db._conn.execute(
+        "SELECT COUNT(*) FROM play_events WHERE path = ?", (str(missing),)
+    ).fetchone()[0]
     db.close()
 
     assert str(leftover) not in recent_paths
     assert str(leftover) not in after_recents
     assert str(missing) in after_recents
     assert str(keep) in after_recents
+    assert missing_plays == 1
 
     search = library_api.library_search(q="Night Watch", type="tracks", limit=20)
     search_titles = {track["name"] for track in search["tracks"]}
@@ -172,7 +188,7 @@ def test_library_search_and_recents_drop_stale_without_sync(tmp_path: Path, monk
 
     assert "Night Watch" not in search_titles
     assert str(keep) in paths
-    assert str(missing) not in paths
+    assert str(missing) in paths
     assert str(leftover) not in paths
     assert keep.is_file()
 
@@ -187,7 +203,7 @@ def test_drop_stale_skips_mass_unrooted_when_library_looks_remounted(tmp_path: P
         _seed(db, other / f"track{index:03d}.flac", artist="A", title=f"T{index}")
     db.commit()
 
-    dropped = library_scanner.drop_stale_library_rows(db, [music], check_missing=False)
+    dropped = library_scanner.drop_stale_library_rows(db, [music])
     paths = db.known_paths()
     db.close()
 
@@ -195,7 +211,7 @@ def test_drop_stale_skips_mass_unrooted_when_library_looks_remounted(tmp_path: P
     assert len(paths) == 150
 
 
-def test_drop_stale_skips_mass_missing_on_empty_mount(tmp_path: Path) -> None:
+def test_drop_stale_does_not_wipe_empty_mount_in_root_rows(tmp_path: Path) -> None:
     music = tmp_path / "music"
     music.mkdir()
     db = LibraryDB(tmp_path / "library.db")
@@ -204,7 +220,7 @@ def test_drop_stale_skips_mass_missing_on_empty_mount(tmp_path: Path) -> None:
         _seed(db, music / f"track{index:03d}.flac", artist="A", title=f"T{index}")
     db.commit()
 
-    dropped = library_scanner.drop_stale_library_rows(db, [music], check_missing=True)
+    dropped = library_scanner.drop_stale_library_rows(db, [music])
     paths = db.known_paths()
     db.close()
 
@@ -230,7 +246,7 @@ def test_drop_stale_treats_isdir_oserror_as_unmounted(tmp_path: Path, monkeypatc
         raise OSError("nas flaked")
 
     monkeypatch.setattr(Path, "is_dir", boom)
-    dropped = library_scanner.drop_stale_library_rows(db, [music], check_missing=True)
+    dropped = library_scanner.drop_stale_library_rows(db, [music])
     paths = db.known_paths()
     db.close()
 
@@ -272,7 +288,6 @@ def test_library_search_survives_root_isdir_oserror(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
     monkeypatch.setattr(Path, "is_dir", boom)
     library_api._stale_purge_key = None
-    library_api._stale_purge_missing = False
     library_api._close_thread_db()
 
     search = library_api.library_search(q="Keep", type="tracks", limit=20)
@@ -294,7 +309,7 @@ def test_drop_stale_keeps_row_when_is_file_raises(tmp_path: Path, monkeypatch) -
         raise OSError("volume flaked")
 
     monkeypatch.setattr(Path, "is_file", boom)
-    dropped = library_scanner.drop_stale_library_rows(db, [music], check_missing=True)
+    dropped = library_scanner.drop_stale_library_rows(db, [music])
     paths = db.known_paths()
     db.close()
 
@@ -302,8 +317,7 @@ def test_drop_stale_keeps_row_when_is_file_raises(tmp_path: Path, monkeypatch) -
     assert str(keep) in paths
 
 
-def test_scan_drops_outside_root_without_walking(tmp_path: Path, monkeypatch) -> None:
-    import json
+def test_scan_drops_outside_root_without_a_successful_walk(tmp_path: Path, monkeypatch) -> None:
     import os
 
     import tidal_dl.gui.api.library as library_api
@@ -317,12 +331,6 @@ def test_scan_drops_outside_root_without_walking(tmp_path: Path, monkeypatch) ->
     db.open()
     _seed(db, keep, artist="Local", title="Keep")
     _seed(db, leftover, artist="Sting", title="Night Watch")
-    finger = json.dumps({
-        "dirs": [str(music)],
-        "mtimes": [os.stat(str(music)).st_mtime],
-        "known_count": 1,
-    }, sort_keys=True)
-    db.set_meta("scan_fingerprint", finger)
     db.commit()
     db.close()
 
@@ -333,14 +341,10 @@ def test_scan_drops_outside_root_without_walking(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
     monkeypatch.setattr(library_api, "_schedule_album_enrichment", lambda: None)
 
-    walked = {"count": 0}
-    real_walk = os.walk
+    def explode_walk(*args, **kwargs):
+        raise RuntimeError("scan interrupted")
 
-    def counting_walk(*args, **kwargs):
-        walked["count"] += 1
-        yield from real_walk(*args, **kwargs)
-
-    monkeypatch.setattr(os, "walk", counting_walk)
+    monkeypatch.setattr(os, "walk", explode_walk)
     library_api._scan_running = True
     try:
         library_api._background_scan(rescan=False)
@@ -352,6 +356,12 @@ def test_scan_drops_outside_root_without_walking(tmp_path: Path, monkeypatch) ->
     paths = db.known_paths()
     db.close()
 
-    assert walked["count"] == 0
     assert str(keep) in paths
     assert str(leftover) not in paths
+
+
+def test_drop_stale_and_library_api_have_no_check_missing() -> None:
+    scanner = Path(__file__).resolve().parents[1] / "tidal_dl" / "helper" / "library_scanner.py"
+    library = Path(__file__).resolve().parents[1] / "tidal_dl" / "gui" / "api" / "library.py"
+    assert "check_missing" not in scanner.read_text()
+    assert "check_missing" not in library.read_text()

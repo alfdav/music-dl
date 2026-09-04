@@ -181,7 +181,7 @@ def recent_plays(limit: int = Query(50, ge=1, le=100)):
     if _get_db is _real_get_db:
         from tidal_dl.gui.api.library import _purge_stale_library_rows
 
-        _purge_stale_library_rows(db, check_missing=False)
+        _purge_stale_library_rows(db)
     tracks = db.recent_plays(limit=limit)
 
     from tidal_dl.gui.api.library import _local_cover_url

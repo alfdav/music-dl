@@ -72,7 +72,6 @@ _db: LibraryDB | None = None  # Compatibility alias for tests/debugging.
 _db_opened_at: float = 0  # Compatibility alias for tests/debugging.
 _DB_MAX_AGE = 300  # Force reconnect every 5 min to catch stale NAS handles
 _stale_purge_key: tuple | None = None
-_stale_purge_missing = False
 _scan_lock = threading.Lock()
 _scan_running = False
 _scan_progress = {
@@ -187,31 +186,27 @@ def _configured_music_roots() -> list[Path]:
     return roots
 
 
-def _purge_stale_library_rows(db: LibraryDB, *, check_missing: bool) -> None:
-    """Drop leftover indexer rows once per DB path + configured roots."""
-    global _stale_purge_key, _stale_purge_missing
+def _purge_stale_library_rows(db: LibraryDB) -> None:
+    """Drop leftover out-of-root indexer rows once per DB path + roots."""
+    global _stale_purge_key
     roots = _configured_music_roots()
     key = (str(db._path), tuple(str(root) for root in roots))
-    if _stale_purge_key != key:
-        _stale_purge_missing = False
-    if _stale_purge_key == key and (not check_missing or _stale_purge_missing):
+    if _stale_purge_key == key:
         return
     try:
-        drop_stale_library_rows(db, roots, check_missing=check_missing)
+        drop_stale_library_rows(db, roots)
     except OSError:
         return
     _stale_purge_key = key
-    if check_missing:
-        _stale_purge_missing = True
 
 
-def _library_db(*, check_missing: bool = True) -> LibraryDB:
-    """Open the library DB and drop leftover rows before serving it."""
+def _library_db() -> LibraryDB:
+    """Open the library DB and drop leftover out-of-root rows first."""
     db = _get_db()
     # Tests replace _get_db with a fixture lambda; don't rewrite those rows.
     if _get_db is not _real_get_db:
         return db
-    _purge_stale_library_rows(db, check_missing=check_missing)
+    _purge_stale_library_rows(db)
     return db
 
 
@@ -1614,9 +1609,7 @@ def _background_scan(rescan: bool) -> None:
         # Leftover rows from another profile / old download root can be dropped
         # before the walk. This is prefix-only — not missing-file prune — so an
         # interrupted scan cannot empty an in-root cache.
-        dropped_unrooted = drop_stale_library_rows(
-            db, _configured_music_roots(), check_missing=False,
-        )
+        dropped_unrooted = drop_stale_library_rows(db, _configured_music_roots())
         if dropped_unrooted:
             print(f"[library] Dropped {dropped_unrooted} rows outside music roots")
 
@@ -1912,7 +1905,7 @@ def library_recent_albums(
     limit: int = Query(12, ge=1, le=50),
     offset: int = Query(0, ge=0),
 ) -> dict:
-    db = _library_db(check_missing=True)
+    db = _library_db()
     page, total = db.recent_albums_page(limit=limit, offset=offset)
     titles = [row["album"] for row in page if row.get("album")]
     rows_by_path: dict[str, dict] = {}
@@ -2139,7 +2132,7 @@ def library(
     q: str = Query("", description="Search query (matches title, artist, album)"),
 ) -> dict:
     """Return a page of cached library from DB. Instant, no disk I/O."""
-    db = _library_db(check_missing=True)
+    db = _library_db()
     rows, total = db.tracks_page(sort=sort, limit=limit, offset=offset, query=q.strip())
     tracks = [_db_row_to_track(row) for row in rows]
     return {"tracks": tracks, "total": total, "scanning": _scan_running}
@@ -2152,7 +2145,7 @@ def library_search(
     limit: int = Query(20, ge=1, le=50),
 ) -> dict:
     """Search the local library by title, artist, or album."""
-    db = _library_db(check_missing=True)
+    db = _library_db()
 
     if type == "tracks":
         rows, total = db.tracks_page(sort="artist", limit=limit, offset=0, query=q.strip())

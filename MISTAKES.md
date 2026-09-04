@@ -6,7 +6,7 @@
 
 **Root cause:** `scanned` is a shared ledger. Search/Recents return every row. Sync prune waits for a successful walk, and the fingerprint fast-path only drops `#recycle` rows, so leftover rows from an isolated QA profile stayed forever.
 
-**Prevention:** On library open, drop rows whose path is outside configured `download_base_path` / `scan_paths`. Drop missing files only when that root is currently a directory, so an unmounted NAS keeps its cache. Skip either drop when it would remove more than half of a library larger than 100 rows (empty mount / remount). `OSError` on `is_dir()` treats the root as unmounted; `OSError` on `is_file()` keeps the row. A purge `OSError` must not 500 library/search/Recents. Scan start drops out-of-root rows without waiting for the walk. Do not delete files on disk. Do not change `#recycle` policy.
+**Prevention:** On library open, Recents, and scan start, drop rows whose path is outside configured `download_base_path` / `scan_paths`. Never DELETE vanished in-root rows (or their play history) — those use `missing_since` + reconcile migrate. Skip an unrooted drop when it would remove more than half of a library larger than 100 rows (empty mount / remount). `OSError` on `is_dir()` treats the root as unmounted; a purge `OSError` must not 500 library/search/Recents. Do not delete files on disk. Do not change `#recycle` policy.
 
 ## 2026-09-03 — Local heal retry looped and replayed a stale track
 
