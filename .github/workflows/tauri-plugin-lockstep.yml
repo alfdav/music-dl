@@ -1,0 +1,51 @@
+name: tauri-plugin-lockstep
+
+# edge-desktop only runs on master and publishes binaries. This PR check
+# runs the same Tauri CLI package-version gate (`check_mismatched_packages`)
+# that `bunx tauri build` aborts on, on all three desktop OSes.
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: tidaldl-py
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Tauri dependencies
+        run: bun install
+
+      - name: Tauri CLI plugin version check
+        run: |
+          if command -v python3 >/dev/null 2>&1; then
+            python3 ../scripts/check_tauri_cli_plugin_versions.py
+          else
+            python ../scripts/check_tauri_cli_plugin_versions.py
+          fi

@@ -406,12 +406,14 @@ def test_affected_build_has_explicit_path_rules_and_commands():
         "docker-compose.yml",
         "tidaldl-py/pyproject.toml",
         "tidaldl-py/package.json",
+        "tidaldl-py/package-lock.json",
     ):
         assert path in block
     assert "cargo check --manifest-path tidaldl-py/src-tauri/Cargo.toml" in block
     assert "docker build -f docker/Dockerfile -t music-dl:qa ." in block
     assert "bun install" in block
-    assert "bunx tauri --version" in block
+    assert "scripts/check_tauri_cli_plugin_versions.py" in block
+    assert "bunx tauri --version" not in block
     assert "bun install --frozen-lockfile" not in block
     assert "affected_build=not_applicable" in block
 
