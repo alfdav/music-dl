@@ -21,6 +21,7 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 ---
 
 ## Unreleased
+- History reloads after a download finishes so a new done row paints without restarting the app.
 - Give track-row source labels (`tidal` / `local`) breathing room before the download icon so they no longer sit flush.
 
 ## v1.7.8 (2026-08-31)
