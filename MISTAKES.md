@@ -168,6 +168,14 @@
 
 **Prevention:** If the audio codec is FLAC, dest is `.flac` and MP4-boxed FLAC is extracted (`-map 0:a -vn -acodec copy`) before metadata. Empty codec + dest `.m4a` still extracts when the box has `fLaC`/`dfLa`. Cover stays as FLAC PICTURE, not ffmpeg MJPEG→PNG. Detect must not flip boxed FLAC to `.m4a`. Extract failure fails closed. Dummy guess for lossless settings is `.flac`.
 
+## 2026-08-30 — Archify --repo-root rejected a matching GitHub origin
+
+**What happened:** `archify validate/deliver architecture --repo-root` failed with `repository-evidence/origin-mismatch` even though `meta.repository.url` was `https://github.com/alfdav/music-dl`.
+
+**Root cause:** Cloud Agent `~/.gitconfig` sets `url.https://x-access-token:…@github.com/.insteadOf https://github.com/`. `git remote get-url origin` therefore returns the token URL, and Archify's slug compare treats that as a different origin.
+
+**Prevention:** For Archify evidence commands, run with `GIT_CONFIG_GLOBAL` pointed at an empty config (and `GIT_CONFIG_SYSTEM=/dev/null`) so `get-url` returns the public HTTPS origin. Keep the token `insteadOf` for push. Do not put the token URL in `meta.repository`.
+
 ## 2026-08-26 — Listed-HiRes downloads wrote 16-bit/44.1 FLAC
 
 **What happened:** First-install desktop (v1.7.6) and Tetrarch live on SHA 15ba50a listed Sting — The Last Ship (tidal 534789853) as HiRes. The download wrote Mutagen-tagged FLAC at 16-bit/44.1 kHz / ~765 kb/s. Settings: `hifi_api_instances` empty, `hifi_instances []`, `hifi_health` None, active source oauth. Probe: requested `HI_RES_LOSSLESS`, delivered `LOSSLESS`.
