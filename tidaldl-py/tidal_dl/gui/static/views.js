@@ -3484,6 +3484,9 @@ async function _showDuplicatePreview(container) {
       return;
     }
     summary.appendChild(textEl('div', 'Found ' + data.total_groups + ' duplicate groups (' + data.total_duplicates + ' extra copies)', 'dup-summary-text'));
+    if (data.truncated) {
+      summary.appendChild(textEl('div', 'Showing the first ' + (data.groups || []).length + ' groups.', 'dup-stale-note'));
+    }
     container.appendChild(summary);
 
     // Clean Up button — only auto extras, never UNCERTAIN edition/quality pairs
