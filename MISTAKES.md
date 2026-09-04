@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-04 — Dependabot could not unlock glib 0.18.5 or rand 0.7.3
+
+**What happened:** Dependabot security updater failed `security_update_not_possible` on master @1d3d780 for transitive `glib` 0.18.5 (GHSA-wrw7-89jp-8q8g) and `rand` 0.7.3 (GHSA-cq8v-f236-94qc). Neither is a direct `Cargo.toml` dep.
+
+**Root cause:** `glib` 0.18 is required by gtk3-rs (`gtk`/`webkit2gtk`) on Tauri 2 Linux. `glib` 0.20 is gtk4-rs only — that is a Tauri 3 / WebKitGTK 6 ABI move. `rand` 0.7 came from `tauri-utils` 2.9.1 `html-manipulation` → `kuchikiki` → `selectors` 0.24 → `phf_generator` 0.8.
+
+**Prevention:** Bump Tauri to 2.11.5 / `tauri-utils` 2.9.3 (`build-2` / `dom_query`) to drop `kuchikiki` and all `rand`. Do not `cargo update -p glib` and do not `[patch]` glib 0.20 onto gtk 0.18. Ignore glib `<0.20` in `.github/dependabot.yml` until Tauri 3 GTK4. Re-run `cargo tree -i glib` / `cargo tree -i rand` after every Tauri minor.
+
 ## 2026-09-04 — 165 Alizée search test looked unrooted after 167
 
 **What happened:** Bag integration of #165 + #167 made `GET /api/library/search?q=Alizée` return `total=0`. The 165 fixture inserted `/Volumes/Music/Alizée/...` NFC/NFD twins into the pytest library DB.
