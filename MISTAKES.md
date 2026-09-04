@@ -88,6 +88,14 @@
 
 **Prevention:** Skip a write only when `scrollTop` is already at the target, or when a programmatic write toward that target is in flight. On resize, invalidate the cached target, recompute spacers, then force an instant recenter after two layout frames while attached. While detached, restore the captured reading anchor — do not recenter.
 
+## 2026-09-01 — Upgrade treated a cloned playlist ISRC as identity
+
+**What happened:** Live 1.7.8 `GET /api/upgrade/scan/status?include_results=true` showed Aylaylay, Golpe De Alabanza, La Hermanda, and Patras all with `isrc: USJ3V1497673` / `tidal_track_id: 241908392`. Distinct playlist rips would have upgraded to one Tidal track.
+
+**Root cause:** Probe cache and match are ISRC-keyed. Playlist dumps clone one ISRC onto many titles. `_probe_tidal_isrc` accepted the first ISRC hit without a title check, then scan/status/start reused that one Tidal id.
+
+**Prevention:** Do not match Upgrade on ISRC alone when titles differ. Prefer title+artist+duration. Colliding ISRC across different titles is UNCERTAIN / skip. Never Upgrade All from a shared Tidal id. Sample-one remains law. Clean Up duplicates is a separate ticket.
+
 ## 2026-08-31 — Track-row source label kissed the download icon
 
 **What happened:** Tetrarch on live 1.7.8 saw duration `3:35`, then lowercase `tidal`, then a download-tray icon sitting on the final `l`. Duration-to-source looked fine. Search, library, and album tracks share that row.

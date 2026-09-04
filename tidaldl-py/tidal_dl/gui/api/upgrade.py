@@ -72,6 +72,56 @@ def _artist_matches(local_artist: str, track: Any) -> bool:
     return bool(local_parts and tidal_parts and local_parts.intersection(tidal_parts))
 
 
+def _titles_compatible(left: str, right: str) -> bool:
+    """True when titles are the same song, allowing short parenthetical variants."""
+    a, b = _norm(left), _norm(right)
+    return bool(a and b and (a == b or a in b or b in a))
+
+
+def _incompatible_titles(titles: list[str]) -> bool:
+    norms = [_norm(title) for title in titles if _norm(title)]
+    return any(
+        a != b and a not in b and b not in a
+        for i, a in enumerate(norms)
+        for b in norms[i + 1 :]
+    )
+
+
+def _colliding_isrcs(tracks: list[dict]) -> set[str]:
+    """ISRCs stamped on local files whose titles are clearly different songs."""
+    groups: dict[str, list[str]] = {}
+    for track in tracks:
+        isrc = (track.get("isrc") or "").strip().upper()
+        if not isrc:
+            continue
+        groups.setdefault(isrc, []).append(track.get("title") or "")
+    return {isrc for isrc, titles in groups.items() if _incompatible_titles(titles)}
+
+
+def _reject_colliding_isrc_matches(results: list[dict]) -> list[dict]:
+    colliding = _colliding_isrcs(results)
+    if not colliding:
+        return results
+    return [row for row in results if (row.get("isrc") or "").strip().upper() not in colliding]
+
+
+def _shared_tidal_ids_with_title_collision(items: list[dict]) -> set[int]:
+    groups: dict[int, list[str]] = {}
+    for item in items:
+        tid = item.get("tidal_track_id")
+        if not tid:
+            continue
+        groups.setdefault(int(tid), []).append(item.get("title") or "")
+    return {tid for tid, titles in groups.items() if _incompatible_titles(titles)}
+
+
+def _tracks_for_isrc(db: Any, isrc: str) -> list[dict]:
+    getter = getattr(db, "tracks_by_isrc", None)
+    if not isrc or not callable(getter):
+        return []
+    return getter(isrc) or []
+
+
 router = APIRouter()
 logger = logging.getLogger("music-dl.upgrade")
 
@@ -128,35 +178,44 @@ def _get_db() -> LibraryDB:
 
 
 def _probe_tidal_isrc(
-    session: Any, isrc: str, title: str = "", artist: str = ""
+    session: Any, isrc: str, title: str = "", artist: str = "", duration: int = 0
 ) -> dict | None:
-    """Search Tidal for a track and return the best quality match.
+    """Search Tidal and return a quality match that is the same song.
 
-    Searches by title+artist (Tidal's search API doesn't support raw ISRC queries),
-    then matches by ISRC in the results.
-
-    Returns {"tidal_track_id": int, "max_quality": str} or None.
+    ISRC alone is not identity: playlist dumps clone one ISRC onto many titles.
+    Prefer title+artist+duration; an ISRC hit is kept only when titles agree.
     """
     from tidalapi.media import Track
 
     try:
-        # Build search query from title + artist
-        query = f"{title} {artist}".strip()
-        if not query:
-            query = isrc  # fallback, unlikely to work but worth trying
-
+        query = f"{title} {artist}".strip() or isrc
         results = session.search(query, models=[Track], limit=20)
         tracks = results.get("tracks", []) if isinstance(results, dict) else []
         if not tracks:
             tracks = getattr(results, "tracks", []) or []
 
+        isrc_hit = None
+        meta_hit = None
         for t in tracks:
+            t_title = getattr(t, "name", "") or getattr(t, "full_name", "") or ""
+            title_ok = _titles_compatible(title, t_title)
             t_isrc = getattr(t, "isrc", None)
-            if not t_isrc or t_isrc.upper() != isrc.upper():
-                continue
-            return {"tidal_track_id": t.id, "max_quality": _extract_quality(t)}
+            isrc_ok = bool(t_isrc and isrc and t_isrc.upper() == isrc.upper())
+            duration_ok = True
+            if duration > 0:
+                t_dur = getattr(t, "duration", 0) or 0
+                if t_dur > 0 and abs(t_dur - duration) > 5:
+                    duration_ok = False
+            if isrc_ok and title_ok and duration_ok:
+                isrc_hit = t
+                break
+            if title_ok and duration_ok and _artist_matches(artist, t) and meta_hit is None:
+                meta_hit = t
 
-        return None
+        chosen = isrc_hit or meta_hit
+        if chosen is None:
+            return None
+        return {"tidal_track_id": chosen.id, "max_quality": _extract_quality(chosen)}
     except Exception:
         logger.exception("Probe failed for ISRC %s", isrc)
         return None
@@ -296,6 +355,11 @@ def probe_isrcs(req: ProbeRequest) -> dict:
         cached = {} if req.force else db.get_probes_batch(req.isrcs)
         misses = list(req.isrcs) if req.force else [isrc for isrc in req.isrcs if isrc not in cached]
 
+        local_rows: list[dict] = []
+        for isrc in req.isrcs:
+            local_rows.extend(_tracks_for_isrc(db, isrc))
+        colliding = _colliding_isrcs(local_rows)
+
         # Look up title/artist for cache misses from scanned table
         isrc_meta: dict[str, tuple[str, str]] = {}
         if misses:
@@ -311,6 +375,8 @@ def probe_isrcs(req: ProbeRequest) -> dict:
         # NOTE: This blocks the worker thread for up to 2s × len(misses).
         # Acceptable because sync handlers run in uvicorn's threadpool, not event loop.
         for i, isrc in enumerate(misses):
+            if isrc.strip().upper() in colliding:
+                continue
             if i > 0:
                 time.sleep(1)
             title, artist = isrc_meta.get(isrc, ("", ""))
@@ -336,6 +402,14 @@ def probe_isrcs(req: ProbeRequest) -> dict:
         # Build results
         results = []
         for isrc in req.isrcs:
+            if isrc.strip().upper() in colliding:
+                results.append({
+                    "isrc": isrc,
+                    "tidal_track_id": None,
+                    "max_quality": None,
+                    "upgradeable": False,
+                })
+                continue
             probe = cached.get(isrc)
             if probe and probe.get("tidal_track_id") and probe.get("max_quality"):
                 probed_rank = TIER_RANK.get(probe["max_quality"], 0)
@@ -451,15 +525,32 @@ def start_upgrade(req: UpgradeStartRequest, request: Request) -> dict:
         request_quality: dict[int, str] = {}
         skipped = 0
         errors: list[str] = []
+        resolved: list[tuple[str, int | None, dict]] = []
 
         for path, direct_tid in all_items:
             row = db.get(path)
             if not row:
                 errors.append(f"Not in library: {path}")
                 continue
+            resolved.append((path, direct_tid, row))
 
+        colliding_isrcs = _colliding_isrcs([row for _, _, row in resolved])
+        for _, _, row in resolved:
+            isrc = row.get("isrc")
+            if isrc:
+                colliding_isrcs |= _colliding_isrcs(_tracks_for_isrc(db, isrc))
+        colliding_tids = _shared_tidal_ids_with_title_collision([
+            {"title": row.get("title") or "", "tidal_track_id": direct_tid}
+            for _, direct_tid, row in resolved
+        ])
+
+        for path, direct_tid, row in resolved:
             # If tidal_track_id provided directly (from meta probe), use it
             if direct_tid:
+                if int(direct_tid) in colliding_tids:
+                    errors.append(f"Uncertain identity: {path}")
+                    skipped += 1
+                    continue
                 track_ids.append(direct_tid)
                 upgrade_map[direct_tid] = path
                 isrc = row.get("isrc")
@@ -470,6 +561,10 @@ def start_upgrade(req: UpgradeStartRequest, request: Request) -> dict:
             isrc = row.get("isrc")
             if not isrc:
                 errors.append(f"No ISRC: {path}")
+                skipped += 1
+                continue
+            if isrc.upper() in colliding_isrcs:
+                errors.append(f"Uncertain identity: {path}")
                 skipped += 1
                 continue
 
@@ -658,6 +753,7 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
         # Batch check probe cache
         all_isrcs = [t["isrc"] for t in candidates]
         cached_probes = db.get_probes_batch(all_isrcs)
+        colliding = _colliding_isrcs(candidates)
 
         for t in candidates:
             if cancel_event.is_set():
@@ -666,24 +762,32 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
                 return
 
             isrc = t["isrc"]
-            probe = cached_probes.get(isrc)
+            isrc_collides = isrc.upper() in colliding
+            probe = None if isrc_collides else cached_probes.get(isrc)
 
-            # Probe Tidal for cache misses
+            # Probe Tidal for cache misses. Colliding ISRCs are per-title only.
             if probe is None:
                 probe_result = _probe_tidal_isrc(
-                    session, isrc, title=t.get("title", ""), artist=t.get("artist", "")
+                    session,
+                    isrc,
+                    title=t.get("title", ""),
+                    artist=t.get("artist", ""),
+                    duration=t.get("duration", 0) or 0,
                 )
                 if probe_result:
-                    db.set_probe(isrc, probe_result["tidal_track_id"], probe_result["max_quality"])
+                    if not isrc_collides:
+                        db.set_probe(isrc, probe_result["tidal_track_id"], probe_result["max_quality"])
                     probe = {
                         "isrc": isrc,
                         "tidal_track_id": probe_result["tidal_track_id"],
                         "max_quality": probe_result["max_quality"],
                     }
                 else:
-                    db.set_probe(isrc, 0, "")
+                    if not isrc_collides:
+                        db.set_probe(isrc, 0, "")
                     probe = {"isrc": isrc, "tidal_track_id": 0, "max_quality": ""}
-                db.commit()
+                if not isrc_collides:
+                    db.commit()
                 time.sleep(2)  # 0.5 req/sec rate limit
 
             # Check if upgradeable
@@ -768,10 +872,11 @@ def _rebuild_results_from_db() -> list[dict]:
         if not all_isrcs:
             return []
         cached_probes = db.get_probes_batch(all_isrcs)
+        colliding = _colliding_isrcs(all_tracks)
         results = []
         for t in all_tracks:
             isrc = t.get("isrc")
-            if not isrc:
+            if not isrc or isrc.upper() in colliding:
                 continue
             probe = cached_probes.get(isrc)
             if not probe or not probe.get("tidal_track_id") or not probe.get("max_quality"):
@@ -830,6 +935,12 @@ def scan_status(include_results: bool = Query(False)) -> dict:
         "skipped_no_isrc": _scan_state["skipped_no_isrc"],
         "error": _scan_state.get("error"),
     }
+    if status == "complete" and _scan_state.get("results"):
+        filtered = _reject_colliding_isrc_matches(list(_scan_state["results"]))
+        if len(filtered) != len(_scan_state["results"]):
+            _scan_state["results"] = filtered
+            _scan_state["upgradeable"] = len(filtered)
+        resp["upgradeable"] = _scan_state["upgradeable"]
     if include_results and status == "complete":
         resp["results"] = _scan_state["results"]
     else:
@@ -860,8 +971,19 @@ def upgrade_status(isrcs: str = Query("", description="Comma-separated ISRCs, ma
     db = _get_db()
     try:
         cached = db.get_probes_batch(isrc_list)
+        local_rows: list[dict] = []
+        for isrc in isrc_list:
+            local_rows.extend(_tracks_for_isrc(db, isrc))
+        colliding = _colliding_isrcs(local_rows)
         results = []
         for isrc in isrc_list:
+            if isrc.strip().upper() in colliding:
+                results.append({
+                    "isrc": isrc,
+                    "tidal_track_id": None,
+                    "max_quality": None,
+                })
+                continue
             probe = cached.get(isrc)
             if probe and probe.get("tidal_track_id") and probe.get("max_quality"):
                 results.append({
