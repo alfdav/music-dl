@@ -872,11 +872,12 @@ function _wfLoop() {
 }
 
 function _fetchWaveform(track) {
-  if (!track || !track.is_local || !track.local_path) {
+  const localPath = _currentTrackLocalPath(track);
+  if (!localPath) {
     generateWaveform();
     return;
   }
-  fetch('/api/playback/waveform?path=' + encodeURIComponent(track.local_path))
+  fetch('/api/playback/waveform?path=' + encodeURIComponent(localPath))
     .then(r => r.ok ? r.json() : null)
     .then(data => {
       if (data && data.peaks && data.peaks.length > 0) {
