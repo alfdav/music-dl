@@ -453,7 +453,7 @@ def test_get_track_stream_info_hifi_paces_before_track_stream():
     assert events[1] == ("hifi", 99, "HI_RES_LOSSLESS")
     assert info.stream_manifest is not None
     hifi_src = inspect.getsource(StreamMixin._get_track_stream_info_hifi)
-    assert hifi_src.index("_pace_stream_api") < hifi_src.index("track_stream")
+    assert hifi_src.index("_pace_stream_api(pace_api)") < hifi_src.index("hifi_client.track_stream")
 
 
 def test_prefer_listed_hires_paces_extra_stream_info_request():
