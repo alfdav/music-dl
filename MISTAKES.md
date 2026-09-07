@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-07 — Live ISRC recovery treated unplayable siblings as local
+
+**What happened:** Bugbot on PR #179: `has_live_isrc` returned true for a tag-scan sibling under a dead path. Download skip / bot `is_local` then blocked even when search could not resolve a playable indexed library path.
+
+**Root cause:** Recovery and library lookup used different "live" gates. Tag-scan siblings counted as present for skip, but search only accepted an indexed `tracks_by_isrc` row whose file exists and is not under a skipped scan dir.
+
+**Prevention:** One playability helper (`playable_library_row_for_isrc`) for `has_live_isrc`, download skip, and search. A recovered sibling is live only when library lookup can play it. Cover dead-path + unindexed sibling vs indexed playable sibling in `test_recording_identity.py`.
+
 ## 2026-09-07 — Identity skip tests used an unresolved album template
 
 **What happened:** First RED run of the upgrade-twin tests asserted against `library/_/{album_title}/Opening.flac`. `{album_artist}` / `{album_title}` never expanded on the Track mock.
