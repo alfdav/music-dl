@@ -949,6 +949,80 @@ def test_match_local_row_stamps_feat_title_with_extra_suffix(tmp_path):
     assert bonus["path"] == str(live)
 
 
+def test_album_identity_does_not_return_unfiltered_va_exact_rows(tmp_path, monkeypatch):
+    """VA album_tracks is title-only. A rejected filter must not return those rows."""
+    foreign = _touch(tmp_path / "music" / "Juniper Vale" / "Harbor Radio" / "01 Static.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        foreign,
+        artist="Juniper Vale",
+        title="Static",
+        album="Harbor Radio",
+        album_artist="Juniper Vale",
+        isrc="USESK0000888",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    db.commit()
+
+    tidal = _tidal_album(
+        160,
+        "Harbor Radio",
+        "Various Artists",
+        [_tidal_track(
+            track_id=161,
+            name="Static",
+            artist="Nia Coltrane",
+            album="Harbor Radio",
+            isrc="QZNIA0000161",
+        )],
+    )
+    _patch_album_lookup(monkeypatch, db, tidal)
+
+    exact = db.album_tracks("Various Artists", "Harbor Radio")
+    assert any(row.get("path") == str(foreign) for row in exact)
+    pool = db.tracks_for_album_identity("Various Artists", "Harbor Radio")
+    assert all(row.get("path") != str(foreign) for row in pool)
+
+    result = albums_api.album_lookup("Various Artists", "Harbor Radio")
+    assert result["tracks"][0]["is_local"] is False
+    assert result["tracks"][0].get("local_path") in (None, "")
+    db.close()
+
+
+def test_identity_finds_file_tagged_as_later_featured_artist(tmp_path, monkeypatch):
+    """Comma-separated catalog credits must load every featured artist's rows."""
+    host = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "01 Low Tide.flac")
+    guest = _touch(tmp_path / "music" / "Juniper Vale" / "Safe Room" / "01 Static.flac")
+    db = _open_db(tmp_path)
+    _record(db, host, artist="Nia Coltrane", title="Low Tide", album="Night Letters", isrc="USESK0000901")
+    _record(db, guest, artist="Juniper Vale", title="Static", album="Safe Room", isrc="USESK0000902")
+    db.commit()
+    _patch_search_db(monkeypatch, db)
+
+    pool = db.tracks_for_identity(
+        isrc="QZNIA0000902",
+        title="Static",
+        artist="Nia Coltrane, Juniper Vale",
+        album="Harbor Radio",
+    )
+    assert any(row.get("path") == str(guest) for row in pool)
+
+    result = search_api._serialize_track(_tidal_track(
+        track_id=162,
+        name="Static",
+        artist="Nia Coltrane",
+        extra_artists=["Juniper Vale"],
+        album="Harbor Radio",
+        isrc="QZNIA0000902",
+    ))
+    assert result["is_local"] is True
+    assert result.get("local_path") == str(guest)
+    db.close()
+
+
 def test_stamp_track_finish_drops_catalog_quality_stash():
     """API responses must not leak the internal catalog-quality stash."""
     track = {"name": "Static", "artist": "Juniper Vale", "album": "Safe Room", "quality": "LOSSLESS"}

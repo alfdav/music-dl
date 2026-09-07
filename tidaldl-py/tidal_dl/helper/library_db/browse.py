@@ -383,11 +383,11 @@ class BrowseMixin:
         if isrc:
             add(self.tracks_by_isrc(isrc))
         if artist:
-            add(self.tracks_for_artist(artist))
-            first = artist.split(",")[0].strip()
-            if first and first != artist:
-                add(self.tracks_for_artist(first))
-        if album and not rows:
+            from tidal_dl.helper.local_identity import artist_credit_queries
+
+            for credit in artist_credit_queries(artist):
+                add(self.tracks_for_artist(credit))
+        if album:
             add(self.tracks_for_albums([album]))
         if title and not rows:
             assert self._conn
@@ -424,8 +424,6 @@ class BrowseMixin:
         matched = filter_album_rows(pool, artist, album)
         if matched:
             return matched
-        if exact:
-            return exact
         if artist == "Various Artists":
             return filter_album_rows(self.tracks_for_albums([album]) or self.all_tracks(), artist, album)
         return []

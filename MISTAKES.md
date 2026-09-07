@@ -1,5 +1,21 @@
 # Mistakes
 
+## 2026-09-07 — VA album pool fallback returned unfiltered exact rows
+
+**What happened:** Bugbot on PR #180 after the #179 rebase: `tracks_for_album_identity` ran `filter_album_rows`, then `if exact: return exact` when the filter was empty. VA `album_tracks` is title-only (`WHERE album = ?`), so another artist's same-named album re-entered and album-scoped ISRC could stamp the wrong release.
+
+**Root cause:** The leftover-codec VA test used `Harbor Radio [FLAC]`, which never populated `exact`. The fallback treated "any exact album-tag rows" as a safe last resort. For VA that set is not artist-scoped.
+
+**Prevention:** If `filter_album_rows` rejects the pool, return `[]` or a still-filtered VA fallback. Never return unfiltered `exact`. Cover an exact album-tag foreign file (`Harbor Radio` + `album_artist=Juniper Vale`) in `test_local_identity.py`.
+
+## 2026-09-07 — Featured-artist files missed the identity candidate pool
+
+**What happened:** Bugbot on PR #180: `tracks_for_identity` and `candidate_rows_for_track` queried only the first comma-separated artist, then skipped the album query once any rows existed. A live file tagged as a later featured artist never entered the pool.
+
+**Root cause:** The first credit's rows were treated as "the" candidate set. Featured guests are often tagged under their own artist, not the host.
+
+**Prevention:** Query every comma-separated credit. Always add the album query. Keep title LIKE bounded (`if title and not rows`). Cover a catalog `Host, Guest` credit whose file is tagged only as Guest.
+
 ## 2026-09-07 — Rebase onto #179 dropped one of two search live-row gates
 
 **What happened:** After PR #179 merged, rebasing #180 and #182 onto master conflicted in `search.py` `_live_library_row`. Taking only master would drop identity/heal. Taking only the PR would drop `playable_library_row_for_isrc`.

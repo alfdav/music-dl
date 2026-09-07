@@ -122,6 +122,19 @@ def with_identity_path(row: Mapping[str, Any]) -> dict | None:
     return stamped
 
 
+def artist_credit_queries(artist: str) -> list[str]:
+    """Full credit string plus each comma-separated featured artist."""
+    full = (artist or "").strip()
+    credits: list[str] = []
+    if full:
+        credits.append(full)
+    for part in full.split(","):
+        part = part.strip()
+        if part and part not in credits:
+            credits.append(part)
+    return credits
+
+
 def _various_artists(value: object | None) -> bool:
     return fold_identity(value) == "various artists"
 
@@ -320,10 +333,10 @@ def candidate_rows_for_track(db: Any, track: Mapping[str, Any]) -> list[dict]:
     if isrc and hasattr(db, "tracks_by_isrc"):
         add(db.tracks_by_isrc(isrc))
     if artist and hasattr(db, "tracks_for_artist"):
-        add(db.tracks_for_artist(artist))
-        first = artist.split(",")[0].strip()
-        if first and first != artist:
-            add(db.tracks_for_artist(first))
+        for credit in artist_credit_queries(artist):
+            add(db.tracks_for_artist(credit))
+    if album and hasattr(db, "tracks_for_albums"):
+        add(db.tracks_for_albums([album]))
     if hasattr(db, "all_tracks") and (not rows or (title and not isrc)):
         add(db.all_tracks())
     return rows
