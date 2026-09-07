@@ -13,6 +13,7 @@ from typing import Any
 import requests
 
 from tidal_dl.constants import QUALITY_STRING_TO_ENUM
+from tidal_dl.download.api_pacing import retry_after_seconds
 from tidal_dl.gui.services.job_events import JobEventHub
 from tidal_dl.gui.services.job_models import DownloadJob, JobKind, JobStatus, UpgradeJobInput
 from tidal_dl.gui.services.upgrade_jobs import (
@@ -181,6 +182,7 @@ class DownloadJobService:
         self._cancelled_ids: set[int] = set()
         self._worker_started = False
         self._worker_thread: threading.Thread | None = None
+        self._worker_threads: list[threading.Thread] = []
         if autostart:
             self.recover_on_startup()
             self.start_worker()
@@ -197,18 +199,39 @@ class DownloadJobService:
         finally:
             db.close()
 
+    def _worker_count(self) -> int:
+        """Media jobs may run concurrently; Tidal API pressure is paced separately."""
+        settings_cls, _, _ = self._download_dependency_provider()
+        try:
+            data = settings_cls().data
+            n = int(getattr(data, "downloads_concurrent_max", 3) or 3)
+        except Exception:
+            n = 3
+        return max(1, min(n, 10))
+
     def start_worker(self) -> None:
         if self._worker_started:
             return
         self._worker_started = True
-        self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
-        self._worker_thread.start()
+        self._worker_threads = []
+        for index in range(self._worker_count()):
+            thread = threading.Thread(
+                target=self._worker_loop,
+                name=f"download-worker-{index}",
+                daemon=True,
+            )
+            thread.start()
+            self._worker_threads.append(thread)
+        self._worker_thread = self._worker_threads[0]
 
     def stop_worker(self, join_timeout: float = 2.0) -> None:
         self._stop.set()
         self._running.set()
-        if self._worker_thread is not None:
-            self._worker_thread.join(timeout=join_timeout)
+        threads = list(self._worker_threads)
+        if not threads and self._worker_thread is not None:
+            threads = [self._worker_thread]
+        for thread in threads:
+            thread.join(timeout=join_timeout)
 
     def enqueue_download(self, track_ids: list[int]) -> dict:
         queued = 0
@@ -557,6 +580,7 @@ class DownloadJobService:
                     file_template=settings.data.format_track,
                     media=track,
                     quality_audio=settings.data.quality_audio,
+                    download_delay=bool(getattr(settings.data, "download_delay", False)),
                 )
                 last_exc = None
                 break
@@ -572,7 +596,7 @@ class DownloadJobService:
                         return
                     if not self._mark_retrying(current, attempt + 1, max_retries):
                         return
-                    time.sleep(2 ** (attempt + 1))
+                    time.sleep(retry_after_seconds(http_exc.response, 2 ** (attempt + 1)))
                     continue
                 raise
             except retryable as retry_exc:
@@ -769,6 +793,7 @@ class DownloadJobService:
                 media=track,
                 quality_audio=quality_enum,
                 duplicate_action_override="redownload",
+                download_delay=bool(getattr(settings.data, "download_delay", False)),
             )
             outcome, new_path = result if isinstance(result, tuple) else (None, result)
             successful = {outcome_cls.DOWNLOADED, outcome_cls.COPIED, None}

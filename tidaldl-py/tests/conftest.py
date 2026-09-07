@@ -16,10 +16,14 @@ from tidal_dl.config import reset_singletons
 @pytest.fixture(autouse=True)
 def isolate_test_config(tmp_path, monkeypatch):
     """Keep each test's configuration and singletons in its own temp directory."""
+    from tidal_dl.download.api_pacing import reset_shared_pacer_for_tests
+
     monkeypatch.setenv("MUSIC_DL_CONFIG_DIR", str(tmp_path))
     reset_singletons()
+    reset_shared_pacer_for_tests()
     yield
     reset_singletons()
+    reset_shared_pacer_for_tests()
 
 
 @pytest.fixture(autouse=False)

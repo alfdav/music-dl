@@ -97,6 +97,20 @@ def _require_exact_quality(requested: Quality | str, delivered: Quality | str | 
 
 
 class StreamMixin:
+    def _pace_stream_api(self, enabled: bool) -> float:
+        """Pace Tidal stream-info/auth API calls. No-op when disabled."""
+        pace = getattr(self, "_pace_tidal_api", None)
+        if callable(pace):
+            return pace(enabled=enabled)
+        if not enabled:
+            return 0.0
+        from tidal_dl.download.api_pacing import shared_pacer
+
+        return shared_pacer().wait_before_api(
+            enabled=True,
+            event_stop=getattr(self, "event_abort", None),
+        )
+
     def _get_track_stream_info_hifi(self, media: Track) -> TrackStreamInfo:
         """Fetch stream info via the Hi-Fi API client and wrap it in a HiFiStreamManifest.
 
@@ -179,7 +193,7 @@ class StreamMixin:
         )
 
     def _get_stream_info(
-        self, media: Track | Video
+        self, media: Track | Video, *, pace_api: bool = False
     ) -> tuple[StreamManifest | HiFiStreamManifest | None, str, bool, Stream | None]:
         """Get stream information for media, routing through Hi-Fi API or OAuth path.
 
@@ -203,6 +217,7 @@ class StreamMixin:
             and self.tidal.hifi_client is not None
         ):
             try:
+                self._pace_stream_api(pace_api)
                 track_info = self._get_track_stream_info_hifi(media)
                 if track_info.stream_manifest is not None:
                     return (
@@ -246,6 +261,7 @@ class StreamMixin:
         track_info: TrackStreamInfo | None = None
         with self.tidal.stream_lock:
             # Proactively refresh a near-expiry OAuth token before the API call.
+            self._pace_stream_api(pace_api)
             self.tidal._ensure_token_fresh()
 
             try:

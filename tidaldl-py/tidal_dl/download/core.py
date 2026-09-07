@@ -49,6 +49,12 @@ class DownloadCore:
         self._rate_limit_lock: Lock = Lock()
         self._adaptive_delay_sec_min = self.settings.data.download_delay_sec_min
         self._adaptive_delay_sec_max = self.settings.data.download_delay_sec_max
+        from tidal_dl.download.api_pacing import shared_pacer
+
+        pacer = shared_pacer()
+        if pacer.rate_limit_hits == 0 and pacer._last_call_mono is None:
+            pacer.delay_min = self._adaptive_delay_sec_min
+            pacer.delay_max = self._adaptive_delay_sec_max
 
         # Use the session-level TTLCache if caching is enabled in settings.
         if self.settings.data.api_cache_enabled and hasattr(tidal_obj, "api_cache"):
@@ -114,17 +120,35 @@ class DownloadCore:
         if cleaned:
             self.fn_logger.info(f"Cleaned up {cleaned} stale temp dir(s) from previous sessions.")
 
+    def _sync_api_pacer_delays(self) -> None:
+        """Keep the process-wide API pacer aligned with this downloader's 429 backoff."""
+        from tidal_dl.download.api_pacing import shared_pacer
+
+        pacer = shared_pacer()
+        pacer.delay_min = self._adaptive_delay_sec_min
+        pacer.delay_max = self._adaptive_delay_sec_max
+
+    def _pace_tidal_api(self, enabled: bool, event_stop: Event | None = None) -> float:
+        """Wait between Tidal first/auth API calls. Never called on CDN byte transfer."""
+        from tidal_dl.download.api_pacing import shared_pacer
+
+        return shared_pacer().wait_before_api(
+            enabled=enabled,
+            event_stop=event_stop or self.event_abort,
+        )
+
     def _on_rate_limit_hit(self) -> None:
-        """Double the adaptive download delay on a 429 response, capped at 30 s."""
+        """Double the adaptive API delay on a 429 response, capped at 30 s."""
         max_delay = 30.0
         with self._rate_limit_lock:
             self._rate_limit_hits += 1
             self._successful_since_limit = 0
             self._adaptive_delay_sec_min = min(self._adaptive_delay_sec_min * 2, max_delay)
             self._adaptive_delay_sec_max = min(self._adaptive_delay_sec_max * 2, max_delay)
+        self._sync_api_pacer_delays()
         self.fn_logger.warning(
             f"Rate limit hit #{self._rate_limit_hits}. "
-            f"Adaptive delay now [{self._adaptive_delay_sec_min:.1f}s–{self._adaptive_delay_sec_max:.1f}s]."
+            f"Adaptive API delay now [{self._adaptive_delay_sec_min:.1f}s–{self._adaptive_delay_sec_max:.1f}s]."
         )
 
     def _on_successful_track(self) -> None:
@@ -137,8 +161,9 @@ class DownloadCore:
                 baseline_max = self.settings.data.download_delay_sec_max
                 self._adaptive_delay_sec_min = max(self._adaptive_delay_sec_min / 2, baseline_min)
                 self._adaptive_delay_sec_max = max(self._adaptive_delay_sec_max / 2, baseline_max)
+                self._sync_api_pacer_delays()
                 self.fn_logger.debug(
-                    f"50 successful tracks. Delay halved to "
+                    f"50 successful tracks. API delay halved to "
                     f"[{self._adaptive_delay_sec_min:.1f}s–{self._adaptive_delay_sec_max:.1f}s]."
                 )
 

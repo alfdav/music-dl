@@ -32,6 +32,14 @@
 
 **Prevention:** Same-folder identity tests must write `01 - Title.flac` and the template dest in one directory (`{track_title}` → `Title.flac`). Give the Track mock album/artist only when the template actually needs those tokens.
 
+## 2026-09-07 — StreamMixin stubs and `*_args` overrides broke when API pacing was wired in
+
+**What happened:** `_get_stream_info` called `_pace_tidal_api` on StreamMixin-only test subjects (`OAuthStreamSubject`). `item()` passed `download_delay=` as a keyword into `_download_and_process_media` overrides that only accept `*_args`.
+
+**Root cause:** Pacing lived on `DownloadCore`, not `StreamMixin`. Keyword args are not swallowed by `*_args`.
+
+**Prevention:** Call pacing through a StreamMixin helper that falls back to the shared pacer. Pass new `item()` → mixin arguments positionally so existing `*_args` test doubles keep working.
+
 ## 2026-09-04 — Rust Tauri plugin bump left JS packages behind
 
 **What happened:** After PR #172, edge-desktop aborted on macOS, Windows, and Linux before compile: `tauri-plugin-updater (v2.11.0) : @tauri-apps/plugin-updater (v2.10.1)`.
