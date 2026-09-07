@@ -72,6 +72,14 @@
 
 **Prevention:** Call pacing through a StreamMixin helper that falls back to the shared pacer. Pass new `item()` → mixin arguments positionally so existing `*_args` test doubles keep working.
 
+## 2026-09-07 — Album scope_artist replaced track artist and dropped compilations
+
+**What happened:** Bugbot on PR #180: `match_local_row` overwrote the catalog track artist with album `scope_artist`. Various Artists / guest-credit files missed live matches when ISRC did not match.
+
+**Root cause:** Album lookup passed the album artist into title matching. Title+artist compatibility then required the file's track artist to match the album artist, which compilations and guest credits do not.
+
+**Prevention:** Use `scope_artist` only to narrow the release. Title matching uses the catalog track artist. Keep guest rows via `album_artist`. Cover VA / guest / other-album reject cases in `test_local_identity.py`.
+
 ## 2026-09-04 — Rust Tauri plugin bump left JS packages behind
 
 **What happened:** After PR #172, edge-desktop aborted on macOS, Windows, and Linux before compile: `tauri-plugin-updater (v2.11.0) : @tauri-apps/plugin-updater (v2.10.1)`.
