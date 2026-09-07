@@ -55,6 +55,9 @@ class DownloadCore:
         if pacer.rate_limit_hits == 0 and pacer._last_call_mono is None:
             pacer.delay_min = self._adaptive_delay_sec_min
             pacer.delay_max = self._adaptive_delay_sec_max
+        else:
+            self._adaptive_delay_sec_min = pacer.delay_min
+            self._adaptive_delay_sec_max = pacer.delay_max
 
         # Use the session-level TTLCache if caching is enabled in settings.
         if self.settings.data.api_cache_enabled and hasattr(tidal_obj, "api_cache"):
@@ -138,14 +141,16 @@ class DownloadCore:
         )
 
     def _on_rate_limit_hit(self) -> None:
-        """Double the adaptive API delay on a 429 response, capped at 30 s."""
-        max_delay = 30.0
+        """Widen the process-wide API pacer on a 429 so later jobs inherit it."""
+        from tidal_dl.download.api_pacing import shared_pacer
+
+        pacer = shared_pacer()
+        pacer.note_429()
         with self._rate_limit_lock:
             self._rate_limit_hits += 1
             self._successful_since_limit = 0
-            self._adaptive_delay_sec_min = min(self._adaptive_delay_sec_min * 2, max_delay)
-            self._adaptive_delay_sec_max = min(self._adaptive_delay_sec_max * 2, max_delay)
-        self._sync_api_pacer_delays()
+            self._adaptive_delay_sec_min = pacer.delay_min
+            self._adaptive_delay_sec_max = pacer.delay_max
         self.fn_logger.warning(
             f"Rate limit hit #{self._rate_limit_hits}. "
             f"Adaptive API delay now [{self._adaptive_delay_sec_min:.1f}s–{self._adaptive_delay_sec_max:.1f}s]."

@@ -32,6 +32,14 @@
 
 **Prevention:** Same-folder identity tests must write `01 - Title.flac` and the template dest in one directory (`{track_title}` → `Title.flac`). Give the Track mock album/artist only when the template actually needs those tokens.
 
+## 2026-09-07 — Download 429 backoff reset per job; Hi-Res fallback skipped API pacing
+
+**What happened:** Bugbot on PR #181: (1) `_on_rate_limit_hit` doubled the current `Download` then overwrote the process-wide pacer, so each GUI job started at baseline and a later 429 never reached the 30s cap; `note_429` existed but was unused on the download path. (2) `_prefer_listed_hires` called `_get_track_stream_info_hifi` after paced OAuth without `_pace_stream_api`.
+
+**Root cause:** Per-instance delay was treated as source of truth and synced outward. The extra Hi-Res stream-info request was added beside the paced OAuth call, not through the same pacer helper.
+
+**Prevention:** Escalate via `note_429` on the shared pacer and inherit that window in new `Download` instances. Pace every stream-info request, including Hi-Res fallback, through `_pace_stream_api`. Cover cross-job escalation and the fallback pace in `test_download_pacing.py`.
+
 ## 2026-09-07 — Cancel-all and shared session quality raced across GUI workers
 
 **What happened:** Bugbot on PR #181: (1) each worker cleared `_cancel_all` when it saw the flag, so an idle worker could reset it while another was inside `dl.item()`; (2) concurrent GUI workers share the Tidal singleton and `_adjust_quality_settings` raced.

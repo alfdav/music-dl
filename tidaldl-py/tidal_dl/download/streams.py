@@ -207,6 +207,7 @@ class StreamMixin:
         media: Track,
         oauth_info: TrackStreamInfo,
         quality_audio: Quality | None = None,
+        pace_api: bool = False,
     ) -> TrackStreamInfo | None:
         """Take Hi-Fi HiRes for a listed-HiRes CD delivery, or fail — do not keep 16/44.1."""
         requested = self._requested_audio_quality(quality_audio)
@@ -221,6 +222,7 @@ class StreamMixin:
             return None
         try:
             self._ensure_hifi_client()
+            self._pace_stream_api(pace_api)
             hifi_info = self._get_track_stream_info_hifi(media, quality_audio=requested)
         except (QualityMismatchError, RuntimeError, ValueError, OSError, requests.RequestException):
             hifi_info = None
@@ -359,7 +361,9 @@ class StreamMixin:
                     return None, "", False, None
 
                 if isinstance(media, Track) and track_info is not None:
-                    upgraded = self._prefer_listed_hires(media, track_info, quality_audio=quality_audio)
+                    upgraded = self._prefer_listed_hires(
+                        media, track_info, quality_audio=quality_audio, pace_api=pace_api
+                    )
                     if upgraded is not None:
                         track_info = upgraded
                     return (

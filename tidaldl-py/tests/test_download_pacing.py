@@ -285,3 +285,142 @@ def test_gui_worker_count_follows_downloads_concurrent_max(tmp_path):
         assert service._worker_thread is service._worker_threads[0]
     finally:
         service.stop_worker()
+
+
+def test_new_download_inherits_widened_shared_pacer(tmp_path):
+    """A later GUI job must start from the process-wide 429 window, not baseline."""
+    from tidal_dl.download import Download
+    from tidal_dl.download.api_pacing import shared_pacer
+
+    job1 = _make_download_stub()
+    job1._on_rate_limit_hit()
+    widened_min = shared_pacer().delay_min
+    widened_max = shared_pacer().delay_max
+    assert widened_min > job1.settings.data.download_delay_sec_min
+    assert widened_max > job1.settings.data.download_delay_sec_max
+
+    tidal = MagicMock()
+    tidal.session = MagicMock()
+    tidal.api_cache = None
+    job2 = Download(tidal_obj=tidal, path_base=str(tmp_path), fn_logger=MagicMock())
+
+    assert job2._adaptive_delay_sec_min == widened_min
+    assert job2._adaptive_delay_sec_max == widened_max
+    assert job2._adaptive_delay_sec_min != job2.settings.data.download_delay_sec_min
+
+
+def test_cross_job_429s_escalate_shared_pacer_to_30s_cap():
+    """New Download instances must escalate the shared window until the 30s cap."""
+    from tidal_dl.download.api_pacing import shared_pacer
+
+    expected_min = 3.0
+    expected_max = 5.0
+    for _ in range(4):
+        job = _make_download_stub()
+        job._on_rate_limit_hit()
+        expected_min = min(expected_min * 2, 30.0)
+        expected_max = min(expected_max * 2, 30.0)
+        pacer = shared_pacer()
+        assert pacer.delay_min == expected_min
+        assert pacer.delay_max == expected_max
+        assert job._adaptive_delay_sec_min == expected_min
+        assert job._adaptive_delay_sec_max == expected_max
+
+    assert shared_pacer().delay_min == 30.0
+    assert shared_pacer().delay_max == 30.0
+
+
+def test_prefer_listed_hires_paces_extra_stream_info_request():
+    """Hi-Res fallback must pace the extra Hi-Fi stream-info call like other API requests."""
+    import threading
+
+    from tidalapi import Quality, Track
+
+    from tidal_dl.constants import DownloadSource
+    from tidal_dl.download.streams import StreamMixin
+    from tidal_dl.hifi_api import HiFiStreamResult
+    from tidal_dl.model.downloader import HiFiStreamManifest
+
+    events: list[tuple] = []
+
+    class HiFiClient:
+        def track_stream(self, track_id, quality):
+            events.append(("hifi", track_id, quality))
+            return HiFiStreamResult(
+                urls=["https://cdn.example/hires.flac"],
+                file_extension=".flac",
+                codecs="flac",
+                mime_type="audio/flac",
+                audio_quality="HI_RES_LOSSLESS",
+                bit_depth=24,
+                sample_rate=96000,
+            )
+
+    class ListedHiResTrack(Track):
+        def __init__(self):
+            pass
+
+        @property
+        def id(self):
+            return 42
+
+        @property
+        def audio_modes(self):
+            return []
+
+        @property
+        def audio_quality(self):
+            return "LOSSLESS"
+
+        @property
+        def media_metadata_tags(self):
+            return ["HIRES_LOSSLESS", "LOSSLESS"]
+
+        def get_stream(self):
+            manifest = type(
+                "Manifest",
+                (),
+                {
+                    "file_extension": ".flac",
+                    "codecs": "flac",
+                    "get_urls": lambda self: ["https://cdn.example/cd.flac"],
+                },
+            )()
+            return type(
+                "Stream",
+                (),
+                {
+                    "audio_quality": Quality.high_lossless,
+                    "bit_depth": 16,
+                    "sample_rate": 44100,
+                    "get_stream_manifest": lambda self: manifest,
+                },
+            )()
+
+    subject = type("Subject", (StreamMixin,), {})()
+    subject.settings = type(
+        "Settings",
+        (),
+        {"data": type("Data", (), {"download_dolby_atmos": False, "extract_flac": True})()},
+    )()
+    subject.session = type("Session", (), {"audio_quality": Quality.hi_res_lossless})()
+    subject.tidal = type(
+        "Tidal",
+        (),
+        {
+            "active_source": DownloadSource.OAUTH,
+            "hifi_client": HiFiClient(),
+            "stream_lock": threading.Lock(),
+            "_ensure_token_fresh": lambda self: None,
+            "restore_normal_session": lambda self: True,
+        },
+    )()
+    subject.fn_logger = MagicMock()
+    subject._pace_stream_api = lambda enabled: events.append(("pace", enabled)) or 0.0
+
+    manifest, _ext, _extract, _stream = subject._get_stream_info(ListedHiResTrack(), pace_api=True)
+
+    assert isinstance(manifest, HiFiStreamManifest)
+    assert ("hifi", 42, "HI_RES_LOSSLESS") in events
+    pace_before_hifi = [item for item in events[: events.index(("hifi", 42, "HI_RES_LOSSLESS"))] if item[0] == "pace"]
+    assert pace_before_hifi.count(("pace", True)) >= 2
