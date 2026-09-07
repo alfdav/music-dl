@@ -273,8 +273,6 @@ def _index_adopted_path(
     if old_row is not None:
         try:
             if db.migrate_path(old_str, new_str):
-                if wanted:
-                    db.register_isrc_path(wanted, new_path)
                 return
         except Exception:  # noqa: BLE001
             logger.debug("adopt migrate failed %s -> %s", old_str, new_str, exc_info=True)

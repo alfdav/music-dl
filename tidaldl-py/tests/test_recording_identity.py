@@ -39,15 +39,26 @@ def _open_db(tmp_path: Path) -> LibraryDB:
     return db
 
 
-def _record(db: LibraryDB, path: Path, isrc: str, *, album: str = "First Album", title: str = "Opening") -> None:
+def _record(
+    db: LibraryDB,
+    path: Path,
+    isrc: str,
+    *,
+    album: str = "First Album",
+    title: str = "Opening",
+    artist: str = "Artist One",
+    quality: str = "44100Hz/16bit",
+    duration: int | None = 181,
+) -> None:
     db.record(
         str(path),
         status="tagged",
         isrc=isrc,
-        artist="Artist One",
+        artist=artist,
         title=title,
         album=album,
-        quality="44100Hz/16bit",
+        quality=quality,
+        duration=duration,
         fmt="FLAC",
     )
 
@@ -551,6 +562,16 @@ def test_collapse_folder_identity_keeps_other_recordings(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _assert_live_metadata(row: dict | None, path: Path, *, title: str = "Opening") -> None:
+    assert row is not None
+    assert Path(row["path"]).resolve() == path.resolve()
+    assert row.get("artist") == "Artist One"
+    assert row.get("title") == title
+    assert row.get("album") == "First Album"
+    assert row.get("quality") == "44100Hz/16bit"
+    assert int(row.get("duration") or 0) == 181
+
+
 def test_adopt_original_name_migrates_isrc_row_to_final_path(tmp_path, monkeypatch):
     """Collapse + adopt must not drop the only live ISRC index row."""
     album = tmp_path / "Artist One" / "First Album"
@@ -559,7 +580,8 @@ def test_adopt_original_name_migrates_isrc_row_to_final_path(tmp_path, monkeypat
 
     db = _open_db(tmp_path)
     _record(db, original, ISRC_A)
-    db.register_isrc_path(ISRC_A, keep, commit=True)
+    _record(db, keep, ISRC_A)
+    db.commit()
 
     monkeypatch.setattr(
         "tidal_dl.gui.services.upgrade_jobs.trash_file",
@@ -576,8 +598,8 @@ def test_adopt_original_name_migrates_isrc_row_to_final_path(tmp_path, monkeypat
     assert original.read_bytes() == b"hires"
     assert not keep.exists()
     assert db.get(str(keep)) is None
-    assert db.get(str(original)) is not None
     assert db.has_live_isrc(ISRC_A)
+    _assert_live_metadata(db.get(str(original)), original)
     assert live is not None
     assert Path(live["path"]).resolve() == original.resolve()
     db.close()
@@ -655,3 +677,51 @@ def test_redownload_keeps_live_isrc_after_adopt_without_tag_register(tmp_path):
     assert live is not None
     assert Path(live["path"]).resolve() == final.resolve()
     assert sorted(p.name for p in album.glob("*.flac")) == [final.name]
+
+
+def test_item_preserves_migrated_metadata_after_adopt(tmp_path):
+    """item() must not stub-upsert the final path after a successful migrate."""
+    album = tmp_path / "library"
+    numbered = _flac(album / "01 - Opening.flac", b"lossless")
+
+    dl = _download_for_paths(tmp_path, skip_existing=False)
+    dl.settings.data.skip_duplicate_isrc = False
+    _record(dl._library_db, numbered, ISRC_A)
+    dl._library_db.commit()
+
+    track = _make_track(508, ISRC_A, name="Opening")
+
+    def fake_download(media, path_media_dst, *_args, **_kwargs):
+        written = Path(path_media_dst)
+        written.parent.mkdir(parents=True, exist_ok=True)
+        written.write_bytes(b"hires")
+        _record(dl._library_db, written, ISRC_A)
+        dl._library_db.commit()
+        return True, written
+
+    with (
+        patch.object(dl, "_validate_and_prepare_media", return_value=track),
+        patch.object(dl, "extension_guess", return_value=".flac"),
+        patch.object(dl, "_adjust_quality_settings", return_value=(None, None)),
+        patch.object(dl, "_download_and_process_media", side_effect=fake_download),
+        patch.object(dl, "_perform_post_processing", return_value=None),
+        patch("tidal_dl.download.items.register_downloaded_track", return_value=None),
+    ):
+        outcome, result_path = dl.item(
+            file_template="{track_title}",
+            media=track,
+            duplicate_action_override="redownload",
+        )
+
+    final = Path(result_path)
+    row = dl._library_db.get(str(final))
+    live = _live_library_row(dl._library_db, ISRC_A)
+    is_local = dl._library_db.has_live_isrc(ISRC_A)
+    dl._library_db.close()
+
+    assert outcome == DownloadOutcome.DOWNLOADED
+    assert final.is_file()
+    assert is_local is True
+    _assert_live_metadata(row, final)
+    assert live is not None
+    assert Path(live["path"]).resolve() == final.resolve()

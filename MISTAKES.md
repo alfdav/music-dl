@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-07 — Post-migrate ISRC re-register wiped row metadata
+
+**What happened:** Bugbot on PR #179 after the adopt/index fix: `_index_adopted_path` called `register_isrc_path` after a successful `migrate_path`, and `item()` did it again on the final path. `record()` conflict-wrote `artist`/`title`/`album`/`quality`/`duration` to null. Upgrade jobs then `commit`ted those stubs after `register_downloaded_track`.
+
+**Root cause:** `register_isrc_path` is a stub upsert, not a migrate. Re-registering a path that already has a migrated complete row destroys metadata.
+
+**Prevention:** After a successful `migrate_path`, do not `register_isrc_path` that same path. Re-register only when migrate failed or there was no keep-row. Assert adopted rows keep artist/title/album/quality/duration.
+
 ## 2026-09-07 — Adopt/rename dropped the live ISRC index row
 
 **What happened:** Bugbot on PR #179: after a replace, `adopt_original_name` renamed the kept file onto the freed original name and `db.remove`d the keep path. Collapse had already deleted the original's row. `has_live_isrc` / search `is_local` stayed false even though the file was on disk.
