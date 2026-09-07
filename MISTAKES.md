@@ -152,6 +152,14 @@
 
 **Prevention:** Use `scope_artist` only to narrow the release. Title matching uses the catalog track artist. Keep guest rows via `album_artist`. Cover VA / guest / other-album reject cases in `test_local_identity.py`.
 
+## 2026-09-07 — PR 169 missed Artist/Artist - Album → Artist/Album when signatures already matched
+
+**What happened:** After folders were rewritten from `Artist/Artist - Album/` to `Artist/Album/`, `scanned` rows kept the old path. Files were live at the new path. Library/search still painted green local+FLAC, then playback grayed the row because the stored path was dead. Covers 403'd. Incremental reconcile did not heal the library.
+
+**Root cause:** Directory-move matching only paired vanished rows to *unindexed* appeared files, and only when dir-signatures changed. A scan (or any walk) that recorded the new tree without migrating left signatures current, so reconcile early-exited. Same-size `01.flac` fingerprints across albums also blocked 1:1 directory matches. There was no cheap `Artist - ` prefix rewrite. `_db_row_to_track` hardcoded `is_local: True` from the index.
+
+**Prevention:** Deterministic layout candidate `Artist/Artist - Album/file` → `Artist/Album/file`. Run that heal on signature-unchanged reconcile, on playback resolve, and on library/search serialize. Pair layout twins even when size fingerprints collide. Merge play_events/favorites onto an already-indexed dest. Never stamp playable-local unless the path is a readable audio file. Do not mark_missing from GET (remount). Edition suffixes stay on the album folder so remasters are not false-healed.
+
 ## 2026-09-04 — Rust Tauri plugin bump left JS packages behind
 
 **What happened:** After PR #172, edge-desktop aborted on macOS, Windows, and Linux before compile: `tauri-plugin-updater (v2.11.0) : @tauri-apps/plugin-updater (v2.10.1)`.

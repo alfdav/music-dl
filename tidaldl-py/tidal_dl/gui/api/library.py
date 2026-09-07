@@ -329,10 +329,30 @@ def _remember_playback_migrations(migrations: list[tuple[str, str]]) -> None:
                 _playback_migration_cache[key] = new_path
 
 
+def apply_playback_layout_heal(path: str) -> str | None:
+    """Rewrite one stale Artist/Artist - Album path if the nested file is live."""
+    from tidal_dl.helper.library_reconcile import heal_artist_album_layout_path
+
+    if not _library_row_under_roots(path):
+        return None
+    try:
+        db = _get_db()
+    except Exception:  # noqa: BLE001
+        return None
+    healed = heal_artist_album_layout_path(db, path)
+    if not healed:
+        return None
+    _remember_playback_migrations([(path, healed)])
+    return healed
+
+
 def request_playback_path_heal(path: str) -> dict:
     """Queue guarded background reconcile for one known library row."""
     if not _library_row_under_roots(path):
         return {"status": "forbidden"}
+    cheap = apply_playback_layout_heal(path)
+    if cheap:
+        return {"status": "healed", "path": cheap}
     return request_path_reconcile(force=False)
 
 
@@ -665,25 +685,66 @@ def _local_cover_url(path: str | None, art_available: bool | int | None) -> str:
     return "/api/library/art?path=" + quote(path, safe="")
 
 
+def _present_library_path(row: dict) -> tuple[dict, bool]:
+    """Heal a stale Artist - Album path. Do not mark_missing on GET."""
+    from tidal_dl.helper.library_reconcile import (
+        artist_album_layout_candidate,
+        heal_artist_album_layout_path,
+        readable_audio_file,
+    )
+
+    path = row.get("path") or ""
+    if path and readable_audio_file(path):
+        return row, True
+    db = None
+    try:
+        db = _get_db()
+    except Exception:  # noqa: BLE001
+        db = None
+    if path and db is not None and hasattr(db, "migrate_path") and artist_album_layout_candidate(path):
+        healed = heal_artist_album_layout_path(db, path)
+        if healed:
+            _remember_playback_migrations([(path, healed)])
+            fresh = db.get(healed) or {**row, "path": healed, "missing_since": None}
+            return fresh, True
+    return row, False
+
+
+def _surface_cover_url(path: str | None, art_available: bool | int | None) -> str:
+    if not path:
+        return ""
+    from tidal_dl.helper.library_reconcile import artist_album_layout_candidate
+
+    if not artist_album_layout_candidate(path):
+        return _local_cover_url(path, art_available)
+    presented, playable = _present_library_path({"path": path, "art_available": art_available})
+    if not playable:
+        return ""
+    return _local_cover_url(presented.get("path"), presented.get("art_available", art_available))
+
+
 def _db_row_to_track(row: dict) -> dict:
-    p = Path(row["path"])
-    return {
-        "path": row["path"],
-        "name": row.get("title") or p.stem,
-        "artist": row.get("artist") or "Unknown Artist",
-        "album": row.get("album") or "Unknown Album",
-        "duration": row.get("duration") or 0,
-        "isrc": row.get("isrc") or "",
-        "genre": row.get("genre") or "",
-        "quality": row.get("quality") or p.suffix[1:].upper(),
-        "format": row.get("format") or p.suffix[1:].upper(),
-        "codec": row.get("codec") or "unknown",
-        "cover_url": _local_cover_url(row["path"], row.get("art_available")),
-        "play_count": row.get("play_count") or 0,
-        "is_local": True,
-        "local_path": row["path"],
-        "missing_since": row.get("missing_since"),
+    presented, playable = _present_library_path(row)
+    path = presented.get("path") or row.get("path") or ""
+    p = Path(path)
+    payload = {
+        "path": path,
+        "name": presented.get("title") or row.get("title") or p.stem,
+        "artist": presented.get("artist") or row.get("artist") or "Unknown Artist",
+        "album": presented.get("album") or row.get("album") or "Unknown Album",
+        "duration": presented.get("duration") or row.get("duration") or 0,
+        "isrc": presented.get("isrc") or row.get("isrc") or "",
+        "genre": presented.get("genre") or row.get("genre") or "",
+        "quality": presented.get("quality") or row.get("quality") or p.suffix[1:].upper(),
+        "format": presented.get("format") or row.get("format") or p.suffix[1:].upper(),
+        "codec": presented.get("codec") or row.get("codec") or "unknown",
+        "play_count": presented.get("play_count") or row.get("play_count") or 0,
+        "is_local": playable,
+        "local_path": path if playable else None,
+        "cover_url": _local_cover_url(path, presented.get("art_available") or row.get("art_available")) if playable else "",
+        "missing_since": presented.get("missing_since") or row.get("missing_since"),
     }
+    return payload
 
 
 def _assessment_payload(assessment, titles: dict[str, str]) -> dict:
@@ -1894,7 +1955,7 @@ def library_artists(
             "name": r["artist"],
             "track_count": r["track_count"],
             "album_count": r["album_count"],
-            "cover_url": _local_cover_url(r.get("cover_path"), r.get("cover_art_available")),
+            "cover_url": _surface_cover_url(r.get("cover_path"), r.get("cover_art_available")),
         }
         for r in rows
     ]
@@ -1921,7 +1982,7 @@ def all_albums(q: str = Query("", description="Search filter")):
                 "name": a["name"],
                 "artist": a["artist"],
                 "track_count": a["track_count"],
-                "cover_url": _local_cover_url(a.get("cover_path"), a.get("cover_art_available")),
+                "cover_url": _surface_cover_url(a.get("cover_path"), a.get("cover_art_available")),
                 "best_quality": a.get("best_quality") or "",
                 "members": a["members"],
                 "possible_duplicate": a["possible_duplicate"],
@@ -1970,7 +2031,7 @@ def library_recent_albums(
             "name": card["name"],
             "artist": card["artist"],
             "track_count": card["track_count"],
-            "cover_url": _local_cover_url(card.get("cover_path"), card.get("cover_art_available")),
+            "cover_url": _surface_cover_url(card.get("cover_path"), card.get("cover_art_available")),
             "recent_at": row["recent_at"],
             "recent_source": row["recent_source"],
             "possible_duplicate": card["possible_duplicate"],
@@ -1993,7 +2054,7 @@ def artist_albums(artist_name: str):
                 "id": a["id"],
                 "name": a["name"],
                 "track_count": a["track_count"],
-                "cover_url": _local_cover_url(a.get("cover_path"), a.get("cover_art_available")),
+                "cover_url": _surface_cover_url(a.get("cover_path"), a.get("cover_art_available")),
                 "genres": ",".join(sorted({
                     str(row.get("genre")) for row in a["tracks"] if row.get("genre")
                 })),
@@ -2045,7 +2106,7 @@ def release_tracks(release_hash: str):
         "id": card["id"],
         "artist": card["artist"],
         "album": card["name"],
-        "cover_url": _local_cover_url(card.get("cover_path"), card.get("cover_art_available")),
+        "cover_url": _surface_cover_url(card.get("cover_path"), card.get("cover_art_available")),
         "tracks": [_db_row_to_track(track) for track in card["tracks"]],
         "total": card["track_count"],
     }
@@ -2109,6 +2170,10 @@ def library_art(path: str = Query(..., description="Absolute path to audio file"
     allowed = [str(Path(settings.data.download_base_path).expanduser())]
     if settings.data.scan_paths:
         allowed.extend(str(Path(p.strip()).expanduser()) for p in settings.data.scan_paths.split(",") if p.strip())
+
+    healed = apply_playback_layout_heal(path)
+    if healed:
+        path = healed
 
     resolution = resolve_local_audio_path(
         path,
@@ -2194,7 +2259,7 @@ def library_search(
                     "name": r.get("album") or "",
                     "artist": r.get("artist") or "",
                     "track_count": r.get("track_count") or 0,
-                    "cover_url": _local_cover_url(r.get("cover_path"), r.get("cover_art_available")),
+                    "cover_url": _surface_cover_url(r.get("cover_path"), r.get("cover_art_available")),
                     "is_local": True,
                     "possible_duplicate": False,
                 }
@@ -2226,7 +2291,7 @@ def library_search(
                     "name": r["artist"],
                     "track_count": r["track_count"],
                     "album_count": r["album_count"],
-                    "cover_url": _local_cover_url(r["cover_path"], r["cover_art_available"]),
+                    "cover_url": _surface_cover_url(r["cover_path"], r["cover_art_available"]),
                     "is_local": True,
                 }
                 for r in rows
@@ -2315,10 +2380,25 @@ def get_favorites():
             "codec": f.get("scanned_codec") or "unknown",
             "duration": duration,
             "favorited_at": f["favorited_at"],
-            "is_local": bool(f.get("path")),
+            "is_local": False,
         }
         if entry["path"]:
-            entry["cover_url"] = _local_cover_url(entry["path"], f.get("scanned_art_available"))
+            presented, playable = _present_library_path({
+                "path": entry["path"],
+                "art_available": f.get("scanned_art_available"),
+            })
+            if playable:
+                entry["path"] = presented.get("path")
+                entry["local_path"] = presented.get("path")
+                entry["is_local"] = True
+                entry["cover_url"] = _local_cover_url(
+                    presented.get("path"), presented.get("art_available", f.get("scanned_art_available")),
+                )
+            else:
+                entry["path"] = None
+                entry["local_path"] = None
+                entry["is_local"] = False
+                entry["cover_url"] = ""
         result.append(entry)
     return {"favorites": result, "total": len(result), "total_duration": total_duration}
 

@@ -68,6 +68,20 @@ def _resolve_local_playback_path(path: str):
         if on_disk is not None:
             return on_disk
 
+    from tidal_dl.helper.library_reconcile import artist_album_layout_candidate
+
+    for candidate in candidates:
+        layout = artist_album_layout_candidate(candidate)
+        if not layout or layout in candidates:
+            continue
+        on_disk = _resolve_on_disk_audio(layout, allowed)
+        if on_disk is None:
+            continue
+        from tidal_dl.gui.api.library import apply_playback_layout_heal
+
+        apply_playback_layout_heal(candidate)
+        return on_disk
+
     for candidate in candidates:
         resolution = resolve_local_audio_path(
             candidate,

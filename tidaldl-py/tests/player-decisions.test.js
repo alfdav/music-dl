@@ -19,7 +19,7 @@ function loadDecisionHelpers() {
 
 function loadNowPlayingDownloadHidden() {
   const helperSource = playerSource.match(
-    /function _nowPlayingDownloadHidden\(track, audioSrc\) \{[\s\S]*?\n\}/,
+    /function _hasLocalPlayAffordance\(track\) \{[\s\S]*?\n\}\n\nfunction _nowPlayingDownloadHidden\(track, audioSrc\) \{[\s\S]*?\n\}/,
   );
 
   if (!helperSource) throw new Error('now-playing download helper not found');
@@ -29,7 +29,7 @@ function loadNowPlayingDownloadHidden() {
 
 function loadNowPlayingSource() {
   const helperSource = playerSource.match(
-    /function _nowPlayingSource\(track, audioSrc\) \{[\s\S]*?\n\}/,
+    /function _hasLocalPlayAffordance\(track\) \{[\s\S]*?\n\}\n\nfunction _nowPlayingDownloadHidden\(track, audioSrc\) \{[\s\S]*?\n\}\n\nfunction _nowPlayingSource\(track, audioSrc\) \{[\s\S]*?\n\}/,
   );
 
   if (!helperSource) throw new Error('now-playing source helper not found');
@@ -513,8 +513,9 @@ describe('now-playing download visibility', () => {
     }, '/api/playback/stream/42')).toBe(true);
     expect(hidden({
       id: 42,
+      is_local: false,
       path: '/music/Sandy, PAPO/Otra Vez/Huelepega.flac',
-    }, '/api/playback/stream/42')).toBe(true);
+    }, '/api/playback/stream/42')).toBe(false);
   });
 
   test('hides Download when audio is already a local playback URL', () => {
@@ -545,7 +546,7 @@ describe('now-playing source chip', () => {
     const source = loadNowPlayingSource();
 
     expect(source({ is_local: true, name: 'Huelepega' }, '')).toBe('local');
-    expect(source({ path: '/music/Huelepega.flac' }, '')).toBe('local');
+    expect(source({ path: '/music/Huelepega.flac' }, '')).toBe(null);
     expect(source({ local_path: '/music/Huelepega.flac' }, '')).toBe('local');
     expect(source({ id: 42, name: 'Huelepega' }, '')).toBe('tidal');
   });

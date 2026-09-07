@@ -1403,6 +1403,347 @@ class TestRemountAndRestoreGuards:
         db.close()
 
 
+class TestArtistAlbumLayoutHeal:
+    """Artist/Artist - Album → Artist/Album must heal without a full rescan."""
+
+    def test_layout_candidate_strips_artist_prefix_and_keeps_extras(self):
+        from tidal_dl.helper.library_reconcile import artist_album_layout_candidate
+
+        old = (
+            "/Volumes/Music/Juniper Vale/Juniper Vale - First Light (2005)/"
+            "CD1/01 - Dawn.flac"
+        )
+        new = "/Volumes/Music/Juniper Vale/First Light (2005)/CD1/01 - Dawn.flac"
+        assert artist_album_layout_candidate(old) == new
+        assert artist_album_layout_candidate(new) is None
+        assert artist_album_layout_candidate(
+            "/Volumes/Music/Juniper Vale/First Light (Remastered)/01 - Dawn.flac"
+        ) is None
+
+    def test_reconcile_heals_nested_artist_album_folder(self, tmp_path):
+        root = tmp_path / "Music"
+        old_dir = root / "Juniper Vale" / "Juniper Vale - First Light (2005)"
+        new_dir = root / "Juniper Vale" / "First Light (2005)"
+        names = [f"{i:02d} - Dawn {i}.wav" for i in range(1, 4)]
+        files = [_write_wav(old_dir / name, frames=5000 + i * 80) for i, name in enumerate(names)]
+        db = _open_db(tmp_path)
+        metadata = {}
+        for index, path in enumerate(files):
+            metadata[str(path)] = _metadata_for(
+                path, name=f"Dawn {index + 1}", artist="Juniper Vale",
+                album="First Light", duration=1,
+            )
+            _seed(
+                db, path, artist="Juniper Vale", title=f"Dawn {index + 1}",
+                album="First Light", duration=1, play_count=4 + index,
+            )
+            db.log_play_event(str(path), artist="Juniper Vale", duration=1, played_at=1700000100 + index)
+        db.add_favorite(
+            path=str(files[0]), artist="Juniper Vale", title="Dawn 1", album="First Light",
+        )
+        db.commit()
+
+        rec = _reconciler(db, [root], metadata=metadata)
+        rec.reconcile(force=True)
+        old_dir.rename(new_dir)
+        for path in files:
+            dest = new_dir / path.name
+            metadata[str(dest)] = _metadata_for(
+                dest, name=path.stem, artist="Juniper Vale", album="First Light", duration=1,
+            )
+
+        result = rec.reconcile(force=True)
+
+        assert (str(old_dir), str(new_dir)) in result.directory_moves
+        for index, name in enumerate(names):
+            dest = new_dir / name
+            row = db.get(str(dest))
+            assert row is not None
+            assert row["play_count"] == 4 + index
+            assert db.get(str(old_dir / name)) is None
+        events = db._conn.execute("SELECT path FROM play_events ORDER BY played_at").fetchall()
+        assert [row["path"] for row in events] == [str(new_dir / name) for name in names]
+        assert db.is_favorite(path=str(new_dir / names[0]))
+        assert not db.is_favorite(path=str(old_dir / names[0]))
+        db.close()
+
+    def test_unchanged_signatures_still_heal_artist_album_layout(self, tmp_path):
+        """Scan/signature refresh of the new tree must not strand old index paths."""
+        root = tmp_path / "Music"
+        old_dir = root / "Maren Ortega" / "Maren Ortega - Night Watch"
+        new_dir = root / "Maren Ortega" / "Night Watch"
+        name = "01 - Beacon.wav"
+        src = _write_wav(old_dir / name, frames=7000)
+        dest = new_dir / name
+        db = _open_db(tmp_path)
+        metadata = {
+            str(src): _metadata_for(src, name="Beacon", artist="Maren Ortega", album="Night Watch", duration=1),
+            str(dest): _metadata_for(dest, name="Beacon", artist="Maren Ortega", album="Night Watch", duration=1),
+        }
+        _seed(db, src, artist="Maren Ortega", title="Beacon", album="Night Watch", duration=1, play_count=12)
+        db.log_play_event(str(src), artist="Maren Ortega", duration=1, played_at=1700000400)
+        db.commit()
+
+        rec = _reconciler(db, [root], metadata=metadata)
+        rec.reconcile(force=True)
+        new_dir.mkdir(parents=True)
+        src.rename(dest)
+        current, _unreadable = rec.walk_dirs()
+        db.replace_dir_signatures(
+            {directory: info.signature for directory, info in current.items()},
+            checked_at=1,
+        )
+        db.commit()
+
+        result = rec.reconcile(force=True)
+
+        assert db.get(str(dest)) is not None
+        assert db.get(str(dest))["play_count"] == 12
+        assert db.get(str(src)) is None
+        events = db._conn.execute("SELECT path FROM play_events").fetchall()
+        assert [row["path"] for row in events] == [str(dest)]
+        assert result.migrations
+        db.close()
+
+    def test_already_indexed_dest_merges_history_instead_of_false_missing(self, tmp_path):
+        root = tmp_path / "Music"
+        old_dir = root / "Nia Coltrane" / "Nia Coltrane - Harbor Songs"
+        new_dir = root / "Nia Coltrane" / "Harbor Songs"
+        name = "01 - Tide.wav"
+        src = _write_wav(old_dir / name, frames=6400)
+        dest = new_dir / name
+        db = _open_db(tmp_path)
+        metadata = {
+            str(src): _metadata_for(src, name="Tide", artist="Nia Coltrane", album="Harbor Songs", duration=1),
+            str(dest): _metadata_for(dest, name="Tide", artist="Nia Coltrane", album="Harbor Songs", duration=1),
+        }
+        _seed(db, src, artist="Nia Coltrane", title="Tide", album="Harbor Songs", duration=1, play_count=8)
+        db.log_play_event(str(src), artist="Nia Coltrane", duration=1, played_at=1700000500)
+        db.commit()
+        rec = _reconciler(db, [root], metadata=metadata)
+        rec.reconcile(force=True)
+
+        new_dir.mkdir(parents=True)
+        src.rename(dest)
+        _seed(db, dest, artist="Nia Coltrane", title="Tide", album="Harbor Songs", duration=1, play_count=1)
+        current, _unreadable = rec.walk_dirs()
+        db.replace_dir_signatures(
+            {directory: info.signature for directory, info in current.items()},
+            checked_at=1,
+        )
+        db.commit()
+
+        rec.reconcile(force=True)
+
+        keep = db.get(str(dest))
+        assert keep is not None
+        assert keep["play_count"] == 9
+        assert db.get(str(src)) is None
+        events = db._conn.execute("SELECT path FROM play_events").fetchall()
+        assert [row["path"] for row in events] == [str(dest)]
+        db.close()
+
+    def test_directory_move_pairs_layout_when_size_fingerprints_collide(self):
+        from tidal_dl.helper.library_reconcile import FileIdentity, plan_path_reconcile
+
+        vanished = [
+            FileIdentity(
+                path="/music/Artist One/Artist One - First Album/01.flac",
+                size=1000, duration=180, codec="flac",
+                title="One", artist="Artist One", album="First Album",
+            ),
+            FileIdentity(
+                path="/music/Artist Two/Artist Two - Second Album/01.flac",
+                size=1000, duration=180, codec="flac",
+                title="Two", artist="Artist Two", album="Second Album",
+            ),
+        ]
+        appeared = [
+            FileIdentity(
+                path="/music/Artist One/First Album/01.flac",
+                size=1000, duration=180, codec="flac",
+                title="One", artist="Artist One", album="First Album",
+            ),
+            FileIdentity(
+                path="/music/Artist Two/Second Album/01.flac",
+                size=1000, duration=180, codec="flac",
+                title="Two", artist="Artist Two", album="Second Album",
+            ),
+        ]
+
+        plan = plan_path_reconcile(vanished, appeared)
+
+        assert set(plan.directory_moves) == {
+            ("/music/Artist One/Artist One - First Album", "/music/Artist One/First Album"),
+            ("/music/Artist Two/Artist Two - Second Album", "/music/Artist Two/Second Album"),
+        }
+        assert set(plan.migrations) == {
+            (vanished[0].path, appeared[0].path),
+            (vanished[1].path, appeared[1].path),
+        }
+        assert plan.mark_missing == []
+        assert plan.index_new == []
+
+    def test_layout_heal_does_not_cross_editions(self, tmp_path):
+        from tidal_dl.helper.library_reconcile import artist_album_layout_candidate, plan_path_reconcile
+
+        root = tmp_path / "Music"
+        old_dir = root / "Juniper Vale" / "Juniper Vale - First Light"
+        live_dir = root / "Juniper Vale" / "First Light (Remastered)"
+        name = "01 - Dawn.wav"
+        src = old_dir / name
+        live = _write_wav(live_dir / name, frames=9000)
+        db = _open_db(tmp_path)
+        metadata = {
+            str(src): _metadata_for(src, name="Dawn", artist="Juniper Vale", album="First Light", duration=1),
+            str(live): _metadata_for(
+                live, name="Dawn", artist="Juniper Vale",
+                album="First Light (Remastered)", duration=1,
+            ),
+        }
+        _seed(db, src, artist="Juniper Vale", title="Dawn", album="First Light", duration=1, play_count=3)
+        rec = _reconciler(db, [root], metadata=metadata)
+        rec.reconcile(force=True)
+
+        result = rec.reconcile(force=True)
+        assert result.migrations == []
+        assert db.get(str(src)) is not None
+        assert db.get(str(src))["play_count"] == 3
+        assert db.get(str(live)) is not None
+        assert db.get(str(live))["play_count"] in (None, 0)
+        assert artist_album_layout_candidate(str(src)) == str(root / "Juniper Vale" / "First Light" / name)
+
+        from tidal_dl.helper.library_reconcile import FileIdentity
+
+        plan = plan_path_reconcile(
+            [FileIdentity(
+                path=str(src), size=1000, duration=180, codec="flac",
+                title="Dawn", artist="Juniper Vale", album="First Light",
+            )],
+            [FileIdentity(
+                path=str(live), size=1000, duration=180, codec="flac",
+                title="Dawn", artist="Juniper Vale", album="First Light (Remastered)",
+            )],
+        )
+        assert plan.directory_moves == []
+        assert plan.migrations == []
+        db.close()
+
+
+class TestPlayabilityHonesty:
+    def test_dead_index_path_is_not_presented_as_playable_local(self, tmp_path, monkeypatch):
+        import tidal_dl.gui.api.library as library_api
+
+        root = tmp_path / "Music"
+        dead = root / "Artist One" / "First Album" / "01 - Song.wav"
+        dead.parent.mkdir(parents=True)
+        db = _open_db(tmp_path)
+        db.record(
+            str(dead), status="tagged", artist="Artist One", title="Song",
+            album="First Album", duration=180, quality="FLAC", fmt="FLAC",
+            codec="flac", metadata_complete=True,
+        )
+        db.commit()
+
+        class FakeSettings:
+            data = SimpleNamespace(download_base_path=str(root), scan_paths="")
+
+        monkeypatch.setattr(library_api, "Settings", FakeSettings)
+        monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
+        monkeypatch.setattr(library_api, "_library_db", lambda: db)
+        monkeypatch.setattr(library_api, "_get_db", lambda: db)
+
+        track = library_api._db_row_to_track(dict(db.get(str(dead))))
+        assert track["is_local"] is False
+        assert not track.get("local_path")
+        assert track["path"] == str(dead)
+
+        search = library_api.library_search(q="Song", type="tracks", limit=20)
+        assert search["tracks"][0]["is_local"] is False
+        assert not search["tracks"][0].get("local_path")
+
+        page = library_api.library(sort="title", limit=50, offset=0, q="")
+        assert page["tracks"][0]["is_local"] is False
+        rec = _reconciler(db, [root], metadata={})
+        rec.reconcile(force=True)
+        assert db.get(str(dead))["missing_since"] is not None
+        db.close()
+
+    def test_library_surfaces_heal_then_serve_nested_layout(self, tmp_path, monkeypatch):
+        import tidal_dl.gui.api.library as library_api
+
+        root = tmp_path / "Music"
+        old = root / "Artist One" / "Artist One - First Album" / "01 - Song.wav"
+        live = root / "Artist One" / "First Album" / "01 - Song.wav"
+        _write_wav(live, frames=8000)
+        db = _open_db(tmp_path)
+        _seed(
+            db, old, artist="Artist One", title="Song", album="First Album",
+            duration=1, play_count=6, with_identity=False,
+        )
+        db.log_play_event(str(old), artist="Artist One", duration=1, played_at=1700000600)
+        db.commit()
+
+        class FakeSettings:
+            data = SimpleNamespace(download_base_path=str(root), scan_paths="")
+
+        monkeypatch.setattr(library_api, "Settings", FakeSettings)
+        monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
+        monkeypatch.setattr(library_api, "_library_db", lambda: db)
+        monkeypatch.setattr(library_api, "_get_db", lambda: db)
+
+        track = library_api._db_row_to_track(db.get(str(old)))
+        search = library_api.library_search(q="Song", type="tracks", limit=20)
+
+        assert track["is_local"] is True
+        assert track["path"] == str(live)
+        assert track["local_path"] == str(live)
+        assert search["tracks"][0]["is_local"] is True
+        assert search["tracks"][0]["path"] == str(live)
+        assert db.get(str(live))["play_count"] == 6
+        assert db.get(str(old)) is None
+        events = db._conn.execute("SELECT path FROM play_events").fetchall()
+        assert [row["path"] for row in events] == [str(live)]
+        db.close()
+
+    def test_playback_cheap_layout_heal_serves_without_full_reconcile(self, tmp_path, monkeypatch):
+        import tidal_dl.gui.api.library as library_api
+
+        root = tmp_path / "Music"
+        old = root / "Artist One" / "Artist One - First Album" / "01 - Song.wav"
+        live = root / "Artist One" / "First Album" / "01 - Song.wav"
+        _write_wav(live, frames=8000)
+        db = _open_db(tmp_path)
+        _seed(db, old, artist="Artist One", title="Song", album="First Album", duration=1, with_identity=False)
+        db.commit()
+        db.close()
+
+        client, headers, library_api = TestPlaybackBackstop()._playback_client(
+            tmp_path, monkeypatch, root,
+        )
+        reconcile_calls = 0
+
+        def boom(*, force=False):
+            nonlocal reconcile_calls
+            reconcile_calls += 1
+            return {"status": "started"}
+
+        monkeypatch.setattr(library_api, "request_path_reconcile", boom)
+        with client:
+            resp = client.get(
+                "/api/playback/local",
+                params={"path": str(old)},
+                headers=headers,
+            )
+        assert resp.status_code == 200
+        assert reconcile_calls == 0
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        assert db.get(str(live)) is not None
+        assert db.get(str(old)) is None
+        db.close()
+
+
 class TestUnicodePathIdentity:
     def test_nfc_row_and_nfd_walk_are_not_a_move(self, tmp_path):
         import unicodedata

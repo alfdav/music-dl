@@ -138,8 +138,12 @@ function _lyricsQuery(track) {
   return params.toString();
 }
 
+function _hasLocalPlayAffordance(track) {
+  return !!(track && (track.is_local || track.local_path));
+}
+
 function _nowPlayingDownloadHidden(track, audioSrc) {
-  if (track && (track.is_local || track.local_path || track.path)) return true;
+  if (_hasLocalPlayAffordance(track)) return true;
   return String(audioSrc || '').includes('/playback/local');
 }
 
@@ -148,7 +152,7 @@ function _nowPlayingSource(track, audioSrc) {
   if (src.includes('/playback/local')) return 'local';
   if (src.includes('/playback/stream/')) return 'tidal';
   if (!track) return null;
-  if (track.is_local || track.local_path || track.path) return 'local';
+  if (_hasLocalPlayAffordance(track)) return 'local';
   if (track.id) return 'tidal';
   return null;
 }
