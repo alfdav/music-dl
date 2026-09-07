@@ -72,6 +72,30 @@
 
 **Prevention:** Call pacing through a StreamMixin helper that falls back to the shared pacer. Pass new `item()` → mixin arguments positionally so existing `*_args` test doubles keep working.
 
+## 2026-09-07 — Loose titles stamped remix/live/radio-edit onto the original
+
+**What happened:** Bugbot on PR #180: title identity used `base_title`, which strips every trailing parenthetical. Remix, live, and radio-edit rows shared a key with the original. `_pick_identity_row` then preferred the shortest path, so a live file could lose to the studio cut (or the reverse). Download hid and playback used the wrong recording.
+
+**Root cause:** `_title_variants` and `titles_compatible` treated feat-credit robustness as "strip all parentheticals." Version tokens are different recordings. Shortest-path is only a tie-break inside one recording.
+
+**Prevention:** Identity titles keep remix/live/radio-edit tokens. Strip only feat/ft/with credits and leftover codec brackets. Prefer a version-preserving title match over shortest path. Cover original vs live/remix/radio-edit (and shortest-path) in `test_local_identity.py`.
+
+## 2026-09-07 — Album restamp left another release's quality fields
+
+**What happened:** Bugbot on PR #180: album-scoped `stamp_track` with no match cleared `is_local` and paths but left `quality` / `format` / `codec` from the catalog-wide `_serialize_track` stamp. Shared-ISRC album rows showed another release's on-disk quality while remaining remote.
+
+**Root cause:** `stamp_track(None)` only dropped locality and paths. Local media fields are written by the same function and must be undone together. Catalog quality has to be restored from the Tidal track, not from the leftover on-disk stamp.
+
+**Prevention:** On a miss, clear `format` / `codec` and restore catalog `quality`. Do not re-stash an already-local quality as catalog. Cover the restamp-miss unit and `GET /albums/{id}/tracks` shared-ISRC case in `test_local_identity.py`.
+
+## 2026-09-07 — Guest leftover Artist - Album tags missed the album pool
+
+**What happened:** Bugbot on PR #180: `tracks_for_album_identity` only found guest credits through an exact `tracks_for_albums` title. Leftover `Artist - Album` tags missed that query, and `tracks_for_artist` uses the host artist, so `filter_album_rows` never saw the `album_artist` row. Album pages still showed Download for those live files.
+
+**Root cause:** Discovery was exact album-tag plus host track-artist. Guest leftover rows are keyed by `album_artist` and a leftover album string. `filter_album_rows` already keeps those once they are in the pool.
+
+**Prevention:** Also collect `album_artist` rows and leftover `Artist - Album` / codec-bracket album tags, then let `filter_album_rows` keep the matching release. Cover a guest leftover tag in `test_local_identity.py`.
+
 ## 2026-09-07 — Album detail skipped album-scoped restamp
 
 **What happened:** Bugbot on PR #180: `GET /albums/{id}/tracks` stamped `is_local` from catalog-wide ISRC / title+artist via `_serialize_track`. A live file from another release hid Download on this album page.

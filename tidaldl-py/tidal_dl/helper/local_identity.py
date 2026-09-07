@@ -6,13 +6,20 @@ stamp so a file on disk cannot keep showing a download affordance.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from tidal_dl.helper.album_grouping import base_title, compatible_title, normalize_text
+from tidal_dl.helper.album_grouping import compatible_title, normalize_text
 from tidal_dl.helper.library_scanner import path_has_skipped_scan_dir
-from tidal_dl.helper.path import _album_identity, resolve_live_library_path
+from tidal_dl.helper.path import _album_identity, _strip_codec_brackets, resolve_live_library_path
+
+_FEAT_MARKER = re.compile(
+    r"\s*[\(\[]\s*(?:feat(?:uring)?\.?|ft\.?|with)\s+[^\)\]]+[\)\]]\s*$",
+    re.IGNORECASE,
+)
+_CATALOG_QUALITY = "_catalog_quality"
 
 
 def fold_identity(value: object | None) -> str:
@@ -48,6 +55,21 @@ def titles_compatible(left: object | None, right: object | None) -> bool:
     return compatible_title(str(left or ""), str(right or ""))
 
 
+def recording_title(value: object | None) -> str:
+    """Fold a title while keeping remix / live / radio-edit version tokens.
+
+    Feature credits and leftover codec brackets are the same recording.
+    Stripping every trailing parenthetical would collapse those versions
+    onto the original and let shortest-path pick the wrong file.
+    """
+    title = _strip_codec_brackets(str(value or "").strip())
+    while True:
+        stripped = _FEAT_MARKER.sub("", title).strip()
+        if stripped == title:
+            return fold_identity(title)
+        title = stripped
+
+
 def _title_variants(*values: object | None) -> set[str]:
     variants: set[str] = set()
     for value in values:
@@ -56,9 +78,9 @@ def _title_variants(*values: object | None) -> set[str]:
         folded = fold_identity(value)
         if folded:
             variants.add(folded)
-        base = base_title(value)
-        if base:
-            variants.add(base)
+        recording = recording_title(value)
+        if recording:
+            variants.add(recording)
     return variants
 
 
@@ -143,6 +165,7 @@ def match_local_row(
     # Title matching uses the catalog track artist. Album scope_artist only
     # narrows the release — it must not replace a compilation/guest credit.
     title_artist = catalog_artist or ("" if _various_artists(scope_artist) else scope_artist)
+    track_title = str(track.get("name") or track.get("title") or track.get("full_name") or "")
     track_titles = _title_variants(track.get("name"), track.get("title"), track.get("full_name"))
 
     def in_scope(row: Mapping[str, Any]) -> bool:
@@ -157,7 +180,7 @@ def match_local_row(
             row for row in rows
             if str(row.get("isrc") or "").strip() == isrc and in_scope(row)
         ]
-        picked = _pick_identity_row(isrc_hits, prefer_album=track_album)
+        picked = _pick_identity_row(isrc_hits, prefer_album=track_album, prefer_title=track_title)
         if picked:
             return picked
 
@@ -166,11 +189,7 @@ def match_local_row(
         if not in_scope(row):
             continue
         row_titles = _title_variants(row.get("title"))
-        if not (track_titles & row_titles) and not any(
-            titles_compatible(left, row.get("title"))
-            for left in (track.get("name"), track.get("title"))
-            if left
-        ):
+        if not (track_titles & row_titles):
             continue
         if title_artist and not artists_compatible(title_artist, row.get("artist")):
             continue
@@ -186,10 +205,15 @@ def match_local_row(
         else:
             return None
 
-    return _pick_identity_row(title_hits, prefer_album=track_album)
+    return _pick_identity_row(title_hits, prefer_album=track_album, prefer_title=track_title)
 
 
-def _pick_identity_row(rows: list[dict], *, prefer_album: str = "") -> dict | None:
+def _pick_identity_row(
+    rows: list[dict],
+    *,
+    prefer_album: str = "",
+    prefer_title: str = "",
+) -> dict | None:
     live: list[dict] = []
     for row in rows:
         stamped = with_identity_path(row)
@@ -197,8 +221,12 @@ def _pick_identity_row(rows: list[dict], *, prefer_album: str = "") -> dict | No
             live.append(stamped)
     if not live:
         return None
+    wanted_recording = recording_title(prefer_title)
+    wanted_exact = fold_identity(prefer_title)
     live.sort(key=lambda row: (
         0 if albums_compatible(row.get("album"), prefer_album, row.get("artist")) else 1,
+        0 if wanted_recording and recording_title(row.get("title")) == wanted_recording else 1,
+        0 if wanted_exact and fold_identity(row.get("title")) == wanted_exact else 1,
         len(row.get("path") or ""),
         row.get("path") or "",
     ))
@@ -207,10 +235,19 @@ def _pick_identity_row(rows: list[dict], *, prefer_album: str = "") -> dict | No
 
 def stamp_track(track: dict, row: Mapping[str, Any] | None) -> dict:
     """Write is_local plus path / local_path (and on-disk quality when present)."""
+    if _CATALOG_QUALITY not in track and not track.get("format") and not track.get("codec"):
+        track[_CATALOG_QUALITY] = track.get("quality")
     if not row:
         track["is_local"] = False
         track.pop("local_path", None)
         track.pop("path", None)
+        track.pop("format", None)
+        track.pop("codec", None)
+        catalog = track.pop(_CATALOG_QUALITY, None)
+        if catalog is not None:
+            track["quality"] = catalog
+        else:
+            track.pop("quality", None)
         return track
     path = row.get("path") or ""
     track["is_local"] = True
@@ -225,6 +262,12 @@ def stamp_track(track: dict, row: Mapping[str, Any] | None) -> dict:
         track["codec"] = row["codec"]
     elif "codec" not in track:
         track["codec"] = "unknown"
+    return track
+
+
+def finish_stamp(track: dict) -> dict:
+    """Drop internal catalog-quality stash before a track leaves the API."""
+    track.pop(_CATALOG_QUALITY, None)
     return track
 
 

@@ -9,11 +9,12 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 
 from tidal_dl.config import Tidal
-from tidal_dl.gui.api.search import _serialize_track
+from tidal_dl.gui.api.search import _catalog_quality, _serialize_track
 from tidal_dl.helper.album_grouping import base_title
 from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.local_identity import (
     filter_album_rows,
+    finish_stamp,
     match_local_row,
     stamp_track,
 )
@@ -165,7 +166,9 @@ def album_tracks(album_id: int) -> dict:
             scope_artist=artist,
             scope_album=album_name,
         )
-        stamp_track(data, local_row)
+        finish_stamp(stamp_track(data, local_row))
+        if not local_row:
+            data["quality"] = _catalog_quality(track)
         serialized.append(data)
 
     return {
@@ -301,7 +304,9 @@ def album_lookup(
             scope_artist=artist,
             scope_album=album,
         )
-        stamp_track(data, local_row)
+        finish_stamp(stamp_track(data, local_row))
+        if not local_row:
+            data["quality"] = _catalog_quality(t)
         if not data["is_local"]:
             missing_count += 1
         serialized.append(data)

@@ -213,6 +213,43 @@ class BrowseMixin:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def tracks_for_album_artist(self, artist: str) -> list[dict]:
+        """Rows tagged with this album artist, including guest-credit track artists."""
+        assert self._conn
+        if not artist:
+            return []
+        rows = self._conn.execute(
+            f"""SELECT * FROM scanned
+               WHERE status != 'unreadable' AND missing_since IS NULL
+                 AND {visible_scanned_path_sql()}
+                 AND album_artist = ? COLLATE NOCASE""",
+            (artist,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def tracks_for_leftover_album_tags(self, artist: str, album: str) -> list[dict]:
+        """Leftover ``Artist - Album`` / codec-bracket album tags for one release."""
+        assert self._conn
+        if not album:
+            return []
+        clauses = ["album = ?"]
+        params: list = [album]
+        if artist:
+            clauses.append("album LIKE ?")
+            params.append(f"{artist} - {album}%")
+            clauses.append("album LIKE ?")
+            params.append(f"% - {album}%")
+        clauses.append("album LIKE ?")
+        params.append(f"{album} [%")
+        rows = self._conn.execute(
+            f"""SELECT * FROM scanned
+               WHERE status != 'unreadable' AND missing_since IS NULL
+                 AND {visible_scanned_path_sql()}
+                 AND ({' OR '.join(clauses)})""",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def tracks_for_release(self, release_id: str) -> list[dict]:
         """Return readable rows already stamped with a grouped release id."""
         assert self._conn
@@ -368,9 +405,12 @@ class BrowseMixin:
         pool = list(exact)
         if artist and artist != "Various Artists":
             pool.extend(self.tracks_for_artist(artist))
-        # Same album title can carry guest credits tagged with a different
-        # track artist; filter_album_rows keeps those via album_artist.
+        # Guest credits are tagged with the host album_artist, often under a
+        # leftover Artist - Album title that misses exact tracks_for_albums.
+        if artist:
+            pool.extend(self.tracks_for_album_artist(artist))
         pool.extend(self.tracks_for_albums([album]) or [])
+        pool.extend(self.tracks_for_leftover_album_tags(artist, album))
         matched = filter_album_rows(pool, artist, album)
         if matched:
             return matched

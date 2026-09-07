@@ -13,6 +13,7 @@ from tidal_dl.gui.tidal_ref import TidalRef, looks_like_web_url, parse_tidal_ref
 from tidal_dl.helper.library_scanner import path_has_skipped_scan_dir
 from tidal_dl.helper.local_identity import (
     candidate_rows_for_track,
+    finish_stamp,
     identity_path_for_row,
     match_local_row,
     stamp_track,
@@ -72,6 +73,17 @@ def get_tidal_session():
     return tidal.session
 
 
+def _catalog_quality(track: Any) -> str:
+    tags = getattr(track, "media_metadata_tags", None) or []
+    if "HIRES_LOSSLESS" in tags:
+        return "HI_RES_LOSSLESS"
+    if "HIRES" in tags:
+        return "HI_RES"
+    if "DOLBY_ATMOS" in tags:
+        return "DOLBY_ATMOS"
+    return getattr(track, "audio_quality", "") or ""
+
+
 def _serialize_track(track: Any, isrc_index: Any = None) -> dict:
     artists = track.artists or []
     artist_name = ", ".join(a.name for a in artists if a.name)
@@ -100,15 +112,7 @@ def _serialize_track(track: Any, isrc_index: Any = None) -> dict:
     if local_row is None:
         local_row = match_local_row(draft, candidate_rows_for_track(db, draft))
 
-    tags = getattr(track, "media_metadata_tags", None) or []
-    if "HIRES_LOSSLESS" in tags:
-        quality = "HI_RES_LOSSLESS"
-    elif "HIRES" in tags:
-        quality = "HI_RES"
-    elif "DOLBY_ATMOS" in tags:
-        quality = "DOLBY_ATMOS"
-    else:
-        quality = getattr(track, "audio_quality", "") or ""
+    quality = _catalog_quality(track)
 
     artist_id = getattr(artists[0], "id", None) if artists else None
     result = {
@@ -124,7 +128,7 @@ def _serialize_track(track: Any, isrc_index: Any = None) -> dict:
         "isrc": isrc,
         "is_local": False,
     }
-    return stamp_track(result, local_row)
+    return finish_stamp(stamp_track(result, local_row))
 
 
 def _empty(type_str: str, error: str) -> dict:

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from tidal_dl.gui.api import albums as albums_api
 from tidal_dl.gui.api import search as search_api
 from tidal_dl.helper.library_db import LibraryDB
-from tidal_dl.helper.local_identity import match_local_row
+from tidal_dl.helper.local_identity import match_local_row, stamp_track
 
 
 def _touch(path: Path) -> Path:
@@ -683,4 +683,173 @@ def test_album_lookup_title_match_does_not_take_same_title_from_other_album(tmp_
     assert by_name["Static"].get("local_path") in (None, "")
     assert by_name["Low Tide"]["is_local"] is True
     assert by_name["Low Tide"]["local_path"] == str(wanted)
+    db.close()
+
+
+def test_match_local_row_keeps_live_remix_and_radio_edit_distinct(tmp_path):
+    """Version parentheticals are different recordings, even when both files exist."""
+    original = _touch(tmp_path / "music" / "Juniper Vale" / "Safe Room" / "01 Static.flac")
+    live = _touch(tmp_path / "music" / "Juniper Vale" / "Safe Room" / "01 Static (Live).flac")
+    remix = _touch(tmp_path / "music" / "Juniper Vale" / "Safe Room" / "02 Static (Remix).flac")
+    radio = _touch(tmp_path / "music" / "Juniper Vale" / "Safe Room" / "03 Static (Radio Edit).flac")
+    rows = [
+        {"path": str(original), "artist": "Juniper Vale", "title": "Static", "album": "Safe Room"},
+        {"path": str(live), "artist": "Juniper Vale", "title": "Static (Live)", "album": "Safe Room"},
+        {"path": str(remix), "artist": "Juniper Vale", "title": "Static (Remix)", "album": "Safe Room"},
+        {"path": str(radio), "artist": "Juniper Vale", "title": "Static (Radio Edit)", "album": "Safe Room"},
+    ]
+
+    def _track(name: str) -> dict:
+        return {"name": name, "artist": "Juniper Vale", "album": "Safe Room", "isrc": ""}
+
+    assert match_local_row(_track("Static"), rows)["path"] == str(original)
+    assert match_local_row(_track("Static (Live)"), rows)["path"] == str(live)
+    assert match_local_row(_track("Static (Remix)"), rows)["path"] == str(remix)
+    assert match_local_row(_track("Static (Radio Edit)"), rows)["path"] == str(radio)
+    assert match_local_row(_track("Static (Acoustic)"), rows) is None
+
+
+def test_match_local_row_does_not_let_shortest_path_steal_a_version(tmp_path):
+    """A shorter original path must not win when the catalog title is the live cut."""
+    original = _touch(tmp_path / "a" / "Static.flac")
+    live = _touch(tmp_path / "library" / "Juniper Vale" / "Safe Room" / "01 Static (Live).flac")
+    rows = [
+        {"path": str(original), "artist": "Juniper Vale", "title": "Static", "album": "Safe Room"},
+        {"path": str(live), "artist": "Juniper Vale", "title": "Static (Live)", "album": "Safe Room"},
+    ]
+    track = {"name": "Static (Live)", "artist": "Juniper Vale", "album": "Safe Room", "isrc": ""}
+
+    matched = match_local_row(track, rows)
+
+    assert matched is not None
+    assert matched["path"] == str(live)
+
+
+def test_stamp_track_clears_foreign_quality_when_restamp_misses():
+    """Album-scoped miss must drop on-disk quality/format/codec from a prior stamp."""
+    track = {
+        "name": "Static",
+        "artist": "Juniper Vale",
+        "album": "Night Letters",
+        "quality": "LOSSLESS",
+        "is_local": False,
+    }
+    stamp_track(track, {
+        "path": "/music/Juniper Vale/Safe Room/01 Static.flac",
+        "quality": "FLAC",
+        "format": "FLAC",
+        "codec": "flac",
+    })
+    stamp_track(track, None)
+
+    assert track["is_local"] is False
+    assert track.get("local_path") in (None, "")
+    assert track.get("path") in (None, "")
+    assert track.get("format") in (None, "")
+    assert track.get("codec") in (None, "")
+    assert track.get("quality") != "FLAC"
+    assert track.get("quality") == "LOSSLESS"
+
+
+def test_album_tracks_clears_foreign_quality_when_shared_isrc_is_other_album(
+    tmp_path, monkeypatch,
+):
+    """Remote album-detail rows must not keep another release's on-disk quality."""
+    other = _touch(tmp_path / "music" / "Juniper Vale" / "Safe Room" / "01 Static.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        other,
+        artist="Juniper Vale",
+        title="Static",
+        album="Safe Room",
+        isrc="SHARED0000001",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    db.commit()
+
+    compilation = _tidal_album(
+        130,
+        "Night Letters",
+        "Nia Coltrane",
+        [_tidal_track(
+            track_id=131,
+            name="Static",
+            artist="Juniper Vale",
+            album="Night Letters",
+            isrc="SHARED0000001",
+        )],
+    )
+    _patch_album_lookup(monkeypatch, db, compilation)
+
+    result = albums_api.album_tracks(130)
+    track = result["tracks"][0]
+
+    assert track["is_local"] is False
+    assert track.get("local_path") in (None, "")
+    assert track.get("format") in (None, "")
+    assert track.get("codec") in (None, "")
+    assert track.get("quality") != "FLAC"
+    db.close()
+
+
+def test_album_lookup_stamps_guest_leftover_artist_album_tag(tmp_path, monkeypatch):
+    """Guest credit tagged Artist - Album still enters the host album candidate pool."""
+    live = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "04 Harbor Light.flac")
+    host = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "01 Low Tide.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        host,
+        artist="Nia Coltrane",
+        title="Low Tide",
+        album="Night Letters",
+        album_artist="Nia Coltrane",
+        isrc="QZNIA0000001",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    _record(
+        db,
+        live,
+        artist="Juniper Vale",
+        title="Harbor Light",
+        album="Nia Coltrane - Night Letters [FLAC]",
+        album_artist="Nia Coltrane",
+        isrc="USESK0000002",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    db.commit()
+
+    tidal = _tidal_album(
+        140,
+        "Night Letters",
+        "Nia Coltrane",
+        [
+            _tidal_track(track_id=141, name="Low Tide", artist="Nia Coltrane", album="Night Letters", isrc="QZNIA0000001"),
+            _tidal_track(
+                track_id=142,
+                name="Harbor Light",
+                artist="Juniper Vale",
+                album="Night Letters",
+                isrc="QZNIA0000142",
+            ),
+        ],
+    )
+    _patch_album_lookup(monkeypatch, db, tidal)
+
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Night Letters")
+    assert any(row.get("path") == str(live) for row in pool)
+
+    result = albums_api.album_lookup("Nia Coltrane", "Night Letters")
+    by_name = {track["name"]: track for track in result["tracks"]}
+
+    assert by_name["Harbor Light"]["is_local"] is True
+    assert by_name["Harbor Light"]["local_path"] == str(live)
+    assert result["missing_count"] == 0
     db.close()
