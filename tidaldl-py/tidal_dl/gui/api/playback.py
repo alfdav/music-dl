@@ -33,6 +33,20 @@ def _local_media_type(path: Path) -> str:
     return media_types.get(path.suffix.lower(), "audio/flac")
 
 
+def _resolve_on_disk_audio(path: str, allowed: list[str]) -> Path | None:
+    """Resolve an already-local file without touching the library DB.
+
+    Download jobs hold SQLite write locks while indexing. Local playback of a
+    file that is already on disk under a configured root must not wait on that.
+    """
+    from tidal_dl.gui.security import resolve_local_audio_path
+
+    resolution = resolve_local_audio_path(path, allowed)
+    if resolution.kind == "ok" and resolution.path is not None:
+        return resolution.path
+    return None
+
+
 def _resolve_local_playback_path(path: str):
     from tidal_dl.gui.api.library import (
         _library_row_under_roots,
@@ -48,6 +62,11 @@ def _resolve_local_playback_path(path: str):
     cached = playback_resolved_path(path)
     if cached and cached not in candidates:
         candidates.append(cached)
+
+    for candidate in candidates:
+        on_disk = _resolve_on_disk_audio(candidate, allowed)
+        if on_disk is not None:
+            return on_disk
 
     for candidate in candidates:
         resolution = resolve_local_audio_path(
@@ -235,15 +254,18 @@ def get_waveform(path: str = Query(..., description="Absolute path to audio file
     from tidal_dl.helper.path import path_config_base
     from tidal_dl.helper.waveform import extract_both, peaks_from_json, peaks_to_json
 
-    resolution = resolve_local_audio_path(
-        path,
-        get_download_paths(),
-        library_trusts_raw_path=_path_in_library(path),
-        library_resolved_path=_trusted_library_path(path),
-    )
-    if resolution.kind != "ok" or resolution.path is None:
-        raise HTTPException(status_code=400, detail="Invalid path")
-    validated_path = resolution.path
+    allowed = get_download_paths()
+    validated_path = _resolve_on_disk_audio(path, allowed)
+    if validated_path is None:
+        resolution = resolve_local_audio_path(
+            path,
+            allowed,
+            library_trusts_raw_path=_path_in_library(path),
+            library_resolved_path=_trusted_library_path(path),
+        )
+        if resolution.kind != "ok" or resolution.path is None:
+            raise HTTPException(status_code=400, detail="Invalid path")
+        validated_path = resolution.path
 
     db = LibraryDB(Path(path_config_base()) / "library.db")
     db.open()
