@@ -729,7 +729,7 @@ describe('track source decisions', () => {
   });
 
   test('hides the track-row download button when the file is already in the library', () => {
-    expect(viewsSource).toContain('if (!track.is_local && !(track.local_path || track.path))');
+    expect(viewsSource).toContain('if (!trackIsPlayable(track) && track.id)');
   });
 });
 

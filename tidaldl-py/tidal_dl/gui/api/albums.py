@@ -15,6 +15,7 @@ from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.local_identity import (
     filter_album_rows,
     finish_stamp,
+    indexed_path_for_row,
     match_local_row,
     stamp_track,
 )
@@ -331,7 +332,7 @@ def _album_lookup_with_db(artist: str, album: str, albums: list, db) -> dict:
             scope_album=album,
         )
         if local_row:
-            served, ok = present_playable_path(local_row.get("path"), db)
+            served, ok = present_playable_path(indexed_path_for_row(local_row), db)
             if ok and served:
                 local_row = {**local_row, "path": served}
             else:

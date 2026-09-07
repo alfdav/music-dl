@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-07 — Identity rewrite skipped album-lookup persist-heal
+
+**What happened:** After rebasing #182 onto merged #180, `test_album_lookup_persists_artist_album_layout_heal` returned the dest path but left `scanned` on the vanished `Artist - Album` folder.
+
+**Root cause:** `match_local_row` → `with_identity_path` already rewrites `path` via `resolve_live_library_path`. `present_playable_path(dest, db)` then `db.get(dest)` misses and serves the file without `migrate_path`. Persist only runs when the helper sees the scanned key.
+
+**Prevention:** Keep `indexed_path` on identity-rewritten rows. Pass `indexed_path_for_row` into `present_playable_path`. Do not present-heal the already-rewritten dest.
+
 ## 2026-09-07 — VA album pool fallback returned unfiltered exact rows
 
 **What happened:** Bugbot on PR #180 after the #179 rebase: `tracks_for_album_identity` ran `filter_album_rows`, then `if exact: return exact` when the filter was empty. VA `album_tracks` is title-only (`WHERE album = ?`), so another artist's same-named album re-entered and album-scoped ISRC could stamp the wrong release.

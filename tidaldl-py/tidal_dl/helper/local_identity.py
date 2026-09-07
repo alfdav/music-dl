@@ -118,8 +118,19 @@ def with_identity_path(row: Mapping[str, Any]) -> dict | None:
     if not live:
         return None
     stamped = dict(row)
+    indexed = str(row.get("indexed_path") or row.get("path") or "")
+    if indexed:
+        stamped["indexed_path"] = indexed
     stamped["path"] = live
     return stamped
+
+
+def indexed_path_for_row(row: Mapping[str, Any] | None) -> str | None:
+    """Scanned-key path for persist-heal. Identity may have already rewritten ``path``."""
+    if not row:
+        return None
+    indexed = str(row.get("indexed_path") or row.get("path") or "").strip()
+    return indexed or None
 
 
 def artist_credit_queries(artist: str) -> list[str]:
