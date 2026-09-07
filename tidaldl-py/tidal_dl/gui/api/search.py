@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Query
@@ -22,15 +21,9 @@ def _get_library_db():
 
 def _live_library_row(db: Any, isrc: str) -> dict | None:
     """Prefer a live library file. Never rank a `#recycle` / trash path first."""
-    if not isrc:
-        return None
-    for row in db.tracks_by_isrc(isrc):
-        path = row.get("path") or ""
-        if path_has_skipped_scan_dir(path):
-            continue
-        if Path(path).is_file():
-            return row
-    return None
+    from tidal_dl.helper.recording_identity import playable_library_row_for_isrc
+
+    return playable_library_row_for_isrc(db, isrc)
 
 
 def get_tidal():

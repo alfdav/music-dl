@@ -593,7 +593,7 @@ def test_worker_upgrade_renames_replacement_to_original_path_after_cleanup(tmp_p
 
     db = LibraryDB(tmp_path / "library.db")
     db.open()
-    for path in (old_path, duplicate_path):
+    for path in (old_path, duplicate_path, replacement_path):
         db.record(
             str(path),
             status="tagged",
@@ -601,7 +601,8 @@ def test_worker_upgrade_renames_replacement_to_original_path_after_cleanup(tmp_p
             artist="Test Artist",
             title="Song",
             album="Album",
-            quality="44100Hz/16bit",
+            quality="96000Hz/24bit" if path == replacement_path else "44100Hz/16bit",
+            duration=193 if path == replacement_path else 181,
             fmt="FLAC",
         )
     db.commit()
@@ -705,6 +706,20 @@ def test_worker_upgrade_renames_replacement_to_original_path_after_cleanup(tmp_p
     assert set(trashed) == {str(old_path), str(duplicate_path)}
     assert stored.status.value == "done"
     assert stored.new_path == str(old_path)
+
+    db = LibraryDB(tmp_path / "library.db")
+    db.open()
+    try:
+        row = db.get(str(old_path))
+        assert row is not None
+        assert row["artist"] == "Test Artist"
+        assert row["title"] == "Song"
+        assert row["album"] == "Album"
+        assert row["quality"] == "96000Hz/24bit"
+        assert int(row["duration"] or 0) == 193
+        assert db.has_live_isrc("US-TST-00-00002")
+    finally:
+        db.close()
 
 
 def test_claim_progress_event_includes_remaining_queue_counts(tmp_path, monkeypatch):

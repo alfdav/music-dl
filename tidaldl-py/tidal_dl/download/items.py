@@ -3,6 +3,11 @@
 from tidal_dl.download._common import *  # noqa: F403
 from tidal_dl.download.registry import register_downloaded_track
 from tidal_dl.helper.path import resolve_library_relative
+from tidal_dl.helper.recording_identity import (
+    adopt_original_name,
+    collapse_folder_identity,
+    live_identity_paths,
+)
 
 
 class ItemMixin:
@@ -65,6 +70,14 @@ class ItemMixin:
         # Handle copy override: copy source file directly to destination.
         if duplicate_action_override == "copy" and isinstance(media, Track):
             isrc = getattr(media, "isrc", None)
+            folder_identity = live_identity_paths(
+                isrc=isrc,
+                directory=path_media_dst.parent,
+                db=self._library_db_for_current_thread(),
+                dest_path=path_media_dst,
+            )
+            if folder_identity:
+                return DownloadOutcome.SKIPPED, folder_identity[0]
             src_path_str = self._library_db_for_current_thread().primary_path_for_isrc(isrc) if isrc else None
             if src_path_str and pathlib.Path(src_path_str).is_file():
                 src_ext = pathlib.Path(src_path_str).suffix
@@ -127,8 +140,19 @@ class ItemMixin:
         # Record the ISRC after a successful download so future duplicate checks work.
         if outcome == DownloadOutcome.DOWNLOADED and isinstance(media, Track):
             isrc = getattr(media, "isrc", None)
+            library_db = self._library_db_for_current_thread()
             if isrc and self.settings.data.skip_duplicate_isrc:
-                self._library_db_for_current_thread().register_isrc_path(isrc, path_media_dst, commit=True)
+                library_db.register_isrc_path(isrc, path_media_dst, commit=True)
+            if isrc and path_media_dst:
+                removed = collapse_folder_identity(
+                    library_db,
+                    isrc=isrc,
+                    keep_path=path_media_dst,
+                )
+                path_media_dst = adopt_original_name(
+                    path_media_dst, removed, library_db, isrc=isrc
+                )
+                library_db.commit()
             self._on_successful_track()
             register_downloaded_track(path_media_dst)
 
@@ -302,10 +326,33 @@ class ItemMixin:
         # ISRC-based cross-context dedup: skip if the same recording was already
         # downloaded to *any* path (independent of skip_existing path check).
         # bypass_isrc=True is set for redownload overrides decided in pre-flight.
+        media_isrc = getattr(media, "isrc", None) if isinstance(media, Track) else None
+        folder_identity = live_identity_paths(
+            isrc=media_isrc,
+            directory=path_media_dst.parent,
+            db=self._library_db_for_current_thread() if isinstance(media, Track) else None,
+            dest_path=path_media_dst,
+        )
         if not bypass_isrc and not skip_file and self.settings.data.skip_duplicate_isrc and isinstance(media, Track):
-            media_isrc = getattr(media, "isrc", None)
             if media_isrc and self._library_db_for_current_thread().has_live_isrc(media_isrc):
                 skip_file = True
+            elif folder_identity:
+                skip_file = True
+
+        if (
+            not bypass_isrc
+            and not skip_file
+            and self.skip_existing
+            and folder_identity
+        ):
+            skip_file = True
+
+        if skip_file and folder_identity:
+            dest_match = next(
+                (path for path in folder_identity if path.resolve() == path_media_dst.resolve()),
+                None,
+            )
+            path_media_dst = dest_match or folder_identity[0]
 
         return path_media_dst, file_extension_dummy, skip_file, skip_download
 

@@ -208,32 +208,44 @@ class ScannedMixin:
             return None
         return dict(row)
 
-    def tracks_by_isrc(self, isrc: str) -> list[dict]:
+    def tracks_by_isrc(self, isrc: str, *, include_missing: bool = False) -> list[dict]:
         """Return all scanned rows for one ISRC."""
         assert self._conn
         from tidal_dl.helper.library_scanner import visible_scanned_path_sql
 
+        missing_sql = "" if include_missing else "AND missing_since IS NULL"
         rows = self._conn.execute(
             f"""SELECT * FROM scanned
                 WHERE isrc = ? AND status != 'unreadable'
-                  AND missing_since IS NULL
+                  {missing_sql}
                   AND {visible_scanned_path_sql()}
                 ORDER BY path ASC""",
             (isrc,),
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def primary_live_path_for_isrc(self, isrc: str) -> str | None:
+        """Return a library-playable path for *isrc*, or None.
+
+        Same-folder tag-scan recovery is not enough: search / playlist
+        lookup only resolve indexed live ``tracks_by_isrc`` files. A
+        recovered sibling counts as live only when that same check
+        would accept it.
+        """
+        from tidal_dl.helper.recording_identity import playable_library_row_for_isrc
+
+        row = playable_library_row_for_isrc(self, isrc)
+        return row["path"] if row else None
+
     def has_live_isrc(self, isrc: str) -> bool:
-        if not isrc:
-            return False
-        for row in self.tracks_by_isrc(isrc):
-            if pathlib.Path(row["path"]).is_file():
-                return True
-        return False
+        return self.primary_live_path_for_isrc(isrc) is not None
 
     def primary_path_for_isrc(self, isrc: str) -> str | None:
         if not isrc:
             return None
+        live = self.primary_live_path_for_isrc(isrc)
+        if live:
+            return live
         fallback: str | None = None
         for row in self.tracks_by_isrc(isrc):
             path = row["path"]

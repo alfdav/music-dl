@@ -6,7 +6,6 @@ import platform
 import re
 import subprocess
 import time
-from pathlib import Path
 from typing import Any
 
 from tidal_dl.helper.library_db import LibraryDB
@@ -51,43 +50,20 @@ def trash_file(path: str) -> None:
 
 
 def cleanup_replaced_track_files(
-    db: LibraryDB, *, old_path: str, new_path: str
+    db: LibraryDB, *, old_path: str, new_path: str, isrc: str | None = None
 ) -> list[str]:
-    removed: list[str] = []
-    seen: set[str] = set()
-    new_path = str(new_path)
-
-    def queue(path: str | None) -> None:
-        if not path or path == new_path or path in seen:
-            return
-        seen.add(path)
-        removed.append(path)
+    from tidal_dl.helper.recording_identity import collapse_folder_identity
 
     old_row = db.get(old_path) if old_path else None
-    queue(old_path)
-
-    isrc = old_row.get("isrc") if old_row else None
-    old_album = old_row.get("album") if old_row else None
-    old_dir = str(Path(old_path).parent) if old_path else None
-    if isrc:
-        for row in db.tracks_by_isrc(isrc):
-            candidate = row.get("path")
-            if not candidate:
-                continue
-            same_album = old_album and row.get("album") == old_album
-            same_dir = old_dir and str(Path(candidate).parent) == old_dir
-            if same_album and same_dir:
-                queue(candidate)
-
-    stale_rows = [path for path in removed if db.get(path)]
-    for stale_path in removed:
-        trash_file(stale_path)
-    if stale_rows:
-        with db.write_transaction():
-            for path in stale_rows:
-                db.remove(path)
-
-    return removed
+    resolved_isrc = isrc or (old_row.get("isrc") if old_row else None)
+    extra = [old_path] if old_path else []
+    return collapse_folder_identity(
+        db,
+        isrc=resolved_isrc,
+        keep_path=new_path,
+        extra_paths=extra,
+        trash=trash_file,
+    )
 
 
 def resolve_tidal_album(

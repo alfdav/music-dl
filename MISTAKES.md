@@ -1,5 +1,37 @@
 # Mistakes
 
+## 2026-09-07 — Post-migrate ISRC re-register wiped row metadata
+
+**What happened:** Bugbot on PR #179 after the adopt/index fix: `_index_adopted_path` called `register_isrc_path` after a successful `migrate_path`, and `item()` did it again on the final path. `record()` conflict-wrote `artist`/`title`/`album`/`quality`/`duration` to null. Upgrade jobs then `commit`ted those stubs after `register_downloaded_track`.
+
+**Root cause:** `register_isrc_path` is a stub upsert, not a migrate. Re-registering a path that already has a migrated complete row destroys metadata.
+
+**Prevention:** After a successful `migrate_path`, do not `register_isrc_path` that same path. Re-register only when migrate failed or there was no keep-row. Assert adopted rows keep artist/title/album/quality/duration.
+
+## 2026-09-07 — Adopt/rename dropped the live ISRC index row
+
+**What happened:** Bugbot on PR #179: after a replace, `adopt_original_name` renamed the kept file onto the freed original name and `db.remove`d the keep path. Collapse had already deleted the original's row. `has_live_isrc` / search `is_local` stayed false even though the file was on disk.
+
+**Root cause:** The only remaining index write was best-effort `register_downloaded_track`, which needs readable tags and a separate DB connection. Adopt deleted the keep row without migrating it to the final path.
+
+**Prevention:** After adopt/rename, migrate or `register_isrc_path` the final on-disk path. Do not rely on tag registration for live-ISRC. Cover collapse+adopt and `item()` with `register_downloaded_track` patched out in `test_recording_identity.py`.
+
+## 2026-09-07 — Live ISRC recovery treated unplayable siblings as local
+
+**What happened:** Bugbot on PR #179: `has_live_isrc` returned true for a tag-scan sibling under a dead path. Download skip / bot `is_local` then blocked even when search could not resolve a playable indexed library path.
+
+**Root cause:** Recovery and library lookup used different "live" gates. Tag-scan siblings counted as present for skip, but search only accepted an indexed `tracks_by_isrc` row whose file exists and is not under a skipped scan dir.
+
+**Prevention:** One playability helper (`playable_library_row_for_isrc`) for `has_live_isrc`, download skip, and search. A recovered sibling is live only when library lookup can play it. Cover dead-path + unindexed sibling vs indexed playable sibling in `test_recording_identity.py`.
+
+## 2026-09-07 — Identity skip tests used an unresolved album template
+
+**What happened:** First RED run of the upgrade-twin tests asserted against `library/_/{album_title}/Opening.flac`. `{album_artist}` / `{album_title}` never expanded on the Track mock.
+
+**Root cause:** The fixture treated `format_path_media` as a string format. Unresolved tokens are left in the path, so skip/redownload never saw the numbered CD-rip sibling in the same album folder.
+
+**Prevention:** Same-folder identity tests must write `01 - Title.flac` and the template dest in one directory (`{track_title}` → `Title.flac`). Give the Track mock album/artist only when the template actually needs those tokens.
+
 ## 2026-09-04 — Rust Tauri plugin bump left JS packages behind
 
 **What happened:** After PR #172, edge-desktop aborted on macOS, Windows, and Linux before compile: `tauri-plugin-updater (v2.11.0) : @tauri-apps/plugin-updater (v2.10.1)`.
