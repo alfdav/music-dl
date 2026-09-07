@@ -715,6 +715,10 @@ describe('track source decisions', () => {
     expect(viewsSource).toContain("className: 'source-tag ' + (track.is_local ? 'local-tag' : 'tidal-tag')");
     expect(viewsSource).toContain("if (track.format) return track.format.toUpperCase();\n  return '';");
   });
+
+  test('hides the track-row download button when the file is already in the library', () => {
+    expect(viewsSource).toContain('if (!track.is_local && !(track.local_path || track.path))');
+  });
 });
 
 describe('recent history view decisions', () => {

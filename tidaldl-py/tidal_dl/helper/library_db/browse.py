@@ -1,6 +1,6 @@
 """Album and artist browsing queries."""
 
-from tidal_dl.helper.library_db._common import *  # noqa: F403
+from tidal_dl.helper.library_db._common import *
 from tidal_dl.helper.library_scanner import visible_scanned_path_sql
 
 
@@ -213,6 +213,53 @@ class BrowseMixin:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def tracks_for_album_artist(self, artist: str) -> list[dict]:
+        """Rows tagged with this album artist, including guest-credit track artists."""
+        assert self._conn
+        if not artist:
+            return []
+        rows = self._conn.execute(
+            f"""SELECT * FROM scanned
+               WHERE status != 'unreadable' AND missing_since IS NULL
+                 AND {visible_scanned_path_sql()}
+                 AND album_artist = ? COLLATE NOCASE""",
+            (artist,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def tracks_for_leftover_album_tags(self, artist: str, album: str) -> list[dict]:
+        """Leftover ``Artist - Album`` / codec-bracket album tags for one release."""
+        assert self._conn
+        if not album:
+            return []
+        artist = (artist or "").strip()
+        various = artist.casefold() == "various artists"
+        clauses = ["album = ?"]
+        params: list = [album]
+        if artist:
+            clauses.append("album LIKE ?")
+            params.append(f"{artist} - {album}%")
+            if not various:
+                # Any leftover ``Someone - Album`` prefix; filter_album_rows
+                # still requires host artist / album_artist.
+                clauses.append("album LIKE ?")
+                params.append(f"% - {album}%")
+            # Bare ``Album [FLAC]`` must stay artist-scoped. An unscoped LIKE
+            # lets another artist's leftover title enter a VA compilation.
+            clauses.append(
+                "(album LIKE ? AND (artist = ? COLLATE NOCASE "
+                "OR album_artist = ? COLLATE NOCASE))"
+            )
+            params.extend([f"{album} [%", artist, artist])
+        rows = self._conn.execute(
+            f"""SELECT * FROM scanned
+               WHERE status != 'unreadable' AND missing_since IS NULL
+                 AND {visible_scanned_path_sql()}
+                 AND ({' OR '.join(clauses)})""",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def tracks_for_release(self, release_id: str) -> list[dict]:
         """Return readable rows already stamped with a grouped release id."""
         assert self._conn
@@ -312,3 +359,71 @@ class BrowseMixin:
 
         result.sort(key=lambda t: t.get("path", ""))
         return result
+
+    def tracks_for_identity(
+        self,
+        *,
+        isrc: str = "",
+        title: str = "",
+        artist: str = "",
+        album: str = "",
+    ) -> list[dict]:
+        """Bounded candidate set for catalog→library identity (not a full-library walk)."""
+        seen: set[str] = set()
+        rows: list[dict] = []
+
+        def add(found: list[dict]) -> None:
+            for row in found:
+                path = row.get("path") or ""
+                if not path or path in seen:
+                    continue
+                seen.add(path)
+                rows.append(row)
+
+        if isrc:
+            add(self.tracks_by_isrc(isrc))
+        if artist:
+            from tidal_dl.helper.local_identity import artist_credit_queries
+
+            for credit in artist_credit_queries(artist):
+                add(self.tracks_for_artist(credit))
+        if album:
+            add(self.tracks_for_albums([album]))
+        if title and not rows:
+            assert self._conn
+            from tidal_dl.helper.library_db.utils import fold_search_text
+
+            folded = fold_search_text(title)
+            if folded:
+                add([
+                    dict(row)
+                    for row in self._conn.execute(
+                        f"""SELECT * FROM scanned
+                           WHERE status != 'unreadable' AND missing_since IS NULL
+                             AND {visible_scanned_path_sql()}
+                             AND fold_search(title) LIKE ?""",
+                        (f"%{folded}%",),
+                    ).fetchall()
+                ])
+        return rows
+
+    def tracks_for_album_identity(self, artist: str, album: str) -> list[dict]:
+        """Album rows by identity, not an exact album-tag string."""
+        from tidal_dl.helper.local_identity import filter_album_rows
+
+        exact = self.album_tracks(artist, album)
+        pool = list(exact)
+        if artist and artist != "Various Artists":
+            pool.extend(self.tracks_for_artist(artist))
+        # Guest credits are tagged with the host album_artist, often under a
+        # leftover Artist - Album title that misses exact tracks_for_albums.
+        if artist:
+            pool.extend(self.tracks_for_album_artist(artist))
+        pool.extend(self.tracks_for_albums([album]) or [])
+        pool.extend(self.tracks_for_leftover_album_tags(artist, album))
+        matched = filter_album_rows(pool, artist, album)
+        if matched:
+            return matched
+        if artist == "Various Artists":
+            return filter_album_rows(self.tracks_for_albums([album]) or self.all_tracks(), artist, album)
+        return []

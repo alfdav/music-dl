@@ -1,5 +1,21 @@
 # Mistakes
 
+## 2026-09-07 — VA album pool fallback returned unfiltered exact rows
+
+**What happened:** Bugbot on PR #180 after the #179 rebase: `tracks_for_album_identity` ran `filter_album_rows`, then `if exact: return exact` when the filter was empty. VA `album_tracks` is title-only (`WHERE album = ?`), so another artist's same-named album re-entered and album-scoped ISRC could stamp the wrong release.
+
+**Root cause:** The leftover-codec VA test used `Harbor Radio [FLAC]`, which never populated `exact`. The fallback treated "any exact album-tag rows" as a safe last resort. For VA that set is not artist-scoped.
+
+**Prevention:** If `filter_album_rows` rejects the pool, return `[]` or a still-filtered VA fallback. Never return unfiltered `exact`. Cover an exact album-tag foreign file (`Harbor Radio` + `album_artist=Juniper Vale`) in `test_local_identity.py`.
+
+## 2026-09-07 — Featured-artist files missed the identity candidate pool
+
+**What happened:** Bugbot on PR #180: `tracks_for_identity` and `candidate_rows_for_track` queried only the first comma-separated artist, then skipped the album query once any rows existed. A live file tagged as a later featured artist never entered the pool.
+
+**Root cause:** The first credit's rows were treated as "the" candidate set. Featured guests are often tagged under their own artist, not the host.
+
+**Prevention:** Query every comma-separated credit. Always add the album query. Keep title LIKE bounded (`if title and not rows`). Cover a catalog `Host, Guest` credit whose file is tagged only as Guest.
+
 ## 2026-09-07 — Rebase onto #179 dropped one of two search live-row gates
 
 **What happened:** After PR #179 merged, rebasing #180 and #182 onto master conflicted in `search.py` `_live_library_row`. Taking only master would drop identity/heal. Taking only the PR would drop `playable_library_row_for_isrc`.
@@ -71,6 +87,70 @@
 **Root cause:** Pacing lived on `DownloadCore`, not `StreamMixin`. Keyword args are not swallowed by `*_args`.
 
 **Prevention:** Call pacing through a StreamMixin helper that falls back to the shared pacer. Pass new `item()` → mixin arguments positionally so existing `*_args` test doubles keep working.
+
+## 2026-09-07 — Leftover Album [FLAC] tags ignored artist scope on VA compilations
+
+**What happened:** Bugbot on PR #180: `tracks_for_leftover_album_tags` always added an unscoped `album LIKE '{album} [%'` clause. `filter_album_rows` then treated codec-stripped titles as the same release and, for Various Artists, skipped the artist check. Another artist's leftover `Greatest Hits [FLAC]` could stamp `is_local` on a VA compilation.
+
+**Root cause:** Leftover codec-bracket discovery was title-only. VA guest-credit matching correctly skips track-artist equality, so an unscoped leftover LIKE has no second gate.
+
+**Prevention:** Scope leftover `Album [codec]` rows to artist/album_artist. Do not use any-artist `% - Album%` leftovers on VA. `filter_album_rows` rejects leftover codec titles from a solo album_artist on VA lookups. Cover the foreign leftover VA case in `test_local_identity.py`.
+
+## 2026-09-07 — Playlist stamp leaked `_catalog_quality`
+
+**What happened:** Bugbot on PR #180: `stamp_track` writes an internal `_catalog_quality` stash. Search and album APIs call `finish_stamp`; playlist serialization did not. When bounded candidates missed and `all_tracks` fallback hit, the playlist JSON included `_catalog_quality`.
+
+**Root cause:** The stash is a restamp helper, not an API field. Every surface that stamps must finish.
+
+**Prevention:** Playlist track serialization calls `finish_stamp`. Cover the all_tracks fallback in `test_gui_playlist_local_preference.py`.
+
+## 2026-09-07 — Feat strip required the credit to be the last parenthetical
+
+**What happened:** Bugbot on PR #180: `_FEAT_MARKER` only stripped feat/ft/with when it was the last parenthetical. After dropping `base_title` fallback, `Title (feat. X) [Explicit]` and `Title (feat. X) (Bonus Track)` no longer shared a variant with a live file tagged `Title`.
+
+**Root cause:** Version-preserving titles still need leftover metadata suffixes (explicit/clean/bonus) and mid-title feat credits stripped. Those are the same recording; remix/live/radio-edit are not.
+
+**Prevention:** Strip feat/ft/with anywhere, then leftover explicit/clean/bonus suffixes. Keep remix/live/radio-edit. Cover both suffix shapes in `test_local_identity.py`.
+
+## 2026-09-07 — Loose titles stamped remix/live/radio-edit onto the original
+
+**What happened:** Bugbot on PR #180: title identity used `base_title`, which strips every trailing parenthetical. Remix, live, and radio-edit rows shared a key with the original. `_pick_identity_row` then preferred the shortest path, so a live file could lose to the studio cut (or the reverse). Download hid and playback used the wrong recording.
+
+**Root cause:** `_title_variants` and `titles_compatible` treated feat-credit robustness as "strip all parentheticals." Version tokens are different recordings. Shortest-path is only a tie-break inside one recording.
+
+**Prevention:** Identity titles keep remix/live/radio-edit tokens. Strip only feat/ft/with credits and leftover codec brackets. Prefer a version-preserving title match over shortest path. Cover original vs live/remix/radio-edit (and shortest-path) in `test_local_identity.py`.
+
+## 2026-09-07 — Album restamp left another release's quality fields
+
+**What happened:** Bugbot on PR #180: album-scoped `stamp_track` with no match cleared `is_local` and paths but left `quality` / `format` / `codec` from the catalog-wide `_serialize_track` stamp. Shared-ISRC album rows showed another release's on-disk quality while remaining remote.
+
+**Root cause:** `stamp_track(None)` only dropped locality and paths. Local media fields are written by the same function and must be undone together. Catalog quality has to be restored from the Tidal track, not from the leftover on-disk stamp.
+
+**Prevention:** On a miss, clear `format` / `codec` and restore catalog `quality`. Do not re-stash an already-local quality as catalog. Cover the restamp-miss unit and `GET /albums/{id}/tracks` shared-ISRC case in `test_local_identity.py`.
+
+## 2026-09-07 — Guest leftover Artist - Album tags missed the album pool
+
+**What happened:** Bugbot on PR #180: `tracks_for_album_identity` only found guest credits through an exact `tracks_for_albums` title. Leftover `Artist - Album` tags missed that query, and `tracks_for_artist` uses the host artist, so `filter_album_rows` never saw the `album_artist` row. Album pages still showed Download for those live files.
+
+**Root cause:** Discovery was exact album-tag plus host track-artist. Guest leftover rows are keyed by `album_artist` and a leftover album string. `filter_album_rows` already keeps those once they are in the pool.
+
+**Prevention:** Also collect `album_artist` rows and leftover `Artist - Album` / codec-bracket album tags, then let `filter_album_rows` keep the matching release. Cover a guest leftover tag in `test_local_identity.py`.
+
+## 2026-09-07 — Album detail skipped album-scoped restamp
+
+**What happened:** Bugbot on PR #180: `GET /albums/{id}/tracks` stamped `is_local` from catalog-wide ISRC / title+artist via `_serialize_track`. A live file from another release hid Download on this album page.
+
+**Root cause:** `album_lookup` drops that catalog-wide stamp and restamps with `match_local_row(..., album_scoped=True)`. The album-detail endpoint never did.
+
+**Prevention:** Apply the same album-scoped restamp on `album_tracks`. Cover shared-ISRC and title+artist cross-release cases in `test_local_identity.py` against `GET /albums/{id}/tracks`, not only `album_lookup`.
+
+## 2026-09-07 — Album scope_artist replaced track artist and dropped compilations
+
+**What happened:** Bugbot on PR #180: `match_local_row` overwrote the catalog track artist with album `scope_artist`. Various Artists / guest-credit files missed live matches when ISRC did not match.
+
+**Root cause:** Album lookup passed the album artist into title matching. Title+artist compatibility then required the file's track artist to match the album artist, which compilations and guest credits do not.
+
+**Prevention:** Use `scope_artist` only to narrow the release. Title matching uses the catalog track artist. Keep guest rows via `album_artist`. Cover VA / guest / other-album reject cases in `test_local_identity.py`.
 
 ## 2026-09-04 — Rust Tauri plugin bump left JS packages behind
 

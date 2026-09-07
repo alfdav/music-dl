@@ -157,6 +157,54 @@ def test_playlist_tracks_fall_back_to_stream_when_no_local_match(monkeypatch, cl
 
     assert data["tracks"][0]["is_local"] is False
     assert data["tracks"][0].get("local_path") in (None, "")
+    assert "_catalog_quality" not in data["tracks"][0]
+
+
+def test_playlist_fallback_stamp_does_not_leak_catalog_quality_stash(
+    monkeypatch, clear_singletons, tmp_path,
+):
+    """Playlist all_tracks fallback must finish_stamp so _catalog_quality stays internal."""
+    from tidal_dl.gui.api import playlists as playlists_api
+
+    live = tmp_path / "static.flac"
+    live.touch()
+    fake_track = _fake_track(isrc="", name="Static", artist="Juniper Vale", album="Safe Room")
+    fake_session = SimpleNamespace(
+        check_login=lambda: True,
+        playlist=lambda playlist_id: SimpleNamespace(tracks=lambda: [fake_track]),
+    )
+    monkeypatch.setattr(
+        playlists_api,
+        "get_tidal",
+        lambda: SimpleNamespace(
+            session=fake_session,
+            data=SimpleNamespace(access_token="a", refresh_token="r"),
+            _ensure_token_fresh=lambda refresh_window_sec=300: True,
+        ),
+    )
+    _patch_playlist_library_db(
+        monkeypatch,
+        playlists_api,
+        _FakePlaylistDB(
+            {},
+            all_rows=[{
+                "path": str(live),
+                "artist": "Juniper Vale",
+                "title": "Static",
+                "album": "Safe Room",
+                "quality": "FLAC",
+                "format": "FLAC",
+                "codec": "flac",
+            }],
+        ),
+    )
+
+    playlists_api._playlist_tracks_cache.clear()
+    data = playlists_api.playlist_tracks("pl-fallback-stash")
+
+    assert data["tracks"][0]["is_local"] is True
+    assert data["tracks"][0]["local_path"] == str(live)
+    assert "_catalog_quality" not in data["tracks"][0]
 
 
 def test_playlist_sync_uses_same_local_match_logic_as_playlist_view(monkeypatch, clear_singletons):
