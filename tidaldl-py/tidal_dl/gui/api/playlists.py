@@ -111,7 +111,7 @@ def _serialize_playlist_tracks(session, playlist_id: str) -> list[dict]:
             data = _serialize_track(track)
             local_row = _best_local_row(data, db, all_tracks, fallback_index=fallback_index)
             data["is_local"] = False
-            data["playable"] = False
+            data.pop("playable", None)
             data.pop("local_path", None)
             data.pop("path", None)
             if local_row:
@@ -121,8 +121,6 @@ def _serialize_playlist_tracks(session, playlist_id: str) -> list[dict]:
                 else:
                     local_row = None
             finish_stamp(stamp_track(data, local_row))
-            if data.get("is_local"):
-                data["playable"] = True
             serialized.append(data)
     finally:
         db.close()

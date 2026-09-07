@@ -300,6 +300,10 @@ def album_lookup(
         # Drop the catalog-wide ISRC stamp from _serialize_track, then restamp
         # from this release's library rows so a shared ISRC cannot steal a file
         # from another album. Title+artist still win when ISRC is missing.
+        data["is_local"] = False
+        data.pop("playable", None)
+        data.pop("local_path", None)
+        data.pop("path", None)
         local_row = match_local_row(
             data,
             local_rows,

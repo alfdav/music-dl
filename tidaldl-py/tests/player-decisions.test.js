@@ -52,13 +52,15 @@ function loadSearchRefreshHelper(state, document, doSearch) {
   )(state, document, doSearch);
 }
 
+function loadPlayableLocalPath() {
+  const start = playerSource.indexOf('function _playableLocalPath(');
+  if (start < 0) throw new Error('_playableLocalPath is missing');
+  const end = playerSource.indexOf('\nfunction ', start + 1);
+  return new Function(`${playerSource.slice(start, end)}\nreturn _playableLocalPath;`)();
+}
+
 function _playableLocalPathForTest(track) {
-  if (!track) return null;
-  if (track.playable === false) return null;
-  if (track.missing_since) return null;
-  if (track.local_path) return track.local_path;
-  if (track.is_local) return track.path || null;
-  return null;
+  return loadPlayableLocalPath()(track);
 }
 
 function loadPlayTrack(audio, state) {
@@ -662,6 +664,16 @@ describe('local playback decisions', () => {
 
     expect(deadLocal.src).toBe('');
     expect(deadWithTidalId.src).toBe('/api/playback/stream/42');
+  });
+
+  test('leftover missing_since does not block a playable local file', () => {
+    const playablePath = loadPlayableLocalPath();
+    expect(playablePath({
+      is_local: true,
+      playable: true,
+      missing_since: 1700000000,
+      local_path: '/music/live.flac',
+    })).toBe('/music/live.flac');
   });
 
   test('plays a Tidal item from disk when a local path is stamped', () => {

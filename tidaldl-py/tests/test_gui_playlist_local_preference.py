@@ -80,6 +80,7 @@ def test_tidal_search_stays_remote_without_live_local_isrc(monkeypatch, clear_si
     result = search_api._serialize_track(_fake_track(isrc="ISRC999"))
 
     assert result["is_local"] is False
+    assert "playable" not in result
     assert "local_path" not in result
     assert "path" not in result
     assert "format" not in result
@@ -232,6 +233,7 @@ def test_playlist_tracks_fall_back_to_stream_when_no_local_match(monkeypatch, cl
     data = playlists_api.playlist_tracks("pl-stream")
 
     assert data["tracks"][0]["is_local"] is False
+    assert "playable" not in data["tracks"][0]
     assert data["tracks"][0].get("local_path") in (None, "")
     assert "_catalog_quality" not in data["tracks"][0]
 

@@ -2055,6 +2055,7 @@ function _queueTrackLast(track) {
 
 function trackIsPlayable(track) {
   if (!track) return false;
+  if (track.playable === true) return !!(track.local_path || track.path);
   if (track.playable === false) return false;
   if (track.missing_since) return false;
   if (!track.is_local) return false;
@@ -2064,6 +2065,8 @@ function trackIsPlayable(track) {
 function trackRowUnplayable(track) {
   if (!track) return false;
   if (trackIsPlayable(track)) return false;
+  const claimedLocal = !!(track.is_local || track.local_path || track.path);
+  if (!claimedLocal) return false;
   if (track.playable === false) return true;
   if (track.missing_since) return true;
   if (track.is_local && !(track.local_path || track.path)) return true;

@@ -197,6 +197,7 @@ def recent_plays(limit: int = Query(50, ge=1, le=100)):
         if playable:
             track["path"] = served
             track["local_path"] = served
+            track["missing_since"] = None
             track["cover_url"] = _local_cover_url(served, track.get("art_available"))
         else:
             track["local_path"] = None

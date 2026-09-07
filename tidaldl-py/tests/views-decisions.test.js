@@ -743,8 +743,21 @@ describe('track playability honesty', () => {
     expect(trackIsPlayable({ is_local: true })).toBe(false);
     expect(trackIsPlayable({ is_local: false, id: 91 })).toBe(false);
     expect(trackRowUnplayable({ is_local: false, id: 91 })).toBe(false);
+    expect(trackRowUnplayable({ is_local: false, playable: false, id: 91 })).toBe(false);
     expect(trackRowUnplayable({ playable: false, path: '/music/dead.flac' })).toBe(true);
     expect(trackRowUnplayable({ is_local: true, missing_since: 1700000000, local_path: '/music/dead.flac' })).toBe(true);
+    expect(trackIsPlayable({
+      is_local: true,
+      playable: true,
+      missing_since: 1700000000,
+      local_path: '/music/live.flac',
+    })).toBe(true);
+    expect(trackRowUnplayable({
+      is_local: true,
+      playable: true,
+      missing_since: 1700000000,
+      local_path: '/music/live.flac',
+    })).toBe(false);
   });
 
   test('play/shuffle album queues playable local files only', () => {

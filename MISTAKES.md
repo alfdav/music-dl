@@ -16,6 +16,30 @@
 
 **Prevention:** Query every comma-separated credit. Always add the album query. Keep title LIKE bounded (`if title and not rows`). Cover a catalog `Host, Guest` credit whose file is tagged only as Guest.
 
+## 2026-09-07 — Tidal-only playable:false grayed catalog rows
+
+**What happened:** Bugbot on PR #182 after the #179 rebase: search/playlist set `playable` to the same boolean as `is_local`. Tidal-only rows arrived with `playable: false`. `trackRowUnplayable` treated any `playable === false` as a dead local and grayed the row at 45% opacity.
+
+**Root cause:** `playable` was used as both "this local file is readable" and "this catalog row is not local." The honesty test only covered a fixture that omitted `playable`.
+
+**Prevention:** Omit `playable` unless there is a local-file opinion. `trackRowUnplayable` may treat `playable === false` as dead only when the row claimed local (`is_local`, `path`, or `local_path`). Cover `{ is_local: false, playable: false, id }` as still Tidal-playable.
+
+## 2026-09-07 — Leftover missing_since blocked a healed live file
+
+**What happened:** Bugbot on PR #182: `present_playable_path` marked a file playable when it was back on disk, but serializers still emitted leftover `missing_since`. `trackIsPlayable` and `_playableLocalPath` rejected any truthy `missing_since`.
+
+**Root cause:** Heal/present is the live-file opinion. `missing_since` on the index row is stale until reconcile commits a clear. The frontend treated the leftover stamp as stronger than `playable: true`.
+
+**Prevention:** If playable, emit `missing_since: None`. If `playable === true`, do not reject on leftover `missing_since`. Cover a live file whose scanned row still has `missing_since`.
+
+## 2026-09-07 — Rebase #182 onto merged #180 dropped one of two products
+
+**What happened:** After PR #180 merged, rebasing #182 onto master conflicted in search/playlist/album serialize. Taking only `stamp_track` would drop `present_playable_path` and playable honesty. Taking only #182 serializers would drop album-scoped identity.
+
+**Root cause:** Both PRs restamp the same API rows. #180 owns identity/`is_local`. #182 owns heal-then-serve and omit-`playable` on Tidal-only.
+
+**Prevention:** Keep both: `playable_library_row_for_isrc` first, then `present_playable_path`, then identity. Heal the matched row, then `stamp_track`. Omit `playable` unless local. Concatenate `MISTAKES.md`. Do not open a new PR.
+
 ## 2026-09-07 — Rebase onto #179 dropped one of two search live-row gates
 
 **What happened:** After PR #179 merged, rebasing #180 and #182 onto master conflicted in `search.py` `_live_library_row`. Taking only master would drop identity/heal. Taking only the PR would drop `playable_library_row_for_isrc`.

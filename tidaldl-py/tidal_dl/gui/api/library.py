@@ -751,7 +751,7 @@ def _db_row_to_track(row: dict) -> dict:
         "playable": playable,
         "local_path": path if playable else None,
         "cover_url": _local_cover_url(path, presented.get("art_available") or row.get("art_available")) if playable else "",
-        "missing_since": presented.get("missing_since") or row.get("missing_since"),
+        "missing_since": None if playable else (presented.get("missing_since") or row.get("missing_since")),
     }
     return payload
 

@@ -100,6 +100,7 @@ function _currentTrackLocalPath(track) {
 
 function _playableLocalPath(track) {
   if (!track) return null;
+  if (track.playable === true) return track.local_path || track.path || null;
   if (track.playable === false) return null;
   if (track.missing_since) return null;
   if (track.local_path) return track.local_path;

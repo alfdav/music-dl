@@ -1715,6 +1715,38 @@ class TestPlayabilityHonesty:
         assert db.get(str(dead))["missing_since"] is not None
         db.close()
 
+    def test_live_file_does_not_emit_leftover_missing_since(self, tmp_path, monkeypatch):
+        import tidal_dl.gui.api.library as library_api
+
+        root = tmp_path / "Music"
+        live = root / "Artist One" / "First Album" / "01 - Song.wav"
+        _write_wav(live, frames=8000)
+        db = _open_db(tmp_path)
+        _seed(
+            db, live, artist="Artist One", title="Song", album="First Album",
+            duration=1, with_identity=False,
+        )
+        db._conn.execute(
+            "UPDATE scanned SET missing_since = ? WHERE path = ?",
+            (1_700_000_000, str(live)),
+        )
+        db.commit()
+        assert db.get(str(live))["missing_since"] is not None
+
+        class FakeSettings:
+            data = SimpleNamespace(download_base_path=str(root), scan_paths="")
+
+        monkeypatch.setattr(library_api, "Settings", FakeSettings)
+        monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
+        monkeypatch.setattr(library_api, "_library_db", lambda: db)
+        monkeypatch.setattr(library_api, "_get_db", lambda: db)
+
+        track = library_api._db_row_to_track(dict(db.get(str(live))))
+        assert track["is_local"] is True
+        assert track["playable"] is True
+        assert track["missing_since"] is None
+        db.close()
+
     def test_library_surfaces_heal_then_serve_nested_layout(self, tmp_path, monkeypatch):
         import tidal_dl.gui.api.library as library_api
 
@@ -1745,6 +1777,7 @@ class TestPlayabilityHonesty:
         assert track["playable"] is True
         assert track["path"] == str(live)
         assert track["local_path"] == str(live)
+        assert track["missing_since"] is None
         assert search["tracks"][0]["is_local"] is True
         assert search["tracks"][0]["playable"] is True
         assert search["tracks"][0]["path"] == str(live)
