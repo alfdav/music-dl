@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-07 — Identity skip tests used an unresolved album template
+
+**What happened:** First RED run of the upgrade-twin tests asserted against `library/_/{album_title}/Opening.flac`. `{album_artist}` / `{album_title}` never expanded on the Track mock.
+
+**Root cause:** The fixture treated `format_path_media` as a string format. Unresolved tokens are left in the path, so skip/redownload never saw the numbered CD-rip sibling in the same album folder.
+
+**Prevention:** Same-folder identity tests must write `01 - Title.flac` and the template dest in one directory (`{track_title}` → `Title.flac`). Give the Track mock album/artist only when the template actually needs those tokens.
+
 ## 2026-09-04 — Rust Tauri plugin bump left JS packages behind
 
 **What happened:** After PR #172, edge-desktop aborted on macOS, Windows, and Linux before compile: `tauri-plugin-updater (v2.11.0) : @tauri-apps/plugin-updater (v2.10.1)`.

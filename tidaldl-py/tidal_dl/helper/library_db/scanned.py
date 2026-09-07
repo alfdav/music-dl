@@ -208,32 +208,54 @@ class ScannedMixin:
             return None
         return dict(row)
 
-    def tracks_by_isrc(self, isrc: str) -> list[dict]:
+    def tracks_by_isrc(self, isrc: str, *, include_missing: bool = False) -> list[dict]:
         """Return all scanned rows for one ISRC."""
         assert self._conn
         from tidal_dl.helper.library_scanner import visible_scanned_path_sql
 
+        missing_sql = "" if include_missing else "AND missing_since IS NULL"
         rows = self._conn.execute(
             f"""SELECT * FROM scanned
                 WHERE isrc = ? AND status != 'unreadable'
-                  AND missing_since IS NULL
+                  {missing_sql}
                   AND {visible_scanned_path_sql()}
                 ORDER BY path ASC""",
             (isrc,),
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def has_live_isrc(self, isrc: str) -> bool:
+    def primary_live_path_for_isrc(self, isrc: str) -> str | None:
+        """Return a path that still exists for *isrc*, recovering same-folder twins."""
         if not isrc:
-            return False
-        for row in self.tracks_by_isrc(isrc):
-            if pathlib.Path(row["path"]).is_file():
-                return True
-        return False
+            return None
+        from tidal_dl.helper.recording_identity import live_identity_paths
+
+        parents: list[pathlib.Path] = []
+        seen_parents: set[str] = set()
+        for row in self.tracks_by_isrc(isrc, include_missing=True):
+            path = pathlib.Path(row["path"])
+            if path.is_file():
+                return row["path"]
+            parent = path.parent
+            key = str(parent)
+            if key not in seen_parents:
+                seen_parents.add(key)
+                parents.append(parent)
+        for parent in parents:
+            recovered = live_identity_paths(isrc=isrc, directory=parent, db=self)
+            if recovered:
+                return str(recovered[0])
+        return None
+
+    def has_live_isrc(self, isrc: str) -> bool:
+        return self.primary_live_path_for_isrc(isrc) is not None
 
     def primary_path_for_isrc(self, isrc: str) -> str | None:
         if not isrc:
             return None
+        live = self.primary_live_path_for_isrc(isrc)
+        if live:
+            return live
         fallback: str | None = None
         for row in self.tracks_by_isrc(isrc):
             path = row["path"]

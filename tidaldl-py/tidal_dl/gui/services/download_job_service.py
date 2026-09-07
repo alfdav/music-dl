@@ -779,6 +779,7 @@ class DownloadJobService:
                 db,
                 old_path=old_path,
                 new_path=str(new_path),
+                isrc=row.get("isrc"),
             )
             db.commit()
             new_path = self._rename_replacement_if_possible(old_path, new_path, removed_paths, db)
@@ -854,20 +855,15 @@ class DownloadJobService:
         removed_paths: list[str],
         db: LibraryDB,
     ) -> Path:
+        from tidal_dl.helper.recording_identity import adopt_original_name
+
         replacement = Path(new_path) if not isinstance(new_path, Path) else new_path
-        if not old_path or old_path not in removed_paths or str(replacement) == old_path:
-            return replacement
-
-        original = Path(old_path)
-        if replacement.parent != original.parent or original.exists():
-            return replacement
-
-        try:
-            replacement.rename(original)
-            db.remove(str(replacement))
-            return original
-        except OSError:
-            return replacement
+        return adopt_original_name(
+            replacement,
+            removed_paths,
+            db,
+            preferred=old_path or None,
+        )
 
     def _cover_url(self, track) -> str:
         if not track.album:
