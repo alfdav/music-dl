@@ -331,15 +331,26 @@ def _remember_playback_migrations(migrations: list[tuple[str, str]]) -> None:
 
 def apply_playback_layout_heal(path: str) -> str | None:
     """Rewrite one stale Artist/Artist - Album path if the nested file is live."""
+    from tidal_dl.gui.security import validate_audio_path
     from tidal_dl.helper.library_reconcile import heal_artist_album_layout_path
 
-    if not _library_row_under_roots(path):
+    stored = _exact_scanned_path(path)
+    if stored is None:
         return None
+    allowed = [str(directory) for directory in _scan_directories()]
+    if _lexically_under_roots(stored, allowed) is None:
+        return None
+
+    def exists(candidate: str) -> bool:
+        if _lexically_under_roots(candidate, allowed) is None:
+            return False
+        return validate_audio_path(candidate, allowed) is not None
+
     try:
         db = _get_db()
     except Exception:  # noqa: BLE001
         return None
-    healed = heal_artist_album_layout_path(db, path)
+    healed = heal_artist_album_layout_path(db, stored, exists=exists)
     if not healed:
         return None
     _remember_playback_migrations([(path, healed)])

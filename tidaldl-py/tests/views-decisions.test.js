@@ -709,11 +709,16 @@ describe('Tidal connection reset decisions', () => {
   });
 });
 
-function loadTrackIsPlayable() {
-  const start = viewsSource.indexOf('function trackIsPlayable(');
-  if (start < 0) throw new Error('trackIsPlayable is missing');
-  const end = viewsSource.indexOf('\nfunction ', start + 1);
-  return new Function(`${viewsSource.slice(start, end)}\nreturn trackIsPlayable;`)();
+function loadTrackRowHelpers() {
+  const playableStart = viewsSource.indexOf('function trackIsPlayable(');
+  if (playableStart < 0) throw new Error('trackIsPlayable is missing');
+  const unplayableStart = viewsSource.indexOf('function trackRowUnplayable(');
+  if (unplayableStart < 0) throw new Error('trackRowUnplayable is missing');
+  const playableEnd = viewsSource.indexOf('\nfunction ', playableStart + 1);
+  const unplayableEnd = viewsSource.indexOf('\nfunction ', unplayableStart + 1);
+  return new Function(
+    `${viewsSource.slice(playableStart, playableEnd)}\n${viewsSource.slice(unplayableStart, unplayableEnd)}\nreturn { trackIsPlayable, trackRowUnplayable };`,
+  )();
 }
 
 describe('track source decisions', () => {
@@ -730,13 +735,16 @@ describe('track source decisions', () => {
 
 describe('track playability honesty', () => {
   test('treats dead local index rows as unplayable', () => {
-    const trackIsPlayable = loadTrackIsPlayable();
+    const { trackIsPlayable, trackRowUnplayable } = loadTrackRowHelpers();
     expect(trackIsPlayable({ is_local: true, local_path: '/music/live.flac' })).toBe(true);
     expect(trackIsPlayable({ is_local: true, playable: true, path: '/music/live.flac' })).toBe(true);
     expect(trackIsPlayable({ is_local: true, playable: false, local_path: '/music/dead.flac' })).toBe(false);
     expect(trackIsPlayable({ is_local: true, missing_since: 1700000000, local_path: '/music/dead.flac' })).toBe(false);
     expect(trackIsPlayable({ is_local: true })).toBe(false);
     expect(trackIsPlayable({ is_local: false, id: 91 })).toBe(false);
+    expect(trackRowUnplayable({ is_local: false, id: 91 })).toBe(false);
+    expect(trackRowUnplayable({ playable: false, path: '/music/dead.flac' })).toBe(true);
+    expect(trackRowUnplayable({ is_local: true, missing_since: 1700000000, local_path: '/music/dead.flac' })).toBe(true);
   });
 
   test('play/shuffle album queues playable local files only', () => {
@@ -745,7 +753,7 @@ describe('track playability honesty', () => {
   });
 
   test('grays unplayable rows and skips local play', () => {
-    expect(viewsSource).toContain("className: 'track' + (isPlaying ? ' playing' : '') + (trackIsPlayable(track) ? '' : ' unplayable')");
+    expect(viewsSource).toContain("className: 'track' + (isPlaying ? ' playing' : '') + (trackRowUnplayable(track) ? ' unplayable' : '')");
     expect(viewsSource).toContain('if (!trackIsPlayable(track) && !track.id) return;');
   });
 });

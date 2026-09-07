@@ -2061,10 +2061,19 @@ function trackIsPlayable(track) {
   return !!(track.local_path || track.path);
 }
 
+function trackRowUnplayable(track) {
+  if (!track) return false;
+  if (trackIsPlayable(track)) return false;
+  if (track.playable === false) return true;
+  if (track.missing_since) return true;
+  if (track.is_local && !(track.local_path || track.path)) return true;
+  return false;
+}
+
 function renderTrackRow(track, num, allTracks) {
   const current = state.queue[state.queueIndex];
   const isPlaying = current && _trackKey(current) === _trackKey(track) && _trackKey(track) !== '' && state.playing;
-  const row = h('div', { className: 'track' + (isPlaying ? ' playing' : '') + (trackIsPlayable(track) ? '' : ' unplayable'), 'data-track-id': _trackKey(track) });
+  const row = h('div', { className: 'track' + (isPlaying ? ' playing' : '') + (trackRowUnplayable(track) ? ' unplayable' : ''), 'data-track-id': _trackKey(track) });
 
   // Number / equalizer
   const numCell = h('div', { className: 'track-num', 'data-num': String(num) });

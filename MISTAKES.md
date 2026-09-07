@@ -184,6 +184,22 @@
 
 **Prevention:** `_playableLocalPath` requires `local_path` or (`is_local` and `path`), and rejects `playable === false` / `missing_since`. Classify audio errors as local when `is_local` or `audio.src` is `/playback/local`.
 
+## 2026-09-07 — Playlist kept another album's live ISRC path
+
+**What happened:** `_serialize_track` stamps `path` from any live ISRC hit. Playlist then preferred an album-scoped dead row, set `is_local` false, and left the other album's path on the payload.
+
+**Root cause:** Honesty only wrote paths on success and never cleared the ISRC stamp.
+
+**Prevention:** Pop `path` / `local_path` after `_serialize_track`. Restamp only when the album-scoped row is a readable file.
+
+## 2026-09-07 — Tidal rows used the dead-local unplayable style
+
+**What happened:** `.unplayable` was `!trackIsPlayable`. Tidal search/album rows are not local, so they rendered at 45% opacity while still streaming.
+
+**Root cause:** Local-file playability was reused as a row-disabled flag.
+
+**Prevention:** `trackRowUnplayable` is `playable === false`, `missing_since`, or a claimed-local row with no path. Tidal-only rows stay full opacity.
+
 ## 2026-09-04 — Rust Tauri plugin bump left JS packages behind
 
 **What happened:** After PR #172, edge-desktop aborted on macOS, Windows, and Linux before compile: `tauri-plugin-updater (v2.11.0) : @tauri-apps/plugin-updater (v2.10.1)`.

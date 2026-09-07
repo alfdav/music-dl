@@ -143,6 +143,55 @@ def test_playlist_tracks_include_local_path_when_isrc_matches(monkeypatch, clear
     assert data["tracks"][0]["local_path"] == str(live)
 
 
+def test_playlist_tracks_do_not_keep_isrc_path_from_another_album(monkeypatch, clear_singletons, tmp_path):
+    from tidal_dl.gui.api import playlists as playlists_api
+
+    other = tmp_path / "Sandy, PAPO" / "Hits" / "Huelepega.flac"
+    other.parent.mkdir(parents=True)
+    other.write_bytes(b"fLaC")
+    dead = tmp_path / "Sandy, PAPO" / "Otra Vez" / "Huelepega.flac"
+    fake_track = _fake_track(name="Huelepega", artist="Sandy, PAPO", album="Otra Vez")
+    fake_session = SimpleNamespace(
+        check_login=lambda: True,
+        playlist=lambda playlist_id: SimpleNamespace(tracks=lambda: [fake_track]),
+    )
+
+    monkeypatch.setattr(playlists_api, "get_tidal", lambda: SimpleNamespace(session=fake_session, data=SimpleNamespace(access_token="a", refresh_token="r"), _ensure_token_fresh=lambda refresh_window_sec=300: True))
+    _patch_playlist_library_db(
+        monkeypatch,
+        playlists_api,
+        _FakePlaylistDB(
+            {
+                "ISRC123": [
+                    {
+                        "path": str(dead),
+                        "artist": "Sandy, PAPO",
+                        "title": "Huelepega",
+                        "album": "Otra Vez",
+                    },
+                    {
+                        "path": str(other),
+                        "artist": "Sandy, PAPO",
+                        "title": "Huelepega",
+                        "album": "Hits",
+                    },
+                ]
+            },
+        ),
+    )
+
+    playlists_api._playlist_tracks_cache.clear()
+    data = playlists_api.playlist_tracks("pl-isrc-leak")
+    track = data["tracks"][0]
+
+    assert track["is_local"] is False
+    assert track.get("playable") is not True
+    assert track.get("path") in (None, "")
+    assert track.get("local_path") in (None, "")
+    assert str(other) not in (track.get("path") or "")
+    assert str(other) not in (track.get("local_path") or "")
+
+
 def test_playlist_tracks_do_not_stamp_local_when_indexed_file_is_missing(monkeypatch, clear_singletons):
     from tidal_dl.gui.api import playlists as playlists_api
 

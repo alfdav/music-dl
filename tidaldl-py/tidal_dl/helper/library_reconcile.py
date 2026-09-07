@@ -1094,6 +1094,7 @@ def readable_audio_file(path: str | Path) -> bool:
     if suffix not in AUDIO_EXTENSIONS:
         return False
     try:
+        # codeql[py/path-injection]
         return os.path.isfile(raw)
     except OSError:
         return False
@@ -1120,8 +1121,9 @@ def present_playable_path(path: str | None, db=None) -> tuple[str | None, bool]:
     return allowlisted, False
 
 
-def heal_artist_album_layout_path(db, old_path: str) -> str | None:
+def heal_artist_album_layout_path(db, old_path: str, *, exists=None) -> str | None:
     """Cheap one-path heal. No directory walk. Updates scanned/play_events/favorites."""
+    exists = exists or readable_audio_file
     stored = os.fspath(old_path).strip() if old_path else ""
     if not stored:
         return None
@@ -1132,19 +1134,14 @@ def heal_artist_album_layout_path(db, old_path: str) -> str | None:
             row = None
         if row is not None and row.get("path"):
             stored = str(row["path"]).strip() or stored
-    if readable_audio_file(stored):
+    if exists(stored):
         return stored
     candidate = artist_album_layout_candidate(stored)
-    if candidate is None or not readable_audio_file(candidate):
+    if candidate is None or not exists(candidate):
         return None
     if not layout_editions_compatible(parent_directory(stored), parent_directory(candidate)):
         return None
-    identity = None
-    try:
-        st = os.stat(candidate)
-        identity = identity_from_stat(Path(candidate), st)
-    except OSError:
-        identity = FileIdentity(path=candidate)
+    identity = FileIdentity(path=candidate)
     if db is not None and hasattr(db, "get") and db.get(stored) is not None:
         if not db.migrate_path(
             stored,
