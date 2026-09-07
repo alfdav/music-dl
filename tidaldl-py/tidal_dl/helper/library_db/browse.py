@@ -1,6 +1,6 @@
 """Album and artist browsing queries."""
 
-from tidal_dl.helper.library_db._common import *  # noqa: F403
+from tidal_dl.helper.library_db._common import *
 from tidal_dl.helper.library_scanner import visible_scanned_path_sql
 
 
@@ -312,3 +312,67 @@ class BrowseMixin:
 
         result.sort(key=lambda t: t.get("path", ""))
         return result
+
+    def tracks_for_identity(
+        self,
+        *,
+        isrc: str = "",
+        title: str = "",
+        artist: str = "",
+        album: str = "",
+    ) -> list[dict]:
+        """Bounded candidate set for catalog→library identity (not a full-library walk)."""
+        seen: set[str] = set()
+        rows: list[dict] = []
+
+        def add(found: list[dict]) -> None:
+            for row in found:
+                path = row.get("path") or ""
+                if not path or path in seen:
+                    continue
+                seen.add(path)
+                rows.append(row)
+
+        if isrc:
+            add(self.tracks_by_isrc(isrc))
+        if artist:
+            add(self.tracks_for_artist(artist))
+            first = artist.split(",")[0].strip()
+            if first and first != artist:
+                add(self.tracks_for_artist(first))
+        if album and not rows:
+            add(self.tracks_for_albums([album]))
+        if title and not rows:
+            assert self._conn
+            from tidal_dl.helper.library_db.utils import fold_search_text
+
+            folded = fold_search_text(title)
+            if folded:
+                add([
+                    dict(row)
+                    for row in self._conn.execute(
+                        f"""SELECT * FROM scanned
+                           WHERE status != 'unreadable' AND missing_since IS NULL
+                             AND {visible_scanned_path_sql()}
+                             AND fold_search(title) LIKE ?""",
+                        (f"%{folded}%",),
+                    ).fetchall()
+                ])
+        return rows
+
+    def tracks_for_album_identity(self, artist: str, album: str) -> list[dict]:
+        """Album rows by identity, not an exact album-tag string."""
+        from tidal_dl.helper.local_identity import filter_album_rows
+
+        exact = self.album_tracks(artist, album)
+        pool = list(exact)
+        if artist and artist != "Various Artists":
+            pool.extend(self.tracks_for_artist(artist))
+        matched = filter_album_rows(pool, artist, album)
+        if matched:
+            return matched
+        if exact:
+            return exact
+        if artist == "Various Artists":
+            return filter_album_rows(self.tracks_for_albums([album]) or self.all_tracks(), artist, album)
+        return []

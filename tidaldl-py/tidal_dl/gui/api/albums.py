@@ -10,7 +10,13 @@ from fastapi import APIRouter, HTTPException, Query
 
 from tidal_dl.config import Tidal
 from tidal_dl.gui.api.search import _serialize_track
+from tidal_dl.helper.album_grouping import base_title
 from tidal_dl.helper.library_db import LibraryDB
+from tidal_dl.helper.local_identity import (
+    filter_album_rows,
+    match_local_row,
+    stamp_track,
+)
 from tidal_dl.helper.path import path_config_base
 
 router = APIRouter()
@@ -80,7 +86,14 @@ def _local_album_rows(artist: str, album: str) -> list[dict]:
     try:
         db = _get_library_db()
         try:
-            return db.album_tracks(artist, album)
+            if hasattr(db, "tracks_for_album_identity"):
+                return db.tracks_for_album_identity(artist, album)
+            rows = db.album_tracks(artist, album)
+            if rows:
+                return rows
+            if hasattr(db, "tracks_for_artist"):
+                return filter_album_rows(db.tracks_for_artist(artist), artist, album)
+            return rows
         finally:
             db.close()
     except Exception:
@@ -89,10 +102,9 @@ def _local_album_rows(artist: str, album: str) -> list[dict]:
 
 
 def _track_title_variants(track: object) -> set[str]:
-    variants = {
-        _normalize(getattr(track, "name", "")),
-        _normalize(getattr(track, "full_name", "")),
-    }
+    names = [getattr(track, "name", ""), getattr(track, "full_name", "")]
+    variants = {_normalize(name) for name in names if name}
+    variants.update(base_title(name) for name in names if name)
     return {value for value in variants if value}
 
 
@@ -159,8 +171,9 @@ def album_lookup(
 
     Each track is annotated with ``is_local`` and ``path`` / ``local_path``
     when this release already has the file. Matching is album-scoped
-    title+artist against the queried library album — never ISRC, which
-    collides across albums.
+    title+artist (and ISRC only inside those rows) against the queried
+    library album, with album-title normalization and layout-move-safe
+    paths. Global ISRC is not used — it collides across albums.
     """
     from tidalapi.album import Album as TidalAlbum
 
@@ -187,22 +200,14 @@ def album_lookup(
     # --- 2. Rank candidates by metadata, then verify with local track overlap ---
     local_rows = _local_album_rows(artist, album)
     local_track_keys = {
-        (
-            title,
-            artist_name,
-        )
+        (title, artist_name)
         for row in local_rows
-        for title in [_normalize(row.get("title") or "")]
+        for title in {
+            _normalize(row.get("title") or ""),
+            base_title(row.get("title") or ""),
+        }
         for artist_name in [_normalize(row.get("artist") or "")]
         if title and artist_name
-    }
-    local_by_title_artist = {
-        (
-            _normalize(row.get("title") or ""),
-            _normalize(row.get("artist") or ""),
-        ): row
-        for row in local_rows
-        if _normalize(row.get("title") or "") and _normalize(row.get("artist") or "")
     }
 
     ranked = sorted(
@@ -262,27 +267,22 @@ def album_lookup(
 
     tidal_tracks = best_tracks
 
-    # --- 5. Serialize with album-scoped is_local (never ISRC) ---
+    # --- 5. Serialize with album-scoped identity (ISRC only inside this release) ---
     serialized = []
     missing_count = 0
     for t in tidal_tracks:
         data = _serialize_track(t)
-        # Override ISRC-based is_local — ISRC is global and causes false positives
-        # across albums (same track on different albums shares an ISRC).
-        # Trust title+artist against this release's library rows so a slightly
-        # different Tidal album string still hides Download and plays the file.
-        data["is_local"] = False
-        data.pop("local_path", None)
-        data.pop("path", None)
-        t_title = _normalize(data.get("name", ""))
-        t_artist = _normalize(data.get("artist", ""))
-        local_row = local_by_title_artist.get((t_title, t_artist)) if t_title and t_artist else None
-        if local_row:
-            data["is_local"] = True
-            path = local_row.get("path") or ""
-            if path:
-                data["local_path"] = path
-                data["path"] = path
+        # Drop the catalog-wide ISRC stamp from _serialize_track, then restamp
+        # from this release's library rows so a shared ISRC cannot steal a file
+        # from another album. Title+artist still win when ISRC is missing.
+        local_row = match_local_row(
+            data,
+            local_rows,
+            album_scoped=True,
+            scope_artist=artist,
+            scope_album=album,
+        )
+        stamp_track(data, local_row)
         if not data["is_local"]:
             missing_count += 1
         serialized.append(data)

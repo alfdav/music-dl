@@ -11,6 +11,13 @@ from tidal_dl.config import Tidal
 from tidal_dl.gui.services.db import get_library_db
 from tidal_dl.gui.tidal_ref import TidalRef, looks_like_web_url, parse_tidal_ref
 from tidal_dl.helper.library_scanner import path_has_skipped_scan_dir
+from tidal_dl.helper.local_identity import (
+    candidate_rows_for_track,
+    identity_path_for_row,
+    match_local_row,
+    stamp_track,
+)
+from tidal_dl.helper.path import resolve_live_library_path
 
 router = APIRouter()
 
@@ -20,10 +27,37 @@ def _get_library_db():
 
 
 def _live_library_row(db: Any, isrc: str) -> dict | None:
-    """Prefer a live library file. Never rank a `#recycle` / trash path first."""
+    """Prefer a live library file. Never rank a `#recycle` / trash path first.
+
+    Twin-file ISRC adopt (#179) and download skip share
+    ``playable_library_row_for_isrc``. A stale index path after a layout
+    move still resolves through identity so search can stamp ``is_local``.
+    """
     from tidal_dl.helper.recording_identity import playable_library_row_for_isrc
 
-    return playable_library_row_for_isrc(db, isrc)
+    if not isrc:
+        return None
+    playable = playable_library_row_for_isrc(db, isrc)
+    if playable:
+        live = resolve_live_library_path(playable.get("path") or "") or identity_path_for_row(
+            playable
+        )
+        if live:
+            stamped = dict(playable)
+            stamped["path"] = live
+            return stamped
+        return playable
+    for row in db.tracks_by_isrc(isrc):
+        path = row.get("path") or ""
+        if path_has_skipped_scan_dir(path):
+            continue
+        live = resolve_live_library_path(path) or identity_path_for_row(row)
+        if not live:
+            continue
+        stamped = dict(row)
+        stamped["path"] = live
+        return stamped
+    return None
 
 
 def get_tidal():
@@ -53,14 +87,18 @@ def _serialize_track(track: Any, isrc_index: Any = None) -> dict:
             pass
 
     isrc = getattr(track, "isrc", "") or ""
-    local_path = None
     local_row = None
+    db = _get_library_db()
     if isrc:
-        db = _get_library_db()
         local_row = _live_library_row(db, isrc)
-        if local_row:
-            local_path = local_row["path"]
-    is_local = bool(local_path)
+    draft = {
+        "name": track.full_name or track.name,
+        "artist": artist_name,
+        "album": album_name,
+        "isrc": isrc,
+    }
+    if local_row is None:
+        local_row = match_local_row(draft, candidate_rows_for_track(db, draft))
 
     tags = getattr(track, "media_metadata_tags", None) or []
     if "HIRES_LOSSLESS" in tags:
@@ -84,17 +122,9 @@ def _serialize_track(track: Any, isrc_index: Any = None) -> dict:
         "duration": track.duration or 0,
         "quality": quality,
         "isrc": isrc,
-        "is_local": is_local,
+        "is_local": False,
     }
-    if local_row:
-        result.update({
-            "local_path": local_path,
-            "path": local_path,
-            "quality": local_row.get("quality") or quality,
-            "format": local_row.get("format") or "",
-            "codec": local_row.get("codec") or "unknown",
-        })
-    return result
+    return stamp_track(result, local_row)
 
 
 def _empty(type_str: str, error: str) -> dict:

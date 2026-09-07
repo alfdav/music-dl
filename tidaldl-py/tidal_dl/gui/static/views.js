@@ -2132,7 +2132,7 @@ function renderTrackRow(track, num, allTracks) {
     className: 'source-tag ' + (track.is_local ? 'local-tag' : 'tidal-tag'),
   }, track.is_local ? 'local' : 'tidal');
   actions.appendChild(sourceTag);
-  if (!track.is_local) {
+  if (!track.is_local && !(track.local_path || track.path)) {
     const btn = h('button', { className: 'dl-btn', title: 'Download' });
     btn.appendChild(svgIcon(ICONS.download));
     btn.addEventListener('click', (e) => {

@@ -634,6 +634,62 @@ def resolve_library_relative(path_base: str | pathlib.Path, relative: str) -> st
     return str(pathlib.PurePosixPath(*dest_dirs, *extra, filename))
 
 
+def resolve_live_library_path(path: str | pathlib.Path | None) -> str | None:
+    """Return a live on-disk path for an indexed library file.
+
+    Accepts the stored index path, NFC/NFD twins, and the leftover
+    ``Artist - Album`` ↔ ``Artist/Album`` layout pair after a folder move
+    (including disc extras and trailing codec brackets).
+    """
+    if not path:
+        return None
+    raw = str(path)
+    nfc = unicodedata.normalize("NFC", raw)
+    seen: set[str] = set()
+    for form in (nfc, unicodedata.normalize("NFD", nfc), raw):
+        if form in seen:
+            continue
+        seen.add(form)
+        candidate = pathlib.Path(form)
+        try:
+            if candidate.is_file():
+                return str(candidate)
+        except OSError:
+            continue
+
+    source = pathlib.Path(raw)
+    parts = list(source.parts)
+    if len(parts) < 2:
+        return None
+    filename = parts[-1]
+    for index in range(len(parts) - 1):
+        dir_parts = parts[index:-1]
+        parsed = _canonicalize_album_dirs(dir_parts)
+        if parsed is None:
+            continue
+        artist, album, extra = parsed
+        root_parts = parts[:index]
+        if not root_parts:
+            continue
+        root = pathlib.Path(*root_parts)
+        dest = root.joinpath(artist, album, *extra, filename)
+        try:
+            if dest.is_file():
+                return str(dest)
+        except OSError:
+            pass
+        leftover = _find_legacy_album_dir(root, artist, album)
+        if leftover is None:
+            continue
+        alt = root.joinpath(*leftover, *extra, filename)
+        try:
+            if alt.is_file():
+                return str(alt)
+        except OSError:
+            continue
+    return None
+
+
 def path_file_sanitize(
     path_file: pathlib.Path,
     adapt: bool = False,
