@@ -16,6 +16,14 @@
 
 **Prevention:** Query every comma-separated credit. Always add the album query. Keep title LIKE bounded (`if title and not rows`). Cover a catalog `Host, Guest` credit whose file is tagged only as Guest.
 
+## 2026-09-07 — Album lookup healed the path but left the index stranded
+
+**What happened:** Bugbot on PR #182: `/albums/lookup` called `present_playable_path` without the library DB. A stale `Artist/Artist - Album` path was rewritten on the response, but `scanned` / `play_events` / favorites stayed on the vanished folder. Playback of the rewritten path found the file on disk and skipped cheap heal, so the old row never migrated.
+
+**Root cause:** Heal persist is `db.migrate_path` inside `heal_artist_album_layout_path`. Without `db`, the helper still returns the candidate path.
+
+**Prevention:** Keep one library handle open for album lookup. Pass it to `present_playable_path`. Cover lookup of a vanished `Artist - Album` folder whose dest file is live.
+
 ## 2026-09-07 — Tidal-only playable:false grayed catalog rows
 
 **What happened:** Bugbot on PR #182 after the #179 rebase: search/playlist set `playable` to the same boolean as `is_local`. Tidal-only rows arrived with `playable: false`. `trackRowUnplayable` treated any `playable === false` as a dead local and grayed the row at 45% opacity.

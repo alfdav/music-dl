@@ -343,3 +343,63 @@ def test_album_lookup_stamps_local_only_when_file_exists(monkeypatch, clear_sing
     assert track["path"] == str(live)
     assert track["local_path"] == str(live)
     assert result["missing_count"] == 0
+
+
+def test_album_lookup_persists_artist_album_layout_heal(monkeypatch, clear_singletons, tmp_path):
+    from tidal_dl.gui.api import albums as albums_api
+    from tidal_dl.helper.library_db import LibraryDB
+
+    old = tmp_path / "Artist One" / "Artist One - First Album" / "01 - Song.flac"
+    live = tmp_path / "Artist One" / "First Album" / "01 - Song.flac"
+    live.parent.mkdir(parents=True)
+    live.write_bytes(b"fLaC")
+    db = LibraryDB(tmp_path / "library.db")
+    db.open()
+    db.record(
+        str(old),
+        status="tagged",
+        artist="Artist One",
+        title="Song",
+        album="First Album",
+        duration=180,
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+        metadata_complete=True,
+    )
+    db.commit()
+    db.close()
+
+    tidal = _album(
+        9,
+        "First Album",
+        "Artist One",
+        [_track("Song", "Artist One", "First Album", 91)],
+    )
+    fake_session = SimpleNamespace(
+        check_login=lambda: True,
+        search=lambda query, models=None, limit=20: {"albums": [tidal]},
+    )
+
+    def _open_library_db():
+        handle = LibraryDB(tmp_path / "library.db")
+        handle.open()
+        return handle
+
+    monkeypatch.setattr(albums_api, "Tidal", lambda: SimpleNamespace(session=fake_session))
+    monkeypatch.setattr(albums_api, "_get_library_db", _open_library_db)
+    monkeypatch.setattr(albums_api, "_serialize_track", _serialize_stub)
+
+    result = albums_api.album_lookup("Artist One", "First Album")
+
+    track = result["tracks"][0]
+    assert track["is_local"] is True
+    assert track["playable"] is True
+    assert track["path"] == str(live)
+    assert track["local_path"] == str(live)
+
+    check = LibraryDB(tmp_path / "library.db")
+    check.open()
+    assert check.get(str(live)) is not None
+    assert check.get(str(old)) is None
+    check.close()

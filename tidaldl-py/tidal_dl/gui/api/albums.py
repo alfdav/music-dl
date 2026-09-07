@@ -24,7 +24,7 @@ router = APIRouter()
 
 
 def _get_library_db() -> LibraryDB:
-    """Open a read-only handle to the library DB for local-match queries."""
+    """Open the library DB for album-scoped local match and layout heal."""
     db = LibraryDB(Path(path_config_base()) / "library.db")
     db.open()
     return db
@@ -83,22 +83,28 @@ def _album_metadata_score(candidate_album: str, candidate_artist: str, target_al
 
 
 
-def _local_album_rows(artist: str, album: str) -> list[dict]:
-    try:
-        db = _get_library_db()
+def _local_album_rows(artist: str, album: str, db=None) -> list[dict]:
+    close = False
+    if db is None:
         try:
-            if hasattr(db, "tracks_for_album_identity"):
-                return db.tracks_for_album_identity(artist, album)
-            rows = db.album_tracks(artist, album)
-            if rows:
-                return rows
-            if hasattr(db, "tracks_for_artist"):
-                return filter_album_rows(db.tracks_for_artist(artist), artist, album)
+            db = _get_library_db()
+            close = True
+        except Exception:
+            return []
+    try:
+        if hasattr(db, "tracks_for_album_identity"):
+            return db.tracks_for_album_identity(artist, album)
+        rows = db.album_tracks(artist, album)
+        if rows:
             return rows
-        finally:
-            db.close()
+        if hasattr(db, "tracks_for_artist"):
+            return filter_album_rows(db.tracks_for_artist(artist), artist, album)
+        return rows
     except Exception:
         return []
+    finally:
+        if close and db is not None:
+            db.close()
 
 
 
@@ -221,7 +227,20 @@ def album_lookup(
         raise HTTPException(status_code=404, detail="No matching album found on Tidal")
 
     # --- 2. Rank candidates by metadata, then verify with local track overlap ---
-    local_rows = _local_album_rows(artist, album)
+    db = None
+    try:
+        db = _get_library_db()
+    except Exception:
+        db = None
+    try:
+        return _album_lookup_with_db(artist, album, albums, db)
+    finally:
+        if db is not None:
+            db.close()
+
+
+def _album_lookup_with_db(artist: str, album: str, albums: list, db) -> dict:
+    local_rows = _local_album_rows(artist, album, db)
     local_track_keys = {
         (title, artist_name)
         for row in local_rows
@@ -312,7 +331,7 @@ def album_lookup(
             scope_album=album,
         )
         if local_row:
-            served, ok = present_playable_path(local_row.get("path"))
+            served, ok = present_playable_path(local_row.get("path"), db)
             if ok and served:
                 local_row = {**local_row, "path": served}
             else:
