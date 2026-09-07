@@ -49,6 +49,15 @@ class DownloadCore:
         self._rate_limit_lock: Lock = Lock()
         self._adaptive_delay_sec_min = self.settings.data.download_delay_sec_min
         self._adaptive_delay_sec_max = self.settings.data.download_delay_sec_max
+        from tidal_dl.download.api_pacing import shared_pacer
+
+        pacer = shared_pacer()
+        if pacer.rate_limit_hits == 0 and pacer._last_call_mono is None:
+            pacer.delay_min = self._adaptive_delay_sec_min
+            pacer.delay_max = self._adaptive_delay_sec_max
+        else:
+            self._adaptive_delay_sec_min = pacer.delay_min
+            self._adaptive_delay_sec_max = pacer.delay_max
 
         # Use the session-level TTLCache if caching is enabled in settings.
         if self.settings.data.api_cache_enabled and hasattr(tidal_obj, "api_cache"):
@@ -114,33 +123,56 @@ class DownloadCore:
         if cleaned:
             self.fn_logger.info(f"Cleaned up {cleaned} stale temp dir(s) from previous sessions.")
 
+    def _sync_api_pacer_delays(self) -> None:
+        """Keep the process-wide API pacer aligned with this downloader's 429 backoff."""
+        from tidal_dl.download.api_pacing import shared_pacer
+
+        pacer = shared_pacer()
+        pacer.delay_min = self._adaptive_delay_sec_min
+        pacer.delay_max = self._adaptive_delay_sec_max
+
+    def _pace_tidal_api(self, enabled: bool, event_stop: Event | None = None) -> float:
+        """Wait between Tidal first/auth API calls. Never called on CDN byte transfer."""
+        from tidal_dl.download.api_pacing import shared_pacer
+
+        return shared_pacer().wait_before_api(
+            enabled=enabled,
+            event_stop=event_stop or self.event_abort,
+        )
+
     def _on_rate_limit_hit(self) -> None:
-        """Double the adaptive download delay on a 429 response, capped at 30 s."""
-        max_delay = 30.0
+        """Widen the process-wide API pacer on a 429 so later jobs inherit it."""
+        from tidal_dl.download.api_pacing import shared_pacer
+
+        pacer = shared_pacer()
+        pacer.note_429()
         with self._rate_limit_lock:
             self._rate_limit_hits += 1
             self._successful_since_limit = 0
-            self._adaptive_delay_sec_min = min(self._adaptive_delay_sec_min * 2, max_delay)
-            self._adaptive_delay_sec_max = min(self._adaptive_delay_sec_max * 2, max_delay)
+            self._adaptive_delay_sec_min = pacer.delay_min
+            self._adaptive_delay_sec_max = pacer.delay_max
         self.fn_logger.warning(
-            f"Rate limit hit #{self._rate_limit_hits}. "
-            f"Adaptive delay now [{self._adaptive_delay_sec_min:.1f}s–{self._adaptive_delay_sec_max:.1f}s]."
+            f"Rate limit hit #{pacer.rate_limit_hits}. "
+            f"Adaptive API delay now [{self._adaptive_delay_sec_min:.1f}s–{self._adaptive_delay_sec_max:.1f}s]."
         )
 
     def _on_successful_track(self) -> None:
-        """Track successful downloads; halve adaptive delay after 50 consecutive successes."""
+        """Tell the process-wide pacer a track succeeded so any job can recover 429 delay."""
+        from tidal_dl.download.api_pacing import shared_pacer
+
+        pacer = shared_pacer()
+        delay_min, delay_max, relaxed = pacer.note_success(
+            self.settings.data.download_delay_sec_min,
+            self.settings.data.download_delay_sec_max,
+        )
         with self._rate_limit_lock:
-            self._successful_since_limit += 1
-            if self._rate_limit_hits > 0 and self._successful_since_limit >= 50:
-                self._successful_since_limit = 0
-                baseline_min = self.settings.data.download_delay_sec_min
-                baseline_max = self.settings.data.download_delay_sec_max
-                self._adaptive_delay_sec_min = max(self._adaptive_delay_sec_min / 2, baseline_min)
-                self._adaptive_delay_sec_max = max(self._adaptive_delay_sec_max / 2, baseline_max)
-                self.fn_logger.debug(
-                    f"50 successful tracks. Delay halved to "
-                    f"[{self._adaptive_delay_sec_min:.1f}s–{self._adaptive_delay_sec_max:.1f}s]."
-                )
+            self._adaptive_delay_sec_min = delay_min
+            self._adaptive_delay_sec_max = delay_max
+        if relaxed:
+            self.fn_logger.debug(
+                f"50 successful tracks. API delay halved to "
+                f"[{self._adaptive_delay_sec_min:.1f}s–{self._adaptive_delay_sec_max:.1f}s]."
+            )
 
     def extension_guess(self, quality_audio: Quality, metadata_tags: list[str], is_video: bool) -> str:
         """Guess the file extension for a media item based on quality and type.

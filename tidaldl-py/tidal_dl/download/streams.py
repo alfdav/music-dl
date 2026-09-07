@@ -97,11 +97,69 @@ def _require_exact_quality(requested: Quality | str, delivered: Quality | str | 
 
 
 class StreamMixin:
-    def _get_track_stream_info_hifi(self, media: Track) -> TrackStreamInfo:
+    def _pace_stream_api(self, enabled: bool) -> float:
+        """Pace Tidal stream-info/auth API calls. No-op when disabled."""
+        pace = getattr(self, "_pace_tidal_api", None)
+        if callable(pace):
+            return pace(enabled=enabled)
+        if not enabled:
+            return 0.0
+        from tidal_dl.download.api_pacing import shared_pacer
+
+        return shared_pacer().wait_before_api(
+            enabled=True,
+            event_stop=getattr(self, "event_abort", None),
+        )
+
+    def _requested_audio_quality(self, quality_audio: Quality | None = None) -> Quality | None:
+        if quality_audio is not None:
+            return quality_audio
+        return getattr(self.session, "audio_quality", None)
+
+    def _bind_call_quality(
+        self, quality_audio: Quality | None, quality_video: QualityVideo | None
+    ) -> tuple[Quality | None, QualityVideo | None, bool, bool]:
+        old_audio: Quality | None = None
+        old_video: QualityVideo | None = None
+        bound_audio = False
+        bound_video = False
+        if quality_audio is not None:
+            old_audio = getattr(self.session, "audio_quality", None)
+            self.session.audio_quality = quality_audio
+            bound_audio = True
+        if quality_video is not None:
+            data = getattr(getattr(self, "settings", None), "data", None)
+            if data is not None and hasattr(data, "quality_video"):
+                old_video = data.quality_video
+                data.quality_video = quality_video
+                bound_video = True
+        return old_audio, old_video, bound_audio, bound_video
+
+    def _restore_call_quality(
+        self,
+        old_audio: Quality | None,
+        old_video: QualityVideo | None,
+        bound_audio: bool,
+        bound_video: bool,
+    ) -> None:
+        if bound_audio:
+            self.session.audio_quality = old_audio
+        if bound_video:
+            self.settings.data.quality_video = old_video
+
+    def _get_track_stream_info_hifi(
+        self, media: Track, quality_audio: Quality | None = None, *, pace_api: bool = False
+    ) -> TrackStreamInfo:
         """Fetch stream info via the Hi-Fi API client and wrap it in a HiFiStreamManifest.
+
+        Every Hi-Fi stream-info request goes through ``_pace_stream_api`` here so
+        callers (primary Hi-Fi path and listed-Hi-Res fallback) cannot skip the
+        shared API pacer. Media/CDN byte transfer is not paced.
 
         Args:
             media (Track): The track to fetch.
+            quality_audio (Quality | None): Per-call quality. Defaults to session quality.
+            pace_api (bool): Wait on the shared Tidal API pacer before the request.
 
         Returns:
             TrackStreamInfo: Stream info with a HiFiStreamManifest as the manifest.
@@ -110,12 +168,14 @@ class StreamMixin:
             Exception: Propagates any exception from the Hi-Fi client so the caller
                        can decide whether to fall back to OAuth.
         """
-        quality_str = HIFI_QUALITY_MAP.get(quality_name(self.session.audio_quality), "LOSSLESS")
+        requested = self._requested_audio_quality(quality_audio)
+        quality_str = HIFI_QUALITY_MAP.get(quality_name(requested), "LOSSLESS")
         hifi_client = self.tidal.hifi_client
         if hifi_client is None:
             raise RuntimeError("Hi-Fi client is not configured")
+        self._pace_stream_api(pace_api)
         result = hifi_client.track_stream(media.id, quality_str)
-        _require_exact_quality(self.session.audio_quality, result.audio_quality, result.codecs)
+        _require_exact_quality(requested, result.audio_quality, result.codecs)
         file_extension, requires_flac_extraction = plan_flac_output(
             result.codecs, result.file_extension, self.settings.data.extract_flac
         )
@@ -148,9 +208,16 @@ class StreamMixin:
         self.tidal.hifi_client = HiFiApiClient(instances=instances or None)
         return self.tidal.hifi_client
 
-    def _prefer_listed_hires(self, media: Track, oauth_info: TrackStreamInfo) -> TrackStreamInfo | None:
+    def _prefer_listed_hires(
+        self,
+        media: Track,
+        oauth_info: TrackStreamInfo,
+        quality_audio: Quality | None = None,
+        pace_api: bool = False,
+    ) -> TrackStreamInfo | None:
         """Take Hi-Fi HiRes for a listed-HiRes CD delivery, or fail — do not keep 16/44.1."""
-        if not _requested_wants_hires(self.session.audio_quality) or not _track_lists_hires(media):
+        requested = self._requested_audio_quality(quality_audio)
+        if not _requested_wants_hires(requested) or not _track_lists_hires(media):
             return None
         stream = oauth_info.media_stream
         if not _delivery_is_cd_lossless(
@@ -161,7 +228,9 @@ class StreamMixin:
             return None
         try:
             self._ensure_hifi_client()
-            hifi_info = self._get_track_stream_info_hifi(media)
+            hifi_info = self._get_track_stream_info_hifi(
+                media, quality_audio=requested, pace_api=pace_api
+            )
         except (QualityMismatchError, RuntimeError, ValueError, OSError, requests.RequestException):
             hifi_info = None
         manifest = getattr(hifi_info, "stream_manifest", None)
@@ -171,15 +240,20 @@ class StreamMixin:
             getattr(manifest, "sample_rate", None),
         ):
             return hifi_info
-        requested = quality_name(self.session.audio_quality).upper()
+        requested_name = quality_name(requested).upper()
         delivered = quality_name(getattr(stream, "audio_quality", None)).upper() if getattr(stream, "audio_quality", None) else "LOSSLESS"
         raise QualityMismatchError(
-            f"Quality mismatch: requested {requested} for listed Hi-Res track "
+            f"Quality mismatch: requested {requested_name} for listed Hi-Res track "
             f"but received {delivered} and Hi-Fi has no Hi-Res stream."
         )
 
     def _get_stream_info(
-        self, media: Track | Video
+        self,
+        media: Track | Video,
+        *,
+        pace_api: bool = False,
+        quality_audio: Quality | None = None,
+        quality_video: QualityVideo | None = None,
     ) -> tuple[StreamManifest | HiFiStreamManifest | None, str, bool, Stream | None]:
         """Get stream information for media, routing through Hi-Fi API or OAuth path.
 
@@ -187,6 +261,9 @@ class StreamMixin:
         Hi-Fi requests are stateless and do not mutate the tidalapi session.  The
         OAuth path retains the broad lock to prevent the Atmos/Normal credential
         race condition described in the original comments below.
+
+        Concurrent GUI workers share one Tidal session. Per-call quality is applied
+        only for the locked get_stream window so peers cannot clobber each other.
 
         Args:
             media (Track | Video): Media item.
@@ -203,7 +280,9 @@ class StreamMixin:
             and self.tidal.hifi_client is not None
         ):
             try:
-                track_info = self._get_track_stream_info_hifi(media)
+                track_info = self._get_track_stream_info_hifi(
+                    media, quality_audio=quality_audio, pace_api=pace_api
+                )
                 if track_info.stream_manifest is not None:
                     return (
                         track_info.stream_manifest,
@@ -245,57 +324,66 @@ class StreamMixin:
         # ------------------------------------------------------------------
         track_info: TrackStreamInfo | None = None
         with self.tidal.stream_lock:
-            # Proactively refresh a near-expiry OAuth token before the API call.
-            self.tidal._ensure_token_fresh()
-
+            old_audio, old_video, bound_audio, bound_video = self._bind_call_quality(
+                quality_audio, quality_video
+            )
             try:
-                if isinstance(media, Track):
-                    track_info = self._get_track_stream_info(media)
+                # Proactively refresh a near-expiry OAuth token before the API call.
+                self._pace_stream_api(pace_api)
+                self.tidal._ensure_token_fresh()
 
-                    if track_info.stream_manifest is None:
+                try:
+                    if isinstance(media, Track):
+                        track_info = self._get_track_stream_info(media)
+
+                        if track_info.stream_manifest is None:
+                            return None, "", False, None
+
+                    elif isinstance(media, Video):
+                        # Videos always require the normal session
+                        if not self.tidal.restore_normal_session():
+                            self.fn_logger.error(f"Failed to restore normal session for video: {media.id}")
+                            return None, "", False, None
+
+                        file_extension = str(
+                            AudioExtensions.MP4 if self.settings.data.video_convert_mp4 else VideoExtensions.TS
+                        )
+                        return None, file_extension, False, None
+
+                    else:
+                        self.fn_logger.error(f"Unknown media type for stream info: {type(media)}")
                         return None, "", False, None
 
-                elif isinstance(media, Video):
-                    # Videos always require the normal session
-                    if not self.tidal.restore_normal_session():
-                        self.fn_logger.error(f"Failed to restore normal session for video: {media.id}")
-                        return None, "", False, None
-
-                    file_extension = str(
-                        AudioExtensions.MP4 if self.settings.data.video_convert_mp4 else VideoExtensions.TS
+                except TooManyRequests:
+                    self._on_rate_limit_hit()
+                    self.fn_logger.exception(
+                        f"Too many requests against TIDAL backend. Skipping '{name_builder_item(media)}'. "
+                        f"Consider activating delay between downloads."
                     )
-                    return None, file_extension, False, None
-
-                else:
-                    self.fn_logger.error(f"Unknown media type for stream info: {type(media)}")
                     return None, "", False, None
 
-            except TooManyRequests:
-                self._on_rate_limit_hit()
-                self.fn_logger.exception(
-                    f"Too many requests against TIDAL backend. Skipping '{name_builder_item(media)}'. "
-                    f"Consider activating delay between downloads."
-                )
+                except QualityMismatchError:
+                    raise
+                except Exception:
+                    self.fn_logger.exception(f"Something went wrong. Skipping '{name_builder_item(media)}'.")
+                    return None, "", False, None
+
+                if isinstance(media, Track) and track_info is not None:
+                    upgraded = self._prefer_listed_hires(
+                        media, track_info, quality_audio=quality_audio, pace_api=pace_api
+                    )
+                    if upgraded is not None:
+                        track_info = upgraded
+                    return (
+                        track_info.stream_manifest,
+                        track_info.file_extension,
+                        track_info.requires_flac_extraction,
+                        track_info.media_stream,
+                    )
+
                 return None, "", False, None
-
-            except QualityMismatchError:
-                raise
-            except Exception:
-                self.fn_logger.exception(f"Something went wrong. Skipping '{name_builder_item(media)}'.")
-                return None, "", False, None
-
-        if isinstance(media, Track) and track_info is not None:
-            upgraded = self._prefer_listed_hires(media, track_info)
-            if upgraded is not None:
-                track_info = upgraded
-            return (
-                track_info.stream_manifest,
-                track_info.file_extension,
-                track_info.requires_flac_extraction,
-                track_info.media_stream,
-            )
-
-        return None, "", False, None
+            finally:
+                self._restore_call_quality(old_audio, old_video, bound_audio, bound_video)
 
     def _get_track_stream_info(self, media: Track) -> TrackStreamInfo:
         """Get stream info for a Track, handling Atmos/Normal session switching.

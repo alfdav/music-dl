@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -991,3 +993,178 @@ def test_refused_retry_update_finishes_cancel_without_backoff(tmp_path, monkeypa
     assert slept == []
     assert any(event["type"] == "cancelled" for event in events)
     assert not any(event.get("status") == "retrying" for event in events)
+
+
+def test_cancel_all_stays_set_while_peer_worker_is_in_flight(tmp_path, monkeypatch):
+    """Idle workers must not clear cancel-all while another worker is inside item()."""
+    from tidal_dl.gui.services.download_job_service import DownloadJobService
+
+    item_entered = threading.Event()
+    release_item = threading.Event()
+    events: list[dict] = []
+
+    class FakeTrack:
+        id = 123
+        name = "Song"
+        full_name = "Song"
+        duration = 1
+        artists = ()
+        album = None
+
+    class FakeSession:
+        def track(self, track_id):
+            return FakeTrack()
+
+    class FakeTidal:
+        session = FakeSession()
+
+    class FakeSettingsData:
+        download_base_path = str(tmp_path)
+        skip_existing = True
+        format_track = "{track_title}"
+        quality_audio = "LOSSLESS"
+        download_delay = False
+        downloads_concurrent_max = 2
+
+    class FakeSettings:
+        data = FakeSettingsData()
+
+    class FakeDownload:
+        def __init__(self, **kwargs):
+            pass
+
+        def item(self, **kwargs):
+            item_entered.set()
+            assert release_item.wait(timeout=5)
+            return DownloadOutcome.DOWNLOADED, tmp_path / "song.flac"
+
+    def dependencies():
+        return FakeSettings, FakeTidal, FakeDownload
+
+    monkeypatch.setattr(
+        "tidal_dl.gui.services.download_job_service.scan_new_downloads",
+        lambda *_args, **_kwargs: None,
+    )
+
+    service = DownloadJobService(
+        db_path=tmp_path / "library.db",
+        autostart=False,
+        dependency_provider=dependencies,
+    )
+    service.events.broadcast = events.append
+    assert service.enqueue_download([123]) == {"status": "queued", "count": 1}
+    service.start_worker()
+    try:
+        assert item_entered.wait(timeout=5)
+        in_flight = service.get_job_for_test(1)
+        assert in_flight is not None
+
+        result = service.cancel()
+        assert result["status"] == "cancelled"
+        # Idle worker loops every 0.25s and used to clear the flag immediately.
+        time.sleep(0.8)
+        assert service._cancel_all is True
+        assert service._is_cancel_requested(in_flight) is True
+        assert service.queue_state()["cancelled"] is True
+    finally:
+        release_item.set()
+        service.stop_worker(join_timeout=5)
+
+    stored = service.get_job_for_test(1)
+    assert stored.status.value == "cancelled"
+    assert not any(event["type"] == "complete" for event in events)
+    assert any(event["type"] == "cancelled" for event in events)
+
+
+def test_cancel_all_clears_only_after_all_workers_acknowledge(tmp_path, monkeypatch):
+    """After every worker has seen cancel-all and no job is in-flight, new work can start."""
+    from tidal_dl.gui.services.download_job_service import DownloadJobService
+
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    item_calls: list[int] = []
+
+    class FakeTrack:
+        def __init__(self, track_id):
+            self.id = track_id
+            self.name = f"Song {track_id}"
+            self.full_name = self.name
+            self.duration = 1
+            self.artists = ()
+            self.album = None
+
+    class FakeSession:
+        def track(self, track_id):
+            return FakeTrack(int(track_id))
+
+    class FakeTidal:
+        session = FakeSession()
+
+    class FakeSettingsData:
+        download_base_path = str(tmp_path)
+        skip_existing = True
+        format_track = "{track_title}"
+        quality_audio = "LOSSLESS"
+        download_delay = False
+        downloads_concurrent_max = 2
+
+    class FakeSettings:
+        data = FakeSettingsData()
+
+    class FakeDownload:
+        def __init__(self, **kwargs):
+            pass
+
+        def item(self, **kwargs):
+            media = kwargs.get("media")
+            track_id = getattr(media, "id", None)
+            item_calls.append(track_id)
+            if track_id == 123:
+                first_entered.set()
+                assert release_first.wait(timeout=5)
+            else:
+                second_started.set()
+            return DownloadOutcome.DOWNLOADED, tmp_path / f"{track_id}.flac"
+
+    def dependencies():
+        return FakeSettings, FakeTidal, FakeDownload
+
+    monkeypatch.setattr(
+        "tidal_dl.gui.services.download_job_service.scan_new_downloads",
+        lambda *_args, **_kwargs: None,
+    )
+
+    service = DownloadJobService(
+        db_path=tmp_path / "library.db",
+        autostart=False,
+        dependency_provider=dependencies,
+    )
+    assert service.enqueue_download([123]) == {"status": "queued", "count": 1}
+    service.start_worker()
+    try:
+        assert first_entered.wait(timeout=5)
+        service.cancel()
+        time.sleep(0.4)
+        assert service._cancel_all is True
+        release_first.set()
+        deadline = time.time() + 5
+        while service._cancel_all and time.time() < deadline:
+            time.sleep(0.05)
+        assert service._cancel_all is False
+
+        assert service.enqueue_download([456]) == {"status": "queued", "count": 1}
+        assert second_started.wait(timeout=5)
+        deadline = time.time() + 5
+        stored = None
+        while time.time() < deadline:
+            stored = service.get_job_for_test(2)
+            if stored is not None and stored.status.value == "done":
+                break
+            time.sleep(0.05)
+        assert stored is not None
+        assert stored.status.value == "done"
+        assert 456 in item_calls
+    finally:
+        release_first.set()
+        service.stop_worker(join_timeout=5)

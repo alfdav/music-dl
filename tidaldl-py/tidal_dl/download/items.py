@@ -1,6 +1,6 @@
 """Download items helpers."""
 
-from tidal_dl.download._common import *  # noqa: F403
+from tidal_dl.download._common import *
 from tidal_dl.download.registry import register_downloaded_track
 from tidal_dl.helper.path import resolve_library_relative
 from tidal_dl.helper.recording_identity import (
@@ -35,7 +35,8 @@ class ItemMixin:
             media_type (MediaType | None, optional): Media type. Defaults to None.
             media (Track | Video | None, optional): Media item. Defaults to None.
             video_download (bool, optional): Whether to allow video downloads. Defaults to True.
-            download_delay (bool, optional): Whether to delay between downloads. Defaults to False.
+            download_delay (bool, optional): Whether to pace Tidal API/auth calls
+                before stream-info. Never applied to media byte transfer. Defaults to False.
             quality_audio (Quality | None, optional): Audio quality. Defaults to None.
             quality_video (QualityVideo | None, optional): Video quality. Defaults to None.
             is_parent_album (bool, optional): Whether this is a parent album. Defaults to False.
@@ -109,10 +110,9 @@ class ItemMixin:
 
             return DownloadOutcome.SKIPPED, path_media_dst
 
-        # Step 3: Handle quality settings
-        quality_audio_old, quality_video_old = self._adjust_quality_settings(quality_audio, quality_video)
-
-        # Step 4: Download and process media
+        # Step 3: Download and process media. Quality is applied per-call inside
+        # `_get_stream_info` under the shared session lock so peer workers cannot
+        # clobber each other on the Tidal singleton.
         download_success, path_media_dst = self._download_and_process_media(
             media,
             path_media_dst,
@@ -120,16 +120,19 @@ class ItemMixin:
             is_parent_album,
             file_extension_dummy,
             event_stop,
+            download_delay,
+            quality_audio,
+            quality_video,
         )
 
-        # Step 5: Post-processing
+        # Step 4: Post-processing
         self._perform_post_processing(
             media,
             path_media_dst,
             quality_audio,
             quality_video,
-            quality_audio_old,
-            quality_video_old,
+            None,
+            None,
             download_delay,
             skip_file,
             event_stop,
@@ -387,6 +390,9 @@ class ItemMixin:
         is_parent_album: bool,
         file_extension_dummy: str,
         event_stop: Event | None = None,
+        download_delay: bool = False,
+        quality_audio: Quality | None = None,
+        quality_video: QualityVideo | None = None,
     ) -> tuple[bool, pathlib.Path]:
         """Download and process media file.
 
@@ -397,6 +403,9 @@ class ItemMixin:
             is_parent_album (bool): Whether this is a parent album.
             file_extension_dummy (str): Dummy file extension.
             event_stop (Event | None, optional): Event to stop the download. Defaults to None.
+            download_delay (bool, optional): Pace Tidal API/auth calls only. Defaults to False.
+            quality_audio (Quality | None, optional): Per-call audio quality. Defaults to None.
+            quality_video (QualityVideo | None, optional): Per-call video quality. Defaults to None.
 
         Returns:
             tuple[bool, pathlib.Path]: Whether download was successful and the final output path.
@@ -405,7 +414,12 @@ class ItemMixin:
             return True, path_media_dst
 
         # Get stream information and final file extension
-        stream_manifest, file_extension, do_flac_extract, media_stream = self._get_stream_info(media)
+        stream_manifest, file_extension, do_flac_extract, media_stream = self._get_stream_info(
+            media,
+            pace_api=download_delay,
+            quality_audio=quality_audio,
+            quality_video=quality_video,
+        )
 
         if stream_manifest is None and isinstance(media, Track):
             return False, path_media_dst
@@ -634,7 +648,7 @@ class ItemMixin:
             quality_video (QualityVideo | None): Video quality setting.
             quality_audio_old (Quality | None): Previous audio quality.
             quality_video_old (QualityVideo | None): Previous video quality.
-            download_delay (bool): Whether to apply download delay.
+            download_delay (bool): Unused. API pacing happens before stream-info, not after bytes.
             skip_file (bool): Whether file was skipped.
             event_stop (Event | None, optional): Event to stop the download. Defaults to None.
         """
@@ -651,19 +665,7 @@ class ItemMixin:
         if quality_video_old is not None:
             self.adjust_quality_video(quality_video_old)
 
-        # Apply download delay if needed
-        if download_delay and not skip_file:
-            time_sleep: float = round(
-                random.SystemRandom().uniform(self._adaptive_delay_sec_min, self._adaptive_delay_sec_max),
-                1,
-            )
-
-            self.fn_logger.debug(f"Next download will start in {time_sleep} seconds.")
-
-            # Use event_stop or event_abort for interruptible sleep
-            if event_stop:
-                event_stop.wait(time_sleep)
-            elif self.event_abort:
-                self.event_abort.wait(time_sleep)
-            else:
-                time.sleep(time_sleep)
+        # download_delay used to sleep 3–5s here after the file was already on disk.
+        # That sat on the media path and throttled Gbps links. API pacing lives in
+        # `_pace_tidal_api` / `_get_stream_info(pace_api=...)` instead.
+        _ = (download_delay, skip_file, event_stop)

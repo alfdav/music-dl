@@ -5241,7 +5241,7 @@ async function loadSettingsForm(container, accessContainer) {
       ]},
       { title: 'Downloads', fields: [
         { key: 'downloads_concurrent_max', label: 'Max Concurrent Downloads', type: 'number', helper: '1\u201310 recommended for stability' },
-        { key: 'download_delay', label: 'Download Delay', type: 'toggle', helper: 'Adds a pause between downloads to avoid rate limits' },
+        { key: 'download_delay', label: 'Download Delay', type: 'toggle', helper: 'Paces Tidal API/auth calls only. Media streams use full bandwidth.' },
       ]},
       { title: 'Metadata', fields: [
         { key: 'metadata_cover_embed', label: 'Embed Cover Art', type: 'toggle', helper: 'Saves album art inside the audio file' },

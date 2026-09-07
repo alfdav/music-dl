@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-07 — Rebase onto #179 dropped one of two search live-row gates
+
+**What happened:** After PR #179 merged, rebasing #180 and #182 onto master conflicted in `search.py` `_live_library_row`. Taking only master would drop identity/heal. Taking only the PR would drop `playable_library_row_for_isrc`.
+
+**Root cause:** Both products replace the same helper. #179 made it the shared playable-ISRC gate (twin-file adopt / download skip). #180 wraps stale index paths with identity; #182 heals `Artist/Artist - Album` then serves a readable file.
+
+**Prevention:** Keep both: call `playable_library_row_for_isrc` first, then identity/heal fallback for stale index paths. Concatenate `MISTAKES.md` entries. Do not take one side of `_live_library_row`.
+
 ## 2026-09-07 — Post-migrate ISRC re-register wiped row metadata
 
 **What happened:** Bugbot on PR #179 after the adopt/index fix: `_index_adopted_path` called `register_isrc_path` after a successful `migrate_path`, and `item()` did it again on the final path. `record()` conflict-wrote `artist`/`title`/`album`/`quality`/`duration` to null. Upgrade jobs then `commit`ted those stubs after `register_downloaded_track`.
@@ -31,6 +39,38 @@
 **Root cause:** The fixture treated `format_path_media` as a string format. Unresolved tokens are left in the path, so skip/redownload never saw the numbered CD-rip sibling in the same album folder.
 
 **Prevention:** Same-folder identity tests must write `01 - Title.flac` and the template dest in one directory (`{track_title}` → `Title.flac`). Give the Track mock album/artist only when the template actually needs those tokens.
+
+## 2026-09-07 — Shared 429 window never recovered; Hi-Fi stream-info paced only at some callers
+
+**What happened:** Bugbot on PR #181 after `5bcf6e8`: (1) new GUI `Download` instances inherited the widened pacer delays but kept `_rate_limit_hits = 0`, so `_on_successful_track` never halved the shared window; (2) `_get_track_stream_info_hifi` (the actual Hi-Fi stream-info HTTP call) still did not call `_pace_stream_api`. Caller-side pacing in `_prefer_listed_hires` could be skipped by any other path.
+
+**Root cause:** Recovery was a per-instance latch. Hi-Fi pacing lived next to some callers instead of at the request site.
+
+**Prevention:** `TidalApiPacer.note_success` owns the 50-success recovery; any later job can relax the process-wide window. Pace inside `_get_track_stream_info_hifi` so every Hi-Fi stream-info request goes through the shared pacer. Cover both in `test_download_pacing.py`.
+
+## 2026-09-07 — Download 429 backoff reset per job; Hi-Res fallback skipped API pacing
+
+**What happened:** Bugbot on PR #181: (1) `_on_rate_limit_hit` doubled the current `Download` then overwrote the process-wide pacer, so each GUI job started at baseline and a later 429 never reached the 30s cap; `note_429` existed but was unused on the download path. (2) `_prefer_listed_hires` called `_get_track_stream_info_hifi` after paced OAuth without `_pace_stream_api`.
+
+**Root cause:** Per-instance delay was treated as source of truth and synced outward. The extra Hi-Res stream-info request was added beside the paced OAuth call, not through the same pacer helper.
+
+**Prevention:** Escalate via `note_429` on the shared pacer and inherit that window in new `Download` instances. Pace every stream-info request, including Hi-Res fallback, through `_pace_stream_api`. Cover cross-job escalation and the fallback pace in `test_download_pacing.py`.
+
+## 2026-09-07 — Cancel-all and shared session quality raced across GUI workers
+
+**What happened:** Bugbot on PR #181: (1) each worker cleared `_cancel_all` when it saw the flag, so an idle worker could reset it while another was inside `dl.item()`; (2) concurrent GUI workers share the Tidal singleton and `_adjust_quality_settings` raced.
+
+**Root cause:** Cancel was a single boolean with first-observer-clears. Quality was a long-lived mutation of `session.audio_quality` for the whole `item()` call.
+
+**Prevention:** Cancel-all stays set until every worker acks and `_in_flight == 0`. Bind quality only inside `stream_lock` around `get_stream` / Hi-Fi mapping, then restore. Cover both races in `test_download_jobs_service.py` and `test_phase2_resilience.py`.
+
+## 2026-09-07 — StreamMixin stubs and `*_args` overrides broke when API pacing was wired in
+
+**What happened:** `_get_stream_info` called `_pace_tidal_api` on StreamMixin-only test subjects (`OAuthStreamSubject`). `item()` passed `download_delay=` as a keyword into `_download_and_process_media` overrides that only accept `*_args`.
+
+**Root cause:** Pacing lived on `DownloadCore`, not `StreamMixin`. Keyword args are not swallowed by `*_args`.
+
+**Prevention:** Call pacing through a StreamMixin helper that falls back to the shared pacer. Pass new `item()` → mixin arguments positionally so existing `*_args` test doubles keep working.
 
 ## 2026-09-04 — Rust Tauri plugin bump left JS packages behind
 

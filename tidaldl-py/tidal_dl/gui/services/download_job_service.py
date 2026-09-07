@@ -13,6 +13,7 @@ from typing import Any
 import requests
 
 from tidal_dl.constants import QUALITY_STRING_TO_ENUM
+from tidal_dl.download.api_pacing import retry_after_seconds
 from tidal_dl.gui.services.job_events import JobEventHub
 from tidal_dl.gui.services.job_models import DownloadJob, JobKind, JobStatus, UpgradeJobInput
 from tidal_dl.gui.services.upgrade_jobs import (
@@ -177,10 +178,15 @@ class DownloadJobService:
         self._running = threading.Event()
         self._running.set()
         self._stop = threading.Event()
+        self._cancel_lock = threading.Lock()
         self._cancel_all = False
+        self._cancel_generation = 0
+        self._cancel_acks: set[int] = set()
+        self._in_flight = 0
         self._cancelled_ids: set[int] = set()
         self._worker_started = False
         self._worker_thread: threading.Thread | None = None
+        self._worker_threads: list[threading.Thread] = []
         if autostart:
             self.recover_on_startup()
             self.start_worker()
@@ -197,18 +203,39 @@ class DownloadJobService:
         finally:
             db.close()
 
+    def _worker_count(self) -> int:
+        """Media jobs may run concurrently; Tidal API pressure is paced separately."""
+        settings_cls, _, _ = self._download_dependency_provider()
+        try:
+            data = settings_cls().data
+            n = int(getattr(data, "downloads_concurrent_max", 3) or 3)
+        except Exception:
+            n = 3
+        return max(1, min(n, 10))
+
     def start_worker(self) -> None:
         if self._worker_started:
             return
         self._worker_started = True
-        self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
-        self._worker_thread.start()
+        self._worker_threads = []
+        for index in range(self._worker_count()):
+            thread = threading.Thread(
+                target=self._worker_loop,
+                name=f"download-worker-{index}",
+                daemon=True,
+            )
+            thread.start()
+            self._worker_threads.append(thread)
+        self._worker_thread = self._worker_threads[0]
 
     def stop_worker(self, join_timeout: float = 2.0) -> None:
         self._stop.set()
         self._running.set()
-        if self._worker_thread is not None:
-            self._worker_thread.join(timeout=join_timeout)
+        threads = list(self._worker_threads)
+        if not threads and self._worker_thread is not None:
+            threads = [self._worker_thread]
+        for thread in threads:
+            thread.join(timeout=join_timeout)
 
     def enqueue_download(self, track_ids: list[int]) -> dict:
         queued = 0
@@ -272,7 +299,10 @@ class DownloadJobService:
             if track_ids:
                 count = db.cancel_queued_download_jobs(track_ids)
             else:
-                self._cancel_all = True
+                with self._cancel_lock:
+                    self._cancel_all = True
+                    self._cancel_generation += 1
+                    self._cancel_acks.clear()
                 count = db.cancel_all_queued_download_jobs()
             active_count = db.active_download_job_count()
         finally:
@@ -434,6 +464,34 @@ class DownloadJobService:
     def _is_cancel_requested(self, job: DownloadJob) -> bool:
         return self._cancel_all or job.track_id in self._cancelled_ids
 
+    def _acknowledge_cancel_all(self) -> None:
+        with self._cancel_lock:
+            if not self._cancel_all:
+                return
+            self._cancel_acks.add(threading.get_ident())
+            self._release_cancel_all_if_quiesced_locked()
+
+    def _begin_in_flight(self) -> None:
+        with self._cancel_lock:
+            self._in_flight += 1
+
+    def _end_in_flight(self) -> None:
+        with self._cancel_lock:
+            self._in_flight = max(0, self._in_flight - 1)
+            if self._cancel_all:
+                self._cancel_acks.add(threading.get_ident())
+                self._release_cancel_all_if_quiesced_locked()
+
+    def _release_cancel_all_if_quiesced_locked(self) -> None:
+        if not self._cancel_all or self._in_flight > 0:
+            return
+        expected = len(self._worker_threads)
+        if expected == 0:
+            return
+        if len(self._cancel_acks) >= expected:
+            self._cancel_all = False
+            self._cancel_acks.clear()
+
     def _worker_loop(self) -> None:
         while not self._stop.is_set():
             self._running.wait(timeout=0.25)
@@ -442,7 +500,9 @@ class DownloadJobService:
             if not self._running.is_set():
                 continue
             if self._cancel_all:
-                self._cancel_all = False
+                self._acknowledge_cancel_all()
+                time.sleep(0.25)
+                continue
 
             db = self._open_db()
             try:
@@ -468,16 +528,20 @@ class DownloadJobService:
                 self._broadcast_error(current, exc)
 
     def _execute_job(self, job: DownloadJob) -> None:
-        if self._is_cancel_requested(job):
-            self._mark_cancelled(job)
-            return
-        if job.kind is JobKind.DOWNLOAD:
-            self._execute_download_job(job)
-            return
-        if job.kind is JobKind.UPGRADE:
-            self._execute_upgrade_job(job)
-            return
-        raise ValueError(f"Unsupported job kind: {job.kind.value}")
+        self._begin_in_flight()
+        try:
+            if self._is_cancel_requested(job):
+                self._mark_cancelled(job)
+                return
+            if job.kind is JobKind.DOWNLOAD:
+                self._execute_download_job(job)
+                return
+            if job.kind is JobKind.UPGRADE:
+                self._execute_upgrade_job(job)
+                return
+            raise ValueError(f"Unsupported job kind: {job.kind.value}")
+        finally:
+            self._end_in_flight()
 
     def _execute_download_job(self, job: DownloadJob) -> None:
         settings_cls, tidal_cls, download_cls = self._download_dependency_provider()
@@ -557,6 +621,7 @@ class DownloadJobService:
                     file_template=settings.data.format_track,
                     media=track,
                     quality_audio=settings.data.quality_audio,
+                    download_delay=bool(getattr(settings.data, "download_delay", False)),
                 )
                 last_exc = None
                 break
@@ -572,7 +637,7 @@ class DownloadJobService:
                         return
                     if not self._mark_retrying(current, attempt + 1, max_retries):
                         return
-                    time.sleep(2 ** (attempt + 1))
+                    time.sleep(retry_after_seconds(http_exc.response, 2 ** (attempt + 1)))
                     continue
                 raise
             except retryable as retry_exc:
@@ -769,6 +834,7 @@ class DownloadJobService:
                 media=track,
                 quality_audio=quality_enum,
                 duplicate_action_override="redownload",
+                download_delay=bool(getattr(settings.data, "download_delay", False)),
             )
             outcome, new_path = result if isinstance(result, tuple) else (None, result)
             successful = {outcome_cls.DOWNLOADED, outcome_cls.COPIED, None}
