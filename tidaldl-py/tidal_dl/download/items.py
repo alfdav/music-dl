@@ -1,6 +1,6 @@
 """Download items helpers."""
 
-from tidal_dl.download._common import *  # noqa: F403
+from tidal_dl.download._common import *
 from tidal_dl.download.registry import register_downloaded_track
 from tidal_dl.helper.path import resolve_library_relative
 from tidal_dl.helper.recording_identity import (
@@ -110,10 +110,9 @@ class ItemMixin:
 
             return DownloadOutcome.SKIPPED, path_media_dst
 
-        # Step 3: Handle quality settings
-        quality_audio_old, quality_video_old = self._adjust_quality_settings(quality_audio, quality_video)
-
-        # Step 4: Download and process media
+        # Step 3: Download and process media. Quality is applied per-call inside
+        # `_get_stream_info` under the shared session lock so peer workers cannot
+        # clobber each other on the Tidal singleton.
         download_success, path_media_dst = self._download_and_process_media(
             media,
             path_media_dst,
@@ -122,16 +121,18 @@ class ItemMixin:
             file_extension_dummy,
             event_stop,
             download_delay,
+            quality_audio,
+            quality_video,
         )
 
-        # Step 5: Post-processing
+        # Step 4: Post-processing
         self._perform_post_processing(
             media,
             path_media_dst,
             quality_audio,
             quality_video,
-            quality_audio_old,
-            quality_video_old,
+            None,
+            None,
             download_delay,
             skip_file,
             event_stop,
@@ -390,6 +391,8 @@ class ItemMixin:
         file_extension_dummy: str,
         event_stop: Event | None = None,
         download_delay: bool = False,
+        quality_audio: Quality | None = None,
+        quality_video: QualityVideo | None = None,
     ) -> tuple[bool, pathlib.Path]:
         """Download and process media file.
 
@@ -401,6 +404,8 @@ class ItemMixin:
             file_extension_dummy (str): Dummy file extension.
             event_stop (Event | None, optional): Event to stop the download. Defaults to None.
             download_delay (bool, optional): Pace Tidal API/auth calls only. Defaults to False.
+            quality_audio (Quality | None, optional): Per-call audio quality. Defaults to None.
+            quality_video (QualityVideo | None, optional): Per-call video quality. Defaults to None.
 
         Returns:
             tuple[bool, pathlib.Path]: Whether download was successful and the final output path.
@@ -410,7 +415,10 @@ class ItemMixin:
 
         # Get stream information and final file extension
         stream_manifest, file_extension, do_flac_extract, media_stream = self._get_stream_info(
-            media, pace_api=download_delay
+            media,
+            pace_api=download_delay,
+            quality_audio=quality_audio,
+            quality_video=quality_video,
         )
 
         if stream_manifest is None and isinstance(media, Track):
