@@ -206,11 +206,20 @@ def test_live_identity_ignores_other_folder_and_other_isrc(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# has_live_isrc / primary_path recover dead DB paths via same-folder identity
+# has_live_isrc / download-skip / is_local must match library lookup
 # ---------------------------------------------------------------------------
 
 
-def test_has_live_isrc_true_when_db_path_dead_and_numbered_sibling_live(tmp_path, monkeypatch):
+def _live_library_row(db, isrc: str):
+    from tidal_dl.gui.api.search import _live_library_row as lookup
+
+    return lookup(db, isrc)
+
+
+def test_has_live_isrc_false_when_tag_scan_sibling_is_not_library_resolvable(
+    tmp_path, monkeypatch,
+):
+    """Unindexed tag-scan hits under a dead path are not playable library files."""
     album = tmp_path / "Composer" / "Catalogue"
     dead = album / "gone.flac"
     numbered = _flac(album / "12 - Catalogue Piece.flac")
@@ -223,8 +232,28 @@ def test_has_live_isrc_true_when_db_path_dead_and_numbered_sibling_live(tmp_path
         _extract_map({str(numbered): ISRC_A}),
     )
 
+    assert _live_library_row(db, ISRC_A) is None
+    assert not db.has_live_isrc(ISRC_A)
+    assert db.primary_live_path_for_isrc(ISRC_A) is None
+    db.close()
+
+
+def test_has_live_isrc_true_when_recovered_sibling_is_library_playable(tmp_path):
+    """An indexed live sibling is resolvable the same way search lookup is."""
+    album = tmp_path / "Composer" / "Catalogue"
+    dead = album / "gone.flac"
+    numbered = _flac(album / "12 - Catalogue Piece.flac")
+
+    db = _open_db(tmp_path)
+    db.register_isrc_path(ISRC_A, dead, commit=True)
+    _record(db, numbered, ISRC_A, title="Catalogue Piece")
+    db.commit()
+
+    row = _live_library_row(db, ISRC_A)
+    assert row is not None
+    assert Path(row["path"]).resolve() == numbered.resolve()
     assert db.has_live_isrc(ISRC_A)
-    assert Path(db.primary_path_for_isrc(ISRC_A)).resolve() == numbered.resolve()
+    assert Path(db.primary_live_path_for_isrc(ISRC_A)).resolve() == numbered.resolve()
     db.close()
 
 
@@ -238,6 +267,58 @@ def test_has_live_isrc_false_when_only_dead_path_and_no_sibling(tmp_path):
     assert not db.has_live_isrc(ISRC_A)
     assert db.primary_path_for_isrc(ISRC_A) is not None
     db.close()
+
+
+def test_skip_duplicate_isrc_does_not_skip_when_tag_scan_sibling_is_unplayable(
+    tmp_path, monkeypatch,
+):
+    """Global ISRC skip must not fire when search cannot resolve a playable path."""
+    other = tmp_path / "elsewhere" / "Other Album"
+    dead = other / "Missing Path.flac"
+    numbered = _flac(other / "07 - Second Theme.flac")
+
+    dl = _download_for_paths(tmp_path, skip_existing=True)
+    dl._library_db.register_isrc_path(ISRC_A, dead, commit=True)
+
+    monkeypatch.setattr(
+        "tidal_dl.helper.recording_identity.extract_audio_isrc",
+        _extract_map({str(numbered): ISRC_A}),
+    )
+
+    track = _make_track(505, ISRC_A, name="Second Theme")
+    with patch.object(dl, "extension_guess", return_value=".flac"):
+        _dest, _ext, skip_file, _skip_dl = dl._prepare_file_paths_and_skip_logic(
+            track, "{track_title}", None, 0, 0
+        )
+    library_row = _live_library_row(dl._library_db, ISRC_A)
+    is_local = dl._library_db.has_live_isrc(ISRC_A)
+    dl._library_db.close()
+
+    assert library_row is None
+    assert is_local is False
+    assert skip_file is False
+
+
+def test_skip_duplicate_isrc_skips_when_indexed_sibling_is_library_playable(tmp_path):
+    other = tmp_path / "elsewhere" / "Other Album"
+    numbered = _flac(other / "07 - Second Theme.flac")
+
+    dl = _download_for_paths(tmp_path, skip_existing=True)
+    _record(dl._library_db, numbered, ISRC_A, title="Second Theme")
+    dl._library_db.commit()
+
+    track = _make_track(506, ISRC_A, name="Second Theme")
+    with patch.object(dl, "extension_guess", return_value=".flac"):
+        _dest, _ext, skip_file, _skip_dl = dl._prepare_file_paths_and_skip_logic(
+            track, "{track_title}", None, 0, 0
+        )
+    live = dl._library_db.primary_live_path_for_isrc(ISRC_A)
+    library_row = _live_library_row(dl._library_db, ISRC_A)
+    dl._library_db.close()
+
+    assert skip_file is True
+    assert Path(live).resolve() == numbered.resolve()
+    assert Path(library_row["path"]).resolve() == numbered.resolve()
 
 
 # ---------------------------------------------------------------------------

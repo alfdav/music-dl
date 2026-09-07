@@ -57,6 +57,30 @@ def _isrc_rows(db: LibraryDB, isrc: str) -> list[dict]:
         return db.tracks_by_isrc(isrc)
 
 
+def playable_library_row_for_isrc(db: LibraryDB | None, isrc: str | None) -> dict | None:
+    """Return the row library lookup can play for *isrc*, or None.
+
+    Search and playlist local resolution only accept an indexed live
+    ``tracks_by_isrc`` row whose path is a real file and not under a
+    skipped scan directory. Download skip / ``has_live_isrc`` / bot
+    ``is_local`` must use this same gate so a tag-scan sibling cannot
+    block a download the app cannot play.
+    """
+    if db is None or not isrc:
+        return None
+    try:
+        rows = db.tracks_by_isrc(isrc)
+    except TypeError:
+        rows = db.tracks_by_isrc(isrc)
+    for row in rows:
+        path = (row or {}).get("path") or ""
+        if path_has_skipped_scan_dir(path):
+            continue
+        if Path(path).is_file():
+            return row
+    return None
+
+
 def live_identity_paths(
     *,
     isrc: str | None,

@@ -225,27 +225,17 @@ class ScannedMixin:
         return [dict(r) for r in rows]
 
     def primary_live_path_for_isrc(self, isrc: str) -> str | None:
-        """Return a path that still exists for *isrc*, recovering same-folder twins."""
-        if not isrc:
-            return None
-        from tidal_dl.helper.recording_identity import live_identity_paths
+        """Return a library-playable path for *isrc*, or None.
 
-        parents: list[pathlib.Path] = []
-        seen_parents: set[str] = set()
-        for row in self.tracks_by_isrc(isrc, include_missing=True):
-            path = pathlib.Path(row["path"])
-            if path.is_file():
-                return row["path"]
-            parent = path.parent
-            key = str(parent)
-            if key not in seen_parents:
-                seen_parents.add(key)
-                parents.append(parent)
-        for parent in parents:
-            recovered = live_identity_paths(isrc=isrc, directory=parent, db=self)
-            if recovered:
-                return str(recovered[0])
-        return None
+        Same-folder tag-scan recovery is not enough: search / playlist
+        lookup only resolve indexed live ``tracks_by_isrc`` files. A
+        recovered sibling counts as live only when that same check
+        would accept it.
+        """
+        from tidal_dl.helper.recording_identity import playable_library_row_for_isrc
+
+        row = playable_library_row_for_isrc(self, isrc)
+        return row["path"] if row else None
 
     def has_live_isrc(self, isrc: str) -> bool:
         return self.primary_live_path_for_isrc(isrc) is not None
