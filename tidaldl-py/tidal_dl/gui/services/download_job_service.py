@@ -178,7 +178,11 @@ class DownloadJobService:
         self._running = threading.Event()
         self._running.set()
         self._stop = threading.Event()
+        self._cancel_lock = threading.Lock()
         self._cancel_all = False
+        self._cancel_generation = 0
+        self._cancel_acks: set[int] = set()
+        self._in_flight = 0
         self._cancelled_ids: set[int] = set()
         self._worker_started = False
         self._worker_thread: threading.Thread | None = None
@@ -295,7 +299,10 @@ class DownloadJobService:
             if track_ids:
                 count = db.cancel_queued_download_jobs(track_ids)
             else:
-                self._cancel_all = True
+                with self._cancel_lock:
+                    self._cancel_all = True
+                    self._cancel_generation += 1
+                    self._cancel_acks.clear()
                 count = db.cancel_all_queued_download_jobs()
             active_count = db.active_download_job_count()
         finally:
@@ -457,6 +464,34 @@ class DownloadJobService:
     def _is_cancel_requested(self, job: DownloadJob) -> bool:
         return self._cancel_all or job.track_id in self._cancelled_ids
 
+    def _acknowledge_cancel_all(self) -> None:
+        with self._cancel_lock:
+            if not self._cancel_all:
+                return
+            self._cancel_acks.add(threading.get_ident())
+            self._release_cancel_all_if_quiesced_locked()
+
+    def _begin_in_flight(self) -> None:
+        with self._cancel_lock:
+            self._in_flight += 1
+
+    def _end_in_flight(self) -> None:
+        with self._cancel_lock:
+            self._in_flight = max(0, self._in_flight - 1)
+            if self._cancel_all:
+                self._cancel_acks.add(threading.get_ident())
+                self._release_cancel_all_if_quiesced_locked()
+
+    def _release_cancel_all_if_quiesced_locked(self) -> None:
+        if not self._cancel_all or self._in_flight > 0:
+            return
+        expected = len(self._worker_threads)
+        if expected == 0:
+            return
+        if len(self._cancel_acks) >= expected:
+            self._cancel_all = False
+            self._cancel_acks.clear()
+
     def _worker_loop(self) -> None:
         while not self._stop.is_set():
             self._running.wait(timeout=0.25)
@@ -465,7 +500,9 @@ class DownloadJobService:
             if not self._running.is_set():
                 continue
             if self._cancel_all:
-                self._cancel_all = False
+                self._acknowledge_cancel_all()
+                time.sleep(0.25)
+                continue
 
             db = self._open_db()
             try:
@@ -491,16 +528,20 @@ class DownloadJobService:
                 self._broadcast_error(current, exc)
 
     def _execute_job(self, job: DownloadJob) -> None:
-        if self._is_cancel_requested(job):
-            self._mark_cancelled(job)
-            return
-        if job.kind is JobKind.DOWNLOAD:
-            self._execute_download_job(job)
-            return
-        if job.kind is JobKind.UPGRADE:
-            self._execute_upgrade_job(job)
-            return
-        raise ValueError(f"Unsupported job kind: {job.kind.value}")
+        self._begin_in_flight()
+        try:
+            if self._is_cancel_requested(job):
+                self._mark_cancelled(job)
+                return
+            if job.kind is JobKind.DOWNLOAD:
+                self._execute_download_job(job)
+                return
+            if job.kind is JobKind.UPGRADE:
+                self._execute_upgrade_job(job)
+                return
+            raise ValueError(f"Unsupported job kind: {job.kind.value}")
+        finally:
+            self._end_in_flight()
 
     def _execute_download_job(self, job: DownloadJob) -> None:
         settings_cls, tidal_cls, download_cls = self._download_dependency_provider()
