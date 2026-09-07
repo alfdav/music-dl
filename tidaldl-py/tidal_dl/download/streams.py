@@ -148,13 +148,18 @@ class StreamMixin:
             self.settings.data.quality_video = old_video
 
     def _get_track_stream_info_hifi(
-        self, media: Track, quality_audio: Quality | None = None
+        self, media: Track, quality_audio: Quality | None = None, *, pace_api: bool = False
     ) -> TrackStreamInfo:
         """Fetch stream info via the Hi-Fi API client and wrap it in a HiFiStreamManifest.
+
+        Every Hi-Fi stream-info request goes through ``_pace_stream_api`` here so
+        callers (primary Hi-Fi path and listed-Hi-Res fallback) cannot skip the
+        shared API pacer. Media/CDN byte transfer is not paced.
 
         Args:
             media (Track): The track to fetch.
             quality_audio (Quality | None): Per-call quality. Defaults to session quality.
+            pace_api (bool): Wait on the shared Tidal API pacer before the request.
 
         Returns:
             TrackStreamInfo: Stream info with a HiFiStreamManifest as the manifest.
@@ -168,6 +173,7 @@ class StreamMixin:
         hifi_client = self.tidal.hifi_client
         if hifi_client is None:
             raise RuntimeError("Hi-Fi client is not configured")
+        self._pace_stream_api(pace_api)
         result = hifi_client.track_stream(media.id, quality_str)
         _require_exact_quality(requested, result.audio_quality, result.codecs)
         file_extension, requires_flac_extraction = plan_flac_output(
@@ -222,8 +228,9 @@ class StreamMixin:
             return None
         try:
             self._ensure_hifi_client()
-            self._pace_stream_api(pace_api)
-            hifi_info = self._get_track_stream_info_hifi(media, quality_audio=requested)
+            hifi_info = self._get_track_stream_info_hifi(
+                media, quality_audio=requested, pace_api=pace_api
+            )
         except (QualityMismatchError, RuntimeError, ValueError, OSError, requests.RequestException):
             hifi_info = None
         manifest = getattr(hifi_info, "stream_manifest", None)
@@ -273,8 +280,9 @@ class StreamMixin:
             and self.tidal.hifi_client is not None
         ):
             try:
-                self._pace_stream_api(pace_api)
-                track_info = self._get_track_stream_info_hifi(media, quality_audio=quality_audio)
+                track_info = self._get_track_stream_info_hifi(
+                    media, quality_audio=quality_audio, pace_api=pace_api
+                )
                 if track_info.stream_manifest is not None:
                     return (
                         track_info.stream_manifest,

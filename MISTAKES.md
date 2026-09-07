@@ -32,6 +32,14 @@
 
 **Prevention:** Same-folder identity tests must write `01 - Title.flac` and the template dest in one directory (`{track_title}` → `Title.flac`). Give the Track mock album/artist only when the template actually needs those tokens.
 
+## 2026-09-07 — Shared 429 window never recovered; Hi-Fi stream-info paced only at some callers
+
+**What happened:** Bugbot on PR #181 after `5bcf6e8`: (1) new GUI `Download` instances inherited the widened pacer delays but kept `_rate_limit_hits = 0`, so `_on_successful_track` never halved the shared window; (2) `_get_track_stream_info_hifi` (the actual Hi-Fi stream-info HTTP call) still did not call `_pace_stream_api`. Caller-side pacing in `_prefer_listed_hires` could be skipped by any other path.
+
+**Root cause:** Recovery was a per-instance latch. Hi-Fi pacing lived next to some callers instead of at the request site.
+
+**Prevention:** `TidalApiPacer.note_success` owns the 50-success recovery; any later job can relax the process-wide window. Pace inside `_get_track_stream_info_hifi` so every Hi-Fi stream-info request goes through the shared pacer. Cover both in `test_download_pacing.py`.
+
 ## 2026-09-07 — Download 429 backoff reset per job; Hi-Res fallback skipped API pacing
 
 **What happened:** Bugbot on PR #181: (1) `_on_rate_limit_hit` doubled the current `Download` then overwrote the process-wide pacer, so each GUI job started at baseline and a later 429 never reached the 30s cap; `note_429` existed but was unused on the download path. (2) `_prefer_listed_hires` called `_get_track_stream_info_hifi` after paced OAuth without `_pace_stream_api`.

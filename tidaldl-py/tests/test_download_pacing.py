@@ -188,11 +188,54 @@ def test_note_429_honors_retry_after_and_widens_delay():
     assert wait == 7.0
     assert pacer.delay_min == 6.0
     assert pacer.delay_max == 10.0
+    assert pacer.successful_since_limit == 0
 
     response = requests.Response()
     response.headers["Retry-After"] = "12"
     assert retry_after_seconds(response, fallback=4.0) == 12.0
     assert retry_after_seconds(None, fallback=4.0) == 4.0
+
+
+def test_pacer_note_success_recovers_after_50_without_caller_hit_count():
+    """429 recovery lives on the pacer, not a per-Download latch."""
+    from tidal_dl.download.api_pacing import TidalApiPacer
+
+    pacer = TidalApiPacer(delay_min=3.0, delay_max=5.0)
+    pacer.note_429()
+    assert pacer.delay_min == 6.0
+    assert pacer.delay_max == 10.0
+
+    for _ in range(49):
+        delay_min, delay_max, relaxed = pacer.note_success(3.0, 5.0)
+        assert relaxed is False
+        assert delay_min == 6.0
+        assert delay_max == 10.0
+
+    delay_min, delay_max, relaxed = pacer.note_success(3.0, 5.0)
+    assert relaxed is True
+    assert delay_min == 3.0
+    assert delay_max == 5.0
+
+
+def test_note_429_resets_success_streak_before_recovery():
+    from tidal_dl.download.api_pacing import TidalApiPacer
+
+    pacer = TidalApiPacer(delay_min=3.0, delay_max=5.0)
+    pacer.note_429()
+    for _ in range(40):
+        pacer.note_success(3.0, 5.0)
+    pacer.note_429()
+    assert pacer.delay_min == 12.0
+    assert pacer.delay_max == 20.0
+    assert pacer.successful_since_limit == 0
+
+    for _ in range(49):
+        _, _, relaxed = pacer.note_success(3.0, 5.0)
+        assert relaxed is False
+    _, _, relaxed = pacer.note_success(3.0, 5.0)
+    assert relaxed is True
+    assert pacer.delay_min == 6.0
+    assert pacer.delay_max == 10.0
 
 
 def test_on_rate_limit_hit_widens_api_pacing_delay():
@@ -328,6 +371,89 @@ def test_cross_job_429s_escalate_shared_pacer_to_30s_cap():
 
     assert shared_pacer().delay_min == 30.0
     assert shared_pacer().delay_max == 30.0
+
+
+def test_later_gui_job_recovers_shared_429_window_without_own_hits(tmp_path):
+    """A later GUI Download that never saw a 429 must still relax the shared window."""
+    from tidal_dl.download import Download
+    from tidal_dl.download.api_pacing import shared_pacer
+
+    job1 = _make_download_stub()
+    job1._on_rate_limit_hit()
+    widened_min = shared_pacer().delay_min
+    widened_max = shared_pacer().delay_max
+    assert widened_min > job1.settings.data.download_delay_sec_min
+    assert job1._rate_limit_hits == 1
+
+    tidal = MagicMock()
+    tidal.session = MagicMock()
+    tidal.api_cache = None
+    job2 = Download(tidal_obj=tidal, path_base=str(tmp_path), fn_logger=MagicMock())
+    assert job2._rate_limit_hits == 0
+    assert job2._adaptive_delay_sec_min == widened_min
+    assert job2._adaptive_delay_sec_max == widened_max
+
+    for _ in range(49):
+        job2._on_successful_track()
+    assert shared_pacer().delay_min == widened_min
+    assert shared_pacer().delay_max == widened_max
+
+    job2._on_successful_track()
+    baseline_min = job2.settings.data.download_delay_sec_min
+    baseline_max = job2.settings.data.download_delay_sec_max
+    assert shared_pacer().delay_min == max(widened_min / 2, baseline_min)
+    assert shared_pacer().delay_max == max(widened_max / 2, baseline_max)
+    assert job2._adaptive_delay_sec_min == shared_pacer().delay_min
+    assert job2._adaptive_delay_sec_max == shared_pacer().delay_max
+
+
+def test_get_track_stream_info_hifi_paces_before_track_stream():
+    """Every Hi-Fi stream-info request must pace at the request site, not only callers."""
+    from tidalapi import Quality, Track
+
+    from tidal_dl.download.streams import StreamMixin
+    from tidal_dl.hifi_api import HiFiStreamResult
+
+    events: list[tuple] = []
+
+    class HiFiClient:
+        def track_stream(self, track_id, quality):
+            events.append(("hifi", track_id, quality))
+            return HiFiStreamResult(
+                urls=["https://cdn.example/hires.flac"],
+                file_extension=".flac",
+                codecs="flac",
+                mime_type="audio/flac",
+                audio_quality="HI_RES_LOSSLESS",
+                bit_depth=24,
+                sample_rate=96000,
+            )
+
+    class AnyTrack(Track):
+        def __init__(self):
+            pass
+
+        @property
+        def id(self):
+            return 99
+
+    subject = type("Subject", (StreamMixin,), {})()
+    subject.settings = type(
+        "Settings",
+        (),
+        {"data": type("Data", (), {"extract_flac": True})()},
+    )()
+    subject.session = type("Session", (), {"audio_quality": Quality.hi_res_lossless})()
+    subject.tidal = type("Tidal", (), {"hifi_client": HiFiClient()})()
+    subject._pace_stream_api = lambda enabled: events.append(("pace", enabled)) or 0.0
+
+    info = subject._get_track_stream_info_hifi(AnyTrack(), pace_api=True)
+
+    assert events[0] == ("pace", True)
+    assert events[1] == ("hifi", 99, "HI_RES_LOSSLESS")
+    assert info.stream_manifest is not None
+    hifi_src = inspect.getsource(StreamMixin._get_track_stream_info_hifi)
+    assert hifi_src.index("_pace_stream_api") < hifi_src.index("track_stream")
 
 
 def test_prefer_listed_hires_paces_extra_stream_info_request():

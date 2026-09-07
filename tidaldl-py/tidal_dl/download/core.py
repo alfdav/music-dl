@@ -152,25 +152,27 @@ class DownloadCore:
             self._adaptive_delay_sec_min = pacer.delay_min
             self._adaptive_delay_sec_max = pacer.delay_max
         self.fn_logger.warning(
-            f"Rate limit hit #{self._rate_limit_hits}. "
+            f"Rate limit hit #{pacer.rate_limit_hits}. "
             f"Adaptive API delay now [{self._adaptive_delay_sec_min:.1f}s–{self._adaptive_delay_sec_max:.1f}s]."
         )
 
     def _on_successful_track(self) -> None:
-        """Track successful downloads; halve adaptive delay after 50 consecutive successes."""
+        """Tell the process-wide pacer a track succeeded so any job can recover 429 delay."""
+        from tidal_dl.download.api_pacing import shared_pacer
+
+        pacer = shared_pacer()
+        delay_min, delay_max, relaxed = pacer.note_success(
+            self.settings.data.download_delay_sec_min,
+            self.settings.data.download_delay_sec_max,
+        )
         with self._rate_limit_lock:
-            self._successful_since_limit += 1
-            if self._rate_limit_hits > 0 and self._successful_since_limit >= 50:
-                self._successful_since_limit = 0
-                baseline_min = self.settings.data.download_delay_sec_min
-                baseline_max = self.settings.data.download_delay_sec_max
-                self._adaptive_delay_sec_min = max(self._adaptive_delay_sec_min / 2, baseline_min)
-                self._adaptive_delay_sec_max = max(self._adaptive_delay_sec_max / 2, baseline_max)
-                self._sync_api_pacer_delays()
-                self.fn_logger.debug(
-                    f"50 successful tracks. API delay halved to "
-                    f"[{self._adaptive_delay_sec_min:.1f}s–{self._adaptive_delay_sec_max:.1f}s]."
-                )
+            self._adaptive_delay_sec_min = delay_min
+            self._adaptive_delay_sec_max = delay_max
+        if relaxed:
+            self.fn_logger.debug(
+                f"50 successful tracks. API delay halved to "
+                f"[{self._adaptive_delay_sec_min:.1f}s–{self._adaptive_delay_sec_max:.1f}s]."
+            )
 
     def extension_guess(self, quality_audio: Quality, metadata_tags: list[str], is_video: bool) -> str:
         """Guess the file extension for a media item based on quality and type.
