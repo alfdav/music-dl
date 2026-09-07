@@ -160,6 +160,14 @@
 
 **Prevention:** Deterministic layout candidate `Artist/Artist - Album/file` → `Artist/Album/file`. Run that heal on signature-unchanged reconcile, on playback resolve, and on library/search serialize. Pair layout twins even when size fingerprints collide. Merge play_events/favorites onto an already-indexed dest. Never stamp playable-local unless the path is a readable audio file. Do not mark_missing from GET (remount). Edition suffixes stay on the album folder so remasters are not false-healed.
 
+## 2026-09-07 — List/detail still stamped local+FLAC from SQLite after path heal
+
+**What happened:** `_db_row_to_track` learned to check the file, but `/albums/lookup`, playlist serialize, Home recents, and the green `views.js` badge still trusted `is_local` from the index. Play album queued those rows. `/albums/{id}/tracks` already used `is_file()`.
+
+**Root cause:** Playability was not one helper. Lookup and playlists set `is_local = bool(row)`. Recents hardcoded `True`. The UI never read `playable` or `missing_since`.
+
+**Prevention:** `present_playable_path` is the only stamp. `is_local`/`playable` require a readable audio file (heal first, no `mark_missing` on GET). Play/Shuffle album filters `trackIsPlayable`. Badge and `.track.unplayable` use that helper. Playback GET stays the hard check.
+
 ## 2026-09-04 — Rust Tauri plugin bump left JS packages behind
 
 **What happened:** After PR #172, edge-desktop aborted on macOS, Windows, and Linux before compile: `tauri-plugin-updater (v2.11.0) : @tauri-apps/plugin-updater (v2.10.1)`.

@@ -690,6 +690,14 @@ body {
 
 .track:hover { background: var(--surface-hover); }
 
+.track.unplayable {
+  opacity: 0.45;
+}
+
+.track.unplayable:hover {
+  background: transparent;
+}
+
 .track.playing {
   background: var(--accent-glow);
 }

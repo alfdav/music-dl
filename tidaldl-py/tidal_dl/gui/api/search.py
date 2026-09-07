@@ -31,15 +31,20 @@ def _live_library_row(db: Any, isrc: str) -> dict | None:
     """Prefer a live library file. Never rank a `#recycle` / trash path first.
 
     Twin-file ISRC adopt (#179) and download skip share
-    ``playable_library_row_for_isrc``. A stale index path after a layout
-    move still resolves through identity so search can stamp ``is_local``.
+    ``playable_library_row_for_isrc``. A stale ``Artist/Artist - Album``
+    index path heals through ``present_playable_path``; identity still
+    resolves layout-move paths so search can stamp ``is_local``.
     """
+    from tidal_dl.helper.library_reconcile import present_playable_path
     from tidal_dl.helper.recording_identity import playable_library_row_for_isrc
 
     if not isrc:
         return None
     playable = playable_library_row_for_isrc(db, isrc)
     if playable:
+        served, ok = present_playable_path(playable.get("path") or "", db)
+        if ok:
+            return {**playable, "path": served}
         live = resolve_live_library_path(playable.get("path") or "") or identity_path_for_row(
             playable
         )
@@ -52,6 +57,9 @@ def _live_library_row(db: Any, isrc: str) -> dict | None:
         path = row.get("path") or ""
         if path_has_skipped_scan_dir(path):
             continue
+        served, ok = present_playable_path(path, db)
+        if ok:
+            return {**row, "path": served}
         live = resolve_live_library_path(path) or identity_path_for_row(row)
         if not live:
             continue

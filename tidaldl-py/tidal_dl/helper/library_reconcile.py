@@ -1081,21 +1081,57 @@ class PathReconciler:
 
 
 def readable_audio_file(path: str | Path) -> bool:
-    file_path = Path(path)
+    raw = os.fspath(path)
+    if not raw or "\x00" in raw:
+        return False
+    suffix = os.path.splitext(raw)[1].lower()
+    if suffix not in AUDIO_EXTENSIONS:
+        return False
     try:
-        return file_path.is_file() and file_path.suffix.lower() in AUDIO_EXTENSIONS
+        return os.path.isfile(raw)
     except OSError:
         return False
 
 
+def present_playable_path(path: str | None, db=None) -> tuple[str | None, bool]:
+    """Heal-then-serve. ``is_local`` only when the audio file is readable. No mark_missing."""
+    stored = os.fspath(path).strip() if path else ""
+    if not stored:
+        return None, False
+    allowlisted = stored
+    if db is not None and hasattr(db, "get"):
+        try:
+            row = db.get(stored)
+        except Exception:  # noqa: BLE001
+            row = None
+        if row and row.get("path"):
+            allowlisted = str(row["path"]).strip() or stored
+    if readable_audio_file(allowlisted):
+        return allowlisted, True
+    healed = heal_artist_album_layout_path(db, allowlisted)
+    if healed:
+        return healed, True
+    return allowlisted, False
+
+
 def heal_artist_album_layout_path(db, old_path: str) -> str | None:
     """Cheap one-path heal. No directory walk. Updates scanned/play_events/favorites."""
-    if readable_audio_file(old_path):
-        return old_path
-    candidate = artist_album_layout_candidate(old_path)
+    stored = os.fspath(old_path).strip() if old_path else ""
+    if not stored:
+        return None
+    if db is not None and hasattr(db, "get"):
+        try:
+            row = db.get(stored)
+        except Exception:  # noqa: BLE001
+            row = None
+        if row is not None and row.get("path"):
+            stored = str(row["path"]).strip() or stored
+    if readable_audio_file(stored):
+        return stored
+    candidate = artist_album_layout_candidate(stored)
     if candidate is None or not readable_audio_file(candidate):
         return None
-    if not directory_editions_compatible(parent_directory(old_path), parent_directory(candidate)):
+    if not directory_editions_compatible(parent_directory(stored), parent_directory(candidate)):
         return None
     identity = None
     try:
@@ -1103,9 +1139,9 @@ def heal_artist_album_layout_path(db, old_path: str) -> str | None:
         identity = identity_from_stat(Path(candidate), st)
     except OSError:
         identity = FileIdentity(path=candidate)
-    if db is not None and db.get(old_path) is not None:
+    if db is not None and hasattr(db, "get") and db.get(stored) is not None:
         if not db.migrate_path(
-            old_path,
+            stored,
             candidate,
             merge=True,
             file_size=identity.size,

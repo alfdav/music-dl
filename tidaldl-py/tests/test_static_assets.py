@@ -546,8 +546,9 @@ class TestTrackRowActionSpacing:
         js = read_gui_js()
 
         assert "className: 'track-actions visible'" in js
-        assert "className: 'source-tag ' + (track.is_local ? 'local-tag' : 'tidal-tag')" in js
+        assert "className: 'source-tag ' + (trackIsPlayable(track) ? 'local-tag' : 'tidal-tag')" in js
         assert "className: 'dl-btn'" in js
+        assert ".track.unplayable" in css
 
         actions = _css_rule_bodies(css, ".track-actions")
         assert actions, ".track-actions rule is missing"

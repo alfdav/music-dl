@@ -687,27 +687,24 @@ def _local_cover_url(path: str | None, art_available: bool | int | None) -> str:
 
 def _present_library_path(row: dict) -> tuple[dict, bool]:
     """Heal a stale Artist - Album path. Do not mark_missing on GET."""
-    from tidal_dl.helper.library_reconcile import (
-        artist_album_layout_candidate,
-        heal_artist_album_layout_path,
-        readable_audio_file,
-    )
+    from tidal_dl.helper.library_reconcile import present_playable_path
 
     path = row.get("path") or ""
-    if path and readable_audio_file(path):
-        return row, True
     db = None
     try:
         db = _get_db()
     except Exception:  # noqa: BLE001
         db = None
-    if path and db is not None and hasattr(db, "migrate_path") and artist_album_layout_candidate(path):
-        healed = heal_artist_album_layout_path(db, path)
-        if healed:
-            _remember_playback_migrations([(path, healed)])
-            fresh = db.get(healed) or {**row, "path": healed, "missing_since": None}
-            return fresh, True
-    return row, False
+    served, playable = present_playable_path(path, db)
+    if playable and served and served != path:
+        _remember_playback_migrations([(path, served)])
+        fresh = (db.get(served) if db is not None else None) or {
+            **row,
+            "path": served,
+            "missing_since": None,
+        }
+        return fresh, True
+    return row, playable
 
 
 def _surface_cover_url(path: str | None, art_available: bool | int | None) -> str:
@@ -740,6 +737,7 @@ def _db_row_to_track(row: dict) -> dict:
         "codec": presented.get("codec") or row.get("codec") or "unknown",
         "play_count": presented.get("play_count") or row.get("play_count") or 0,
         "is_local": playable,
+        "playable": playable,
         "local_path": path if playable else None,
         "cover_url": _local_cover_url(path, presented.get("art_available") or row.get("art_available")) if playable else "",
         "missing_since": presented.get("missing_since") or row.get("missing_since"),

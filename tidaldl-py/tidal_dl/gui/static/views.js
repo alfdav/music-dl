@@ -633,8 +633,11 @@ function _onRepeatHalf(track) {
   half.appendChild(body);
   half.addEventListener('click', (e) => {
     e.stopPropagation();
-    const t = { ...track, local_path: track.path, is_local: true };
-    playTrack(t);
+    if (trackIsPlayable(track)) {
+      playTrack({ ...track, local_path: track.local_path || track.path, is_local: true });
+      return;
+    }
+    if (track.id) playTrack(track);
   });
   a11yClick(half);
   return half;
@@ -748,7 +751,7 @@ function _renderRecentStrip(container) {
     });
     card.appendChild(artistEl);
     card.addEventListener('click', () => {
-      if (track.is_local && track.local_path) startPlaybackFromList(track, recentlyPlayed);
+      if (trackIsPlayable(track)) startPlaybackFromList(track, recentlyPlayed);
       else if (track.id) startPlaybackFromList(track, recentlyPlayed);
     });
     a11yClick(card);
@@ -2050,10 +2053,18 @@ function _queueTrackLast(track) {
   toast((track.name || 'Track') + ' added to queue', 'success');
 }
 
+function trackIsPlayable(track) {
+  if (!track) return false;
+  if (track.playable === false) return false;
+  if (track.missing_since) return false;
+  if (!track.is_local) return false;
+  return !!(track.local_path || track.path);
+}
+
 function renderTrackRow(track, num, allTracks) {
   const current = state.queue[state.queueIndex];
   const isPlaying = current && _trackKey(current) === _trackKey(track) && _trackKey(track) !== '' && state.playing;
-  const row = h('div', { className: 'track' + (isPlaying ? ' playing' : ''), 'data-track-id': _trackKey(track) });
+  const row = h('div', { className: 'track' + (isPlaying ? ' playing' : '') + (trackIsPlayable(track) ? '' : ' unplayable'), 'data-track-id': _trackKey(track) });
 
   // Number / equalizer
   const numCell = h('div', { className: 'track-num', 'data-num': String(num) });
@@ -2129,10 +2140,10 @@ function renderTrackRow(track, num, allTracks) {
   // Actions
   const actions = h('div', { className: 'track-actions visible' });
   const sourceTag = h('span', {
-    className: 'source-tag ' + (track.is_local ? 'local-tag' : 'tidal-tag'),
-  }, track.is_local ? 'local' : 'tidal');
+    className: 'source-tag ' + (trackIsPlayable(track) ? 'local-tag' : 'tidal-tag'),
+  }, trackIsPlayable(track) ? 'local' : 'tidal');
   actions.appendChild(sourceTag);
-  if (!track.is_local && !(track.local_path || track.path)) {
+  if (!trackIsPlayable(track) && track.id) {
     const btn = h('button', { className: 'dl-btn', title: 'Download' });
     btn.appendChild(svgIcon(ICONS.download));
     btn.addEventListener('click', (e) => {
@@ -2250,6 +2261,7 @@ function renderTrackRow(track, num, allTracks) {
 
   // Click to play
   row.addEventListener('click', () => {
+    if (!trackIsPlayable(track) && !track.id) return;
     startPlaybackFromList(track, allTracks);
   });
   a11yClick(row);
@@ -2772,7 +2784,7 @@ async function renderAlbumDetail(container, albumId) {
     const playBtn = h('button', { className: 'pill active' });
     playBtn.textContent = '\u25B6  Play';
     playBtn.addEventListener('click', () => {
-      const playable = tracks.filter(t => t.is_local);
+      const playable = tracks.filter(trackIsPlayable);
       if (!playable.length) { toast('No local tracks to play', 'info'); return; }
       state.shuffle = false;
       btnShuffle.classList.remove('active');
@@ -2783,7 +2795,7 @@ async function renderAlbumDetail(container, albumId) {
     const shuffleBtn = h('button', { className: 'pill' });
     shuffleBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Shuffle';
     shuffleBtn.addEventListener('click', () => {
-      const playable = tracks.filter(t => t.is_local);
+      const playable = tracks.filter(trackIsPlayable);
       if (!playable.length) { toast('No local tracks to play', 'info'); return; }
       state.shuffle = true;
       btnShuffle.classList.add('active');

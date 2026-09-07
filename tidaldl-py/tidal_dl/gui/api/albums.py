@@ -192,10 +192,11 @@ def album_lookup(
     """Search Tidal for a matching album and return its full track listing.
 
     Each track is annotated with ``is_local`` and ``path`` / ``local_path``
-    when this release already has the file. Matching is album-scoped
+    when this release already has a readable file. Matching is album-scoped
     title+artist (and ISRC only inside those rows) against the queried
     library album, with album-title normalization and layout-move-safe
-    paths. Global ISRC is not used — it collides across albums.
+    paths. Global ISRC is not used — it collides across albums. ``playable``
+    is set only when the matched library file is readable on disk.
     """
     from tidalapi.album import Album as TidalAlbum
 
@@ -290,6 +291,8 @@ def album_lookup(
     tidal_tracks = best_tracks
 
     # --- 5. Serialize with album-scoped identity (ISRC only inside this release) ---
+    from tidal_dl.helper.library_reconcile import present_playable_path
+
     serialized = []
     missing_count = 0
     for t in tidal_tracks:
@@ -304,6 +307,12 @@ def album_lookup(
             scope_artist=artist,
             scope_album=album,
         )
+        if local_row:
+            served, ok = present_playable_path(local_row.get("path"))
+            if ok and served:
+                local_row = {**local_row, "path": served}
+            else:
+                local_row = None
         finish_stamp(stamp_track(data, local_row))
         if not local_row:
             data["quality"] = _catalog_quality(t)

@@ -1655,15 +1655,18 @@ class TestPlayabilityHonesty:
 
         track = library_api._db_row_to_track(dict(db.get(str(dead))))
         assert track["is_local"] is False
+        assert track["playable"] is False
         assert not track.get("local_path")
         assert track["path"] == str(dead)
 
         search = library_api.library_search(q="Song", type="tracks", limit=20)
         assert search["tracks"][0]["is_local"] is False
+        assert search["tracks"][0]["playable"] is False
         assert not search["tracks"][0].get("local_path")
 
         page = library_api.library(sort="title", limit=50, offset=0, q="")
         assert page["tracks"][0]["is_local"] is False
+        assert page["tracks"][0]["playable"] is False
         rec = _reconciler(db, [root], metadata={})
         rec.reconcile(force=True)
         assert db.get(str(dead))["missing_since"] is not None
@@ -1696,9 +1699,11 @@ class TestPlayabilityHonesty:
         search = library_api.library_search(q="Song", type="tracks", limit=20)
 
         assert track["is_local"] is True
+        assert track["playable"] is True
         assert track["path"] == str(live)
         assert track["local_path"] == str(live)
         assert search["tracks"][0]["is_local"] is True
+        assert search["tracks"][0]["playable"] is True
         assert search["tracks"][0]["path"] == str(live)
         assert db.get(str(live))["play_count"] == 6
         assert db.get(str(old)) is None
@@ -1741,6 +1746,67 @@ class TestPlayabilityHonesty:
         db.open()
         assert db.get(str(live)) is not None
         assert db.get(str(old)) is None
+        db.close()
+
+    def test_home_recent_does_not_stamp_local_when_file_is_missing(self, tmp_path, monkeypatch):
+        import tidal_dl.gui.api.home as home_api
+        import tidal_dl.gui.api.library as library_api
+
+        root = tmp_path / "Music"
+        dead = root / "Artist One" / "First Album" / "01 - Song.wav"
+        dead.parent.mkdir(parents=True)
+        db = _open_db(tmp_path)
+        _seed(db, dead, artist="Artist One", title="Song", album="First Album", duration=1, with_identity=False)
+        db.log_play_event(str(dead), artist="Artist One", duration=1, played_at=1700000900)
+        db.commit()
+
+        class FakeSettings:
+            data = SimpleNamespace(download_base_path=str(root), scan_paths="")
+
+        monkeypatch.setattr(library_api, "Settings", FakeSettings)
+        monkeypatch.setattr(library_api, "path_config_base", lambda: str(tmp_path))
+        monkeypatch.setattr(library_api, "_library_db", lambda: db)
+        monkeypatch.setattr(library_api, "_get_db", lambda: db)
+        monkeypatch.setattr(home_api, "path_config_base", lambda: str(tmp_path))
+        monkeypatch.setattr(home_api, "_get_db", lambda: db)
+
+        recent = home_api.recent_plays(limit=10)
+        track = recent["tracks"][0]
+        assert track["is_local"] is False
+        assert track["playable"] is False
+        assert not track.get("local_path")
+        db.close()
+
+    def test_search_serialize_heals_layout_path_before_stamping_local(self, tmp_path, monkeypatch):
+        import tidal_dl.gui.api.search as search_api
+
+        root = tmp_path / "Music"
+        old = root / "Artist One" / "Artist One - First Album" / "01 - Song.wav"
+        live = root / "Artist One" / "First Album" / "01 - Song.wav"
+        _write_wav(live, frames=8000)
+        db = _open_db(tmp_path)
+        _seed(
+            db, old, artist="Artist One", title="Song", album="First Album",
+            duration=1, with_identity=False, isrc="ISRCHEAL1",
+        )
+
+        monkeypatch.setattr(search_api, "_get_library_db", lambda: db)
+
+        result = search_api._serialize_track(SimpleNamespace(
+            id=7,
+            name="Song",
+            full_name="Song",
+            artists=[SimpleNamespace(name="Artist One", id=1)],
+            album=SimpleNamespace(id=2, name="First Album", image=lambda size: ""),
+            duration=1,
+            audio_quality="LOSSLESS",
+            isrc="ISRCHEAL1",
+            media_metadata_tags=[],
+        ))
+
+        assert result["is_local"] is True
+        assert result["playable"] is True
+        assert result["path"] == str(live)
         db.close()
 
 
