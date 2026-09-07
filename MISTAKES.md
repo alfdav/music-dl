@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-07 — Rebase onto #179 dropped one of two search live-row gates
+
+**What happened:** After PR #179 merged, rebasing #180 and #182 onto master conflicted in `search.py` `_live_library_row`. Taking only master would drop identity/heal. Taking only the PR would drop `playable_library_row_for_isrc`.
+
+**Root cause:** Both products replace the same helper. #179 made it the shared playable-ISRC gate (twin-file adopt / download skip). #180 wraps stale index paths with identity; #182 heals `Artist/Artist - Album` then serves a readable file.
+
+**Prevention:** Keep both: call `playable_library_row_for_isrc` first, then identity/heal fallback for stale index paths. Concatenate `MISTAKES.md` entries. Do not take one side of `_live_library_row`.
+
 ## 2026-09-07 — Post-migrate ISRC re-register wiped row metadata
 
 **What happened:** Bugbot on PR #179 after the adopt/index fix: `_index_adopted_path` called `register_isrc_path` after a successful `migrate_path`, and `item()` did it again on the final path. `record()` conflict-wrote `artist`/`title`/`album`/`quality`/`duration` to null. Upgrade jobs then `commit`ted those stubs after `register_downloaded_track`.
