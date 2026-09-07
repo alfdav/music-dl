@@ -27,6 +27,13 @@ else:
     _STATIC_DIR = Path(__file__).parent / "static"
 
 
+def _refresh_tidal_token_if_needed() -> None:
+    """Run token refresh off the event loop (download workers share this lock)."""
+    from tidal_dl.config import Tidal as _Tidal
+
+    _Tidal()._ensure_token_fresh()
+
+
 def create_app(
     port: int = 8765,
     job_db_path: Path | None = None,
@@ -174,9 +181,13 @@ def create_app(
     from starlette.requests import Request
 
     class TokenRefreshMiddleware(BaseHTTPMiddleware):
+        # Local playback must never wait on Tidal token I/O. Download workers
+        # hold `_token_fresh_lock` during refresh/persist; a sync check on the
+        # sidecar event loop freezes `/api/playback/*` (0:00 / wrong duration).
         _SKIP_PREFIXES = (
             "/api/settings", "/api/setup",
             "/api/library/scan", "/api/library/reconcile", "/api/queue",
+            "/api/playback",
         )
 
         async def dispatch(self, request: Request, call_next):
@@ -185,8 +196,9 @@ def create_app(
                 path.startswith(p) for p in self._SKIP_PREFIXES
             ):
                 try:
-                    from tidal_dl.config import Tidal as _Tidal
-                    _Tidal()._ensure_token_fresh()
+                    import asyncio
+
+                    await asyncio.to_thread(_refresh_tidal_token_if_needed)
                 except Exception:
                     pass
             return await call_next(request)
