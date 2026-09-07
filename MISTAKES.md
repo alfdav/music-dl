@@ -32,6 +32,14 @@
 
 **Prevention:** Same-folder identity tests must write `01 - Title.flac` and the template dest in one directory (`{track_title}` → `Title.flac`). Give the Track mock album/artist only when the template actually needs those tokens.
 
+## 2026-09-07 — Cancel-all and shared session quality raced across GUI workers
+
+**What happened:** Bugbot on PR #181: (1) each worker cleared `_cancel_all` when it saw the flag, so an idle worker could reset it while another was inside `dl.item()`; (2) concurrent GUI workers share the Tidal singleton and `_adjust_quality_settings` raced.
+
+**Root cause:** Cancel was a single boolean with first-observer-clears. Quality was a long-lived mutation of `session.audio_quality` for the whole `item()` call.
+
+**Prevention:** Cancel-all stays set until every worker acks and `_in_flight == 0`. Bind quality only inside `stream_lock` around `get_stream` / Hi-Fi mapping, then restore. Cover both races in `test_download_jobs_service.py` and `test_phase2_resilience.py`.
+
 ## 2026-09-07 — StreamMixin stubs and `*_args` overrides broke when API pacing was wired in
 
 **What happened:** `_get_stream_info` called `_pace_tidal_api` on StreamMixin-only test subjects (`OAuthStreamSubject`). `item()` passed `download_delay=` as a keyword into `_download_and_process_media` overrides that only accept `*_args`.
