@@ -149,15 +149,34 @@ def album_tracks(album_id: int) -> dict:
     except Exception:
         pass
 
+    album_name = getattr(album, "name", "")
+    artist = getattr(album, "artist", None) and album.artist.name or ""
+    local_rows = _local_album_rows(artist, album_name)
+    serialized = []
+    for track in tracks:
+        data = _serialize_track(track)
+        # Drop the catalog-wide ISRC / title+artist stamp from _serialize_track,
+        # then restamp from this release's library rows so a shared ISRC or
+        # title cannot steal a file from another album.
+        local_row = match_local_row(
+            data,
+            local_rows,
+            album_scoped=True,
+            scope_artist=artist,
+            scope_album=album_name,
+        )
+        stamp_track(data, local_row)
+        serialized.append(data)
+
     return {
         "album": {
             "id": album.id,
-            "name": getattr(album, "name", ""),
-            "artist": getattr(album, "artist", None) and album.artist.name or "",
+            "name": album_name,
+            "artist": artist,
             "cover_url": cover_url,
             "num_tracks": getattr(album, "num_tracks", 0),
         },
-        "tracks": [_serialize_track(t) for t in tracks],
+        "tracks": serialized,
         "total": len(tracks),
     }
 

@@ -72,6 +72,14 @@
 
 **Prevention:** Call pacing through a StreamMixin helper that falls back to the shared pacer. Pass new `item()` → mixin arguments positionally so existing `*_args` test doubles keep working.
 
+## 2026-09-07 — Album detail skipped album-scoped restamp
+
+**What happened:** Bugbot on PR #180: `GET /albums/{id}/tracks` stamped `is_local` from catalog-wide ISRC / title+artist via `_serialize_track`. A live file from another release hid Download on this album page.
+
+**Root cause:** `album_lookup` drops that catalog-wide stamp and restamps with `match_local_row(..., album_scoped=True)`. The album-detail endpoint never did.
+
+**Prevention:** Apply the same album-scoped restamp on `album_tracks`. Cover shared-ISRC and title+artist cross-release cases in `test_local_identity.py` against `GET /albums/{id}/tracks`, not only `album_lookup`.
+
 ## 2026-09-07 — Album scope_artist replaced track artist and dropped compilations
 
 **What happened:** Bugbot on PR #180: `match_local_row` overwrote the catalog track artist with album `scope_artist`. Various Artists / guest-credit files missed live matches when ISRC did not match.
