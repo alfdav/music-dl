@@ -13,7 +13,12 @@ from types import SimpleNamespace
 from tidal_dl.gui.api import albums as albums_api
 from tidal_dl.gui.api import search as search_api
 from tidal_dl.helper.library_db import LibraryDB
-from tidal_dl.helper.local_identity import match_local_row, stamp_track
+from tidal_dl.helper.local_identity import (
+    finish_stamp,
+    match_local_row,
+    recording_title,
+    stamp_track,
+)
 
 
 def _touch(path: Path) -> Path:
@@ -853,3 +858,107 @@ def test_album_lookup_stamps_guest_leftover_artist_album_tag(tmp_path, monkeypat
     assert by_name["Harbor Light"]["local_path"] == str(live)
     assert result["missing_count"] == 0
     db.close()
+
+
+def test_album_lookup_does_not_stamp_foreign_leftover_codec_tag_on_va(
+    tmp_path, monkeypatch,
+):
+    """Another artist's leftover Album [FLAC] must not enter a VA compilation pool."""
+    foreign = _touch(tmp_path / "music" / "Juniper Vale" / "Harbor Radio" / "01 Static.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        foreign,
+        artist="Juniper Vale",
+        title="Static",
+        album="Harbor Radio [FLAC]",
+        album_artist="Juniper Vale",
+        isrc="USESK0000777",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    db.commit()
+
+    tidal = _tidal_album(
+        150,
+        "Harbor Radio",
+        "Various Artists",
+        [_tidal_track(
+            track_id=151,
+            name="Static",
+            artist="Nia Coltrane",
+            album="Harbor Radio",
+            isrc="QZNIA0000151",
+        )],
+    )
+    _patch_album_lookup(monkeypatch, db, tidal)
+
+    leftover = db.tracks_for_leftover_album_tags("Various Artists", "Harbor Radio")
+    assert leftover == []
+    pool = db.tracks_for_album_identity("Various Artists", "Harbor Radio")
+    assert all(row.get("path") != str(foreign) for row in pool)
+
+    result = albums_api.album_lookup("Various Artists", "Harbor Radio")
+    assert result["tracks"][0]["is_local"] is False
+    assert result["tracks"][0].get("local_path") in (None, "")
+    assert result["missing_count"] == 1
+    db.close()
+
+
+def test_recording_title_strips_feat_when_leftover_suffix_follows():
+    """Feat/ft/with is the same recording even when Explicit or Bonus Track follows."""
+    assert recording_title("Static (feat. Icarus) [Explicit]") == recording_title("Static")
+    assert recording_title("Static (feat. Icarus) (Bonus Track)") == recording_title("Static")
+    assert recording_title("Static (Live)") != recording_title("Static")
+    assert recording_title("Static (Remix)") != recording_title("Static")
+
+
+def test_match_local_row_stamps_feat_title_with_extra_suffix(tmp_path):
+    """Catalog Title (feat. X) [Explicit] must still hit a live file tagged Title."""
+    live = _touch(tmp_path / "music" / "Juniper Vale" / "Safe Room" / "01 Static.flac")
+    rows = [{
+        "path": str(live),
+        "artist": "Juniper Vale",
+        "title": "Static",
+        "album": "Safe Room",
+    }]
+
+    matched = match_local_row(
+        {
+            "name": "Static (feat. Icarus) [Explicit]",
+            "artist": "Juniper Vale",
+            "album": "Safe Room",
+            "isrc": "",
+        },
+        rows,
+    )
+    bonus = match_local_row(
+        {
+            "name": "Static (feat. Icarus) (Bonus Track)",
+            "artist": "Juniper Vale",
+            "album": "Safe Room",
+            "isrc": "",
+        },
+        rows,
+    )
+
+    assert matched is not None
+    assert matched["path"] == str(live)
+    assert bonus is not None
+    assert bonus["path"] == str(live)
+
+
+def test_stamp_track_finish_drops_catalog_quality_stash():
+    """API responses must not leak the internal catalog-quality stash."""
+    track = {"name": "Static", "artist": "Juniper Vale", "album": "Safe Room", "quality": "LOSSLESS"}
+    stamp_track(track, {
+        "path": "/music/Juniper Vale/Safe Room/01 Static.flac",
+        "quality": "FLAC",
+        "format": "FLAC",
+        "codec": "flac",
+    })
+    assert "_catalog_quality" in track
+    finish_stamp(track)
+    assert "_catalog_quality" not in track
+    assert track["quality"] == "FLAC"

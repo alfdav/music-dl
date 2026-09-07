@@ -232,15 +232,25 @@ class BrowseMixin:
         assert self._conn
         if not album:
             return []
+        artist = (artist or "").strip()
+        various = artist.casefold() == "various artists"
         clauses = ["album = ?"]
         params: list = [album]
         if artist:
             clauses.append("album LIKE ?")
             params.append(f"{artist} - {album}%")
-            clauses.append("album LIKE ?")
-            params.append(f"% - {album}%")
-        clauses.append("album LIKE ?")
-        params.append(f"{album} [%")
+            if not various:
+                # Any leftover ``Someone - Album`` prefix; filter_album_rows
+                # still requires host artist / album_artist.
+                clauses.append("album LIKE ?")
+                params.append(f"% - {album}%")
+            # Bare ``Album [FLAC]`` must stay artist-scoped. An unscoped LIKE
+            # lets another artist's leftover title enter a VA compilation.
+            clauses.append(
+                "(album LIKE ? AND (artist = ? COLLATE NOCASE "
+                "OR album_artist = ? COLLATE NOCASE))"
+            )
+            params.extend([f"{album} [%", artist, artist])
         rows = self._conn.execute(
             f"""SELECT * FROM scanned
                WHERE status != 'unreadable' AND missing_since IS NULL

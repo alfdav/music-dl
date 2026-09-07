@@ -16,7 +16,11 @@ from tidal_dl.helper.library_scanner import path_has_skipped_scan_dir
 from tidal_dl.helper.path import _album_identity, _strip_codec_brackets, resolve_live_library_path
 
 _FEAT_MARKER = re.compile(
-    r"\s*[\(\[]\s*(?:feat(?:uring)?\.?|ft\.?|with)\s+[^\)\]]+[\)\]]\s*$",
+    r"\s*[\(\[]\s*(?:feat(?:uring)?\.?|ft\.?|with)\s+[^\)\]]+[\)\]]",
+    re.IGNORECASE,
+)
+_LEFTOVER_TITLE_MARKER = re.compile(
+    r"\s*[\(\[]\s*(?:explicit|clean|bonus(?:\s+track)?|deluxe(?:\s+edition)?)\s*[\)\]]\s*$",
     re.IGNORECASE,
 )
 _CATALOG_QUALITY = "_catalog_quality"
@@ -64,7 +68,9 @@ def recording_title(value: object | None) -> str:
     """
     title = _strip_codec_brackets(str(value or "").strip())
     while True:
-        stripped = _FEAT_MARKER.sub("", title).strip()
+        stripped = _FEAT_MARKER.sub("", title)
+        stripped = _LEFTOVER_TITLE_MARKER.sub("", stripped)
+        stripped = re.sub(r"\s{2,}", " ", stripped).strip()
         if stripped == title:
             return fold_identity(title)
         title = stripped
@@ -120,6 +126,12 @@ def _various_artists(value: object | None) -> bool:
     return fold_identity(value) == "various artists"
 
 
+def _leftover_codec_album(row_album: object | None, album: str) -> bool:
+    raw = str(row_album or "").strip()
+    stripped = _strip_codec_brackets(raw)
+    return bool(stripped) and fold_identity(stripped) == fold_identity(album) and stripped != raw
+
+
 def filter_album_rows(
     rows: Iterable[Mapping[str, Any]],
     artist: str,
@@ -131,9 +143,23 @@ def filter_album_rows(
         row_album = row.get("album")
         if not albums_compatible(row_album, album, artist or row.get("artist")):
             continue
-        if not various and not (
-            artists_compatible(artist, row.get("artist"))
-            or artists_compatible(artist, row.get("album_artist"))
+        row_artist = row.get("artist")
+        row_album_artist = row.get("album_artist")
+        if various:
+            # Guest credits stay via album_artist=VA. A leftover Album [FLAC]
+            # from a solo artist is a different release.
+            if row_album_artist and not _various_artists(row_album_artist):
+                continue
+            if (
+                not row_album_artist
+                and _leftover_codec_album(row_album, album)
+                and row_artist
+                and not _various_artists(row_artist)
+            ):
+                continue
+        elif not (
+            artists_compatible(artist, row_artist)
+            or artists_compatible(artist, row_album_artist)
         ):
             continue
         matched.append(dict(row))

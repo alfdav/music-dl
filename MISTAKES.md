@@ -72,6 +72,30 @@
 
 **Prevention:** Call pacing through a StreamMixin helper that falls back to the shared pacer. Pass new `item()` → mixin arguments positionally so existing `*_args` test doubles keep working.
 
+## 2026-09-07 — Leftover Album [FLAC] tags ignored artist scope on VA compilations
+
+**What happened:** Bugbot on PR #180: `tracks_for_leftover_album_tags` always added an unscoped `album LIKE '{album} [%'` clause. `filter_album_rows` then treated codec-stripped titles as the same release and, for Various Artists, skipped the artist check. Another artist's leftover `Greatest Hits [FLAC]` could stamp `is_local` on a VA compilation.
+
+**Root cause:** Leftover codec-bracket discovery was title-only. VA guest-credit matching correctly skips track-artist equality, so an unscoped leftover LIKE has no second gate.
+
+**Prevention:** Scope leftover `Album [codec]` rows to artist/album_artist. Do not use any-artist `% - Album%` leftovers on VA. `filter_album_rows` rejects leftover codec titles from a solo album_artist on VA lookups. Cover the foreign leftover VA case in `test_local_identity.py`.
+
+## 2026-09-07 — Playlist stamp leaked `_catalog_quality`
+
+**What happened:** Bugbot on PR #180: `stamp_track` writes an internal `_catalog_quality` stash. Search and album APIs call `finish_stamp`; playlist serialization did not. When bounded candidates missed and `all_tracks` fallback hit, the playlist JSON included `_catalog_quality`.
+
+**Root cause:** The stash is a restamp helper, not an API field. Every surface that stamps must finish.
+
+**Prevention:** Playlist track serialization calls `finish_stamp`. Cover the all_tracks fallback in `test_gui_playlist_local_preference.py`.
+
+## 2026-09-07 — Feat strip required the credit to be the last parenthetical
+
+**What happened:** Bugbot on PR #180: `_FEAT_MARKER` only stripped feat/ft/with when it was the last parenthetical. After dropping `base_title` fallback, `Title (feat. X) [Explicit]` and `Title (feat. X) (Bonus Track)` no longer shared a variant with a live file tagged `Title`.
+
+**Root cause:** Version-preserving titles still need leftover metadata suffixes (explicit/clean/bonus) and mid-title feat credits stripped. Those are the same recording; remix/live/radio-edit are not.
+
+**Prevention:** Strip feat/ft/with anywhere, then leftover explicit/clean/bonus suffixes. Keep remix/live/radio-edit. Cover both suffix shapes in `test_local_identity.py`.
+
 ## 2026-09-07 — Loose titles stamped remix/live/radio-edit onto the original
 
 **What happened:** Bugbot on PR #180: title identity used `base_title`, which strips every trailing parenthetical. Remix, live, and radio-edit rows shared a key with the original. `_pick_identity_row` then preferred the shortest path, so a live file could lose to the studio cut (or the reverse). Download hid and playback used the wrong recording.

@@ -11,7 +11,12 @@ from fastapi import APIRouter, HTTPException, Request
 from tidal_dl.config import Tidal
 from tidal_dl.gui.api.search import _serialize_track
 from tidal_dl.helper.library_db import LibraryDB
-from tidal_dl.helper.local_identity import candidate_rows_for_track, match_local_row, stamp_track
+from tidal_dl.helper.local_identity import (
+    candidate_rows_for_track,
+    finish_stamp,
+    match_local_row,
+    stamp_track,
+)
 from tidal_dl.helper.path import path_config_base
 
 router = APIRouter()
@@ -103,7 +108,7 @@ def _serialize_playlist_tracks(session, playlist_id: str) -> list[dict]:
         for track in tracks:
             data = _serialize_track(track)
             local_row = _best_local_row(data, db, all_tracks, fallback_index=fallback_index)
-            stamp_track(data, local_row)
+            finish_stamp(stamp_track(data, local_row))
             serialized.append(data)
     finally:
         db.close()
