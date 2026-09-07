@@ -218,8 +218,15 @@ def adopt_original_name(
     db: LibraryDB | None = None,
     *,
     preferred: str | None = None,
+    isrc: str | None = None,
 ) -> Path:
-    """Rename *keep_path* onto a removed same-folder original when free."""
+    """Rename *keep_path* onto a removed same-folder original when free.
+
+    After a successful rename the ISRC/index row must follow the file.
+    Collapse already deleted the original's row; dropping the keep row
+    without migrating or re-registering leaves ``has_live_isrc`` false
+    even though the recording is on disk.
+    """
     keep = Path(keep_path)
     candidates: list[Path] = []
     if preferred:
@@ -241,10 +248,48 @@ def adopt_original_name(
             keep.rename(original)
         except OSError:
             continue
-        if db is not None and db.get(str(keep)):
-            db.remove(str(keep))
+        if db is not None:
+            _index_adopted_path(db, keep, original, isrc)
         return original
     return keep
+
+
+def _index_adopted_path(
+    db: LibraryDB,
+    old_path: Path,
+    new_path: Path,
+    isrc: str | None,
+) -> None:
+    """Keep a live ISRC/index row on the post-rename on-disk path."""
+    old_str = str(old_path)
+    new_str = str(new_path)
+    old_row = None
+    try:
+        old_row = db.get(old_str)
+    except Exception:  # noqa: BLE001
+        old_row = None
+    wanted = _norm_isrc(isrc) or _norm_isrc((old_row or {}).get("isrc"))
+
+    if old_row is not None:
+        try:
+            if db.migrate_path(old_str, new_str):
+                if wanted:
+                    db.register_isrc_path(wanted, new_path)
+                return
+        except Exception:  # noqa: BLE001
+            logger.debug("adopt migrate failed %s -> %s", old_str, new_str, exc_info=True)
+        try:
+            if db.get(old_str):
+                db.remove(old_str)
+        except Exception:  # noqa: BLE001
+            logger.debug("adopt could not drop stale keep row %s", old_str)
+
+    if not wanted:
+        return
+    try:
+        db.register_isrc_path(wanted, new_path)
+    except Exception:  # noqa: BLE001
+        logger.debug("adopt could not re-register ISRC at %s", new_str)
 
 
 def _trash_file(path: str) -> None:

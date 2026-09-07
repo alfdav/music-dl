@@ -782,7 +782,9 @@ class DownloadJobService:
                 isrc=row.get("isrc"),
             )
             db.commit()
-            new_path = self._rename_replacement_if_possible(old_path, new_path, removed_paths, db)
+            new_path = self._rename_replacement_if_possible(
+                old_path, new_path, removed_paths, db, isrc=row.get("isrc")
+            )
             register_func(new_path)
             db.commit()
 
@@ -854,6 +856,7 @@ class DownloadJobService:
         new_path,
         removed_paths: list[str],
         db: LibraryDB,
+        isrc: str | None = None,
     ) -> Path:
         from tidal_dl.helper.recording_identity import adopt_original_name
 
@@ -863,6 +866,7 @@ class DownloadJobService:
             removed_paths,
             db,
             preferred=old_path or None,
+            isrc=isrc,
         )
 
     def _cover_url(self, track) -> str:

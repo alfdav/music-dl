@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-07 — Adopt/rename dropped the live ISRC index row
+
+**What happened:** Bugbot on PR #179: after a replace, `adopt_original_name` renamed the kept file onto the freed original name and `db.remove`d the keep path. Collapse had already deleted the original's row. `has_live_isrc` / search `is_local` stayed false even though the file was on disk.
+
+**Root cause:** The only remaining index write was best-effort `register_downloaded_track`, which needs readable tags and a separate DB connection. Adopt deleted the keep row without migrating it to the final path.
+
+**Prevention:** After adopt/rename, migrate or `register_isrc_path` the final on-disk path. Do not rely on tag registration for live-ISRC. Cover collapse+adopt and `item()` with `register_downloaded_track` patched out in `test_recording_identity.py`.
+
 ## 2026-09-07 — Live ISRC recovery treated unplayable siblings as local
 
 **What happened:** Bugbot on PR #179: `has_live_isrc` returned true for a tag-scan sibling under a dead path. Download skip / bot `is_local` then blocked even when search could not resolve a playable indexed library path.

@@ -16,6 +16,7 @@ from tidalapi.media import Track
 from tidal_dl.gui.services.upgrade_jobs import cleanup_replaced_track_files
 from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.recording_identity import (
+    adopt_original_name,
     collapse_folder_identity,
     live_identity_paths,
 )
@@ -543,3 +544,114 @@ def test_collapse_folder_identity_keeps_other_recordings(tmp_path, monkeypatch):
     assert keep.exists()
     assert replacement.exists()
     assert not twin.exists()
+
+
+# ---------------------------------------------------------------------------
+# adopt_original_name must keep a live ISRC row on the final path
+# ---------------------------------------------------------------------------
+
+
+def test_adopt_original_name_migrates_isrc_row_to_final_path(tmp_path, monkeypatch):
+    """Collapse + adopt must not drop the only live ISRC index row."""
+    album = tmp_path / "Artist One" / "First Album"
+    original = _flac(album / "01 - Opening.flac", b"lossless")
+    keep = _flac(album / "Opening.flac", b"hires")
+
+    db = _open_db(tmp_path)
+    _record(db, original, ISRC_A)
+    db.register_isrc_path(ISRC_A, keep, commit=True)
+
+    monkeypatch.setattr(
+        "tidal_dl.gui.services.upgrade_jobs.trash_file",
+        lambda p: os.remove(p) if os.path.exists(p) else None,
+    )
+
+    removed = collapse_folder_identity(db, isrc=ISRC_A, keep_path=keep)
+    final = adopt_original_name(keep, removed, db, isrc=ISRC_A)
+    db.commit()
+
+    live = _live_library_row(db, ISRC_A)
+    assert final.resolve() == original.resolve()
+    assert original.exists()
+    assert original.read_bytes() == b"hires"
+    assert not keep.exists()
+    assert db.get(str(keep)) is None
+    assert db.get(str(original)) is not None
+    assert db.has_live_isrc(ISRC_A)
+    assert live is not None
+    assert Path(live["path"]).resolve() == original.resolve()
+    db.close()
+
+
+def test_adopt_original_name_reregisters_when_keep_row_is_missing(tmp_path, monkeypatch):
+    """No keep-path row: still index the adopted name from the known ISRC."""
+    album = tmp_path / "Artist One" / "First Album"
+    original = _flac(album / "01 - Opening.flac", b"lossless")
+    keep = _flac(album / "Opening.flac", b"hires")
+
+    db = _open_db(tmp_path)
+    _record(db, original, ISRC_A)
+    db.commit()
+
+    monkeypatch.setattr(
+        "tidal_dl.gui.services.upgrade_jobs.trash_file",
+        lambda p: os.remove(p) if os.path.exists(p) else None,
+    )
+
+    removed = collapse_folder_identity(db, isrc=ISRC_A, keep_path=keep)
+    assert db.get(str(original)) is None
+    assert db.get(str(keep)) is None
+
+    final = adopt_original_name(keep, removed, db, isrc=ISRC_A)
+    db.commit()
+
+    assert final.resolve() == original.resolve()
+    assert original.exists()
+    assert db.has_live_isrc(ISRC_A)
+    assert Path(db.primary_live_path_for_isrc(ISRC_A)).resolve() == original.resolve()
+    db.close()
+
+
+def test_redownload_keeps_live_isrc_after_adopt_without_tag_register(tmp_path):
+    """item() replace path must stay local even if tag registration is a no-op."""
+    album = tmp_path / "library"
+    numbered = _flac(album / "01 - Opening.flac", b"lossless")
+
+    dl = _download_for_paths(tmp_path, skip_existing=False)
+    _record(dl._library_db, numbered, ISRC_A)
+    dl._library_db.commit()
+
+    track = _make_track(507, ISRC_A, name="Opening")
+
+    def fake_download(media, path_media_dst, *_args, **_kwargs):
+        written = Path(path_media_dst)
+        written.parent.mkdir(parents=True, exist_ok=True)
+        written.write_bytes(b"hires")
+        return True, written
+
+    with (
+        patch.object(dl, "_validate_and_prepare_media", return_value=track),
+        patch.object(dl, "extension_guess", return_value=".flac"),
+        patch.object(dl, "_adjust_quality_settings", return_value=(None, None)),
+        patch.object(dl, "_download_and_process_media", side_effect=fake_download),
+        patch.object(dl, "_perform_post_processing", return_value=None),
+        patch("tidal_dl.download.items.register_downloaded_track", return_value=None),
+    ):
+        outcome, result_path = dl.item(
+            file_template="{track_title}",
+            media=track,
+            duplicate_action_override="redownload",
+        )
+
+    live = _live_library_row(dl._library_db, ISRC_A)
+    is_local = dl._library_db.has_live_isrc(ISRC_A)
+    final = Path(result_path)
+    dl._library_db.close()
+
+    assert outcome == DownloadOutcome.DOWNLOADED
+    assert final.is_file()
+    assert final.read_bytes() == b"hires"
+    assert is_local is True
+    assert live is not None
+    assert Path(live["path"]).resolve() == final.resolve()
+    assert sorted(p.name for p in album.glob("*.flac")) == [final.name]

@@ -149,8 +149,13 @@ class ItemMixin:
                     isrc=isrc,
                     keep_path=path_media_dst,
                 )
-                path_media_dst = adopt_original_name(path_media_dst, removed, library_db)
-                library_db.commit()
+                path_media_dst = adopt_original_name(
+                    path_media_dst, removed, library_db, isrc=isrc
+                )
+                # Adopt may rename the keep file onto the original name.
+                # Re-register the final on-disk path here so has_live_isrc
+                # does not depend on best-effort register_downloaded_track.
+                library_db.register_isrc_path(isrc, path_media_dst, commit=True)
             self._on_successful_track()
             register_downloaded_track(path_media_dst)
 
