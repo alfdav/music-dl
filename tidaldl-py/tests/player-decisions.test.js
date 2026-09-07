@@ -162,6 +162,47 @@ function loadPlayButtonHandler(audio, state, playTrack) {
   )(audio, state, { href: 'http://localhost/' }, playTrack, () => {});
 }
 
+function loadFetchWaveform(fetchFn, generateWaveform) {
+  const pathHelper = playerSource.match(
+    /function _currentTrackLocalPath\(track\) \{[\s\S]*?\n\}/,
+  );
+  const fetchHelper = playerSource.match(
+    /function _fetchWaveform\(track\) \{[\s\S]*?\n\}/,
+  );
+  if (!pathHelper || !fetchHelper) throw new Error('waveform fetch helpers not found');
+  return new Function(
+    'fetch',
+    'generateWaveform',
+    `${pathHelper[0]}\n${fetchHelper[0]}\nreturn _fetchWaveform;`,
+  )(fetchFn, generateWaveform);
+}
+
+function loadWfLoop({ audio, bars, hires }) {
+  const loopSource = playerSource.match(
+    /function _wfLoop\(\) \{[\s\S]*?\n\}/,
+  );
+  if (!loopSource) throw new Error('_wfLoop not found');
+  return new Function(
+    'audio',
+    '_wfBars',
+    '_wfHires',
+    'requestAnimationFrame',
+    `let _wfAnimId = null;\n${loopSource[0]}\nreturn _wfLoop;`,
+  )(audio, bars, hires, () => {});
+}
+
+function makeWfBar(baseScale) {
+  return {
+    _baseScale: baseScale,
+    style: { transform: `scaleY(${baseScale.toFixed(3)})` },
+    classList: {
+      added: new Set(),
+      add(name) { this.added.add(name); },
+      remove(name) { this.added.delete(name); },
+    },
+  };
+}
+
 function loadUpgradeQualityJump(qualityTitle) {
   const helperSource = playerSource.match(
     /function _upgradeQualityJump\(result\) \{[\s\S]*?\n\}/,
@@ -1014,5 +1055,96 @@ describe('recent history sync decisions', () => {
     expect(recentlyPlayed).toEqual([
       { id: 'duplicate', source: 'server', played_at: 1_700_000_000_000 },
     ]);
+  });
+});
+
+describe('waveform fetch gating', () => {
+  function captureFetch() {
+    const calls = [];
+    const fetchFn = (url) => {
+      calls.push(url);
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ peaks: [0.2, 0.4], hires: [0.1, 0.8] }),
+      });
+    };
+    const generated = [];
+    const generateWaveform = (...args) => generated.push(args);
+    return { calls, generated, fetchWaveform: loadFetchWaveform(fetchFn, generateWaveform) };
+  }
+
+  test('fetches peaks+hires for any playable local path key, not is_local+local_path only', () => {
+    const cases = [
+      { is_local: true, local_path: '/library/any-artist/any-album/track-a.flac' },
+      { is_local: true, path: '/library/any-artist/any-album/track-b.flac' },
+      { path: '/library/any-artist/any-album/track-c.flac' },
+      { local_path: '/library/any-artist/any-album/track-d.flac' },
+      { is_local: false, path: '/library/any-artist/any-album/track-e.flac' },
+    ];
+
+    for (const track of cases) {
+      const { calls, generated, fetchWaveform } = captureFetch();
+      fetchWaveform(track);
+      const expected = track.local_path || track.path;
+      expect(calls).toEqual([
+        '/api/playback/waveform?path=' + encodeURIComponent(expected),
+      ]);
+      expect(generated).toEqual([]);
+    }
+  });
+
+  test('does not fetch when there is no playable local file path', () => {
+    const skipped = [
+      null,
+      { is_local: true },
+      { is_local: true, local_path: '', path: '' },
+      { id: 99, is_local: false, name: 'Remote only' },
+    ];
+
+    for (const track of skipped) {
+      const { calls, generated, fetchWaveform } = captureFetch();
+      fetchWaveform(track);
+      expect(calls).toEqual([]);
+      expect(generated).toEqual([[]]);
+    }
+  });
+});
+
+describe('waveform pulse loop', () => {
+  test('without hires, the loop sweeps played classes but does not pulse scaleY', () => {
+    const bars = [makeWfBar(0.80), makeWfBar(0.60), makeWfBar(0.40), makeWfBar(0.20)];
+    const before = bars.map(bar => bar.style.transform);
+    const loop = loadWfLoop({
+      audio: { currentTime: 5, duration: 10 },
+      bars,
+      hires: null,
+    });
+
+    loop();
+
+    expect(bars.map(bar => bar.style.transform)).toEqual(before);
+    expect(bars[0].classList.added.has('wf-played')).toBe(true);
+    expect(bars[1].classList.added.has('wf-played')).toBe(true);
+    expect(bars[2].classList.added.has('wf-active')).toBe(true);
+    expect(bars[3].classList.added.has('wf-played')).toBe(false);
+  });
+
+  test('with hires, playing modulates scaleY so the waveform breathes', () => {
+    const bars = [makeWfBar(0.80), makeWfBar(0.60), makeWfBar(0.40), makeWfBar(0.20)];
+    const before = bars.map(bar => bar.style.transform);
+    const hires = new Array(20).fill(0);
+    hires[10] = 1;
+    const loop = loadWfLoop({
+      audio: { currentTime: 5, duration: 10 },
+      bars,
+      hires,
+    });
+
+    loop();
+
+    const after = bars.map(bar => bar.style.transform);
+    expect(after).not.toEqual(before);
+    expect(bars[2].style.transform).not.toBe(before[2]);
+    expect(bars[2].classList.added.has('wf-active')).toBe(true);
   });
 });
