@@ -52,6 +52,15 @@ function loadSearchRefreshHelper(state, document, doSearch) {
   )(state, document, doSearch);
 }
 
+function _playableLocalPathForTest(track) {
+  if (!track) return null;
+  if (track.playable === false) return null;
+  if (track.missing_since) return null;
+  if (track.local_path) return track.local_path;
+  if (track.is_local) return track.path || null;
+  return null;
+}
+
 function loadPlayTrack(audio, state) {
   const functionSource = playerSource.split('function playTrack(track) {')[1]
     .split('\nfunction updateNowPlaying(track) {')[0];
@@ -63,6 +72,7 @@ function loadPlayTrack(audio, state) {
     'audio',
     'state',
     '_currentTrackLocalPath',
+    '_playableLocalPath',
     '_resetPlayCount',
     '_recordRecentlyPlayed',
     'toast',
@@ -75,7 +85,7 @@ function loadPlayTrack(audio, state) {
     'updatePlayerHeart',
     '_saveQueue',
     `function playTrack(track) {${functionSource}\nreturn playTrack;`,
-  )(audio, state, track => track?.local_path || track?.path || null, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop);
+  )(audio, state, track => track?.local_path || track?.path || null, _playableLocalPathForTest, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop);
 }
 
 function loadPreloadNext(state) {
@@ -88,8 +98,9 @@ function loadPreloadNext(state) {
     'state',
     '_preloadAudio',
     '_currentTrackLocalPath',
+    '_playableLocalPath',
     `let _preloadedSrc = '';\nfunction _preloadNext() {${functionSource}\nreturn _preloadNext;`,
-  )(state, preloadAudio, track => track?.local_path || track?.path || null);
+  )(state, preloadAudio, track => track?.local_path || track?.path || null, _playableLocalPathForTest);
   return { preloadAudio, preloadNext };
 }
 
@@ -101,7 +112,7 @@ function loadRestorePosition(state, savedPosition) {
   const audio = { src: '', addEventListener: () => {} };
   const restorePosition = new Function(
     'state', 'localStorage', '_trackKey', '_isResumePositionUsable',
-    '_currentTrackLocalPath', 'audio', 'timeElapsed', 'formatTime',
+    '_currentTrackLocalPath', '_playableLocalPath', 'audio', 'timeElapsed', 'formatTime',
     'timeTotal', 'progressFill', '_fetchWaveform',
     `function _restorePosition() {${functionSource}\nreturn _restorePosition;`,
   )(
@@ -110,6 +121,7 @@ function loadRestorePosition(state, savedPosition) {
     track => track.key,
     () => true,
     track => track?.local_path || track?.path || null,
+    _playableLocalPathForTest,
     audio,
     {},
     value => String(value),
@@ -304,7 +316,7 @@ function loadPlaybackStatusEvents(state, sessionStorage, refreshTidalStatus, ext
     api, fetchFn, localPath,
   );
 
-  return { events: audio.handlers };
+  return { events: audio.handlers, audio };
 }
 
 function loadTidalStatusRefresh(document, refreshStatusLights, loadAuthStatus) {
@@ -620,6 +632,38 @@ describe('local playback decisions', () => {
     expect(invalidLocalAudio.src).toBe('');
   });
 
+  test('does not play a dead library path as local or Tidal', () => {
+    const deadLocal = {
+      src: '',
+      muted: false,
+      pause: () => {},
+      addEventListener: () => {},
+      load: () => {},
+    };
+    const deadWithTidalId = {
+      src: '',
+      muted: false,
+      pause: () => {},
+      addEventListener: () => {},
+      load: () => {},
+    };
+
+    loadPlayTrack(deadLocal, { playing: false })({
+      is_local: false,
+      playable: false,
+      path: '/music/dead.flac',
+    });
+    loadPlayTrack(deadWithTidalId, { playing: false })({
+      id: 42,
+      is_local: false,
+      playable: false,
+      path: '/music/dead.flac',
+    });
+
+    expect(deadLocal.src).toBe('');
+    expect(deadWithTidalId.src).toBe('/api/playback/stream/42');
+  });
+
   test('plays a Tidal item from disk when a local path is stamped', () => {
     const audio = {
       src: '',
@@ -842,6 +886,29 @@ describe('local playback decisions', () => {
 
     expect(storage.get('remotePlaybackUnavailable')).toBe('true');
     expect(localRefreshCalls).toEqual([]);
+  });
+
+  test('local GET failure on a dead indexed path does not mark Tidal unavailable', () => {
+    const storage = new Map();
+    const sessionStorage = {
+      getItem: key => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key),
+    };
+    const refreshCalls = [];
+    const toasts = [];
+    const loaded = loadPlaybackStatusEvents(
+      { playing: true, queue: [{ is_local: false, playable: false, path: '/music/dead.flac' }], queueIndex: 0 },
+      sessionStorage,
+      () => refreshCalls.push('refresh'),
+      { toast: (msg) => toasts.push(msg) },
+    );
+    loaded.audio.src = '/api/playback/local?path=%2Fmusic%2Fdead.flac';
+    loaded.events.error();
+
+    expect(storage.get('remotePlaybackUnavailable')).toBeUndefined();
+    expect(refreshCalls).toEqual([]);
+    expect(toasts.some(msg => String(msg).includes('Tidal stream unavailable'))).toBe(false);
   });
 
   test('reports aggregate local failures as local file access failures', () => {

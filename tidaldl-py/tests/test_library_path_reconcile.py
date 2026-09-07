@@ -1584,6 +1584,49 @@ class TestArtistAlbumLayoutHeal:
         assert plan.mark_missing == []
         assert plan.index_new == []
 
+    def test_layout_heal_allows_artist_folder_named_live(self, tmp_path):
+        from tidal_dl.helper.library_reconcile import (
+            FileIdentity,
+            heal_artist_album_layout_path,
+            plan_path_reconcile,
+        )
+
+        root = tmp_path / "Music"
+        old = root / "Live" / "Live - First Album" / "01 - Song.wav"
+        live = root / "Live" / "First Album" / "01 - Song.wav"
+        _write_wav(live, frames=8000)
+        db = _open_db(tmp_path)
+        _seed(
+            db, old, artist="Live", title="Song", album="First Album",
+            duration=1, with_identity=False,
+        )
+        db.commit()
+
+        healed = heal_artist_album_layout_path(db, str(old))
+        assert healed == str(live)
+        assert db.get(str(live)) is not None
+        assert db.get(str(old)) is None
+        db.close()
+
+        plan = plan_path_reconcile(
+            [FileIdentity(
+                path="/music/Live/Live - First Album/01.flac",
+                size=1000, duration=180, codec="flac",
+                title="Song", artist="Live", album="First Album",
+            )],
+            [FileIdentity(
+                path="/music/Live/First Album/01.flac",
+                size=1000, duration=180, codec="flac",
+                title="Song", artist="Live", album="First Album",
+            )],
+        )
+        assert plan.directory_moves == [
+            ("/music/Live/Live - First Album", "/music/Live/First Album"),
+        ]
+        assert plan.migrations == [
+            ("/music/Live/Live - First Album/01.flac", "/music/Live/First Album/01.flac"),
+        ]
+
     def test_layout_heal_does_not_cross_editions(self, tmp_path):
         from tidal_dl.helper.library_reconcile import artist_album_layout_candidate, plan_path_reconcile
 

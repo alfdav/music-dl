@@ -168,6 +168,22 @@
 
 **Prevention:** `present_playable_path` is the only stamp. `is_local`/`playable` require a readable audio file (heal first, no `mark_missing` on GET). Play/Shuffle album filters `trackIsPlayable`. Badge and `.track.unplayable` use that helper. Playback GET stays the hard check.
 
+## 2026-09-07 — Layout edition check treated artist name Live as an album edition
+
+**What happened:** `directory_editions_compatible` tokenized the raw `Artist - Album` folder. Artists named Live or Acoustic injected those words, so the rewrite to `Artist/Album` looked like an edition change and heal skipped a present file.
+
+**Root cause:** Edition tokens were compared before stripping the `Artist - ` prefix. Remaster protection already comes from the exact layout candidate path.
+
+**Prevention:** Layout pairs use `layout_editions_compatible` (compare after the rewrite). Fingerprint directory matches still use the raw folder names. Keep a Live-artist heal test next to the remaster non-heal test.
+
+## 2026-09-07 — Dead index path still played as local, then toasted as Tidal
+
+**What happened:** Honesty set `is_local` false but left `path`. `playTrack` used `local_path || path`, so a dead row still hit `/api/playback/local`. The error handler only retried heal when `is_local` was true, so the miss toasted Tidal-unavailable and set the session flag.
+
+**Root cause:** Path presence was treated as a playable local source. Error classification used the flag, not the request.
+
+**Prevention:** `_playableLocalPath` requires `local_path` or (`is_local` and `path`), and rejects `playable === false` / `missing_since`. Classify audio errors as local when `is_local` or `audio.src` is `/playback/local`.
+
 ## 2026-09-04 — Rust Tauri plugin bump left JS packages behind
 
 **What happened:** After PR #172, edge-desktop aborted on macOS, Windows, and Linux before compile: `tauri-plugin-updater (v2.11.0) : @tauri-apps/plugin-updater (v2.10.1)`.

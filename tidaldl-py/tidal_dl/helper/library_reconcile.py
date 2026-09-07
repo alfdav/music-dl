@@ -138,6 +138,12 @@ def directory_editions_compatible(old_dir: str, new_dir: str) -> bool:
     return edition_tokens(Path(old_dir).name) == edition_tokens(Path(new_dir).name)
 
 
+def layout_editions_compatible(old_dir: str, new_dir: str) -> bool:
+    """Compare editions after stripping ``Artist - `` so Live/Acoustic artists heal."""
+    rewritten = layout_directory_candidate(old_dir)
+    return directory_editions_compatible(rewritten or old_dir, new_dir)
+
+
 def editions_compatible(left: FileIdentity, right: FileIdentity) -> bool:
     return edition_tokens(
         left.title,
@@ -302,7 +308,7 @@ def plan_directory_moves(
     candidates: dict[str, tuple[str, list[tuple[FileIdentity, FileIdentity]]]] = {}
     for v_dir, v_members in v_dirs.items():
         dest = layout_directory_candidate(v_dir)
-        if dest and dest != v_dir and dest in a_dirs and directory_editions_compatible(v_dir, dest):
+        if dest and dest != v_dir and dest in a_dirs and layout_editions_compatible(v_dir, dest):
             pairs = _pair_dir_members(v_members, a_dirs[dest])
             if pairs is not None:
                 candidates[v_dir] = (dest, pairs)
@@ -805,7 +811,7 @@ class PathReconciler:
             actual = on_disk.get(canon_path(candidate))
             if actual is None:
                 continue
-            if not directory_editions_compatible(parent_directory(path), parent_directory(actual)):
+            if not layout_editions_compatible(parent_directory(path), parent_directory(actual)):
                 continue
             packed = self._file_identity(Path(actual), read_tags=False)
             identity = packed[0] if packed else FileIdentity(path=actual)
@@ -1131,7 +1137,7 @@ def heal_artist_album_layout_path(db, old_path: str) -> str | None:
     candidate = artist_album_layout_candidate(stored)
     if candidate is None or not readable_audio_file(candidate):
         return None
-    if not directory_editions_compatible(parent_directory(stored), parent_directory(candidate)):
+    if not layout_editions_compatible(parent_directory(stored), parent_directory(candidate)):
         return None
     identity = None
     try:
