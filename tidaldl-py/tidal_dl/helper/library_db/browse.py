@@ -368,6 +368,9 @@ class BrowseMixin:
         pool = list(exact)
         if artist and artist != "Various Artists":
             pool.extend(self.tracks_for_artist(artist))
+        # Same album title can carry guest credits tagged with a different
+        # track artist; filter_album_rows keeps those via album_artist.
+        pool.extend(self.tracks_for_albums([album]) or [])
         matched = filter_album_rows(pool, artist, album)
         if matched:
             return matched

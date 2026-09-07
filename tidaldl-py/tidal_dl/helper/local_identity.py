@@ -94,18 +94,25 @@ def with_identity_path(row: Mapping[str, Any]) -> dict | None:
     return stamped
 
 
+def _various_artists(value: object | None) -> bool:
+    return fold_identity(value) == "various artists"
+
+
 def filter_album_rows(
     rows: Iterable[Mapping[str, Any]],
     artist: str,
     album: str,
 ) -> list[dict]:
     matched: list[dict] = []
-    various = fold_identity(artist) == "various artists"
+    various = _various_artists(artist)
     for row in rows:
         row_album = row.get("album")
         if not albums_compatible(row_album, album, artist or row.get("artist")):
             continue
-        if not various and not artists_compatible(artist, row.get("artist")):
+        if not various and not (
+            artists_compatible(artist, row.get("artist"))
+            or artists_compatible(artist, row.get("album_artist"))
+        ):
             continue
         matched.append(dict(row))
     return matched
@@ -131,7 +138,11 @@ def match_local_row(
 
     isrc = str(track.get("isrc") or "").strip()
     track_album = scope_album or str(track.get("album") or "")
-    track_artist = scope_artist or str(track.get("artist") or "")
+    catalog_artist = str(track.get("artist") or "")
+    album_artist = scope_artist or catalog_artist
+    # Title matching uses the catalog track artist. Album scope_artist only
+    # narrows the release — it must not replace a compilation/guest credit.
+    title_artist = catalog_artist or ("" if _various_artists(scope_artist) else scope_artist)
     track_titles = _title_variants(track.get("name"), track.get("title"), track.get("full_name"))
 
     def in_scope(row: Mapping[str, Any]) -> bool:
@@ -139,7 +150,7 @@ def match_local_row(
             return True
         if not track_album:
             return True
-        return albums_compatible(row.get("album"), track_album, track_artist or row.get("artist"))
+        return albums_compatible(row.get("album"), track_album, album_artist or row.get("artist"))
 
     if isrc:
         isrc_hits = [
@@ -161,14 +172,14 @@ def match_local_row(
             if left
         ):
             continue
-        if track_artist and not artists_compatible(track_artist, row.get("artist")):
+        if title_artist and not artists_compatible(title_artist, row.get("artist")):
             continue
         title_hits.append(row)
 
     if not album_scoped and len(title_hits) > 1 and track_album:
         album_hits = [
             row for row in title_hits
-            if albums_compatible(row.get("album"), track_album, track_artist)
+            if albums_compatible(row.get("album"), track_album, album_artist)
         ]
         if album_hits:
             title_hits = album_hits
