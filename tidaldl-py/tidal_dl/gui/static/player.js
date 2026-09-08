@@ -98,6 +98,16 @@ function _currentTrackLocalPath(track) {
   return track.local_path || track.path || null;
 }
 
+function _playableLocalPath(track) {
+  if (!track) return null;
+  if (track.playable === true) return track.local_path || track.path || null;
+  if (track.playable === false) return null;
+  if (track.missing_since) return null;
+  if (track.local_path) return track.local_path;
+  if (track.is_local) return track.path || null;
+  return null;
+}
+
 function _lyricsRequestKey(track) {
   if (!track) return null;
   const localPath = _currentTrackLocalPath(track);
@@ -138,8 +148,12 @@ function _lyricsQuery(track) {
   return params.toString();
 }
 
+function _hasLocalPlayAffordance(track) {
+  return !!(track && (track.is_local || track.local_path));
+}
+
 function _nowPlayingDownloadHidden(track, audioSrc) {
-  if (track && (track.is_local || track.local_path || track.path)) return true;
+  if (_hasLocalPlayAffordance(track)) return true;
   return String(audioSrc || '').includes('/playback/local');
 }
 
@@ -148,7 +162,7 @@ function _nowPlayingSource(track, audioSrc) {
   if (src.includes('/playback/local')) return 'local';
   if (src.includes('/playback/stream/')) return 'tidal';
   if (!track) return null;
-  if (track.is_local || track.local_path || track.path) return 'local';
+  if (_hasLocalPlayAffordance(track)) return 'local';
   if (track.id) return 'tidal';
   return null;
 }
@@ -1143,8 +1157,8 @@ function _recordRecentlyPlayed(track) {
 
 function playTrack(track) {
   if (!track) return;
-  const localPath = _currentTrackLocalPath(track);
-  if (track.is_local && !localPath) {
+  const localPath = _playableLocalPath(track);
+  if (!localPath && !track.id) {
     toast('Local file unavailable', 'error');
     return;
   }
@@ -1517,7 +1531,11 @@ audio.addEventListener('error', () => {
     _localHealInFlight = false;
     _localHealTrackKey = null;
   }
-  if (!current || !current.is_local) {
+  const attemptedLocal = !!(current && (
+    current.is_local
+    || String(audio.src || '').includes('/playback/local')
+  ));
+  if (!current || !attemptedLocal) {
     if (current) {
       _setRemotePlaybackUnavailable(true);
       _refreshTidalStatus();
@@ -2600,10 +2618,11 @@ function _preloadNext() {
   const nextIdx = (state.queueIndex + 1) % state.queue.length;
   const next = state.queue[nextIdx];
   if (!next) return;
-  const localPath = _currentTrackLocalPath(next);
-  const src = (next.is_local && localPath)
+  const localPath = _playableLocalPath(next);
+  const src = localPath
     ? '/api/playback/local?path=' + encodeURIComponent(localPath)
-    : '/api/playback/stream/' + next.id;
+    : (next.id ? '/api/playback/stream/' + next.id : '');
+  if (!src) return;
   if (_preloadedSrc === src) return;  // already preloaded
   _preloadedSrc = src;
   _preloadAudio.src = src;
@@ -2703,10 +2722,11 @@ function _restorePosition() {
     const current = state.queue[state.queueIndex];
     if (current && data.key === _trackKey(current) && _isResumePositionUsable(current, data.time)) {
       // Set source and seek to saved position without auto-playing
-      const localPath = _currentTrackLocalPath(current);
-      const src = (current.is_local && localPath)
+      const localPath = _playableLocalPath(current);
+      const src = localPath
         ? '/api/playback/local?path=' + encodeURIComponent(localPath)
-        : '/api/playback/stream/' + current.id;
+        : (current.id ? '/api/playback/stream/' + current.id : '');
+      if (!src) return;
       audio.src = src;
       audio.addEventListener('loadedmetadata', function _onMeta() {
         audio.currentTime = data.time;

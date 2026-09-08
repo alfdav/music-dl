@@ -709,15 +709,65 @@ describe('Tidal connection reset decisions', () => {
   });
 });
 
+function loadTrackRowHelpers() {
+  const playableStart = viewsSource.indexOf('function trackIsPlayable(');
+  if (playableStart < 0) throw new Error('trackIsPlayable is missing');
+  const unplayableStart = viewsSource.indexOf('function trackRowUnplayable(');
+  if (unplayableStart < 0) throw new Error('trackRowUnplayable is missing');
+  const playableEnd = viewsSource.indexOf('\nfunction ', playableStart + 1);
+  const unplayableEnd = viewsSource.indexOf('\nfunction ', unplayableStart + 1);
+  return new Function(
+    `${viewsSource.slice(playableStart, playableEnd)}\n${viewsSource.slice(unplayableStart, unplayableEnd)}\nreturn { trackIsPlayable, trackRowUnplayable };`,
+  )();
+}
+
 describe('track source decisions', () => {
   test('shows local or Tidal source while leaving unknown remote format blank', () => {
-    expect(viewsSource).toContain("track.is_local ? 'local' : 'tidal'");
-    expect(viewsSource).toContain("className: 'source-tag ' + (track.is_local ? 'local-tag' : 'tidal-tag')");
+    expect(viewsSource).toContain("trackIsPlayable(track) ? 'local' : 'tidal'");
+    expect(viewsSource).toContain("className: 'source-tag ' + (trackIsPlayable(track) ? 'local-tag' : 'tidal-tag')");
     expect(viewsSource).toContain("if (track.format) return track.format.toUpperCase();\n  return '';");
   });
 
   test('hides the track-row download button when the file is already in the library', () => {
-    expect(viewsSource).toContain('if (!track.is_local && !(track.local_path || track.path))');
+    expect(viewsSource).toContain('if (!trackIsPlayable(track) && track.id)');
+  });
+});
+
+describe('track playability honesty', () => {
+  test('treats dead local index rows as unplayable', () => {
+    const { trackIsPlayable, trackRowUnplayable } = loadTrackRowHelpers();
+    expect(trackIsPlayable({ is_local: true, local_path: '/music/live.flac' })).toBe(true);
+    expect(trackIsPlayable({ is_local: true, playable: true, path: '/music/live.flac' })).toBe(true);
+    expect(trackIsPlayable({ is_local: true, playable: false, local_path: '/music/dead.flac' })).toBe(false);
+    expect(trackIsPlayable({ is_local: true, missing_since: 1700000000, local_path: '/music/dead.flac' })).toBe(false);
+    expect(trackIsPlayable({ is_local: true })).toBe(false);
+    expect(trackIsPlayable({ is_local: false, id: 91 })).toBe(false);
+    expect(trackRowUnplayable({ is_local: false, id: 91 })).toBe(false);
+    expect(trackRowUnplayable({ is_local: false, playable: false, id: 91 })).toBe(false);
+    expect(trackRowUnplayable({ playable: false, path: '/music/dead.flac' })).toBe(true);
+    expect(trackRowUnplayable({ is_local: true, missing_since: 1700000000, local_path: '/music/dead.flac' })).toBe(true);
+    expect(trackIsPlayable({
+      is_local: true,
+      playable: true,
+      missing_since: 1700000000,
+      local_path: '/music/live.flac',
+    })).toBe(true);
+    expect(trackRowUnplayable({
+      is_local: true,
+      playable: true,
+      missing_since: 1700000000,
+      local_path: '/music/live.flac',
+    })).toBe(false);
+  });
+
+  test('play/shuffle album queues playable local files only', () => {
+    expect(viewsSource).toContain('tracks.filter(trackIsPlayable)');
+    expect(viewsSource).not.toContain('tracks.filter(t => t.is_local)');
+  });
+
+  test('grays unplayable rows and skips local play', () => {
+    expect(viewsSource).toContain("className: 'track' + (isPlaying ? ' playing' : '') + (trackRowUnplayable(track) ? ' unplayable' : '')");
+    expect(viewsSource).toContain('if (!trackIsPlayable(track) && !track.id) return;');
   });
 });
 

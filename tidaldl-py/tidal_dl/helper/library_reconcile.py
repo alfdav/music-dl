@@ -97,8 +97,51 @@ def parent_directory(path: str) -> str:
     return canon_path(str(Path(path.replace("\\", "/")).parent))
 
 
+def artist_album_layout_candidate(path: str) -> str | None:
+    """Rewrite ``Artist/Artist - Album/...`` to ``Artist/Album/...``.
+
+    Only strips a matching artist prefix from the album folder. Edition
+    suffixes stay on the album name so a remaster folder is never the target.
+    """
+    from tidal_dl.helper.path import _strip_artist_prefix, _strip_codec_brackets
+
+    raw = os.fspath(path).replace("\\", "/")
+    parts = list(Path(raw).parts)
+    if len(parts) < 3:
+        return None
+    filename = parts[-1]
+    dirs = parts[:-1]
+    for index in range(1, len(dirs)):
+        artist_dir = dirs[index - 1]
+        album_dir = dirs[index]
+        nested = _strip_artist_prefix(_strip_codec_brackets(album_dir), artist_dir)
+        if not nested or nested == album_dir or nested == _strip_codec_brackets(album_dir):
+            continue
+        rewritten = list(dirs)
+        rewritten[index] = nested
+        candidate = str(Path(*rewritten, filename))
+        if canon_path(candidate) == canon_path(raw):
+            return None
+        return candidate
+    return None
+
+
+def layout_directory_candidate(directory: str) -> str | None:
+    dummy = str(Path(directory.replace("\\", "/")) / "_layout.flac")
+    candidate = artist_album_layout_candidate(dummy)
+    if candidate is None:
+        return None
+    return parent_directory(candidate)
+
+
 def directory_editions_compatible(old_dir: str, new_dir: str) -> bool:
     return edition_tokens(Path(old_dir).name) == edition_tokens(Path(new_dir).name)
+
+
+def layout_editions_compatible(old_dir: str, new_dir: str) -> bool:
+    """Compare editions after stripping ``Artist - `` so Live/Acoustic artists heal."""
+    rewritten = layout_directory_candidate(old_dir)
+    return directory_editions_compatible(rewritten or old_dir, new_dir)
 
 
 def editions_compatible(left: FileIdentity, right: FileIdentity) -> bool:
@@ -264,6 +307,12 @@ def plan_directory_moves(
 
     candidates: dict[str, tuple[str, list[tuple[FileIdentity, FileIdentity]]]] = {}
     for v_dir, v_members in v_dirs.items():
+        dest = layout_directory_candidate(v_dir)
+        if dest and dest != v_dir and dest in a_dirs and layout_editions_compatible(v_dir, dest):
+            pairs = _pair_dir_members(v_members, a_dirs[dest])
+            if pairs is not None:
+                candidates[v_dir] = (dest, pairs)
+                continue
         a_dir = None
         size_fp = _dir_fingerprint(v_members, mode="size")
         if size_fp is not None:
@@ -740,6 +789,55 @@ class PathReconciler:
                 on_disk[canon_path(actual)] = actual
         return on_disk
 
+    def _heal_layout_paths(
+        self,
+        current: dict[str, _DirInfo],
+        skip_prefixes: set[str],
+    ) -> list[tuple[str, str]]:
+        """Migrate vanished Artist/Artist - Album rows to a live Artist/Album file."""
+        on_disk = self._on_disk_by_canon(current)
+        pending: list[tuple[str, str, FileIdentity]] = []
+        for row in self.db.identity_rows():
+            path = row["path"]
+            if path_has_skipped_scan_dir(path) or _is_under(path, skip_prefixes):
+                continue
+            if not _under_configured_roots(path, self.roots):
+                continue
+            if canon_path(path) in on_disk:
+                continue
+            candidate = artist_album_layout_candidate(path)
+            if candidate is None:
+                continue
+            actual = on_disk.get(canon_path(candidate))
+            if actual is None:
+                continue
+            if not layout_editions_compatible(parent_directory(path), parent_directory(actual)):
+                continue
+            packed = self._file_identity(Path(actual), read_tags=False)
+            identity = packed[0] if packed else FileIdentity(path=actual)
+            pending.append((path, actual, identity))
+        if not pending:
+            return []
+        migrations: list[tuple[str, str]] = []
+        with self.db.write_transaction():
+            for path, actual, identity in pending:
+                if self.db.migrate_path(
+                    path,
+                    actual,
+                    merge=True,
+                    file_size=identity.size,
+                    file_mtime=identity.mtime,
+                    file_inode=identity.inode,
+                    file_device=identity.device,
+                    duration=identity.duration,
+                    codec=identity.codec,
+                    title=identity.title,
+                    artist=identity.artist,
+                    album=identity.album,
+                ):
+                    migrations.append((path, actual))
+        return migrations
+
     def _resurfaced_present_paths(
         self,
         current: dict[str, _DirInfo],
@@ -840,6 +938,9 @@ class PathReconciler:
 
         if not vanished_dirs and not new_dirs and not changed_dirs:
             now = self.now_fn()
+            layout_migrations = self._heal_layout_paths(current, skip_prefixes)
+            if layout_migrations:
+                self.db.commit()
             resurfaced = self._resurfaced_present_paths(current, skip_prefixes)
             if resurfaced:
                 with self.db.write_transaction():
@@ -848,7 +949,8 @@ class PathReconciler:
             self.db.touch_dir_signatures(list(current_keys), checked_at=now)
             self.db.commit()
             return PathReconcileResult(
-                unchanged=not bool(resurfaced),
+                unchanged=not bool(resurfaced or layout_migrations),
+                migrations=list(layout_migrations),
                 skipped_dirs=sorted(unreadable),
                 cleared_missing=list(resurfaced),
             )
@@ -893,7 +995,16 @@ class PathReconciler:
             directory_moves=plan.directory_moves,
             on_progress=on_progress,
         )
+        layout_migrations = self._heal_layout_paths(current, skip_prefixes)
+        if layout_migrations:
+            kept_migrations.extend(layout_migrations)
+            migrated_old = {old for old, _new in layout_migrations}
+            migrated_new = {new for _old, new in layout_migrations}
+            mark_missing = [path for path in mark_missing if path not in migrated_old]
+            index_new = [path for path in index_new if path not in migrated_new]
         for old_path, new_path in failed:
+            if old_path in {old for old, _new in layout_migrations}:
+                continue
             mark_missing.append(old_path)
             index_new.append(new_path)
         known_count = len(self.db.known_paths())
@@ -973,6 +1084,77 @@ class PathReconciler:
             directory_moves=list(plan.directory_moves),
             file_match_comparisons=plan.file_match_comparisons,
         )
+
+
+def readable_audio_file(path: str | Path) -> bool:
+    raw = os.fspath(path)
+    if not raw or "\x00" in raw:
+        return False
+    suffix = os.path.splitext(raw)[1].lower()
+    if suffix not in AUDIO_EXTENSIONS:
+        return False
+    try:
+        # codeql[py/path-injection]
+        return os.path.isfile(raw)
+    except OSError:
+        return False
+
+
+def present_playable_path(path: str | None, db=None) -> tuple[str | None, bool]:
+    """Heal-then-serve. ``is_local`` only when the audio file is readable. No mark_missing."""
+    stored = os.fspath(path).strip() if path else ""
+    if not stored:
+        return None, False
+    allowlisted = stored
+    if db is not None and hasattr(db, "get"):
+        try:
+            row = db.get(stored)
+        except Exception:  # noqa: BLE001
+            row = None
+        if row and row.get("path"):
+            allowlisted = str(row["path"]).strip() or stored
+    if readable_audio_file(allowlisted):
+        return allowlisted, True
+    healed = heal_artist_album_layout_path(db, allowlisted)
+    if healed:
+        return healed, True
+    return allowlisted, False
+
+
+def heal_artist_album_layout_path(db, old_path: str, *, exists=None) -> str | None:
+    """Cheap one-path heal. No directory walk. Updates scanned/play_events/favorites."""
+    exists = exists or readable_audio_file
+    stored = os.fspath(old_path).strip() if old_path else ""
+    if not stored:
+        return None
+    if db is not None and hasattr(db, "get"):
+        try:
+            row = db.get(stored)
+        except Exception:  # noqa: BLE001
+            row = None
+        if row is not None and row.get("path"):
+            stored = str(row["path"]).strip() or stored
+    if exists(stored):
+        return stored
+    candidate = artist_album_layout_candidate(stored)
+    if candidate is None or not exists(candidate):
+        return None
+    if not layout_editions_compatible(parent_directory(stored), parent_directory(candidate)):
+        return None
+    identity = FileIdentity(path=candidate)
+    if db is not None and hasattr(db, "get") and db.get(stored) is not None:
+        if not db.migrate_path(
+            stored,
+            candidate,
+            merge=True,
+            file_size=identity.size,
+            file_mtime=identity.mtime,
+            file_inode=identity.inode,
+            file_device=identity.device,
+        ):
+            return None
+        db.commit()
+    return candidate
 
 
 def identity_from_stat(path: Path, st: os.stat_result, meta: dict | None = None) -> FileIdentity:

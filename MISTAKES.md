@@ -1,5 +1,21 @@
 # Mistakes
 
+## 2026-09-07 — Playback 403’d a successful cheap layout heal
+
+**What happened:** Bugbot on PR #182 after the #180 rebase: `request_playback_path_heal` returned `status: healed` with the dest path, but `_resolve_local_playback_path` only handled `already_running` / `started` / `debounced` and fell through to 403.
+
+**Root cause:** The cheap heal was added to the helper, not to the GET status switch. The first layout loop can miss (no candidate, or dest only via the DB-backed heal) and still succeed inside `request_playback_path_heal`.
+
+**Prevention:** If heal returns a live dest path (`status: healed` or any other success), serve `_resolve_on_disk_audio` of that path. Do not 403 on the status string. Cover a request that skips the first layout loop and only wins via `request_playback_path_heal`.
+
+## 2026-09-07 — Identity rewrite skipped album-lookup persist-heal
+
+**What happened:** After rebasing #182 onto merged #180, `test_album_lookup_persists_artist_album_layout_heal` returned the dest path but left `scanned` on the vanished `Artist - Album` folder.
+
+**Root cause:** `match_local_row` → `with_identity_path` already rewrites `path` via `resolve_live_library_path`. `present_playable_path(dest, db)` then `db.get(dest)` misses and serves the file without `migrate_path`. Persist only runs when the helper sees the scanned key.
+
+**Prevention:** Keep `indexed_path` on identity-rewritten rows. Pass `indexed_path_for_row` into `present_playable_path`. Do not present-heal the already-rewritten dest.
+
 ## 2026-09-07 — VA album pool fallback returned unfiltered exact rows
 
 **What happened:** Bugbot on PR #180 after the #179 rebase: `tracks_for_album_identity` ran `filter_album_rows`, then `if exact: return exact` when the filter was empty. VA `album_tracks` is title-only (`WHERE album = ?`), so another artist's same-named album re-entered and album-scoped ISRC could stamp the wrong release.
@@ -15,6 +31,38 @@
 **Root cause:** The first credit's rows were treated as "the" candidate set. Featured guests are often tagged under their own artist, not the host.
 
 **Prevention:** Query every comma-separated credit. Always add the album query. Keep title LIKE bounded (`if title and not rows`). Cover a catalog `Host, Guest` credit whose file is tagged only as Guest.
+
+## 2026-09-07 — Album lookup healed the path but left the index stranded
+
+**What happened:** Bugbot on PR #182: `/albums/lookup` called `present_playable_path` without the library DB. A stale `Artist/Artist - Album` path was rewritten on the response, but `scanned` / `play_events` / favorites stayed on the vanished folder. Playback of the rewritten path found the file on disk and skipped cheap heal, so the old row never migrated.
+
+**Root cause:** Heal persist is `db.migrate_path` inside `heal_artist_album_layout_path`. Without `db`, the helper still returns the candidate path.
+
+**Prevention:** Keep one library handle open for album lookup. Pass it to `present_playable_path`. Cover lookup of a vanished `Artist - Album` folder whose dest file is live.
+
+## 2026-09-07 — Tidal-only playable:false grayed catalog rows
+
+**What happened:** Bugbot on PR #182 after the #179 rebase: search/playlist set `playable` to the same boolean as `is_local`. Tidal-only rows arrived with `playable: false`. `trackRowUnplayable` treated any `playable === false` as a dead local and grayed the row at 45% opacity.
+
+**Root cause:** `playable` was used as both "this local file is readable" and "this catalog row is not local." The honesty test only covered a fixture that omitted `playable`.
+
+**Prevention:** Omit `playable` unless there is a local-file opinion. `trackRowUnplayable` may treat `playable === false` as dead only when the row claimed local (`is_local`, `path`, or `local_path`). Cover `{ is_local: false, playable: false, id }` as still Tidal-playable.
+
+## 2026-09-07 — Leftover missing_since blocked a healed live file
+
+**What happened:** Bugbot on PR #182: `present_playable_path` marked a file playable when it was back on disk, but serializers still emitted leftover `missing_since`. `trackIsPlayable` and `_playableLocalPath` rejected any truthy `missing_since`.
+
+**Root cause:** Heal/present is the live-file opinion. `missing_since` on the index row is stale until reconcile commits a clear. The frontend treated the leftover stamp as stronger than `playable: true`.
+
+**Prevention:** If playable, emit `missing_since: None`. If `playable === true`, do not reject on leftover `missing_since`. Cover a live file whose scanned row still has `missing_since`.
+
+## 2026-09-07 — Rebase #182 onto merged #180 dropped one of two products
+
+**What happened:** After PR #180 merged, rebasing #182 onto master conflicted in search/playlist/album serialize. Taking only `stamp_track` would drop `present_playable_path` and playable honesty. Taking only #182 serializers would drop album-scoped identity.
+
+**Root cause:** Both PRs restamp the same API rows. #180 owns identity/`is_local`. #182 owns heal-then-serve and omit-`playable` on Tidal-only.
+
+**Prevention:** Keep both: `playable_library_row_for_isrc` first, then `present_playable_path`, then identity. Heal the matched row, then `stamp_track`. Omit `playable` unless local. Concatenate `MISTAKES.md`. Do not open a new PR.
 
 ## 2026-09-07 — Rebase onto #179 dropped one of two search live-row gates
 
@@ -151,6 +199,54 @@
 **Root cause:** Album lookup passed the album artist into title matching. Title+artist compatibility then required the file's track artist to match the album artist, which compilations and guest credits do not.
 
 **Prevention:** Use `scope_artist` only to narrow the release. Title matching uses the catalog track artist. Keep guest rows via `album_artist`. Cover VA / guest / other-album reject cases in `test_local_identity.py`.
+
+## 2026-09-07 — PR 169 missed Artist/Artist - Album → Artist/Album when signatures already matched
+
+**What happened:** After folders were rewritten from `Artist/Artist - Album/` to `Artist/Album/`, `scanned` rows kept the old path. Files were live at the new path. Library/search still painted green local+FLAC, then playback grayed the row because the stored path was dead. Covers 403'd. Incremental reconcile did not heal the library.
+
+**Root cause:** Directory-move matching only paired vanished rows to *unindexed* appeared files, and only when dir-signatures changed. A scan (or any walk) that recorded the new tree without migrating left signatures current, so reconcile early-exited. Same-size `01.flac` fingerprints across albums also blocked 1:1 directory matches. There was no cheap `Artist - ` prefix rewrite. `_db_row_to_track` hardcoded `is_local: True` from the index.
+
+**Prevention:** Deterministic layout candidate `Artist/Artist - Album/file` → `Artist/Album/file`. Run that heal on signature-unchanged reconcile, on playback resolve, and on library/search serialize. Pair layout twins even when size fingerprints collide. Merge play_events/favorites onto an already-indexed dest. Never stamp playable-local unless the path is a readable audio file. Do not mark_missing from GET (remount). Edition suffixes stay on the album folder so remasters are not false-healed.
+
+## 2026-09-07 — List/detail still stamped local+FLAC from SQLite after path heal
+
+**What happened:** `_db_row_to_track` learned to check the file, but `/albums/lookup`, playlist serialize, Home recents, and the green `views.js` badge still trusted `is_local` from the index. Play album queued those rows. `/albums/{id}/tracks` already used `is_file()`.
+
+**Root cause:** Playability was not one helper. Lookup and playlists set `is_local = bool(row)`. Recents hardcoded `True`. The UI never read `playable` or `missing_since`.
+
+**Prevention:** `present_playable_path` is the only stamp. `is_local`/`playable` require a readable audio file (heal first, no `mark_missing` on GET). Play/Shuffle album filters `trackIsPlayable`. Badge and `.track.unplayable` use that helper. Playback GET stays the hard check.
+
+## 2026-09-07 — Layout edition check treated artist name Live as an album edition
+
+**What happened:** `directory_editions_compatible` tokenized the raw `Artist - Album` folder. Artists named Live or Acoustic injected those words, so the rewrite to `Artist/Album` looked like an edition change and heal skipped a present file.
+
+**Root cause:** Edition tokens were compared before stripping the `Artist - ` prefix. Remaster protection already comes from the exact layout candidate path.
+
+**Prevention:** Layout pairs use `layout_editions_compatible` (compare after the rewrite). Fingerprint directory matches still use the raw folder names. Keep a Live-artist heal test next to the remaster non-heal test.
+
+## 2026-09-07 — Dead index path still played as local, then toasted as Tidal
+
+**What happened:** Honesty set `is_local` false but left `path`. `playTrack` used `local_path || path`, so a dead row still hit `/api/playback/local`. The error handler only retried heal when `is_local` was true, so the miss toasted Tidal-unavailable and set the session flag.
+
+**Root cause:** Path presence was treated as a playable local source. Error classification used the flag, not the request.
+
+**Prevention:** `_playableLocalPath` requires `local_path` or (`is_local` and `path`), and rejects `playable === false` / `missing_since`. Classify audio errors as local when `is_local` or `audio.src` is `/playback/local`.
+
+## 2026-09-07 — Playlist kept another album's live ISRC path
+
+**What happened:** `_serialize_track` stamps `path` from any live ISRC hit. Playlist then preferred an album-scoped dead row, set `is_local` false, and left the other album's path on the payload.
+
+**Root cause:** Honesty only wrote paths on success and never cleared the ISRC stamp.
+
+**Prevention:** Pop `path` / `local_path` after `_serialize_track`. Restamp only when the album-scoped row is a readable file.
+
+## 2026-09-07 — Tidal rows used the dead-local unplayable style
+
+**What happened:** `.unplayable` was `!trackIsPlayable`. Tidal search/album rows are not local, so they rendered at 45% opacity while still streaming.
+
+**Root cause:** Local-file playability was reused as a row-disabled flag.
+
+**Prevention:** `trackRowUnplayable` is `playable === false`, `missing_since`, or a claimed-local row with no path. Tidal-only rows stay full opacity.
 
 ## 2026-09-04 — Rust Tauri plugin bump left JS packages behind
 

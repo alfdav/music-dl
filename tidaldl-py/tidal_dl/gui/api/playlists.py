@@ -14,6 +14,7 @@ from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.local_identity import (
     candidate_rows_for_track,
     finish_stamp,
+    indexed_path_for_row,
     match_local_row,
     stamp_track,
 )
@@ -102,12 +103,24 @@ def _serialize_playlist_tracks(session, playlist_id: str) -> list[dict]:
 
     db = _get_playlist_db()
     try:
+        from tidal_dl.helper.library_reconcile import present_playable_path
+
         all_tracks = db.all_tracks()
         fallback_index = _build_title_artist_index(all_tracks)
         serialized = []
         for track in tracks:
             data = _serialize_track(track)
             local_row = _best_local_row(data, db, all_tracks, fallback_index=fallback_index)
+            data["is_local"] = False
+            data.pop("playable", None)
+            data.pop("local_path", None)
+            data.pop("path", None)
+            if local_row:
+                served, ok = present_playable_path(indexed_path_for_row(local_row), db)
+                if ok and served:
+                    local_row = {**local_row, "path": served}
+                else:
+                    local_row = None
             finish_stamp(stamp_track(data, local_row))
             serialized.append(data)
     finally:

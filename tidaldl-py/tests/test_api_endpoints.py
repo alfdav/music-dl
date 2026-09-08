@@ -413,7 +413,10 @@ class TestLocalArtworkAvailability:
 
         db = LibraryDB(tmp_path / "library.db")
         db.open()
-        path = "/music/artist/album/with-art.flac"
+        audio = tmp_path / "artist" / "album" / "with-art.flac"
+        audio.parent.mkdir(parents=True)
+        audio.write_bytes(b"fLaC")
+        path = str(audio)
         db.record(path, status="tagged", artist="Artist", title="With Art", art_available=True)
         db.commit()
         monkeypatch.setattr(library_api, "_get_db", lambda: db)
@@ -514,12 +517,14 @@ class TestRecentAlbums:
 
 
 class TestLibraryFavorites:
-    def test_local_favorite_exposes_local_path_alias(self, monkeypatch):
+    def test_local_favorite_exposes_local_path_alias(self, tmp_path, monkeypatch):
         from tidal_dl.gui.api import library as library_api
 
+        audio = tmp_path / "favorite.flac"
+        audio.write_bytes(b"fLaC")
         favorite = {
             "id": 1,
-            "path": "/music/favorite.flac",
+            "path": str(audio),
             "tidal_id": 7,
             "artist": "Artist",
             "title": "Favorite",
@@ -535,7 +540,7 @@ class TestLibraryFavorites:
 
         payload = library_api.get_favorites()
 
-        assert payload["favorites"][0]["local_path"] == "/music/favorite.flac"
+        assert payload["favorites"][0]["local_path"] == str(audio)
 
     def test_returns_200(self, client):
         resp = client.get("/api/library/favorites", headers=client._host_header)

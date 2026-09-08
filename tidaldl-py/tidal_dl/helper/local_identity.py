@@ -118,8 +118,19 @@ def with_identity_path(row: Mapping[str, Any]) -> dict | None:
     if not live:
         return None
     stamped = dict(row)
+    indexed = str(row.get("indexed_path") or row.get("path") or "")
+    if indexed:
+        stamped["indexed_path"] = indexed
     stamped["path"] = live
     return stamped
+
+
+def indexed_path_for_row(row: Mapping[str, Any] | None) -> str | None:
+    """Scanned-key path for persist-heal. Identity may have already rewritten ``path``."""
+    if not row:
+        return None
+    indexed = str(row.get("indexed_path") or row.get("path") or "").strip()
+    return indexed or None
 
 
 def artist_credit_queries(artist: str) -> list[str]:
@@ -273,11 +284,16 @@ def _pick_identity_row(
 
 
 def stamp_track(track: dict, row: Mapping[str, Any] | None) -> dict:
-    """Write is_local plus path / local_path (and on-disk quality when present)."""
+    """Write is_local plus path / local_path (and on-disk quality when present).
+
+    ``playable`` is a local-file opinion: True when a row is stamped, omitted
+    when the restamp misses. Clear leftover ``missing_since`` when playable.
+    """
     if _CATALOG_QUALITY not in track and not track.get("format") and not track.get("codec"):
         track[_CATALOG_QUALITY] = track.get("quality")
     if not row:
         track["is_local"] = False
+        track.pop("playable", None)
         track.pop("local_path", None)
         track.pop("path", None)
         track.pop("format", None)
@@ -290,6 +306,8 @@ def stamp_track(track: dict, row: Mapping[str, Any] | None) -> dict:
         return track
     path = row.get("path") or ""
     track["is_local"] = True
+    track["playable"] = True
+    track["missing_since"] = None
     if path:
         track["local_path"] = path
         track["path"] = path

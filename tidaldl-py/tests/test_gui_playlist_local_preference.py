@@ -80,6 +80,7 @@ def test_tidal_search_stays_remote_without_live_local_isrc(monkeypatch, clear_si
     result = search_api._serialize_track(_fake_track(isrc="ISRC999"))
 
     assert result["is_local"] is False
+    assert "playable" not in result
     assert "local_path" not in result
     assert "path" not in result
     assert "format" not in result
@@ -117,7 +118,82 @@ def test_tidal_search_reads_isrc_rows_once_to_find_a_live_local_file(monkeypatch
     assert db.calls == ["tracks_by_isrc"]
 
 
-def test_playlist_tracks_include_local_path_when_isrc_matches(monkeypatch, clear_singletons):
+def test_playlist_tracks_include_local_path_when_isrc_matches(monkeypatch, clear_singletons, tmp_path):
+    from tidal_dl.gui.api import playlists as playlists_api
+
+    live = tmp_path / "local.flac"
+    live.write_bytes(b"fLaC")
+    fake_track = _fake_track()
+    fake_session = SimpleNamespace(
+        check_login=lambda: True,
+        playlist=lambda playlist_id: SimpleNamespace(tracks=lambda: [fake_track]),
+    )
+
+    monkeypatch.setattr(playlists_api, "get_tidal", lambda: SimpleNamespace(session=fake_session, data=SimpleNamespace(access_token="a", refresh_token="r"), _ensure_token_fresh=lambda refresh_window_sec=300: True))
+    _patch_playlist_library_db(
+        monkeypatch,
+        playlists_api,
+        _FakePlaylistDB({"ISRC123": [{"path": str(live), "artist": "Artist", "title": "Song", "album": "Album"}]}),
+    )
+
+    playlists_api._playlist_tracks_cache.clear()
+    data = playlists_api.playlist_tracks("pl-local")
+
+    assert data["tracks"][0]["is_local"] is True
+    assert data["tracks"][0]["playable"] is True
+    assert data["tracks"][0]["local_path"] == str(live)
+
+
+def test_playlist_tracks_do_not_keep_isrc_path_from_another_album(monkeypatch, clear_singletons, tmp_path):
+    from tidal_dl.gui.api import playlists as playlists_api
+
+    other = tmp_path / "Sandy, PAPO" / "Hits" / "Huelepega.flac"
+    other.parent.mkdir(parents=True)
+    other.write_bytes(b"fLaC")
+    dead = tmp_path / "Sandy, PAPO" / "Otra Vez" / "Huelepega.flac"
+    fake_track = _fake_track(name="Huelepega", artist="Sandy, PAPO", album="Otra Vez")
+    fake_session = SimpleNamespace(
+        check_login=lambda: True,
+        playlist=lambda playlist_id: SimpleNamespace(tracks=lambda: [fake_track]),
+    )
+
+    monkeypatch.setattr(playlists_api, "get_tidal", lambda: SimpleNamespace(session=fake_session, data=SimpleNamespace(access_token="a", refresh_token="r"), _ensure_token_fresh=lambda refresh_window_sec=300: True))
+    _patch_playlist_library_db(
+        monkeypatch,
+        playlists_api,
+        _FakePlaylistDB(
+            {
+                "ISRC123": [
+                    {
+                        "path": str(dead),
+                        "artist": "Sandy, PAPO",
+                        "title": "Huelepega",
+                        "album": "Otra Vez",
+                    },
+                    {
+                        "path": str(other),
+                        "artist": "Sandy, PAPO",
+                        "title": "Huelepega",
+                        "album": "Hits",
+                    },
+                ]
+            },
+        ),
+    )
+
+    playlists_api._playlist_tracks_cache.clear()
+    data = playlists_api.playlist_tracks("pl-isrc-leak")
+    track = data["tracks"][0]
+
+    assert track["is_local"] is False
+    assert track.get("playable") is not True
+    assert track.get("path") in (None, "")
+    assert track.get("local_path") in (None, "")
+    assert str(other) not in (track.get("path") or "")
+    assert str(other) not in (track.get("local_path") or "")
+
+
+def test_playlist_tracks_do_not_stamp_local_when_indexed_file_is_missing(monkeypatch, clear_singletons):
     from tidal_dl.gui.api import playlists as playlists_api
 
     fake_track = _fake_track()
@@ -130,14 +206,15 @@ def test_playlist_tracks_include_local_path_when_isrc_matches(monkeypatch, clear
     _patch_playlist_library_db(
         monkeypatch,
         playlists_api,
-        _FakePlaylistDB({"ISRC123": [{"path": "/music/local.flac", "artist": "Artist", "title": "Song", "album": "Album"}]}),
+        _FakePlaylistDB({"ISRC123": [{"path": "/music/does-not-exist.flac", "artist": "Artist", "title": "Song", "album": "Album"}]}),
     )
 
     playlists_api._playlist_tracks_cache.clear()
-    data = playlists_api.playlist_tracks("pl-local")
+    data = playlists_api.playlist_tracks("pl-dead")
 
-    assert data["tracks"][0]["is_local"] is True
-    assert data["tracks"][0]["local_path"] == "/music/local.flac"
+    assert data["tracks"][0]["is_local"] is False
+    assert data["tracks"][0].get("playable") is not True
+    assert data["tracks"][0].get("local_path") in (None, "")
 
 
 def test_playlist_tracks_fall_back_to_stream_when_no_local_match(monkeypatch, clear_singletons):
@@ -156,6 +233,7 @@ def test_playlist_tracks_fall_back_to_stream_when_no_local_match(monkeypatch, cl
     data = playlists_api.playlist_tracks("pl-stream")
 
     assert data["tracks"][0]["is_local"] is False
+    assert "playable" not in data["tracks"][0]
     assert data["tracks"][0].get("local_path") in (None, "")
     assert "_catalog_quality" not in data["tracks"][0]
 
@@ -207,9 +285,11 @@ def test_playlist_fallback_stamp_does_not_leak_catalog_quality_stash(
     assert "_catalog_quality" not in data["tracks"][0]
 
 
-def test_playlist_sync_uses_same_local_match_logic_as_playlist_view(monkeypatch, clear_singletons):
+def test_playlist_sync_uses_same_local_match_logic_as_playlist_view(monkeypatch, clear_singletons, tmp_path):
     from tidal_dl.gui.api import playlists as playlists_api
 
+    live = tmp_path / "mas-de-ti.flac"
+    live.write_bytes(b"fLaC")
     fake_track = _fake_track(track_id=7, isrc="", name="Mas De Ti", artist="Don Moen", album="Más De Ti")
     fake_session = SimpleNamespace(
         check_login=lambda: True,
@@ -223,7 +303,7 @@ def test_playlist_sync_uses_same_local_match_logic_as_playlist_view(monkeypatch,
         playlists_api,
         _FakePlaylistDB(
             {},
-            all_rows=[{"path": "/music/mas-de-ti.flac", "artist": "Don Moen", "title": "Mas De Ti", "album": "Más De Ti"}],
+            all_rows=[{"path": str(live), "artist": "Don Moen", "title": "Mas De Ti", "album": "Más De Ti"}],
         ),
     )
     monkeypatch.setattr(playlists_api, "_enqueue_playlist_downloads", lambda track_ids, request=None: queued.extend(track_ids))
@@ -235,9 +315,11 @@ def test_playlist_sync_uses_same_local_match_logic_as_playlist_view(monkeypatch,
     assert queued == []
 
 
-def test_playlist_sync_skips_local_track_when_library_db_has_isrc_match(monkeypatch, clear_singletons):
+def test_playlist_sync_skips_local_track_when_library_db_has_isrc_match(monkeypatch, clear_singletons, tmp_path):
     from tidal_dl.gui.api import playlists as playlists_api
 
+    live = tmp_path / "local.flac"
+    live.write_bytes(b"fLaC")
     fake_track = _fake_track(track_id=8, isrc="ISRC123")
     fake_session = SimpleNamespace(
         check_login=lambda: True,
@@ -249,7 +331,7 @@ def test_playlist_sync_skips_local_track_when_library_db_has_isrc_match(monkeypa
     _patch_playlist_library_db(
         monkeypatch,
         playlists_api,
-        _FakePlaylistDB({"ISRC123": [{"path": "/music/local.flac", "artist": "Artist", "title": "Song", "album": "Album"}]}),
+        _FakePlaylistDB({"ISRC123": [{"path": str(live), "artist": "Artist", "title": "Song", "album": "Album"}]}),
     )
     monkeypatch.setattr(playlists_api, "_enqueue_playlist_downloads", lambda track_ids, request=None: queued.extend(track_ids))
 

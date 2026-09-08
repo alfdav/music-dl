@@ -188,10 +188,20 @@ def recent_plays(limit: int = Query(50, ge=1, le=100)):
     tracks = db.recent_plays(limit=limit)
 
     from tidal_dl.gui.api.library import _local_cover_url
+    from tidal_dl.helper.library_reconcile import present_playable_path
 
     for track in tracks:
-        if track.get("path"):
-            track["cover_url"] = _local_cover_url(track["path"], track.get("art_available"))
+        served, playable = present_playable_path(track.get("path"), db)
+        track["is_local"] = playable
+        track["playable"] = playable
+        if playable:
+            track["path"] = served
+            track["local_path"] = served
+            track["missing_since"] = None
+            track["cover_url"] = _local_cover_url(served, track.get("art_available"))
+        else:
+            track["local_path"] = None
+            track["cover_url"] = ""
     return {"tracks": tracks}
 
 

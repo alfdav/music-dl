@@ -8,7 +8,8 @@ from tests.gui_js_source import read_gui_js
 def test_local_errors_skip_but_remote_errors_stop_without_queue_traversal():
     source = read_gui_js()
 
-    assert "if (!current || !current.is_local) {" in source
+    assert "String(audio.src || '').includes('/playback/local')" in source
+    assert "if (!current || !attemptedLocal) {" in source
     assert "toast('Tidal stream unavailable \\u2014 try again later', 'error');" in source
     assert "toast(label + ' unavailable', 'error');" in source
     assert "const canAutoSkip = state.queueIndex < state.queue.length - 1;" in source

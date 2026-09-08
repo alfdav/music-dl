@@ -15,6 +15,7 @@ from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.local_identity import (
     filter_album_rows,
     finish_stamp,
+    indexed_path_for_row,
     match_local_row,
     stamp_track,
 )
@@ -24,7 +25,7 @@ router = APIRouter()
 
 
 def _get_library_db() -> LibraryDB:
-    """Open a read-only handle to the library DB for local-match queries."""
+    """Open the library DB for album-scoped local match and layout heal."""
     db = LibraryDB(Path(path_config_base()) / "library.db")
     db.open()
     return db
@@ -83,22 +84,28 @@ def _album_metadata_score(candidate_album: str, candidate_artist: str, target_al
 
 
 
-def _local_album_rows(artist: str, album: str) -> list[dict]:
-    try:
-        db = _get_library_db()
+def _local_album_rows(artist: str, album: str, db=None) -> list[dict]:
+    close = False
+    if db is None:
         try:
-            if hasattr(db, "tracks_for_album_identity"):
-                return db.tracks_for_album_identity(artist, album)
-            rows = db.album_tracks(artist, album)
-            if rows:
-                return rows
-            if hasattr(db, "tracks_for_artist"):
-                return filter_album_rows(db.tracks_for_artist(artist), artist, album)
+            db = _get_library_db()
+            close = True
+        except Exception:
+            return []
+    try:
+        if hasattr(db, "tracks_for_album_identity"):
+            return db.tracks_for_album_identity(artist, album)
+        rows = db.album_tracks(artist, album)
+        if rows:
             return rows
-        finally:
-            db.close()
+        if hasattr(db, "tracks_for_artist"):
+            return filter_album_rows(db.tracks_for_artist(artist), artist, album)
+        return rows
     except Exception:
         return []
+    finally:
+        if close and db is not None:
+            db.close()
 
 
 
@@ -192,10 +199,11 @@ def album_lookup(
     """Search Tidal for a matching album and return its full track listing.
 
     Each track is annotated with ``is_local`` and ``path`` / ``local_path``
-    when this release already has the file. Matching is album-scoped
+    when this release already has a readable file. Matching is album-scoped
     title+artist (and ISRC only inside those rows) against the queried
     library album, with album-title normalization and layout-move-safe
-    paths. Global ISRC is not used — it collides across albums.
+    paths. Global ISRC is not used — it collides across albums. ``playable``
+    is set only when the matched library file is readable on disk.
     """
     from tidalapi.album import Album as TidalAlbum
 
@@ -220,7 +228,20 @@ def album_lookup(
         raise HTTPException(status_code=404, detail="No matching album found on Tidal")
 
     # --- 2. Rank candidates by metadata, then verify with local track overlap ---
-    local_rows = _local_album_rows(artist, album)
+    db = None
+    try:
+        db = _get_library_db()
+    except Exception:
+        db = None
+    try:
+        return _album_lookup_with_db(artist, album, albums, db)
+    finally:
+        if db is not None:
+            db.close()
+
+
+def _album_lookup_with_db(artist: str, album: str, albums: list, db) -> dict:
+    local_rows = _local_album_rows(artist, album, db)
     local_track_keys = {
         (title, artist_name)
         for row in local_rows
@@ -290,6 +311,8 @@ def album_lookup(
     tidal_tracks = best_tracks
 
     # --- 5. Serialize with album-scoped identity (ISRC only inside this release) ---
+    from tidal_dl.helper.library_reconcile import present_playable_path
+
     serialized = []
     missing_count = 0
     for t in tidal_tracks:
@@ -297,6 +320,10 @@ def album_lookup(
         # Drop the catalog-wide ISRC stamp from _serialize_track, then restamp
         # from this release's library rows so a shared ISRC cannot steal a file
         # from another album. Title+artist still win when ISRC is missing.
+        data["is_local"] = False
+        data.pop("playable", None)
+        data.pop("local_path", None)
+        data.pop("path", None)
         local_row = match_local_row(
             data,
             local_rows,
@@ -304,6 +331,12 @@ def album_lookup(
             scope_artist=artist,
             scope_album=album,
         )
+        if local_row:
+            served, ok = present_playable_path(indexed_path_for_row(local_row), db)
+            if ok and served:
+                local_row = {**local_row, "path": served}
+            else:
+                local_row = None
         finish_stamp(stamp_track(data, local_row))
         if not local_row:
             data["quality"] = _catalog_quality(t)

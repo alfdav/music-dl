@@ -589,6 +589,7 @@ class ScannedMixin:
         title: str | None = None,
         artist: str | None = None,
         album: str | None = None,
+        merge: bool = False,
     ) -> bool:
         """Move a scanned row and its path-keyed user data to *new_path*."""
         assert self._conn
@@ -602,12 +603,36 @@ class ScannedMixin:
         old_stored = old_row["path"]
         existing_new = self.get(new_nfc)
         if existing_new is not None and existing_new["path"] != old_stored:
-            return False
+            if not merge:
+                return False
+            keep = existing_new["path"]
+            self._merge_library_path(old_stored, keep)
+            self._conn.execute(
+                """UPDATE scanned SET
+                       file_size = COALESCE(?, file_size),
+                       file_mtime = COALESCE(?, file_mtime),
+                       file_inode = COALESCE(?, file_inode),
+                       file_device = COALESCE(?, file_device),
+                       duration = COALESCE(?, duration),
+                       codec = COALESCE(?, codec),
+                       title = COALESCE(?, title),
+                       artist = COALESCE(?, artist),
+                       album = COALESCE(?, album),
+                       missing_since = NULL
+                   WHERE path = ?""",
+                (
+                    file_size, file_mtime, file_inode, file_device,
+                    duration, codec, title, artist, album, keep,
+                ),
+            )
+            return True
         favorite_collision = self._conn.execute(
             "SELECT 1 FROM favorites WHERE path IN (?, ?)", (new_nfc, new_nfd)
         ).fetchone()
-        if favorite_collision:
+        if favorite_collision and not merge:
             return False
+        if favorite_collision and merge:
+            self._rewrite_favorite_path(old_stored, new_nfc)
         cursor = self._conn.execute(
             """UPDATE scanned SET
                    path = ?,
