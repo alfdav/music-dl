@@ -20,6 +20,15 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
+## v1.7.10 (2026-09-08)
+- Waveform bars breathe for any playable local track by fetching peaks from the same path playback uses, not only `is_local` + `local_path` ([#177](https://github.com/alfdav/music-dl/pull/177)).
+- Local playback stays live while downloads run; `/api/playback` skips token refresh and serves on-disk files without waiting on shared token or library-index locks ([#178](https://github.com/alfdav/music-dl/pull/178)).
+- Upgrade and skip treat same-folder recordings as one ISRC identity: skip when a live sibling already exists, replace twins on upgrade, and migrate the live index path instead of minting `Title.flac` beside `01 - Title.flac` ([#179](https://github.com/alfdav/music-dl/pull/179)).
+- Stamp `is_local` from live library identity on search, album lookup, Tidal album tracks, and playlists, then restamp album rows so leftover tags and layout-moved paths hide Download when the file is already here ([#180](https://github.com/alfdav/music-dl/pull/180)).
+- Pace Tidal API and auth only; media streams use full CDN bandwidth. GUI workers follow `downloads_concurrent_max` so transfers can overlap while 429s still widen API delay ([#181](https://github.com/alfdav/music-dl/pull/181)).
+- Heal stale `Artist/Artist - Album` index paths to `Artist/Album` without wiping play history, even when directory signatures already match the new tree ([#182](https://github.com/alfdav/music-dl/pull/182)).
+- Playability honesty: gray local means the claimed file is unplayable; Tidal-only rows stay streamable and are not marked `playable: false` ([#182](https://github.com/alfdav/music-dl/pull/182)).
+
 ## v1.7.9 (2026-09-04)
 - Keep the current lyric on-screen as it plays and add a manual Sync control; opening lyrics no longer hides heart/download or shifts the player bar ([#168](https://github.com/alfdav/music-dl/pull/168)).
 - Heal moved library folders in the background without wiping play history. Vanished in-root rows stay on `missing_since` until reconcile migrates them; local playback retries once after 202/409 ([#169](https://github.com/alfdav/music-dl/pull/169)).
