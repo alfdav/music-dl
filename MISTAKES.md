@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-07 — Playback 403’d a successful cheap layout heal
+
+**What happened:** Bugbot on PR #182 after the #180 rebase: `request_playback_path_heal` returned `status: healed` with the dest path, but `_resolve_local_playback_path` only handled `already_running` / `started` / `debounced` and fell through to 403.
+
+**Root cause:** The cheap heal was added to the helper, not to the GET status switch. The first layout loop can miss (no candidate, or dest only via the DB-backed heal) and still succeed inside `request_playback_path_heal`.
+
+**Prevention:** If heal status is `healed`, serve `_resolve_on_disk_audio` of that path. Cover a request that skips the first layout loop and only wins via `request_playback_path_heal`.
+
 ## 2026-09-07 — Identity rewrite skipped album-lookup persist-heal
 
 **What happened:** After rebasing #182 onto merged #180, `test_album_lookup_persists_artist_album_layout_heal` returned the dest path but left `scanned` on the vanished `Artist - Album` folder.
