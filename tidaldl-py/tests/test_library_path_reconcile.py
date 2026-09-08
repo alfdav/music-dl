@@ -1855,6 +1855,39 @@ class TestPlayabilityHonesty:
             )
         assert resp.status_code == 200
 
+    def test_playback_serves_when_heal_returns_live_path_without_healed_status(
+        self, tmp_path, monkeypatch,
+    ):
+        """Any heal success with a live dest must serve, not only status=healed."""
+        import tidal_dl.gui.api.library as library_api
+        import tidal_dl.helper.library_reconcile as reconcile
+
+        root = tmp_path / "Music"
+        old = root / "Artist One" / "Artist One - First Album" / "01 - Song.wav"
+        live = root / "Artist One" / "First Album" / "01 - Song.wav"
+        _write_wav(live, frames=8000)
+        db = _open_db(tmp_path)
+        _seed(db, old, artist="Artist One", title="Song", album="First Album", duration=1, with_identity=False)
+        db.commit()
+        db.close()
+
+        client, headers, library_api = TestPlaybackBackstop()._playback_client(
+            tmp_path, monkeypatch, root,
+        )
+        monkeypatch.setattr(reconcile, "artist_album_layout_candidate", lambda path: None)
+        monkeypatch.setattr(
+            library_api,
+            "request_playback_path_heal",
+            lambda path: {"status": "rewritten", "path": str(live)},
+        )
+        with client:
+            resp = client.get(
+                "/api/playback/local",
+                params={"path": str(old)},
+                headers=headers,
+            )
+        assert resp.status_code == 200
+
     def test_home_recent_does_not_stamp_local_when_file_is_missing(self, tmp_path, monkeypatch):
         import tidal_dl.gui.api.home as home_api
         import tidal_dl.gui.api.library as library_api

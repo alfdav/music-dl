@@ -96,13 +96,12 @@ def _resolve_local_playback_path(path: str):
         raise HTTPException(status_code=403, detail="Access denied")
 
     heal = request_playback_path_heal(path)
+    served = heal.get("path")
+    if served:
+        on_disk = _resolve_on_disk_audio(served, allowed)
+        if on_disk is not None:
+            return on_disk
     status = heal.get("status")
-    if status == "healed":
-        served = heal.get("path")
-        if served:
-            on_disk = _resolve_on_disk_audio(served, allowed)
-            if on_disk is not None:
-                return on_disk
     if status == "already_running":
         raise HTTPException(status_code=409, detail="Library reconcile in progress")
     if status in {"started", "debounced"}:

@@ -6,7 +6,7 @@
 
 **Root cause:** The cheap heal was added to the helper, not to the GET status switch. The first layout loop can miss (no candidate, or dest only via the DB-backed heal) and still succeed inside `request_playback_path_heal`.
 
-**Prevention:** If heal status is `healed`, serve `_resolve_on_disk_audio` of that path. Cover a request that skips the first layout loop and only wins via `request_playback_path_heal`.
+**Prevention:** If heal returns a live dest path (`status: healed` or any other success), serve `_resolve_on_disk_audio` of that path. Do not 403 on the status string. Cover a request that skips the first layout loop and only wins via `request_playback_path_heal`.
 
 ## 2026-09-07 — Identity rewrite skipped album-lookup persist-heal
 
