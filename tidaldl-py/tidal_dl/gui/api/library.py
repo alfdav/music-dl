@@ -481,7 +481,7 @@ def _resolve_local_metadata(
 
 def _tag_key_forms(name: object) -> set[str]:
     raw = str(name).casefold()
-    collapsed = "".join(character for character in raw if character.isalnum())
+    collapsed = raw.replace(" ", "").replace("_", "")
     return {raw, collapsed} if collapsed else {raw}
 
 

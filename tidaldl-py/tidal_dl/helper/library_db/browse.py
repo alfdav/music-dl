@@ -409,7 +409,7 @@ class BrowseMixin:
 
     def tracks_for_album_identity(self, artist: str, album: str) -> list[dict]:
         """Album rows by identity, not an exact album-tag string."""
-        from tidal_dl.helper.local_identity import filter_album_rows, folder_siblings_for_album
+        from tidal_dl.helper.local_identity import filter_album_rows, folder_siblings_for_album, fold_identity
 
         exact = self.album_tracks(artist, album)
         pool = list(exact)
@@ -422,7 +422,7 @@ class BrowseMixin:
         pool.extend(self.tracks_for_albums([album]) or [])
         pool.extend(self.tracks_for_leftover_album_tags(artist, album))
         matched = filter_album_rows(pool, artist, album)
-        if artist and artist != "Various Artists" and matched:
+        if artist and fold_identity(artist) != "various artists" and matched:
             seen = {row.get("path") for row in matched}
             for row in folder_siblings_for_album(matched, pool, artist, album):
                 path = row.get("path")

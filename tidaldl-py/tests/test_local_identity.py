@@ -1171,6 +1171,67 @@ def test_album_identity_includes_guest_sharing_album_dir_without_host_folder(tmp
     db.close()
 
 
+def test_album_identity_does_not_use_home_folder_named_like_host(tmp_path):
+    """A home/volume directory named for the host must not steal another artist's album."""
+    foreign = _touch(
+        tmp_path / "Users" / "Nia Coltrane" / "Music" / "Juniper Vale" / "Greatest Hits" / "01 Static.flac"
+    )
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        foreign,
+        artist="Juniper Vale",
+        title="Static",
+        album="Greatest Hits",
+        album_artist=None,
+        isrc="USESK0000777",
+    )
+    db.commit()
+
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Greatest Hits")
+    assert all(row.get("path") != str(foreign) for row in pool)
+    db.close()
+
+
+def test_album_identity_does_not_group_flat_library_same_title_dumps(tmp_path):
+    """Two Greatest Hits files dumped in the library root are not one album folder."""
+    host = _touch(tmp_path / "music" / "01 Low Tide.flac")
+    foreign = _touch(tmp_path / "music" / "01 Static.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        host,
+        artist="Nia Coltrane",
+        title="Low Tide",
+        album="Greatest Hits",
+        album_artist="Nia Coltrane",
+        isrc="QZNIA0000777",
+    )
+    _record(
+        db,
+        foreign,
+        artist="Juniper Vale",
+        title="Static",
+        album="Greatest Hits",
+        album_artist=None,
+        isrc="USESK0000777",
+    )
+    db.commit()
+
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Greatest Hits")
+    assert any(row.get("path") == str(host) for row in pool)
+    assert all(row.get("path") != str(foreign) for row in pool)
+    db.close()
+
+
+def test_path_under_artist_ignores_filename_credit(tmp_path):
+    from tidal_dl.helper.local_identity import path_under_artist
+
+    path = tmp_path / "music" / "Juniper Vale" / "Safe Room" / "Nia Coltrane - Static.flac"
+    assert path_under_artist(str(path), "Nia Coltrane") is False
+    assert path_under_artist(str(path), "Juniper Vale") is True
+
+
 def test_album_identity_does_not_take_same_title_from_other_artist_folder(tmp_path):
     """Same album title under another artist folder must stay out of the host pool."""
     host = _touch(tmp_path / "music" / "Nia Coltrane" / "Greatest Hits" / "01 Low Tide.flac")

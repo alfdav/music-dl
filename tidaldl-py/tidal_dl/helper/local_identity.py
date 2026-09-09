@@ -157,21 +157,48 @@ def _leftover_codec_album(row_album: object | None, album: str) -> bool:
 
 
 _DISC_DIR = re.compile(
-    r"^(?:cd|disc|disk|vol(?:ume)?)\s*\d*$",
+    r"^(?:cd|disc|disk|vol(?:ume)?)\s*\d+$",
     re.IGNORECASE,
 )
 
 
+def _leftover_artist_album_dir(name: str, artist: str) -> bool:
+    stripped = _strip_codec_brackets(str(name or "").strip())
+    if " - " not in stripped:
+        return False
+    left, _right = stripped.split(" - ", 1)
+    return bool(left) and artists_compatible(artist, left)
+
+
+def _album_like_directory(directory: str | None, album: str, artist: str) -> bool:
+    """True when a folder name is this album or a leftover Artist - Album dir."""
+    if not directory:
+        return False
+    name = Path(directory).name
+    if albums_compatible(name, album, artist):
+        return True
+    stripped = _strip_codec_brackets(name)
+    if " - " not in stripped:
+        return False
+    left, right = stripped.split(" - ", 1)
+    return bool(right) and artists_compatible(artist, left) and albums_compatible(right, album, artist)
+
+
 def path_under_artist(path: object | None, artist: str) -> bool:
-    """True when a library path has a directory named for the host artist."""
+    """True when the album folder sits directly under the host artist directory."""
     folded = fold_identity(artist)
     if not folded or not path:
         return False
-    try:
-        parts = Path(str(path)).parts
-    except TypeError:
+    album_dir = album_directory_key(path)
+    if not album_dir:
         return False
-    return any(fold_identity(part) == folded for part in parts[:-1])
+    folder = Path(album_dir)
+    if _leftover_artist_album_dir(folder.name, artist):
+        return True
+    artist_dir = folder.parent
+    if not artist_dir.parts or artist_dir == artist_dir.anchor:
+        return False
+    return fold_identity(artist_dir.name) == folded
 
 
 def album_directory_key(path: object | None) -> str | None:
@@ -195,8 +222,10 @@ def folder_siblings_for_album(
     album: str,
 ) -> list[dict]:
     """Keep same-folder rows after a host match, even when album_artist is empty."""
-    host_dirs = {album_directory_key(row.get("path")) for row in host_rows}
-    host_dirs.discard(None)
+    host_dirs = {
+        key for key in (album_directory_key(row.get("path")) for row in host_rows)
+        if key and _album_like_directory(key, album, artist)
+    }
     if not host_dirs:
         return []
     extra: list[dict] = []
@@ -207,7 +236,8 @@ def folder_siblings_for_album(
             continue
         if not albums_compatible(row.get("album"), album, artist or row.get("artist")):
             continue
-        if album_directory_key(path) not in host_dirs:
+        key = album_directory_key(path)
+        if key not in host_dirs:
             continue
         extra.append(dict(row))
         seen.add(path)

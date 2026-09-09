@@ -82,3 +82,11 @@ def test_extracts_spaced_and_multivalue_album_artist_tags():
     multi = _extract_release_metadata({}, {"ALBUMARTIST": ["Nia Coltrane", "Juniper Vale"]})
     assert "Nia Coltrane" in (multi["album_artist"] or "")
     assert "Juniper Vale" in (multi["album_artist"] or "")
+
+
+def test_copyright_day_atom_does_not_steal_vorbis_day_tag():
+    """MP4 ©day collapse must not treat a Vorbis DAY comment as release_date."""
+    from tidal_dl.gui.api.library import _raw_tag
+
+    assert _raw_tag({"DAY": ["not-a-date"]}, "date", "DATE", "TDRC", "\xa9day") is None
+    assert _raw_tag({"DATE": ["2011-03-15"]}, "date", "DATE", "TDRC", "\xa9day") == ["2011-03-15"]
