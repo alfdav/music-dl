@@ -14,10 +14,19 @@ from tidal_dl.gui.api import albums as albums_api
 from tidal_dl.gui.api import search as search_api
 from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.local_identity import (
+    artists_compatible,
     finish_stamp,
+    fold_identity,
     match_local_row,
     recording_title,
     stamp_track,
+)
+
+# Generic accent pairs (not one live album). Catalog/Tidal form vs tag/DB form.
+_ACCENT_ARTIST_PAIRS = (
+    ("Jose Marquez", "José Márquez"),
+    ("Sofia Nunez", "Sofía Núñez"),
+    ("Andre Cote", "André Côté"),
 )
 
 
@@ -1020,6 +1029,157 @@ def test_identity_finds_file_tagged_as_later_featured_artist(tmp_path, monkeypat
     ))
     assert result["is_local"] is True
     assert result.get("local_path") == str(guest)
+    db.close()
+
+
+def test_fold_identity_and_artists_compatible_treat_accented_credits_as_equal():
+    """Stamp matching must fold ñ/n and accented vowels for any credit pair."""
+    for plain, accented in _ACCENT_ARTIST_PAIRS:
+        assert fold_identity(plain) == fold_identity(accented)
+        assert artists_compatible(plain, accented)
+        assert artists_compatible(accented, plain)
+    assert not artists_compatible("Jose Marquez", "Sofia Nunez")
+    assert not artists_compatible("Nia Coltrane", "José Márquez")
+
+
+def test_match_local_row_stamps_when_catalog_artist_lacks_accents(tmp_path):
+    """Title+artist restamp uses folded credits, not raw Tidal spelling."""
+    live = _touch(tmp_path / "music" / "José Márquez" / "Solo Works" / "01 Harbor Light.flac")
+    row = {
+        "path": str(live),
+        "artist": "José Márquez",
+        "title": "Harbor Light",
+        "album": "Solo Works",
+        "album_artist": None,
+        "isrc": "",
+    }
+    track = {
+        "name": "Harbor Light",
+        "artist": "Jose Marquez",
+        "album": "Solo Works",
+        "isrc": "QZJOS0000101",
+    }
+
+    matched = match_local_row(
+        track,
+        [row],
+        album_scoped=True,
+        scope_artist="Jose Marquez",
+        scope_album="Solo Works",
+    )
+
+    assert matched is not None
+    assert matched["path"] == str(live)
+
+
+def test_tracks_for_artist_finds_accented_tag_from_plain_credit(tmp_path):
+    """SQLite NOCASE is ASCII-only; artist identity must use the same fold."""
+    live = _touch(tmp_path / "music" / "José Márquez" / "Solo Works" / "01 Harbor Light.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        live,
+        artist="José Márquez",
+        title="Harbor Light",
+        album="Solo Works",
+        album_artist="José Márquez",
+        isrc="USESK0000301",
+    )
+    db.commit()
+
+    found = db.tracks_for_artist("Jose Marquez")
+    assert any(row.get("path") == str(live) for row in found)
+    album_rows = db.tracks_for_album_artist("Jose Marquez")
+    assert any(row.get("path") == str(live) for row in album_rows)
+    db.close()
+
+
+def test_identity_finds_featured_guest_when_accents_differ(tmp_path, monkeypatch):
+    """Host credit rows must not hide an accent-folded featured-artist file."""
+    host = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "01 Low Tide.flac")
+    guest = _touch(tmp_path / "music" / "José Márquez" / "Solo Works" / "01 Harbor Light.flac")
+    db = _open_db(tmp_path)
+    _record(db, host, artist="Nia Coltrane", title="Low Tide", album="Night Letters", isrc="USESK0000301")
+    _record(db, guest, artist="José Márquez", title="Harbor Light", album="Solo Works", isrc="USESK0000302")
+    db.commit()
+    _patch_search_db(monkeypatch, db)
+
+    pool = db.tracks_for_identity(
+        isrc="QZJOS0000302",
+        title="Harbor Light",
+        artist="Nia Coltrane, Jose Marquez",
+        album="Harbor Radio",
+    )
+    assert any(row.get("path") == str(guest) for row in pool)
+
+    result = search_api._serialize_track(_tidal_track(
+        track_id=190,
+        name="Harbor Light",
+        artist="Nia Coltrane",
+        extra_artists=["Jose Marquez"],
+        album="Harbor Radio",
+        isrc="QZJOS0000302",
+    ))
+    assert result["is_local"] is True
+    assert result.get("local_path") == str(guest)
+    db.close()
+
+
+def test_album_lookup_stamps_guest_accent_mismatch_and_missing_album_artist(tmp_path, monkeypatch):
+    """Guest ≠ host, ISRC match, accented tag vs plain Tidal credit, no album_artist."""
+    host = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "01 Low Tide.flac")
+    guest = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "04 Harbor Light.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        host,
+        artist="Nia Coltrane",
+        title="Low Tide",
+        album="Night Letters",
+        album_artist="Nia Coltrane",
+        isrc="QZNIA0000001",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    _record(
+        db,
+        guest,
+        artist="José Márquez",
+        title="Harbor Light",
+        album="Night Letters",
+        album_artist=None,
+        isrc="USESK0000269",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    db.commit()
+
+    tidal = _tidal_album(
+        200,
+        "Night Letters",
+        "Nia Coltrane",
+        [
+            _tidal_track(track_id=201, name="Low Tide", artist="Nia Coltrane", album="Night Letters", isrc="QZNIA0000001"),
+            _tidal_track(
+                track_id=202,
+                name="Harbor Light",
+                artist="Jose Marquez",
+                album="Night Letters",
+                isrc="USESK0000269",
+            ),
+        ],
+    )
+    _patch_album_lookup(monkeypatch, db, tidal)
+
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Night Letters")
+    assert any(row.get("path") == str(guest) for row in pool)
+
+    result = albums_api.album_lookup("Nia Coltrane", "Night Letters")
+    by_name = {track["name"]: track for track in result["tracks"]}
+    assert by_name["Harbor Light"]["is_local"] is True
+    assert by_name["Harbor Light"]["local_path"] == str(guest)
     db.close()
 
 

@@ -2087,8 +2087,10 @@ def library_recent_albums(
 def artist_albums(artist_name: str):
     """Return all albums by an artist from the local library."""
     db = _get_db()
+    from tidal_dl.helper.local_identity import artists_compatible
+
     albums = [album for album in _album_cards(db, db.tracks_for_artist(artist_name)) if any(
-        str(row.get("artist") or "").casefold() == artist_name.casefold()
+        artists_compatible(row.get("artist"), artist_name)
         for row in album["tracks"]
     )]
     return {

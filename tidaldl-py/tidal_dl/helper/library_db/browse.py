@@ -204,12 +204,17 @@ class BrowseMixin:
     def tracks_for_artist(self, artist: str) -> list[dict]:
         """Return readable rows for one artist without loading the whole library."""
         assert self._conn
+        from tidal_dl.helper.library_db.utils import fold_search_text
+
+        folded = fold_search_text(artist)
+        if not folded:
+            return []
         rows = self._conn.execute(
             f"""SELECT * FROM scanned
                WHERE status != 'unreadable' AND missing_since IS NULL
                  AND {visible_scanned_path_sql()}
-                 AND artist = ? COLLATE NOCASE""",
-            (artist,),
+                 AND fold_search(artist) = ?""",
+            (folded,),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -218,12 +223,17 @@ class BrowseMixin:
         assert self._conn
         if not artist:
             return []
+        from tidal_dl.helper.library_db.utils import fold_search_text
+
+        folded = fold_search_text(artist)
+        if not folded:
+            return []
         rows = self._conn.execute(
             f"""SELECT * FROM scanned
                WHERE status != 'unreadable' AND missing_since IS NULL
                  AND {visible_scanned_path_sql()}
-                 AND album_artist = ? COLLATE NOCASE""",
-            (artist,),
+                 AND fold_search(album_artist) = ?""",
+            (folded,),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -246,11 +256,14 @@ class BrowseMixin:
                 params.append(f"% - {album}%")
             # Bare ``Album [FLAC]`` must stay artist-scoped. An unscoped LIKE
             # lets another artist's leftover title enter a VA compilation.
+            from tidal_dl.helper.library_db.utils import fold_search_text
+
+            folded_artist = fold_search_text(artist)
             clauses.append(
-                "(album LIKE ? AND (artist = ? COLLATE NOCASE "
-                "OR album_artist = ? COLLATE NOCASE))"
+                "(album LIKE ? AND (fold_search(artist) = ? "
+                "OR fold_search(album_artist) = ?))"
             )
-            params.extend([f"{album} [%", artist, artist])
+            params.extend([f"{album} [%", folded_artist, folded_artist])
         rows = self._conn.execute(
             f"""SELECT * FROM scanned
                WHERE status != 'unreadable' AND missing_since IS NULL

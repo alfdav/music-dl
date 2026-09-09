@@ -6,7 +6,7 @@
 
 **Root cause:** `filter_album_rows` required `artists_compatible(host, row.artist) OR artists_compatible(host, row.album_artist)`. Guest rows with a different track artist and empty `album_artist` left the candidate pool, so album-scoped ISRC never saw them. Tag read only looked for `albumartist`/`ALBUMARTIST`/`TPE2`/`aART`, so Vorbis `ALBUM ARTIST` (space) never reached `scanned`.
 
-**Prevention:** After album titles match, keep rows under `/{host_artist}/` and same-folder siblings of a host match. Do not unscope same-title across the library. Persist every album-artist tag alias, including spaced/underscore keys and multi-value lists. Cover host+guest, missing `album_artist`, shared folder + ISRC, Greatest Hits isolation, and scan/register persistence.
+**Prevention:** After album titles match, keep rows under `/{host_artist}/` and same-folder siblings of a host match. Do not unscope same-title across the library. Persist every album-artist tag alias, including spaced/underscore keys and multi-value lists. Cover host+guest, missing `album_artist`, shared folder + ISRC, Greatest Hits isolation, and scan/register persistence. `fold_identity` already equates accented credits; artist SQL must use `fold_search`, not ASCII `COLLATE NOCASE`, or featured-guest rows stay out of the identity pool once any host credit matches.
 
 ## 2026-09-07 — Playback 403’d a successful cheap layout heal
 
