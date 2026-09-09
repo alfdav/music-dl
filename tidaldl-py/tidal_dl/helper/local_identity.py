@@ -156,6 +156,64 @@ def _leftover_codec_album(row_album: object | None, album: str) -> bool:
     return bool(stripped) and fold_identity(stripped) == fold_identity(album) and stripped != raw
 
 
+_DISC_DIR = re.compile(
+    r"^(?:cd|disc|disk|vol(?:ume)?)\s*\d*$",
+    re.IGNORECASE,
+)
+
+
+def path_under_artist(path: object | None, artist: str) -> bool:
+    """True when a library path has a directory named for the host artist."""
+    folded = fold_identity(artist)
+    if not folded or not path:
+        return False
+    try:
+        parts = Path(str(path)).parts
+    except TypeError:
+        return False
+    return any(fold_identity(part) == folded for part in parts[:-1])
+
+
+def album_directory_key(path: object | None) -> str | None:
+    """Album folder for a file, skipping a trailing CD/Disc directory."""
+    if not path:
+        return None
+    parent = Path(str(path)).parent
+    if not parent.parts or parent == parent.anchor:
+        return None
+    if _DISC_DIR.match(parent.name.strip()):
+        parent = parent.parent
+        if not parent.parts or parent == parent.anchor:
+            return None
+    return str(parent)
+
+
+def folder_siblings_for_album(
+    host_rows: Iterable[Mapping[str, Any]],
+    candidates: Iterable[Mapping[str, Any]],
+    artist: str,
+    album: str,
+) -> list[dict]:
+    """Keep same-folder rows after a host match, even when album_artist is empty."""
+    host_dirs = {album_directory_key(row.get("path")) for row in host_rows}
+    host_dirs.discard(None)
+    if not host_dirs:
+        return []
+    extra: list[dict] = []
+    seen: set[str] = set()
+    for row in candidates:
+        path = str(row.get("path") or "")
+        if not path or path in seen:
+            continue
+        if not albums_compatible(row.get("album"), album, artist or row.get("artist")):
+            continue
+        if album_directory_key(path) not in host_dirs:
+            continue
+        extra.append(dict(row))
+        seen.add(path)
+    return extra
+
+
 def filter_album_rows(
     rows: Iterable[Mapping[str, Any]],
     artist: str,
@@ -184,6 +242,7 @@ def filter_album_rows(
         elif not (
             artists_compatible(artist, row_artist)
             or artists_compatible(artist, row_album_artist)
+            or path_under_artist(row.get("path"), artist)
         ):
             continue
         matched.append(dict(row))

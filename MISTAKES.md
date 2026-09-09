@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-09 — Guest-credit album rows never restamped is_local
+
+**What happened:** Tidal album detail/lookup dropped the catalog-wide ISRC stamp, then restamped from `tracks_for_album_identity` → `filter_album_rows`. Host-credited tracks stamped `is_local`. Guest-credited tracks on the same disc (file on disk, History Done, matching ISRC) kept Download. Scanner stored `album_artist` NULL even when ffprobe showed a host;guest album artist.
+
+**Root cause:** `filter_album_rows` required `artists_compatible(host, row.artist) OR artists_compatible(host, row.album_artist)`. Guest rows with a different track artist and empty `album_artist` left the candidate pool, so album-scoped ISRC never saw them. Tag read only looked for `albumartist`/`ALBUMARTIST`/`TPE2`/`aART`, so Vorbis `ALBUM ARTIST` (space) never reached `scanned`.
+
+**Prevention:** After album titles match, keep rows under `/{host_artist}/` and same-folder siblings of a host match. Do not unscope same-title across the library. Persist every album-artist tag alias, including spaced/underscore keys and multi-value lists. Cover host+guest, missing `album_artist`, shared folder + ISRC, Greatest Hits isolation, and scan/register persistence.
+
 ## 2026-09-07 — Playback 403’d a successful cheap layout heal
 
 **What happened:** Bugbot on PR #182 after the #180 rebase: `request_playback_path_heal` returned `status: healed` with the dest path, but `_resolve_local_playback_path` only handled `already_running` / `started` / `debounced` and fell through to 403.

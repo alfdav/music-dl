@@ -479,12 +479,20 @@ def _resolve_local_metadata(
     }
 
 
+def _tag_key_forms(name: object) -> set[str]:
+    raw = str(name).casefold()
+    collapsed = "".join(character for character in raw if character.isalnum())
+    return {raw, collapsed} if collapsed else {raw}
+
+
 def _raw_tag(tags: object, *names: str) -> object | None:
     if not tags or not hasattr(tags, "items"):
         return None
-    wanted = {name.casefold() for name in names}
+    wanted: set[str] = set()
+    for name in names:
+        wanted.update(_tag_key_forms(name))
     for key, value in tags.items():
-        if str(key).casefold() in wanted:
+        if _tag_key_forms(key) & wanted:
             return value
     return None
 
@@ -502,6 +510,24 @@ def _tag_scalar(value: object | None) -> str | None:
         value = value.decode("utf-8", errors="ignore")
     cleaned = str(value).strip()
     return cleaned or None
+
+
+def _tag_join(value: object | None, *, sep: str = "; ") -> str | None:
+    """Join multi-value tags so every album-artist credit is stored."""
+    if value is None:
+        return None
+    if hasattr(value, "text"):
+        value = value.text
+    if isinstance(value, (list, tuple)):
+        parts: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            scalar = _tag_scalar(item)
+            if scalar and scalar not in seen:
+                parts.append(scalar)
+                seen.add(scalar)
+        return sep.join(parts) if parts else None
+    return _tag_scalar(value)
 
 
 def _tag_position(value: object | None, total: object | None = None) -> tuple[int | None, int | None]:
@@ -553,7 +579,16 @@ def _extract_release_metadata(easy_tags: object, raw_tags: object) -> dict:
         provider_album_id = tidal_album_id
 
     return {
-        "album_artist": _tag_scalar(value("albumartist", "ALBUMARTIST", "TPE2", "aART")),
+        "album_artist": _tag_join(value(
+            "albumartist",
+            "ALBUMARTIST",
+            "ALBUM ARTIST",
+            "album artist",
+            "album_artist",
+            "ALBUM_ARTIST",
+            "TPE2",
+            "aART",
+        )),
         "release_date": _tag_scalar(value("date", "DATE", "TDRC", "\xa9day")),
         "track_number": track_number,
         "track_total": track_total,

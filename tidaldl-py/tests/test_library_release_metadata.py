@@ -72,3 +72,13 @@ def test_missing_release_tags_stay_null():
     assert _extract_release_metadata({}, {}) == {
         key: None for key in EXPECTED
     }
+
+
+def test_extracts_spaced_and_multivalue_album_artist_tags():
+    """Vorbis ALBUM ARTIST and multi-value ALBUMARTIST must both land."""
+    spaced = _extract_release_metadata({}, {"ALBUM ARTIST": ["Nia Coltrane; Juniper Vale"]})
+    assert spaced["album_artist"] == "Nia Coltrane; Juniper Vale"
+
+    multi = _extract_release_metadata({}, {"ALBUMARTIST": ["Nia Coltrane", "Juniper Vale"]})
+    assert "Nia Coltrane" in (multi["album_artist"] or "")
+    assert "Juniper Vale" in (multi["album_artist"] or "")

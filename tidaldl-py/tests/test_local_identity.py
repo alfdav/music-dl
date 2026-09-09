@@ -1023,6 +1023,185 @@ def test_identity_finds_file_tagged_as_later_featured_artist(tmp_path, monkeypat
     db.close()
 
 
+def test_album_lookup_stamps_guest_missing_album_artist_same_folder(tmp_path, monkeypatch):
+    """Co-release guest with no album_artist still stamps when it shares the album folder."""
+    host = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "01 Low Tide.flac")
+    guest = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "04 Harbor Light.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        host,
+        artist="Nia Coltrane",
+        title="Low Tide",
+        album="Night Letters",
+        album_artist="Nia Coltrane",
+        isrc="QZNIA0000001",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    _record(
+        db,
+        guest,
+        artist="Juniper Vale",
+        title="Harbor Light",
+        album="Night Letters",
+        album_artist=None,
+        isrc="USESK0000269",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    db.commit()
+
+    tidal = _tidal_album(
+        170,
+        "Night Letters",
+        "Nia Coltrane",
+        [
+            _tidal_track(track_id=171, name="Low Tide", artist="Nia Coltrane", album="Night Letters", isrc="QZNIA0000001"),
+            _tidal_track(
+                track_id=172,
+                name="Harbor Light",
+                artist="Juniper Vale",
+                album="Night Letters",
+                isrc="USESK0000269",
+            ),
+        ],
+    )
+    _patch_album_lookup(monkeypatch, db, tidal)
+
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Night Letters")
+    assert any(row.get("path") == str(guest) for row in pool)
+
+    result = albums_api.album_lookup("Nia Coltrane", "Night Letters")
+    by_name = {track["name"]: track for track in result["tracks"]}
+
+    assert by_name["Low Tide"]["is_local"] is True
+    assert by_name["Harbor Light"]["is_local"] is True
+    assert by_name["Harbor Light"]["local_path"] == str(guest)
+    assert result["missing_count"] == 0
+    db.close()
+
+
+def test_album_tracks_stamps_guest_missing_album_artist_same_folder(tmp_path, monkeypatch):
+    """Tidal album detail must restamp the same folder-scoped guest ISRC."""
+    host = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "01 Low Tide.flac")
+    guest = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "04 Harbor Light.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        host,
+        artist="Nia Coltrane",
+        title="Low Tide",
+        album="Night Letters",
+        album_artist="Nia Coltrane",
+        isrc="QZNIA0000001",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    _record(
+        db,
+        guest,
+        artist="Juniper Vale",
+        title="Harbor Light",
+        album="Night Letters",
+        album_artist=None,
+        isrc="USESK0000269",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    db.commit()
+
+    tidal = _tidal_album(
+        180,
+        "Night Letters",
+        "Nia Coltrane",
+        [
+            _tidal_track(track_id=181, name="Low Tide", artist="Nia Coltrane", album="Night Letters", isrc="QZNIA0000001"),
+            _tidal_track(
+                track_id=182,
+                name="Harbor Light",
+                artist="Juniper Vale",
+                album="Night Letters",
+                isrc="USESK0000269",
+            ),
+        ],
+    )
+    _patch_album_lookup(monkeypatch, db, tidal)
+
+    result = albums_api.album_tracks(180)
+    by_name = {track["name"]: track for track in result["tracks"]}
+
+    assert by_name["Harbor Light"]["is_local"] is True
+    assert by_name["Harbor Light"]["local_path"] == str(guest)
+    db.close()
+
+
+def test_album_identity_includes_guest_sharing_album_dir_without_host_folder(tmp_path):
+    """Host-matched rows pull in same-folder guests even when the path has no artist dir."""
+    host = _touch(tmp_path / "music" / "Night Letters" / "01 Low Tide.flac")
+    guest = _touch(tmp_path / "music" / "Night Letters" / "04 Harbor Light.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        host,
+        artist="Nia Coltrane",
+        title="Low Tide",
+        album="Night Letters",
+        album_artist="Nia Coltrane",
+        isrc="QZNIA0000001",
+    )
+    _record(
+        db,
+        guest,
+        artist="Juniper Vale",
+        title="Harbor Light",
+        album="Night Letters",
+        album_artist=None,
+        isrc="USESK0000269",
+    )
+    db.commit()
+
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Night Letters")
+    assert any(row.get("path") == str(host) for row in pool)
+    assert any(row.get("path") == str(guest) for row in pool)
+    db.close()
+
+
+def test_album_identity_does_not_take_same_title_from_other_artist_folder(tmp_path):
+    """Same album title under another artist folder must stay out of the host pool."""
+    host = _touch(tmp_path / "music" / "Nia Coltrane" / "Greatest Hits" / "01 Low Tide.flac")
+    foreign = _touch(tmp_path / "music" / "Juniper Vale" / "Greatest Hits" / "01 Static.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        host,
+        artist="Nia Coltrane",
+        title="Low Tide",
+        album="Greatest Hits",
+        album_artist="Nia Coltrane",
+        isrc="QZNIA0000777",
+    )
+    _record(
+        db,
+        foreign,
+        artist="Juniper Vale",
+        title="Static",
+        album="Greatest Hits",
+        album_artist=None,
+        isrc="USESK0000777",
+    )
+    db.commit()
+
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Greatest Hits")
+    assert any(row.get("path") == str(host) for row in pool)
+    assert all(row.get("path") != str(foreign) for row in pool)
+    db.close()
+
+
 def test_stamp_track_finish_drops_catalog_quality_stash():
     """API responses must not leak the internal catalog-quality stash."""
     track = {"name": "Static", "artist": "Juniper Vale", "album": "Safe Room", "quality": "LOSSLESS"}
