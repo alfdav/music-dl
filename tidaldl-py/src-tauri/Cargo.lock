@@ -2194,7 +2194,7 @@ dependencies = [
 
 [[package]]
 name = "music-dl"
-version = "1.7.10"
+version = "1.7.11"
 dependencies = [
  "log",
  "serde",
