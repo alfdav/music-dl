@@ -20,6 +20,9 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
+## v1.7.11 (2026-09-11)
+- Stamp album-detail / album-lookup `is_local` for guest-credit tracks when `album_artist` is missing or joined (`host; guest`), including accent-folded artist identity and Vorbis `ALBUM ARTIST` tags ([#184](https://github.com/alfdav/music-dl/pull/184)).
+
 ## v1.7.10 (2026-09-08)
 - Waveform bars breathe for any playable local track by fetching peaks from the same path playback uses, not only `is_local` + `local_path` ([#177](https://github.com/alfdav/music-dl/pull/177)).
 - Local playback stays live while downloads run; `/api/playback` skips token refresh and serves on-disk files without waiting on shared token or library-index locks ([#178](https://github.com/alfdav/music-dl/pull/178)).
