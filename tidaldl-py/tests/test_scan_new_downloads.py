@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import wave
 from pathlib import Path
 from types import SimpleNamespace
+
+from mutagen.flac import FLAC
 
 from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.library_scanner import is_skipped_scan_dir, path_has_skipped_scan_dir
@@ -23,6 +26,45 @@ def _write_wav(path: Path) -> None:
 
 def _settings(library_dir: Path):
     return SimpleNamespace(data=SimpleNamespace(download_base_path=str(library_dir)))
+
+
+def _write_tagged_flac(path: Path, *, spaced_album_artist: bool = False) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=0.05",
+            "-ac",
+            "1",
+            "-ar",
+            "44100",
+            "-sample_fmt",
+            "s16",
+            "-c:a",
+            "flac",
+            "-y",
+            str(path),
+        ],
+        check=True,
+    )
+    audio = FLAC(path)
+    audio["TITLE"] = "Harbor Light"
+    audio["ARTIST"] = "Juniper Vale"
+    audio["ALBUM"] = "Night Letters"
+    audio["ISRC"] = "USESK0000269"
+    if spaced_album_artist:
+        audio["ALBUM ARTIST"] = "Nia Coltrane; Juniper Vale"
+    else:
+        audio["ALBUMARTIST"] = "Nia Coltrane; Juniper Vale"
+    audio.save()
+    return path
 
 
 def _library_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -250,3 +292,44 @@ class TestWorkerPostDownloadIndexing:
         assert history == []
         assert any(event["type"] == "cancelled" for event in events)
         assert not any(event["type"] == "complete" for event in events)
+
+
+class TestScanPersistsAlbumArtist:
+    def test_scan_new_downloads_persists_album_artist_from_tags(self, tmp_path):
+        from tidal_dl.gui.services.download_job_service import scan_new_downloads
+
+        library_dir = tmp_path / "music"
+        tagged = _write_tagged_flac(
+            library_dir / "Nia Coltrane" / "Night Letters" / "04 Harbor Light.flac",
+            spaced_album_artist=True,
+        )
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        scan_new_downloads(db, _settings(library_dir), paths=[tagged])
+        row = db.get(str(tagged))
+        db.close()
+
+        assert row is not None
+        assert row["artist"] == "Juniper Vale"
+        assert row["album"] == "Night Letters"
+        assert row["album_artist"]
+        assert "Nia Coltrane" in row["album_artist"]
+
+    def test_register_downloaded_track_persists_album_artist_from_tags(self, tmp_path, monkeypatch):
+        from tidal_dl.download import registry as registry_mod
+
+        monkeypatch.setattr(registry_mod, "path_config_base", lambda: str(tmp_path / "config"))
+        tagged = _write_tagged_flac(
+            tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "04 Harbor Light.flac",
+            spaced_album_artist=True,
+        )
+        registry_mod.register_downloaded_track(tagged)
+
+        db = LibraryDB(tmp_path / "config" / "library.db")
+        db.open()
+        row = db.get(str(tagged))
+        db.close()
+
+        assert row is not None
+        assert row["album_artist"]
+        assert "Nia Coltrane" in row["album_artist"]

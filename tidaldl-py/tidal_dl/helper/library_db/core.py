@@ -60,7 +60,15 @@ class LibraryDBCore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self._path))
         self._conn.row_factory = sqlite3.Row
+        from tidal_dl.helper.local_identity import credits_include
+
         self._conn.create_function("fold_search", 1, fold_search_text, deterministic=True)
+        self._conn.create_function(
+            "credit_includes",
+            2,
+            lambda haystack, needle: credits_include(haystack, needle, fold=fold_search_text),
+            deterministic=True,
+        )
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         version = self._conn.execute("PRAGMA user_version").fetchone()[0]

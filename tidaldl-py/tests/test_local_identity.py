@@ -14,10 +14,20 @@ from tidal_dl.gui.api import albums as albums_api
 from tidal_dl.gui.api import search as search_api
 from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.local_identity import (
+    artists_compatible,
+    filter_album_rows,
     finish_stamp,
+    fold_identity,
     match_local_row,
     recording_title,
     stamp_track,
+)
+
+# Generic accent pairs (not one live album). Catalog/Tidal form vs tag/DB form.
+_ACCENT_ARTIST_PAIRS = (
+    ("Jose Marquez", "José Márquez"),
+    ("Sofia Nunez", "Sofía Núñez"),
+    ("Andre Cote", "André Côté"),
 )
 
 
@@ -1023,6 +1033,397 @@ def test_identity_finds_file_tagged_as_later_featured_artist(tmp_path, monkeypat
     db.close()
 
 
+def test_fold_identity_and_artists_compatible_treat_accented_credits_as_equal():
+    """Stamp matching must fold ñ/n and accented vowels for any credit pair."""
+    for plain, accented in _ACCENT_ARTIST_PAIRS:
+        assert fold_identity(plain) == fold_identity(accented)
+        assert artists_compatible(plain, accented)
+        assert artists_compatible(accented, plain)
+    assert not artists_compatible("Jose Marquez", "Sofia Nunez")
+    assert not artists_compatible("Nia Coltrane", "José Márquez")
+
+
+def test_match_local_row_stamps_when_catalog_artist_lacks_accents(tmp_path):
+    """Title+artist restamp uses folded credits, not raw Tidal spelling."""
+    live = _touch(tmp_path / "music" / "José Márquez" / "Solo Works" / "01 Harbor Light.flac")
+    row = {
+        "path": str(live),
+        "artist": "José Márquez",
+        "title": "Harbor Light",
+        "album": "Solo Works",
+        "album_artist": None,
+        "isrc": "",
+    }
+    track = {
+        "name": "Harbor Light",
+        "artist": "Jose Marquez",
+        "album": "Solo Works",
+        "isrc": "QZJOS0000101",
+    }
+
+    matched = match_local_row(
+        track,
+        [row],
+        album_scoped=True,
+        scope_artist="Jose Marquez",
+        scope_album="Solo Works",
+    )
+
+    assert matched is not None
+    assert matched["path"] == str(live)
+
+
+def test_tracks_for_artist_finds_accented_tag_from_plain_credit(tmp_path):
+    """SQLite NOCASE is ASCII-only; artist identity must use the same fold."""
+    live = _touch(tmp_path / "music" / "José Márquez" / "Solo Works" / "01 Harbor Light.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        live,
+        artist="José Márquez",
+        title="Harbor Light",
+        album="Solo Works",
+        album_artist="José Márquez",
+        isrc="USESK0000301",
+    )
+    db.commit()
+
+    found = db.tracks_for_artist("Jose Marquez")
+    assert any(row.get("path") == str(live) for row in found)
+    album_rows = db.tracks_for_album_artist("Jose Marquez")
+    assert any(row.get("path") == str(live) for row in album_rows)
+    db.close()
+
+
+def test_identity_finds_featured_guest_when_accents_differ(tmp_path, monkeypatch):
+    """Host credit rows must not hide an accent-folded featured-artist file."""
+    host = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "01 Low Tide.flac")
+    guest = _touch(tmp_path / "music" / "José Márquez" / "Solo Works" / "01 Harbor Light.flac")
+    db = _open_db(tmp_path)
+    _record(db, host, artist="Nia Coltrane", title="Low Tide", album="Night Letters", isrc="USESK0000301")
+    _record(db, guest, artist="José Márquez", title="Harbor Light", album="Solo Works", isrc="USESK0000302")
+    db.commit()
+    _patch_search_db(monkeypatch, db)
+
+    pool = db.tracks_for_identity(
+        isrc="QZJOS0000302",
+        title="Harbor Light",
+        artist="Nia Coltrane, Jose Marquez",
+        album="Harbor Radio",
+    )
+    assert any(row.get("path") == str(guest) for row in pool)
+
+    result = search_api._serialize_track(_tidal_track(
+        track_id=190,
+        name="Harbor Light",
+        artist="Nia Coltrane",
+        extra_artists=["Jose Marquez"],
+        album="Harbor Radio",
+        isrc="QZJOS0000302",
+    ))
+    assert result["is_local"] is True
+    assert result.get("local_path") == str(guest)
+    db.close()
+
+
+def test_album_lookup_stamps_guest_accent_mismatch_and_missing_album_artist(tmp_path, monkeypatch):
+    """Guest ≠ host, ISRC match, accented tag vs plain Tidal credit, no album_artist."""
+    host = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "01 Low Tide.flac")
+    guest = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "04 Harbor Light.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        host,
+        artist="Nia Coltrane",
+        title="Low Tide",
+        album="Night Letters",
+        album_artist="Nia Coltrane",
+        isrc="QZNIA0000001",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    _record(
+        db,
+        guest,
+        artist="José Márquez",
+        title="Harbor Light",
+        album="Night Letters",
+        album_artist=None,
+        isrc="USESK0000269",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    db.commit()
+
+    tidal = _tidal_album(
+        200,
+        "Night Letters",
+        "Nia Coltrane",
+        [
+            _tidal_track(track_id=201, name="Low Tide", artist="Nia Coltrane", album="Night Letters", isrc="QZNIA0000001"),
+            _tidal_track(
+                track_id=202,
+                name="Harbor Light",
+                artist="Jose Marquez",
+                album="Night Letters",
+                isrc="USESK0000269",
+            ),
+        ],
+    )
+    _patch_album_lookup(monkeypatch, db, tidal)
+
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Night Letters")
+    assert any(row.get("path") == str(guest) for row in pool)
+
+    result = albums_api.album_lookup("Nia Coltrane", "Night Letters")
+    by_name = {track["name"]: track for track in result["tracks"]}
+    assert by_name["Harbor Light"]["is_local"] is True
+    assert by_name["Harbor Light"]["local_path"] == str(guest)
+    db.close()
+
+
+def test_album_lookup_stamps_guest_missing_album_artist_same_folder(tmp_path, monkeypatch):
+    """Co-release guest with no album_artist still stamps when it shares the album folder."""
+    host = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "01 Low Tide.flac")
+    guest = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "04 Harbor Light.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        host,
+        artist="Nia Coltrane",
+        title="Low Tide",
+        album="Night Letters",
+        album_artist="Nia Coltrane",
+        isrc="QZNIA0000001",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    _record(
+        db,
+        guest,
+        artist="Juniper Vale",
+        title="Harbor Light",
+        album="Night Letters",
+        album_artist=None,
+        isrc="USESK0000269",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    db.commit()
+
+    tidal = _tidal_album(
+        170,
+        "Night Letters",
+        "Nia Coltrane",
+        [
+            _tidal_track(track_id=171, name="Low Tide", artist="Nia Coltrane", album="Night Letters", isrc="QZNIA0000001"),
+            _tidal_track(
+                track_id=172,
+                name="Harbor Light",
+                artist="Juniper Vale",
+                album="Night Letters",
+                isrc="USESK0000269",
+            ),
+        ],
+    )
+    _patch_album_lookup(monkeypatch, db, tidal)
+
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Night Letters")
+    assert any(row.get("path") == str(guest) for row in pool)
+
+    result = albums_api.album_lookup("Nia Coltrane", "Night Letters")
+    by_name = {track["name"]: track for track in result["tracks"]}
+
+    assert by_name["Low Tide"]["is_local"] is True
+    assert by_name["Harbor Light"]["is_local"] is True
+    assert by_name["Harbor Light"]["local_path"] == str(guest)
+    assert result["missing_count"] == 0
+    db.close()
+
+
+def test_album_tracks_stamps_guest_missing_album_artist_same_folder(tmp_path, monkeypatch):
+    """Tidal album detail must restamp the same folder-scoped guest ISRC."""
+    host = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "01 Low Tide.flac")
+    guest = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "04 Harbor Light.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        host,
+        artist="Nia Coltrane",
+        title="Low Tide",
+        album="Night Letters",
+        album_artist="Nia Coltrane",
+        isrc="QZNIA0000001",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    _record(
+        db,
+        guest,
+        artist="Juniper Vale",
+        title="Harbor Light",
+        album="Night Letters",
+        album_artist=None,
+        isrc="USESK0000269",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    db.commit()
+
+    tidal = _tidal_album(
+        180,
+        "Night Letters",
+        "Nia Coltrane",
+        [
+            _tidal_track(track_id=181, name="Low Tide", artist="Nia Coltrane", album="Night Letters", isrc="QZNIA0000001"),
+            _tidal_track(
+                track_id=182,
+                name="Harbor Light",
+                artist="Juniper Vale",
+                album="Night Letters",
+                isrc="USESK0000269",
+            ),
+        ],
+    )
+    _patch_album_lookup(monkeypatch, db, tidal)
+
+    result = albums_api.album_tracks(180)
+    by_name = {track["name"]: track for track in result["tracks"]}
+
+    assert by_name["Harbor Light"]["is_local"] is True
+    assert by_name["Harbor Light"]["local_path"] == str(guest)
+    db.close()
+
+
+def test_album_identity_includes_guest_sharing_album_dir_without_host_folder(tmp_path):
+    """Host-matched rows pull in same-folder guests even when the path has no artist dir."""
+    host = _touch(tmp_path / "music" / "Night Letters" / "01 Low Tide.flac")
+    guest = _touch(tmp_path / "music" / "Night Letters" / "04 Harbor Light.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        host,
+        artist="Nia Coltrane",
+        title="Low Tide",
+        album="Night Letters",
+        album_artist="Nia Coltrane",
+        isrc="QZNIA0000001",
+    )
+    _record(
+        db,
+        guest,
+        artist="Juniper Vale",
+        title="Harbor Light",
+        album="Night Letters",
+        album_artist=None,
+        isrc="USESK0000269",
+    )
+    db.commit()
+
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Night Letters")
+    assert any(row.get("path") == str(host) for row in pool)
+    assert any(row.get("path") == str(guest) for row in pool)
+    db.close()
+
+
+def test_album_identity_does_not_use_home_folder_named_like_host(tmp_path):
+    """A home/volume directory named for the host must not steal another artist's album."""
+    foreign = _touch(
+        tmp_path / "Users" / "Nia Coltrane" / "Music" / "Juniper Vale" / "Greatest Hits" / "01 Static.flac"
+    )
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        foreign,
+        artist="Juniper Vale",
+        title="Static",
+        album="Greatest Hits",
+        album_artist=None,
+        isrc="USESK0000777",
+    )
+    db.commit()
+
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Greatest Hits")
+    assert all(row.get("path") != str(foreign) for row in pool)
+    db.close()
+
+
+def test_album_identity_does_not_group_flat_library_same_title_dumps(tmp_path):
+    """Two Greatest Hits files dumped in the library root are not one album folder."""
+    host = _touch(tmp_path / "music" / "01 Low Tide.flac")
+    foreign = _touch(tmp_path / "music" / "01 Static.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        host,
+        artist="Nia Coltrane",
+        title="Low Tide",
+        album="Greatest Hits",
+        album_artist="Nia Coltrane",
+        isrc="QZNIA0000777",
+    )
+    _record(
+        db,
+        foreign,
+        artist="Juniper Vale",
+        title="Static",
+        album="Greatest Hits",
+        album_artist=None,
+        isrc="USESK0000777",
+    )
+    db.commit()
+
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Greatest Hits")
+    assert any(row.get("path") == str(host) for row in pool)
+    assert all(row.get("path") != str(foreign) for row in pool)
+    db.close()
+
+
+def test_path_under_artist_ignores_filename_credit(tmp_path):
+    from tidal_dl.helper.local_identity import path_under_artist
+
+    path = tmp_path / "music" / "Juniper Vale" / "Safe Room" / "Nia Coltrane - Static.flac"
+    assert path_under_artist(str(path), "Nia Coltrane") is False
+    assert path_under_artist(str(path), "Juniper Vale") is True
+
+
+def test_album_identity_does_not_take_same_title_from_other_artist_folder(tmp_path):
+    """Same album title under another artist folder must stay out of the host pool."""
+    host = _touch(tmp_path / "music" / "Nia Coltrane" / "Greatest Hits" / "01 Low Tide.flac")
+    foreign = _touch(tmp_path / "music" / "Juniper Vale" / "Greatest Hits" / "01 Static.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        host,
+        artist="Nia Coltrane",
+        title="Low Tide",
+        album="Greatest Hits",
+        album_artist="Nia Coltrane",
+        isrc="QZNIA0000777",
+    )
+    _record(
+        db,
+        foreign,
+        artist="Juniper Vale",
+        title="Static",
+        album="Greatest Hits",
+        album_artist=None,
+        isrc="USESK0000777",
+    )
+    db.commit()
+
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Greatest Hits")
+    assert any(row.get("path") == str(host) for row in pool)
+    assert all(row.get("path") != str(foreign) for row in pool)
+    db.close()
+
+
 def test_stamp_track_finish_drops_catalog_quality_stash():
     """API responses must not leak the internal catalog-quality stash."""
     track = {"name": "Static", "artist": "Juniper Vale", "album": "Safe Room", "quality": "LOSSLESS"}
@@ -1036,3 +1437,235 @@ def test_stamp_track_finish_drops_catalog_quality_stash():
     finish_stamp(track)
     assert "_catalog_quality" not in track
     assert track["quality"] == "FLAC"
+
+
+def test_credits_include_parses_joined_album_artist_members():
+    """Joined album_artist is list membership under fold_identity, not whole-string equality."""
+    from tidal_dl.helper.local_identity import credits_include
+
+    assert credits_include("Nia Coltrane; Juniper Vale", "Nia Coltrane")
+    assert credits_include("Nia Coltrane; Juniper Vale", "Juniper Vale")
+    assert credits_include("Nia Coltrane, Juniper Vale", "Juniper Vale")
+    assert credits_include("José Márquez; Sofía Núñez", "Jose Marquez")
+    assert credits_include("José Márquez; Sofía Núñez", "Sofia Nunez")
+    assert not credits_include("Nia Coltrane; Juniper Vale", "Maren Ortega")
+    assert not credits_include("Nia Coltrane; Juniper Vale", "Nia")
+    assert artists_compatible("Nia Coltrane", "Nia Coltrane; Juniper Vale")
+    assert artists_compatible("Jose Marquez", "José Márquez; Sofía Núñez")
+
+
+def test_tracks_for_album_artist_finds_joined_host_and_guest_credits(tmp_path):
+    """SQL album-artist lookup must match semicolon or comma list members, including accents."""
+    semicolon = _touch(tmp_path / "music" / "Juniper Vale" / "Night Letters" / "04 Harbor Light.flac")
+    comma = _touch(tmp_path / "music" / "Sofía Núñez" / "Solo Works" / "01 Static.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        semicolon,
+        artist="Juniper Vale",
+        title="Harbor Light",
+        album="Night Letters [FLAC]",
+        album_artist="Nia Coltrane; Juniper Vale",
+        isrc="USESK0000401",
+    )
+    _record(
+        db,
+        comma,
+        artist="Sofía Núñez",
+        title="Static",
+        album="Solo Works",
+        album_artist="José Márquez, Sofía Núñez",
+        isrc="USESK0000402",
+    )
+    db.commit()
+
+    host_rows = db.tracks_for_album_artist("Nia Coltrane")
+    guest_rows = db.tracks_for_album_artist("Juniper Vale")
+    accent_rows = db.tracks_for_album_artist("Jose Marquez")
+    assert any(row.get("path") == str(semicolon) for row in host_rows)
+    assert any(row.get("path") == str(semicolon) for row in guest_rows)
+    assert any(row.get("path") == str(comma) for row in accent_rows)
+    db.close()
+
+
+def test_leftover_codec_clause_matches_joined_album_artist_not_foreign_title(tmp_path):
+    """Bare Album [FLAC] stays artist-scoped via album_artist members, not whole-library title."""
+    guest = _touch(tmp_path / "music" / "Juniper Vale" / "Night Letters" / "04 Harbor Light.flac")
+    foreign = _touch(tmp_path / "music" / "Maren Ortega" / "Night Letters" / "01 Low Tide.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        guest,
+        artist="Juniper Vale",
+        title="Harbor Light",
+        album="Night Letters [FLAC]",
+        album_artist="Nia Coltrane; Juniper Vale",
+        isrc="USESK0000403",
+    )
+    _record(
+        db,
+        foreign,
+        artist="Maren Ortega",
+        title="Low Tide",
+        album="Night Letters [FLAC]",
+        album_artist="Maren Ortega",
+        isrc="USESK0000404",
+    )
+    db.commit()
+
+    leftover = db.tracks_for_leftover_album_tags("Nia Coltrane", "Night Letters")
+    assert any(row.get("path") == str(guest) for row in leftover)
+    assert all(row.get("path") != str(foreign) for row in leftover)
+    db.close()
+
+
+def test_filter_album_rows_keeps_joined_album_artist_guest():
+    """Album identity pool keeps a guest whose album_artist list includes the host."""
+    guest = {
+        "path": "/music/Juniper Vale/Night Letters/04 Harbor Light.flac",
+        "artist": "Juniper Vale",
+        "title": "Harbor Light",
+        "album": "Night Letters [FLAC]",
+        "album_artist": "Nia Coltrane; Juniper Vale",
+    }
+    foreign = {
+        "path": "/music/Maren Ortega/Night Letters/01 Low Tide.flac",
+        "artist": "Maren Ortega",
+        "title": "Low Tide",
+        "album": "Night Letters [FLAC]",
+        "album_artist": "Maren Ortega",
+    }
+
+    matched = filter_album_rows([guest, foreign], "Nia Coltrane", "Night Letters")
+    assert any(row.get("path") == guest["path"] for row in matched)
+    assert all(row.get("path") != foreign["path"] for row in matched)
+
+
+def test_album_lookup_stamps_joined_album_artist_leftover_codec_guest(tmp_path, monkeypatch):
+    """Guest under its own folder, leftover Album [FLAC], joined album_artist still stamps."""
+    host = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "01 Low Tide.flac")
+    guest = _touch(tmp_path / "music" / "Juniper Vale" / "Night Letters" / "04 Harbor Light.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        host,
+        artist="Nia Coltrane",
+        title="Low Tide",
+        album="Night Letters",
+        album_artist="Nia Coltrane",
+        isrc="QZNIA0000001",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    _record(
+        db,
+        guest,
+        artist="Juniper Vale",
+        title="Harbor Light",
+        album="Night Letters [FLAC]",
+        album_artist="Nia Coltrane; Juniper Vale",
+        isrc="USESK0000405",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    db.commit()
+
+    tidal = _tidal_album(
+        210,
+        "Night Letters",
+        "Nia Coltrane",
+        [
+            _tidal_track(track_id=211, name="Low Tide", artist="Nia Coltrane", album="Night Letters", isrc="QZNIA0000001"),
+            _tidal_track(
+                track_id=212,
+                name="Harbor Light",
+                artist="Juniper Vale",
+                album="Night Letters",
+                isrc="USESK0000405",
+            ),
+        ],
+    )
+    _patch_album_lookup(monkeypatch, db, tidal)
+
+    leftover = db.tracks_for_leftover_album_tags("Nia Coltrane", "Night Letters")
+    assert any(row.get("path") == str(guest) for row in leftover)
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Night Letters")
+    assert any(row.get("path") == str(guest) for row in pool)
+
+    result = albums_api.album_lookup("Nia Coltrane", "Night Letters")
+    by_name = {track["name"]: track for track in result["tracks"]}
+    assert by_name["Harbor Light"]["is_local"] is True
+    assert by_name["Harbor Light"]["local_path"] == str(guest)
+    assert result["missing_count"] == 0
+    db.close()
+
+
+def test_album_lookup_joined_album_artist_does_not_steal_greatest_hits_isrc(tmp_path, monkeypatch):
+    """Joined album_artist membership must not widen to another album's shared ISRC."""
+    other = _touch(tmp_path / "music" / "Juniper Vale" / "Greatest Hits" / "01 Static.flac")
+    wanted = _touch(tmp_path / "music" / "Nia Coltrane" / "Night Letters" / "04 Harbor Light.flac")
+    db = _open_db(tmp_path)
+    _record(
+        db,
+        other,
+        artist="Juniper Vale",
+        title="Static",
+        album="Greatest Hits [FLAC]",
+        album_artist="Juniper Vale; Maren Ortega",
+        isrc="SHARED0000406",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    _record(
+        db,
+        wanted,
+        artist="Juniper Vale",
+        title="Harbor Light",
+        album="Night Letters [FLAC]",
+        album_artist="Nia Coltrane; Juniper Vale",
+        isrc="USESK0000406",
+        quality="FLAC",
+        fmt="FLAC",
+        codec="flac",
+    )
+    db.commit()
+
+    leftover = db.tracks_for_leftover_album_tags("Nia Coltrane", "Night Letters")
+    assert all(row.get("path") != str(other) for row in leftover)
+    pool = db.tracks_for_album_identity("Nia Coltrane", "Night Letters")
+    assert any(row.get("path") == str(wanted) for row in pool)
+    assert all(row.get("path") != str(other) for row in pool)
+
+    tidal = _tidal_album(
+        220,
+        "Night Letters",
+        "Nia Coltrane",
+        [
+            _tidal_track(
+                track_id=221,
+                name="Harbor Light",
+                artist="Juniper Vale",
+                album="Night Letters",
+                isrc="USESK0000406",
+            ),
+            _tidal_track(
+                track_id=222,
+                name="Static",
+                artist="Juniper Vale",
+                album="Night Letters",
+                isrc="SHARED0000406",
+            ),
+        ],
+    )
+    _patch_album_lookup(monkeypatch, db, tidal)
+
+    result = albums_api.album_lookup("Nia Coltrane", "Night Letters")
+    by_name = {track["name"]: track for track in result["tracks"]}
+    assert by_name["Harbor Light"]["is_local"] is True
+    assert by_name["Harbor Light"]["local_path"] == str(wanted)
+    assert by_name["Static"]["is_local"] is False
+    assert by_name["Static"].get("local_path") in (None, "")
+    db.close()
