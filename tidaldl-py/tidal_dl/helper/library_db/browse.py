@@ -232,8 +232,8 @@ class BrowseMixin:
             f"""SELECT * FROM scanned
                WHERE status != 'unreadable' AND missing_since IS NULL
                  AND {visible_scanned_path_sql()}
-                 AND fold_search(album_artist) = ?""",
-            (folded,),
+                 AND credit_includes(album_artist, ?)""",
+            (artist,),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -261,9 +261,9 @@ class BrowseMixin:
             folded_artist = fold_search_text(artist)
             clauses.append(
                 "(album LIKE ? AND (fold_search(artist) = ? "
-                "OR fold_search(album_artist) = ?))"
+                "OR credit_includes(album_artist, ?)))"
             )
-            params.extend([f"{album} [%", folded_artist, folded_artist])
+            params.extend([f"{album} [%", folded_artist, artist])
         rows = self._conn.execute(
             f"""SELECT * FROM scanned
                WHERE status != 'unreadable' AND missing_since IS NULL

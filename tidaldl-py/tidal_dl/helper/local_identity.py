@@ -45,12 +45,40 @@ def albums_compatible(left: object | None, right: object | None, artist: object 
     return bool(bare_left) and bare_left == bare_right
 
 
+_CREDIT_SPLIT = re.compile(r"[;,]")
+
+
+def credit_members(value: object | None, *, fold=fold_identity) -> list[str]:
+    """Folded `;` / `,` list members from a stored artist or album-artist credit."""
+    members: list[str] = []
+    seen: set[str] = set()
+    for part in _CREDIT_SPLIT.split(str(value or "")):
+        folded = fold(part.strip())
+        if folded and folded not in seen:
+            members.append(folded)
+            seen.add(folded)
+    return members
+
+
+def credits_include(haystack: object | None, needle: object | None, *, fold=None) -> bool:
+    """True when needle equals haystack or a semicolon/comma list member."""
+    fold_fn = fold or fold_identity
+    wanted = fold_fn(needle)
+    if not wanted:
+        return False
+    if fold_fn(haystack) == wanted:
+        return True
+    return wanted in credit_members(haystack, fold=fold_fn)
+
+
 def artists_compatible(left: object | None, right: object | None) -> bool:
     first = fold_identity(left)
     second = fold_identity(right)
     if not first or not second:
         return False
     if first == second:
+        return True
+    if first in credit_members(right) or second in credit_members(left):
         return True
     return first in second or second in first
 
@@ -271,6 +299,7 @@ def filter_album_rows(
                 continue
         elif not (
             artists_compatible(artist, row_artist)
+            or credits_include(row_album_artist, artist)
             or artists_compatible(artist, row_album_artist)
             or path_under_artist(row.get("path"), artist)
         ):

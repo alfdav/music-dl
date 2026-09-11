@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-11 — Joined album_artist missed identity SQL membership
+
+**What happened:** Bugbot on PR #184: `_tag_join` stores multi-value album-artist as `host; guest`, but `tracks_for_album_artist` and the leftover `Album [FLAC]` clause required `fold_search(album_artist)` whole-string equality. Guest rows never entered the album identity pool when the album tag was not an exact title match, so leftover codec-bracket guests kept Download.
+
+**Root cause:** Identity SQL treated the stored credit string as one artist. `filter_album_rows` already kept joined credits via `artists_compatible` substring once a row was in the pool, but the pool query never loaded those rows.
+
+**Prevention:** Parse `;` / `,` list members under `fold_identity` / `fold_search`. SQL uses `credit_includes(album_artist, host)` for album-artist and leftover-codec clauses. Do not unscope leftover `Album [FLAC]` to whole-library title matches. Cover joined host+guest leftover codec, accented members, and Greatest Hits / cross-album ISRC steal.
+
 ## 2026-09-09 — Guest-credit album rows never restamped is_local
 
 **What happened:** Tidal album detail/lookup dropped the catalog-wide ISRC stamp, then restamped from `tracks_for_album_identity` → `filter_album_rows`. Host-credited tracks stamped `is_local`. Guest-credited tracks on the same disc (file on disk, History Done, matching ISRC) kept Download. Scanner stored `album_artist` NULL even when ffprobe showed a host;guest album artist.
