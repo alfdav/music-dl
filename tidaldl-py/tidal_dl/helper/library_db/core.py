@@ -40,7 +40,7 @@ def write_lock_for(db_path: pathlib.Path | str) -> threading.Lock:
 class LibraryDBCore:
     """Thin wrapper around a SQLite scan ledger."""
 
-    _SCHEMA_VERSION = 10
+    _SCHEMA_VERSION = 11
 
     def __init__(self, db_path: pathlib.Path) -> None:
         self._path = db_path
@@ -420,6 +420,29 @@ class LibraryDBCore:
         self._conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_album_grouping_signatures
                ON album_grouping_assessments(left_signature, right_signature)"""
+        )
+
+        # v10 → v11: Jev edition-advice cache (advisory; never a grouping outcome).
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS edition_advice (
+                path_a TEXT NOT NULL,
+                path_b TEXT NOT NULL,
+                fingerprint_a TEXT NOT NULL,
+                fingerprint_b TEXT NOT NULL,
+                relation TEXT,
+                confidence REAL,
+                probabilities_json TEXT,
+                same_isrc_misleading INTEGER,
+                model TEXT,
+                usage_json TEXT,
+                scored_at REAL,
+                error TEXT,
+                group_id TEXT,
+                PRIMARY KEY (path_a, path_b)
+            )"""
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_edition_advice_group ON edition_advice(group_id)"
         )
 
     def begin_immediate(self) -> None:
