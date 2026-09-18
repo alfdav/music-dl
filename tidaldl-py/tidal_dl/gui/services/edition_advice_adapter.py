@@ -9,6 +9,7 @@ from tidal_dl.gui.services.edition_advice_policy import (
     aggregate_relation,
     chip_label,
     fingerprint,
+    may_auto_act,
 )
 from tidal_dl.gui.services.edition_scorer import EditionScorerError, score_pair
 
@@ -82,13 +83,37 @@ def _aggregate(pairs: list[dict]) -> dict[str, Any]:
     }
 
 
+def _advice_for_extra(pair: dict | None) -> dict[str, Any]:
+    if not pair:
+        return {
+            "relation": None,
+            "confidence": None,
+            "error": None,
+            "default_checked": False,
+        }
+    error = pair.get("error")
+    relation = pair.get("relation")
+    confidence = pair.get("confidence")
+    return {
+        "relation": relation,
+        "confidence": confidence,
+        "error": error,
+        "default_checked": (not error) and may_auto_act(relation, confidence),
+    }
+
+
 def preview_chip_from_cache(db, group: dict) -> dict[str, Any]:
-    """Build a list chip from cache only — never spawn the scorer."""
+    """Build a list chip from cache only — never spawn the scorer.
+
+    Attaches per-extra ``edition_advice`` (including ``default_checked``).
+    Partial cache is not ``ready`` and must not mark the whole group actable.
+    """
+    extras = group.get("duplicates") or []
     keeper_path = group["keeper"]["path"]
     keeper_row = db.get(keeper_path)
     fp_a = _row_fingerprint(keeper_row, keeper_path)
-    pairs: list[dict] = []
-    for extra in group.get("duplicates") or []:
+    pairs_by_path: dict[str, dict] = {}
+    for extra in extras:
         extra_path = extra["path"]
         extra_row = db.get(extra_path)
         fp_b = _row_fingerprint(extra_row, extra_path)
@@ -96,21 +121,26 @@ def preview_chip_from_cache(db, group: dict) -> dict[str, Any]:
             keeper_path, extra_path, fingerprint_a=fp_a, fingerprint_b=fp_b
         )
         if hit:
-            pairs.append(
-                _pair_payload(
-                    path_a=keeper_path, path_b=extra_path, cached=True, result=hit
-                )
+            pairs_by_path[extra_path] = _pair_payload(
+                path_a=keeper_path, path_b=extra_path, cached=True, result=hit
             )
-    if not pairs:
+        extra["edition_advice"] = _advice_for_extra(pairs_by_path.get(extra_path))
+
+    pairs = list(pairs_by_path.values())
+    if not extras or not pairs:
         return {
             "state": "pending",
+            "complete": False,
             "relation": None,
             "confidence": None,
             "label": chip_label("pending", None, None),
         }
     agg = _aggregate(pairs)
+    complete = len(pairs) >= len(extras)
+    state = agg["state"] if complete else "partial"
     return {
-        "state": agg["state"],
+        "state": state,
+        "complete": complete,
         "relation": agg["relation"],
         "confidence": agg["confidence"],
         "label": agg["chip"],

@@ -3594,8 +3594,20 @@ function _mayAutoActEdition(relation, confidence) {
     && Number(confidence) >= 0.95;
 }
 
+function _editionAdviceChecked(advice) {
+  if (!advice || advice.error) return false;
+  return _mayAutoActEdition(advice.relation, advice.confidence);
+}
+
 function _editionDefaultChecked(status, relation, confidence) {
-  return status === 'auto' || _mayAutoActEdition(relation, confidence);
+  return _editionAdviceChecked({ relation, confidence });
+}
+
+function _syncEditionChecks(checks, pairByPath, groupCard) {
+  (checks || []).forEach(cb => {
+    if (groupCard != null && cb._groupCard !== groupCard) return;
+    cb.checked = _editionAdviceChecked(pairByPath[cb._path]);
+  });
 }
 
 function _editionShortLabel(relation) {
@@ -3682,16 +3694,7 @@ async function _showDuplicatePreview(container) {
       const applyAdviceToChecks = (pairs) => {
         pairByPath = {};
         (pairs || []).forEach(p => { pairByPath[p.path_b] = p; });
-        extraChecks.forEach(cb => {
-          if (cb._groupKey !== g.key) return;
-          const pair = pairByPath[cb._path];
-          if (!pair || pair.error) return;
-          if (pair.relation === 'keep_both_editions' || pair.relation === 'insufficient_evidence') {
-            cb.checked = false;
-            return;
-          }
-          cb.checked = _editionDefaultChecked(g.status, pair.relation, pair.confidence);
-        });
+        _syncEditionChecks(extraChecks, pairByPath, card);
         updateCleanLabel();
       };
 
@@ -3700,8 +3703,9 @@ async function _showDuplicatePreview(container) {
         const dupRow = h('div', { className: 'dup-duplicate' });
         if (adviceOn) {
           const cb = h('input', { type: 'checkbox', className: 'dup-extra-check' });
-          cb.checked = _editionDefaultChecked(g.status, chip && chip.relation, chip && chip.confidence);
+          cb.checked = _editionAdviceChecked(d.edition_advice);
           cb._path = d.path;
+          cb._groupCard = card;
           cb._groupKey = g.key;
           cb.addEventListener('click', (e) => e.stopPropagation());
           cb.addEventListener('change', updateCleanLabel);

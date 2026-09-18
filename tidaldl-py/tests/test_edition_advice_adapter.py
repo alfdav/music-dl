@@ -2,9 +2,12 @@
 
 import pytest
 
-from tidal_dl.helper.library_db import LibraryDB
-from tidal_dl.gui.services.edition_advice_adapter import score_group
+from tidal_dl.gui.services.edition_advice_adapter import (
+    preview_chip_from_cache,
+    score_group,
+)
 from tidal_dl.gui.services.edition_advice_policy import fingerprint
+from tidal_dl.helper.library_db import LibraryDB
 
 
 @pytest.fixture
@@ -121,7 +124,7 @@ def test_does_not_write_album_grouping_assessments(db, monkeypatch):
 def test_scorer_error_records_pair_and_continues(db, monkeypatch):
     from tidal_dl.gui.services.edition_scorer import EditionScorerUnavailable
 
-    group, keeper, extra_a, extra_b = _seed(db)
+    group, _keeper, extra_a, extra_b = _seed(db)
     seen = []
 
     def fake_score(item_a, item_b, *, timeout_s=60):
@@ -147,3 +150,41 @@ def test_scorer_error_records_pair_and_continues(db, monkeypatch):
     assert by_b[extra_a]["error"]
     assert by_b[extra_b]["relation"] == "layout_twin_extra"
     assert result["aggregate"]["relation"] == "layout_twin_extra"
+
+
+def test_preview_chip_partial_cache_is_not_ready(db):
+    group, keeper, extra_a, _extra_b = _seed(db)
+    db.upsert_edition_advice(
+        path_a=keeper,
+        path_b=extra_a,
+        fingerprint_a=fingerprint(keeper, 100, 1),
+        fingerprint_b=fingerprint(extra_a, 200, 2),
+        relation="layout_twin_extra",
+        confidence=0.98,
+        group_id=group["key"],
+    )
+    chip = preview_chip_from_cache(db, group)
+    assert chip["state"] != "ready"
+    assert chip.get("complete") is False
+    assert extra_a in str(chip.get("label") or "") or chip.get("relation") == "layout_twin_extra"
+
+
+def test_preview_chip_full_cache_is_ready(db):
+    group, keeper, extra_a, extra_b = _seed(db)
+    for extra, size, mtime, relation in (
+        (extra_a, 200, 2, "layout_twin_extra"),
+        (extra_b, 300, 3, "keep_both_editions"),
+    ):
+        db.upsert_edition_advice(
+            path_a=keeper,
+            path_b=extra,
+            fingerprint_a=fingerprint(keeper, 100, 1),
+            fingerprint_b=fingerprint(extra, size, mtime),
+            relation=relation,
+            confidence=0.99,
+            group_id=group["key"],
+        )
+    chip = preview_chip_from_cache(db, group)
+    assert chip["state"] == "ready"
+    assert chip.get("complete") is True
+    assert chip["relation"] == "keep_both_editions"

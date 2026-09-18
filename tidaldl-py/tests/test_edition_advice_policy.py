@@ -65,12 +65,15 @@ class TestMayAutoAct:
 
 
 class TestDefaultChecked:
-    def test_auto_status_checked(self):
-        assert default_checked("auto", None, None) is True
-
-    def test_uncertain_unchecked_until_actable(self):
+    def test_only_actable_per_extra_advice_checks(self):
+        assert default_checked("auto", None, None) is False
+        assert default_checked("auto", "keep_both_editions", 0.99) is False
+        assert default_checked("uncertain", None, None) is False
         assert default_checked("uncertain", "keep_both_editions", 0.99) is False
+        assert default_checked("uncertain", "insufficient_evidence", 0.99) is False
+        assert default_checked("auto", "layout_twin_extra", 0.95) is True
         assert default_checked("uncertain", "true_duplicate_candidate", 0.95) is True
+        assert default_checked("uncertain", "layout_twin_extra", 0.94) is False
 
 
 class TestFingerprint:
@@ -136,3 +139,20 @@ class TestResolveDeletePaths:
             selected_paths=selected, advice_by_path=advice, honor_uncheck=True
         )
         assert result == {"/layout.flac"}
+
+    def test_strips_unscored_and_error_even_if_posted(self):
+        selected = {
+            "/unscored.flac",
+            "/error.flac",
+            "/layout.flac",
+        }
+        advice = {
+            "/error.flac": {"relation": None, "confidence": None, "error": "missing"},
+            "/layout.flac": {"relation": "layout_twin_extra", "confidence": 0.97},
+        }
+        result = resolve_delete_paths(
+            selected_paths=selected, advice_by_path=advice, honor_uncheck=True
+        )
+        assert result == {"/layout.flac"}
+        assert "/unscored.flac" not in result
+        assert "/error.flac" not in result

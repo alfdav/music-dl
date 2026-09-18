@@ -57,7 +57,8 @@ def may_auto_act(relation: str | None, confidence: float | None) -> bool:
 
 
 def default_checked(status: str, relation: str | None, confidence: float | None) -> bool:
-    return status == "auto" or may_auto_act(relation, confidence)
+    """Per-extra checkbox default. Group status and aggregate chips never check."""
+    return may_auto_act(relation, confidence)
 
 
 def resolve_delete_paths(
@@ -69,14 +70,19 @@ def resolve_delete_paths(
     """Return posted extras that may be deleted.
 
     When ``honor_uncheck`` is True, never force-add unchecked paths.
-    Always strip keep_both / insufficient_evidence even if they were posted.
+    Keep only extras with actable per-path advice. Strip keep_both,
+    insufficient_evidence, unscored, and error even if they were posted.
     """
     result = set(selected_paths)
     if not honor_uncheck:
         for path, advice in advice_by_path.items():
             if may_auto_act(advice.get("relation"), advice.get("confidence")):
                 result.add(path)
-    for path, advice in advice_by_path.items():
-        if advice.get("relation") in _NEVER_ACT_RELATIONS:
-            result.discard(path)
-    return result
+    kept: set[str] = set()
+    for path in result:
+        advice = advice_by_path.get(path) or {}
+        if advice.get("error"):
+            continue
+        if may_auto_act(advice.get("relation"), advice.get("confidence")):
+            kept.add(path)
+    return kept

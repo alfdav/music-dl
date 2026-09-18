@@ -1,19 +1,28 @@
 """Tests for duplicate detection logic and cleanup/undo cycle."""
-import json
 import os
 import time
-import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-from tidal_dl.helper.library_db import LibraryDB
+import pytest
+
 from tidal_dl.gui.api.duplicates import (
-    _normalize, _path_score, _find_duplicate_groups, _get_db,
-    _staging_base, _write_manifest, _read_manifest, _find_active_manifest,
-    _is_cleanup_running, _acquire_lock, _release_lock, _lock_path,
-    _preview_sync, _clean_sync, _PREVIEW_GROUP_LIMIT, _score_sync,
+    _PREVIEW_GROUP_LIMIT,
+    _acquire_lock,
+    _clean_sync,
+    _find_duplicate_groups,
+    _is_cleanup_running,
+    _lock_path,
+    _normalize,
+    _path_score,
+    _preview_sync,
+    _read_manifest,
+    _release_lock,
+    _score_sync,
+    _write_manifest,
 )
 from tidal_dl.gui.services.edition_advice_policy import fingerprint
+from tidal_dl.helper.library_db import LibraryDB
 
 
 @pytest.fixture
@@ -683,6 +692,72 @@ class TestEditionAdvicePreviewAndClean:
         chip = result["groups"][0]["edition_chip"]
         assert chip["state"] == "pending"
         assert chip["label"] == "Edition: —"
+        extra = result["groups"][0]["duplicates"][0]
+        assert extra["edition_advice"]["default_checked"] is False
+        assert extra["edition_advice"]["relation"] is None
+
+    def test_preview_per_extra_advice_ignores_sibling_and_keep_both(self, db):
+        keeper = "/music/Artist - Album/01.flac"
+        extra_scored = "/music/Artist/Album (Deluxe)/01.flac"
+        extra_unscored = "/music/Artist/Album (Remastered)/01.flac"
+        for path, size, mtime in (
+            (keeper, 10, 1),
+            (extra_scored, 11, 2),
+            (extra_unscored, 12, 3),
+        ):
+            db.record(
+                path, status="tagged", isrc="USREM1", artist="Artist", title="Song",
+                album="Album", duration=200, quality="44100Hz/16bit", fmt="FLAC",
+                codec="flac", file_size=size, file_mtime=mtime,
+            )
+        db.upsert_edition_advice(
+            path_a=keeper,
+            path_b=extra_scored,
+            fingerprint_a=fingerprint(keeper, 10, 1),
+            fingerprint_b=fingerprint(extra_scored, 11, 2),
+            relation="true_duplicate_candidate",
+            confidence=0.96,
+        )
+        db.commit()
+        with patch("tidal_dl.gui.api.duplicates._edition_advice_enabled", return_value=True):
+            result = _preview(db)
+        uncertain = next(g for g in result["groups"] if g["status"] == "uncertain")
+        by_path = {d["path"]: d for d in uncertain["duplicates"]}
+        assert by_path[extra_scored]["edition_advice"]["default_checked"] is True
+        assert by_path[extra_unscored]["edition_advice"]["default_checked"] is False
+        assert by_path[extra_unscored]["edition_advice"]["relation"] is None
+        assert uncertain["edition_chip"]["state"] != "ready"
+        assert uncertain["edition_chip"].get("complete") is False
+
+    def test_preview_keep_both_extra_default_unchecked_on_reload(self, db):
+        keeper = "/music/Artist - Album/01.flac"
+        extra = "/music/Artist/Album/01.flac"
+        db.record(
+            keeper, status="tagged", isrc="USKB1", artist="Artist", title="Song",
+            album="Album", duration=200, quality="44100Hz/16bit", fmt="FLAC",
+            codec="flac", file_size=10, file_mtime=1,
+        )
+        db.record(
+            extra, status="tagged", isrc="USKB1", artist="Artist", title="Song",
+            album="Album", duration=200, quality="44100Hz/16bit", fmt="FLAC",
+            codec="flac", file_size=11, file_mtime=2,
+        )
+        db.upsert_edition_advice(
+            path_a=keeper,
+            path_b=extra,
+            fingerprint_a=fingerprint(keeper, 10, 1),
+            fingerprint_b=fingerprint(extra, 11, 2),
+            relation="keep_both_editions",
+            confidence=0.99,
+        )
+        db.commit()
+        with patch("tidal_dl.gui.api.duplicates._edition_advice_enabled", return_value=True):
+            result = _preview(db)
+        group = result["groups"][0]
+        extra_row = group["duplicates"][0]
+        assert extra_row["edition_advice"]["relation"] == "keep_both_editions"
+        assert extra_row["edition_advice"]["default_checked"] is False
+        assert group["edition_chip"]["relation"] == "keep_both_editions"
 
     def test_flag_off_ignores_paths_and_cleans_all_auto(self, tmp_path, db):
         keeper, extra = _layout_twin_files(tmp_path, db)
@@ -691,14 +766,29 @@ class TestEditionAdvicePreviewAndClean:
         assert keeper.exists()
         assert not extra.exists()
 
-    def test_flag_on_cleans_only_posted_extras(self, tmp_path, db):
+    def test_flag_on_cleans_only_posted_actable_extras(self, tmp_path, db):
         keeper_a, extra_a = _layout_twin_files(tmp_path, db, name="Alpha")
         keeper_b, extra_b = _layout_twin_files(tmp_path, db, name="Beta")
+        db.upsert_edition_advice(
+            path_a=str(keeper_a),
+            path_b=str(extra_a),
+            fingerprint_a=fingerprint(str(keeper_a), 10, 1),
+            fingerprint_b=fingerprint(str(extra_a), 11, 2),
+            relation="layout_twin_extra",
+            confidence=0.97,
+        )
         result = _run_clean(db, tmp_path, enabled=True, paths=[str(extra_a)])
         assert result["duplicates_moved"] == 1
         assert keeper_a.exists() and keeper_b.exists()
         assert not extra_a.exists()
         assert extra_b.exists()
+
+    def test_flag_on_refuses_unscored_even_if_posted(self, tmp_path, db):
+        keeper, extra = _layout_twin_files(tmp_path, db)
+        result = _run_clean(db, tmp_path, enabled=True, paths=[str(extra)])
+        assert result["duplicates_moved"] == 0
+        assert extra.exists()
+        assert keeper.exists()
 
     def test_refuses_keep_both_even_if_path_listed(self, tmp_path, db):
         keeper, extra = _layout_twin_files(tmp_path, db)
@@ -720,9 +810,8 @@ class TestEditionAdvicePreviewAndClean:
         db.close = lambda: None
         with patch("tidal_dl.gui.api.duplicates._get_db", return_value=db), \
              patch("tidal_dl.gui.api.duplicates._edition_advice_enabled", return_value=True), \
-             patch("tidal_dl.gui.api.library._scan_running", False):
-            with pytest.raises(Exception) as exc:
-                _score_sync("missing-key", force=False)
+             patch("tidal_dl.gui.api.library._scan_running", False), pytest.raises(Exception) as exc:
+            _score_sync("missing-key", force=False)
         assert getattr(exc.value, "status_code", None) == 404
 
     def test_score_does_not_mutate_grouping_table(self, db, monkeypatch):

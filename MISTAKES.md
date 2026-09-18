@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-18 — Group edition chip drove every extra’s checkbox
+
+**What happened:** Clean Up initialized extra checkboxes from the group `edition_chip` and `status === 'auto'`. `applyAdviceToChecks` matched by shared `g.key` (auto + uncertain cards reuse it) and left missing/error pairs unchanged. Partial cache marked the group `ready`, so one actable sibling auto-checked unscored remasters; reload re-checked `keep_both_editions` autos.
+
+**Root cause:** Aggregate chip is display-only. Act rules are per extra. Group status is not Jev advice.
+
+**Prevention:** Init and sync checkboxes from that extra’s pair / `edition_advice.default_checked`. Auto-check only `layout_twin_extra` / `true_duplicate_candidate` at ≥0.95. Partial cache is not `ready`. Server `resolve_delete_paths` keeps only actable per-path advice when the module is on.
+
 ## 2026-09-18 — Shipped DJAI AI docs without a shared “can be wrong” stance
 
 **What happened:** Edition advice and DJAI cards described advisory chips and “never safe to delete” in the Clean Up path, but DJAI overview / bot onboarding / module cards did not share one AI-mistake disclaimer.
