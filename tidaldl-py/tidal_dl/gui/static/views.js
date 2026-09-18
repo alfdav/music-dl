@@ -3489,6 +3489,33 @@ function renderLibrary(container) {
   }
 }
 
+function _mayAutoActEdition(relation, confidence) {
+  return (relation === 'true_duplicate_candidate' || relation === 'layout_twin_extra')
+    && Number(confidence) >= 0.95;
+}
+
+function _editionDefaultChecked(status, relation, confidence) {
+  return status === 'auto' || _mayAutoActEdition(relation, confidence);
+}
+
+function _editionShortLabel(relation) {
+  return ({
+    keep_both_editions: 'Keep both',
+    insufficient_evidence: 'Unclear',
+    layout_twin_extra: 'Layout twin',
+    true_duplicate_candidate: 'Dup candidate',
+  })[relation] || relation || '—';
+}
+
+async function _revealPath(path) {
+  try {
+    await api('/downloads/reveal', { method: 'POST', body: { path } });
+    toast('Revealed in Finder', 'success');
+  } catch (_) {
+    toast('File not found', 'error');
+  }
+}
+
 async function _showDuplicatePreview(container) {
   while (container.firstChild) container.removeChild(container.firstChild);
   container.appendChild(textEl('div', 'Scanning for duplicates...', 'upgrade-scanner-status'));
@@ -3513,28 +3540,74 @@ async function _showDuplicatePreview(container) {
     }
     container.appendChild(summary);
 
+    const adviceOn = (data.groups || []).some(g => g.edition_chip);
+
     // Clean Up button — only auto extras, never UNCERTAIN edition/quality pairs
     let cleanBtn = null;
-    if (data.total_duplicates > 0) {
+    if (data.total_duplicates > 0 || adviceOn) {
       cleanBtn = h('button', { className: 'pill active dup-clean-btn' });
       cleanBtn.textContent = 'Clean Up ' + data.total_duplicates + ' Duplicates';
       container.appendChild(cleanBtn);
     }
+
+    const extraChecks = [];
+
+    const updateCleanLabel = () => {
+      if (!cleanBtn || !adviceOn) return;
+      const n = extraChecks.filter(cb => cb.checked).length;
+      cleanBtn.textContent = 'Clean Up ' + n + ' Duplicates';
+      cleanBtn.disabled = n === 0;
+    };
 
     // Group list
     const groupList = h('div', { className: 'dup-groups' });
     (data.groups || []).forEach(g => {
       const uncertain = g.status === 'uncertain';
       const card = h('div', { className: 'dup-group-card' + (uncertain ? ' dup-uncertain' : '') });
+      const chip = g.edition_chip || null;
+      let pairByPath = {};
+
       // Keeper
       const keeperRow = h('div', { className: 'dup-keeper' });
       keeperRow.appendChild(textEl('span', '\u2713 KEEP', 'dup-keep-badge'));
       keeperRow.appendChild(textEl('span', (g.keeper.tier || '') + ' \u00B7 ' + (g.keeper.format || ''), 'dup-tier'));
       keeperRow.appendChild(textEl('span', g.keeper.path, 'dup-path'));
+      if (adviceOn) {
+        const chipEl = textEl('span', chip && chip.label ? chip.label : 'Edition: —', 'dup-edition-chip');
+        keeperRow.appendChild(chipEl);
+        g._chipEl = chipEl;
+      }
       card.appendChild(keeperRow);
+
+      const applyAdviceToChecks = (pairs) => {
+        pairByPath = {};
+        (pairs || []).forEach(p => { pairByPath[p.path_b] = p; });
+        extraChecks.forEach(cb => {
+          if (cb._groupKey !== g.key) return;
+          const pair = pairByPath[cb._path];
+          if (!pair || pair.error) return;
+          if (pair.relation === 'keep_both_editions' || pair.relation === 'insufficient_evidence') {
+            cb.checked = false;
+            return;
+          }
+          cb.checked = _editionDefaultChecked(g.status, pair.relation, pair.confidence);
+        });
+        updateCleanLabel();
+      };
+
       // Duplicates
       (g.duplicates || []).forEach(d => {
         const dupRow = h('div', { className: 'dup-duplicate' });
+        if (adviceOn) {
+          const cb = h('input', { type: 'checkbox', className: 'dup-extra-check' });
+          cb.checked = _editionDefaultChecked(g.status, chip && chip.relation, chip && chip.confidence);
+          cb._path = d.path;
+          cb._groupKey = g.key;
+          cb.addEventListener('click', (e) => e.stopPropagation());
+          cb.addEventListener('change', updateCleanLabel);
+          extraChecks.push(cb);
+          dupRow.appendChild(cb);
+        }
         dupRow.appendChild(textEl(
           'span',
           uncertain ? 'UNCERTAIN' : '\u2717 REMOVE',
@@ -3542,11 +3615,105 @@ async function _showDuplicatePreview(container) {
         ));
         dupRow.appendChild(textEl('span', (d.tier || '') + ' \u00B7 ' + (d.format || ''), 'dup-tier'));
         dupRow.appendChild(textEl('span', d.path, 'dup-path'));
+        if (adviceOn) {
+          const revealBtn = h('button', {
+            className: 'dup-reveal-btn',
+            type: 'button',
+            title: 'Reveal in Finder',
+            'aria-label': 'Reveal in Finder',
+          });
+          revealBtn.appendChild(svgIcon(ICONS.folder));
+          revealBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            _revealPath(d.path);
+          });
+          dupRow.appendChild(revealBtn);
+        }
         card.appendChild(dupRow);
       });
+
+      if (adviceOn) {
+        const detail = h('div', { className: 'dup-group-detail' });
+        detail.hidden = true;
+        const aggLine = textEl(
+          'div',
+          'Advisory labels. Confirm Clean Up to remove checked extras — never keep-both, unclear, or unscored.',
+          'dup-advice-note',
+        );
+        detail.appendChild(aggLine);
+        const pairList = h('div', { className: 'dup-advice-pairs' });
+        detail.appendChild(pairList);
+
+        const renderPairs = (pairs, aggregate) => {
+          while (pairList.firstChild) pairList.removeChild(pairList.firstChild);
+          if (g._chipEl && aggregate && aggregate.chip) {
+            g._chipEl.textContent = aggregate.chip;
+          } else if (g._chipEl && aggregate && aggregate.state === 'error') {
+            g._chipEl.textContent = 'Edition: n/a';
+          }
+          (g.duplicates || []).forEach(d => {
+            const pair = (pairs || []).find(p => p.path_b === d.path);
+            const row = h('div', { className: 'dup-advice-pair' });
+            const rel = pair && pair.relation ? _editionShortLabel(pair.relation) : (pair && pair.error ? 'n/a' : '—');
+            const conf = pair && pair.confidence != null ? Number(pair.confidence).toFixed(2) : '—';
+            let line = rel + ' · ' + conf;
+            if (pair && pair.same_isrc_misleading) line += ' · same ISRC can mislead';
+            row.appendChild(textEl('span', line, 'dup-advice-meta'));
+            row.appendChild(textEl('span', d.path, 'dup-path'));
+            const revealBtn = h('button', {
+              className: 'dup-reveal-btn',
+              type: 'button',
+              title: 'Reveal in Finder',
+              'aria-label': 'Reveal in Finder',
+            });
+            revealBtn.appendChild(svgIcon(ICONS.folder));
+            revealBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              _revealPath(d.path);
+            });
+            row.appendChild(revealBtn);
+            pairList.appendChild(row);
+          });
+          applyAdviceToChecks(pairs);
+        };
+
+        const actions = h('div', { className: 'dup-advice-actions' });
+        const scoreBtn = h('button', { className: 'pill dup-score-btn', type: 'button' });
+        const scored = chip && chip.state === 'ready';
+        scoreBtn.textContent = scored ? 'Re-score' : 'Score';
+        scoreBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const force = scoreBtn.textContent === 'Re-score';
+          if (g._chipEl) g._chipEl.textContent = 'Edition: …';
+          scoreBtn.disabled = true;
+          try {
+            const payload = await api('/duplicates/score', {
+              method: 'POST',
+              body: { group_key: g.key, force },
+            });
+            renderPairs(payload.pairs || [], payload.aggregate || {});
+            scoreBtn.textContent = 'Re-score';
+          } catch (err) {
+            if (g._chipEl) g._chipEl.textContent = 'Edition: n/a';
+            toast('Score failed: ' + (err.message || err), 'error');
+          }
+          scoreBtn.disabled = false;
+        });
+        actions.appendChild(scoreBtn);
+        detail.appendChild(actions);
+        card.appendChild(detail);
+        card.classList.add('dup-expandable');
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('button, input, a')) return;
+          detail.hidden = !detail.hidden;
+        });
+      }
+
       groupList.appendChild(card);
     });
     container.appendChild(groupList);
+
+    if (adviceOn) updateCleanLabel();
 
     if (!cleanBtn) {
       return;
@@ -3557,7 +3724,11 @@ async function _showDuplicatePreview(container) {
       cleanBtn.disabled = true;
       cleanBtn.textContent = 'Cleaning...';
       try {
-        const result = await api('/duplicates/clean', { method: 'POST' });
+        const cleanOpts = { method: 'POST' };
+        if (adviceOn) {
+          cleanOpts.body = { paths: extraChecks.filter(cb => cb.checked).map(cb => cb._path) };
+        }
+        const result = await api('/duplicates/clean', cleanOpts);
         cleanBtn.textContent = 'Cleaned ' + result.duplicates_moved + ' duplicates';
         toast('Removed ' + result.duplicates_moved + ' duplicates. Undo available for 5 minutes.', 'success', 8000);
 

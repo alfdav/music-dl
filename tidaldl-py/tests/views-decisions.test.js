@@ -1587,8 +1587,14 @@ describe('duplicate preview', () => {
     expect(source).toContain("data.truncated");
     expect(source).toContain("Showing the first ");
     expect(source).toContain("api('/duplicates/preview')");
-    expect(source).toContain("api('/duplicates/clean', { method: 'POST' })");
+    expect(source).toContain("api('/duplicates/clean'");
     expect(source.match(/api\('\/duplicates\/clean'/g) || []).toHaveLength(1);
+    expect(source).toContain("api('/duplicates/score'");
+    expect(source).toContain('_revealPath');
+    expect(source).toContain('Reveal in Finder');
+    expect(source).toMatch(/Score/);
+    expect(source).toMatch(/Re-score/);
+    expect(source).not.toMatch(/safe to delete/i);
   });
 });
 
