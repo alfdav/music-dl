@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-18 — Module-on delete gate kept only Jev-actable extras
+
+**What happened:** After the group-chip checkbox fix, `resolve_delete_paths` kept only ≥0.95 layout_twin / true_dup. Posted engine-auto extras with no cache, missing scorer, or pair error were dropped. Enabling the module blocked ordinary Clean Up.
+
+**Root cause:** Jev auto-check (UI) was copied onto the server allowlist. Design: Jev never auto-deletes unscored; it also never blocks engine/manual cleanup of unscored. Only strip keep_both / insufficient.
+
+**Prevention:** Server strips only those two relations. Unscored / error posted paths stay. UI still auto-checks Jev-actable per extra only; engine `auto` extras with no keep/unclear/error still start checked so missing-scorer Clean Up works.
+
 ## 2026-09-18 — Group edition chip drove every extra’s checkbox
 
 **What happened:** Clean Up initialized extra checkboxes from the group `edition_chip` and `status === 'auto'`. `applyAdviceToChecks` matched by shared `g.key` (auto + uncertain cards reuse it) and left missing/error pairs unchanged. Partial cache marked the group `ready`, so one actable sibling auto-checked unscored remasters; reload re-checked `keep_both_editions` autos.

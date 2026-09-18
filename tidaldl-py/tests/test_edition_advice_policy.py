@@ -140,19 +140,20 @@ class TestResolveDeletePaths:
         )
         assert result == {"/layout.flac"}
 
-    def test_strips_unscored_and_error_even_if_posted(self):
+    def test_keeps_unscored_and_error_if_posted(self):
         selected = {
             "/unscored.flac",
             "/error.flac",
             "/layout.flac",
+            "/keep-both.flac",
         }
         advice = {
             "/error.flac": {"relation": None, "confidence": None, "error": "missing"},
             "/layout.flac": {"relation": "layout_twin_extra", "confidence": 0.97},
+            "/keep-both.flac": {"relation": "keep_both_editions", "confidence": 0.99},
         }
         result = resolve_delete_paths(
             selected_paths=selected, advice_by_path=advice, honor_uncheck=True
         )
-        assert result == {"/layout.flac"}
-        assert "/unscored.flac" not in result
-        assert "/error.flac" not in result
+        assert result == {"/unscored.flac", "/error.flac", "/layout.flac"}
+        assert "/keep-both.flac" not in result

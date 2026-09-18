@@ -3599,6 +3599,17 @@ function _editionAdviceChecked(advice) {
   return _mayAutoActEdition(advice.relation, advice.confidence);
 }
 
+function _editionNeverDelete(advice) {
+  const relation = advice && advice.relation;
+  return relation === 'keep_both_editions' || relation === 'insufficient_evidence';
+}
+
+function _editionInitChecked(status, advice) {
+  if (_editionAdviceChecked(advice)) return true;
+  if (advice && (advice.error || _editionNeverDelete(advice))) return false;
+  return status === 'auto';
+}
+
 function _editionDefaultChecked(status, relation, confidence) {
   return _editionAdviceChecked({ relation, confidence });
 }
@@ -3703,7 +3714,7 @@ async function _showDuplicatePreview(container) {
         const dupRow = h('div', { className: 'dup-duplicate' });
         if (adviceOn) {
           const cb = h('input', { type: 'checkbox', className: 'dup-extra-check' });
-          cb.checked = _editionAdviceChecked(d.edition_advice);
+          cb.checked = _editionInitChecked(g.status, d.edition_advice);
           cb._path = d.path;
           cb._groupCard = card;
           cb._groupKey = g.key;

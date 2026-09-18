@@ -1619,7 +1619,7 @@ function loadEditionAdviceHelpers() {
   const start = viewsSource.indexOf('function _mayAutoActEdition');
   const end = viewsSource.indexOf('async function _revealPath');
   return new Function(
-    `${viewsSource.slice(start, end)}\nreturn { _mayAutoActEdition, _editionDefaultChecked, _editionAdviceChecked, _syncEditionChecks };`
+    `${viewsSource.slice(start, end)}\nreturn { _mayAutoActEdition, _editionDefaultChecked, _editionAdviceChecked, _editionInitChecked, _syncEditionChecks };`
   )();
 }
 
@@ -1642,12 +1642,13 @@ describe('duplicate preview', () => {
 
   test('auto-checks only per-extra actable advice, never the group chip', () => {
     const source = duplicatePreviewSource();
-    expect(source).toContain('_editionAdviceChecked(d.edition_advice)');
+    expect(source).toContain('_editionInitChecked(g.status, d.edition_advice)');
     expect(source).not.toContain('_editionDefaultChecked(g.status, chip && chip.relation');
     expect(source).toContain('_syncEditionChecks(extraChecks, pairByPath, card)');
     const {
       _editionDefaultChecked,
       _editionAdviceChecked,
+      _editionInitChecked,
       _syncEditionChecks,
     } = loadEditionAdviceHelpers();
     const chip = { relation: 'layout_twin_extra', confidence: 0.99 };
@@ -1658,6 +1659,12 @@ describe('duplicate preview', () => {
     expect(_editionDefaultChecked('auto', 'keep_both_editions', 0.99)).toBe(false);
     expect(_editionDefaultChecked('auto', null, null)).toBe(false);
     expect(_editionDefaultChecked('uncertain', 'true_duplicate_candidate', 0.95)).toBe(true);
+    expect(_editionInitChecked('auto', null)).toBe(true);
+    expect(_editionInitChecked('auto', { relation: null, confidence: null })).toBe(true);
+    expect(_editionInitChecked('auto', { relation: 'keep_both_editions', confidence: 0.99 })).toBe(false);
+    expect(_editionInitChecked('auto', { error: 'missing' })).toBe(false);
+    expect(_editionInitChecked('uncertain', null)).toBe(false);
+    expect(_editionInitChecked('uncertain', { relation: 'true_duplicate_candidate', confidence: 0.95 })).toBe(true);
 
     const scored = { _path: '/scored.flac', _groupCard: 'auto', checked: false };
     const unscored = { _path: '/unscored.flac', _groupCard: 'auto', checked: true };

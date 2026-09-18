@@ -70,19 +70,15 @@ def resolve_delete_paths(
     """Return posted extras that may be deleted.
 
     When ``honor_uncheck`` is True, never force-add unchecked paths.
-    Keep only extras with actable per-path advice. Strip keep_both,
-    insufficient_evidence, unscored, and error even if they were posted.
+    Strip only keep_both / insufficient_evidence. Unscored, missing, and
+    error advice do not block a posted path (engine auto / manual check).
     """
     result = set(selected_paths)
     if not honor_uncheck:
         for path, advice in advice_by_path.items():
             if may_auto_act(advice.get("relation"), advice.get("confidence")):
                 result.add(path)
-    kept: set[str] = set()
-    for path in result:
-        advice = advice_by_path.get(path) or {}
-        if advice.get("error"):
-            continue
-        if may_auto_act(advice.get("relation"), advice.get("confidence")):
-            kept.add(path)
-    return kept
+    for path, advice in advice_by_path.items():
+        if advice.get("relation") in _NEVER_ACT_RELATIONS:
+            result.discard(path)
+    return result

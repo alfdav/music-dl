@@ -783,11 +783,25 @@ class TestEditionAdvicePreviewAndClean:
         assert not extra_a.exists()
         assert extra_b.exists()
 
-    def test_flag_on_refuses_unscored_even_if_posted(self, tmp_path, db):
+    def test_flag_on_allows_unscored_engine_auto_if_posted(self, tmp_path, db):
         keeper, extra = _layout_twin_files(tmp_path, db)
         result = _run_clean(db, tmp_path, enabled=True, paths=[str(extra)])
-        assert result["duplicates_moved"] == 0
-        assert extra.exists()
+        assert result["duplicates_moved"] == 1
+        assert not extra.exists()
+        assert keeper.exists()
+
+    def test_flag_on_allows_errored_advice_if_posted(self, tmp_path, db):
+        keeper, extra = _layout_twin_files(tmp_path, db)
+        db.upsert_edition_advice(
+            path_a=str(keeper),
+            path_b=str(extra),
+            fingerprint_a=fingerprint(str(keeper), 10, 1),
+            fingerprint_b=fingerprint(str(extra), 11, 2),
+            error="scorer missing",
+        )
+        result = _run_clean(db, tmp_path, enabled=True, paths=[str(extra)])
+        assert result["duplicates_moved"] == 1
+        assert not extra.exists()
         assert keeper.exists()
 
     def test_refuses_keep_both_even_if_path_listed(self, tmp_path, db):
