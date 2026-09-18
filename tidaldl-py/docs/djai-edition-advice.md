@@ -2,6 +2,10 @@
 
 Advisory TypeSafe Jev classification on Clean Up. This is a **DJAI module**, not a Settings toggle.
 
+AI suggestions can be wrong. Treat edition advice as advisory. Confirm paths yourself (Reveal in Finder) before Clean Up. music-dl never promises a suggestion is safe to delete.
+
+DJAI modules that use AI can make mistakes. Verify important actions yourself before you confirm them. See [`djai-modules.md`](djai-modules.md).
+
 Evidence for TypeSafe key and API facts: Techmarine verified note dated **2026-09-18** (`docs/plans/2026-09-18-typesafe-key-access-verified.md`). This guide does not add steps beyond that note.
 
 ## Where it lives
@@ -60,12 +64,14 @@ You do not paste this URL into music-dl. Set `TYPESAFE_API_KEY` and keep the sco
 4. Click **Score** or **Re-score**. The list does not score every row when it opens; chips stay `Edition: —` until cached.
 5. Read the chip and per-extra relation + confidence. Copy never says “safe to delete”. True duplicates are labeled **candidate**.
 6. Checkboxes: extras with status auto stay available to clean. After scores land, ≥0.95 `layout_twin_extra` or `true_duplicate_candidate` may auto-check. You can uncheck; Clean Up honors that.
-7. Confirm Clean Up. Only checked extras are posted. The server still refuses `keep_both_editions` and `insufficient_evidence` (unclear). Unscored pairs are never auto-deleted via Jev.
+7. Before you confirm: AI suggestions can be wrong. Treat edition advice as advisory. Confirm paths yourself (Reveal in Finder). music-dl never promises a suggestion is safe to delete.
+8. Confirm Clean Up. Only checked extras are posted. The server still refuses `keep_both_editions` and `insufficient_evidence` (unclear). Unscored pairs are never auto-deleted via Jev.
 
 Scorer missing or errors: chips show **n/a**. Clean Up still works.
 
 ## Related
 
+- DJAI overview: [`djai-modules.md`](djai-modules.md)
 - Verified research appendix: [`docs/plans/2026-09-18-typesafe-key-access-verified.md`](../../docs/plans/2026-09-18-typesafe-key-access-verified.md)
 - TypeSafe Quick start: https://docs.typesafe.ai/introduction/quickstart.md
 - TypeSafe Python SDK env note: https://docs.typesafe.ai/sdk/python.md

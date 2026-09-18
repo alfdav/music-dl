@@ -169,6 +169,7 @@ SETTINGS_HELP: dict[str, str] = {
     "edition_advice_enabled": (
         "DJAI module: TypeSafe/Jev edition chips on Clean Up. "
         "Toggled on the DJAI Edition advice card, not in Settings. "
+        "AI can make mistakes; verify before Clean Up. "
         "Never auto-deletes keep-both, unclear, or unscored extras."
     ),
     "edition_scorer_path": (

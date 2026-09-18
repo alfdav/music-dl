@@ -2866,7 +2866,15 @@ function renderDjai(container) {
   const header = h('div', { className: 'djai-header' },
     textEl('div', 'DJAI', 'wizard-step-label'),
     textEl('h2', 'DJAI', 'djai-title'),
-    textEl('p', 'Music automation modules live here. Discord Bot is the first deployable module; Edition advice is the second.', 'djai-desc')
+    textEl('p', 'Music automation modules live here. Discord Bot is the first deployable module; Edition advice is the second. DJAI modules that use AI can make mistakes.', 'djai-desc'),
+    h('p', { className: 'djai-module-desc' },
+      h('a', {
+        className: 'djai-modules-docs',
+        href: 'https://github.com/alfdav/music-dl/blob/master/tidaldl-py/docs/djai-modules.md',
+        target: '_blank',
+        rel: 'noopener noreferrer',
+      }, 'DJAI modules overview')
+    )
   );
 
   const moduleGrid = h('div', { className: 'djai-module-grid' });
@@ -2934,7 +2942,8 @@ function renderDjai(container) {
       textEl('div', 'Available now', 'wizard-step-label'),
       textEl('h3', 'Edition advice (Jev)', 'djai-module-title')
     ),
-    textEl('p', 'Advisory edition chips on Clean Up. Never deletes keep-both or unclear extras.', 'djai-module-desc')
+    textEl('p', 'Advisory edition chips on Clean Up. Never deletes keep-both or unclear extras.', 'djai-module-desc'),
+    textEl('p', 'AI can make mistakes; verify before Clean Up.', 'djai-module-desc')
   );
   const editionStatus = h('div', { className: 'djai-bot-status' },
     textEl('span', 'Checking scorer...', 'djai-bot-pill')
@@ -3728,7 +3737,7 @@ async function _showDuplicatePreview(container) {
         detail.hidden = true;
         const aggLine = textEl(
           'div',
-          'Advisory labels. Confirm Clean Up to remove checked extras — never keep-both, unclear, or unscored.',
+          'AI can make mistakes; verify before Clean Up. Advisory labels. Confirm to remove checked extras — never keep-both, unclear, or unscored.',
           'dup-advice-note',
         );
         detail.appendChild(aggLine);

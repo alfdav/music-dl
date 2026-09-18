@@ -446,6 +446,8 @@ class TestAppJsFeatureMarkers:
         assert "Missing binary" in js
         assert "saveSetting('edition_advice_enabled'" in js
         assert "djai-edition-advice.md" in js
+        assert "djai-modules.md" in js
+        assert "AI can make mistakes; verify before Clean Up." in js
         assert "{ key: 'edition_advice_enabled'" not in js
         assert "{ key: 'skip_duplicate_isrc'" in js
         assert ".djai-edition-card" in css

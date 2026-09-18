@@ -1604,7 +1604,12 @@ describe('DJAI edition advice module', () => {
     expect(djai).toContain('Missing binary');
     expect(djai).toContain('djai-edition-advice.md');
     expect(djai).toContain('Edition advice guide');
+    expect(djai).toContain('djai-modules.md');
+    expect(djai).toContain('DJAI modules overview');
+    expect(djai).toContain('AI can make mistakes; verify before Clean Up.');
+    expect(djai).toContain('DJAI modules that use AI can make mistakes.');
     expect(djai).not.toMatch(/TYPESAFE_API_KEY|api key/i);
+    expect(djai).not.toMatch(/safe to delete/i);
     expect(settings).toContain("key: 'skip_duplicate_isrc'");
     expect(settings).not.toContain("key: 'edition_advice_enabled'");
   });
@@ -1621,6 +1626,7 @@ describe('duplicate preview', () => {
     expect(source).toContain("api('/duplicates/score'");
     expect(source).toContain('_revealPath');
     expect(source).toContain('Reveal in Finder');
+    expect(source).toContain('AI can make mistakes; verify before Clean Up.');
     expect(source).toMatch(/Score/);
     expect(source).toMatch(/Re-score/);
     expect(source).not.toMatch(/safe to delete/i);

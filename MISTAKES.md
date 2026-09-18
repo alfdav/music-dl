@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-18 — Shipped DJAI AI docs without a shared “can be wrong” stance
+
+**What happened:** Edition advice and DJAI cards described advisory chips and “never safe to delete” in the Clean Up path, but DJAI overview / bot onboarding / module cards did not share one AI-mistake disclaimer.
+
+**Root cause:** Docs were written around TypeSafe key facts and module placement first. The “AI can err” line was treated as implied by “advisory” instead of being copied into every DJAI surface.
+
+**Prevention:** Keep the same phrases in `djai-modules.md`, `djai-edition-advice.md` (top + How to use), a light pointer in `bot-onboarding.md`, and the Edition advice card. Tests lock the disclaimer strings. Never write “safe to delete” as a promise.
+
 ## 2026-09-18 — Assumed nested Artist/Album path is the Clean Up keeper
 
 **What happened:** Edition-advice selective-clean tests labeled `Artist/Album` as keeper and `Artist - Album` as extra. Grouping actually keeps the flatter `Artist - Album` path (`_path_score` prefers fewer slashes). Tests then posted the keeper and asserted the extra vanished.
