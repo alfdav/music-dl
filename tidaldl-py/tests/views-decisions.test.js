@@ -1602,6 +1602,8 @@ describe('DJAI edition advice module', () => {
     expect(djai).toContain("saveSetting('edition_advice_enabled'");
     expect(djai).toContain('edition_scorer_status');
     expect(djai).toContain('Missing binary');
+    expect(djai).toContain('djai-edition-advice.md');
+    expect(djai).toContain('Edition advice guide');
     expect(djai).not.toMatch(/TYPESAFE_API_KEY|api key/i);
     expect(settings).toContain("key: 'skip_duplicate_isrc'");
     expect(settings).not.toContain("key: 'edition_advice_enabled'");

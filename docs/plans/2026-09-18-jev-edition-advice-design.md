@@ -4,6 +4,8 @@ Date: 2026-09-18
 Status: approved + planned 2026-09-18; plan in 2026-09-18-jev-edition-advice-plan.md  
 Owner: Techmarine  
 
+User docs: `tidaldl-py/docs/djai-edition-advice.md` — evidence-based from the verified TypeSafe key-access note dated 2026-09-18 (`docs/plans/2026-09-18-typesafe-key-access-verified.md`). Enablement is a DJAI module, not a Settings toggle.  
+
 ## Goal
 
 Help the human make an informed Clean Up decision using TypeSafe Jev edition classification (relation + confidence), with Reveal-in-Finder for manual checks. Optionally auto-remove only high-confidence layout/true-duplicate extras when the user confirms Clean Up.

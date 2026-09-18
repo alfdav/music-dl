@@ -259,6 +259,7 @@ Your browser opens automatically. The wizard handles the rest.
 - **Lyrics** — the now-playing panel reads a sidecar `.lrc` or embedded tags first, then Tidal `track.lyrics()` when signed in. Save lyrics writes that sidecar for the current local file so later plays work offline. Download-time embed/sidecar stay opt-in. See [`tidaldl-py/docs/local-lyrics.md`](tidaldl-py/docs/local-lyrics.md).
 - **Setup wizard** — first-run experience that walks you through Tidal login and library paths
 - **Discord bot (optional)** — single-user, single-guild companion that streams and downloads from your library over Discord voice. Configure it from the GUI's DJAI view; when valid config exists, the app starts the bot in the background, reuses any live recorded bot process after backend restarts, and stops it when the app exits. The Discord remote panel handles search, playlists, playback controls, and repeat. See [`apps/discord-bot/README.md`](apps/discord-bot/README.md) and [`tidaldl-py/docs/bot-onboarding.md`](tidaldl-py/docs/bot-onboarding.md).
+- **Edition advice (optional DJAI module)** — TypeSafe Jev chips on Clean Up. Enable it on the DJAI Edition advice card (not Settings). Needs `TYPESAFE_API_KEY` and a `typesafe-music-edition`-compatible scorer. See [`tidaldl-py/docs/djai-edition-advice.md`](tidaldl-py/docs/djai-edition-advice.md).
 
 ## CLI
 

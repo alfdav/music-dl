@@ -62,6 +62,12 @@ See [`docs/bot-onboarding.md`](docs/bot-onboarding.md) for the GUI setup flow
 and [`../apps/discord-bot/README.md`](../apps/discord-bot/README.md) for the
 bot itself.
 
+## Edition advice (optional)
+
+A DJAI module that shows TypeSafe Jev edition chips on Clean Up. Enable it
+from **DJAI → Edition advice**, not Settings. See
+[`docs/djai-edition-advice.md`](docs/djai-edition-advice.md).
+
 ## Development
 
 From the repository root:

@@ -2952,6 +2952,15 @@ function renderDjai(container) {
   editionCard.appendChild(editionHeader);
   editionCard.appendChild(editionStatus);
   editionCard.appendChild(editionEnableRow);
+  editionCard.appendChild(h('p', { className: 'djai-module-desc' },
+    'How to use: ',
+    h('a', {
+      className: 'djai-edition-docs',
+      href: 'https://github.com/alfdav/music-dl/blob/master/tidaldl-py/docs/djai-edition-advice.md',
+      target: '_blank',
+      rel: 'noopener noreferrer',
+    }, 'Edition advice guide')
+  ));
   moduleGrid.appendChild(editionCard);
 
   shell.appendChild(moduleGrid);

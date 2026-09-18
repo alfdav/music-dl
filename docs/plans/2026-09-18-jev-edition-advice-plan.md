@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python FastAPI (tidaldl-py), SQLite `library.db` via `LibraryDB`, vanilla JS GUI (`views.js` / `api.js`), existing `/downloads/reveal`, Settings persistence in `model/cfg.py`. Enablement UX is a DJAI module card, not a Settings toggle.
 
-**Spec:** `docs/plans/2026-09-18-jev-edition-advice-design.md` (approved 2026-09-18). Also attached / Inbox copy OK.
+**Spec:** `docs/plans/2026-09-18-jev-edition-advice-design.md` (approved 2026-09-18). User guide: `tidaldl-py/docs/djai-edition-advice.md` (facts from `docs/plans/2026-09-18-typesafe-key-access-verified.md`, 2026-09-18). Also attached / Inbox copy OK.
 
 ## Global Constraints
 
@@ -146,6 +146,7 @@ Item dict fields from scanned row: `artist, album, title, path, codec, format, q
 
 - [x] Commit `feat: edition_advice_enabled setting` (persistence)
 - [x] Follow-up: DJAI module card is the only human toggle
+- [x] User guide `tidaldl-py/docs/djai-edition-advice.md` from verified 2026-09-18 TypeSafe note
 
 ---
 
