@@ -82,6 +82,41 @@ def _aggregate(pairs: list[dict]) -> dict[str, Any]:
     }
 
 
+def preview_chip_from_cache(db, group: dict) -> dict[str, Any]:
+    """Build a list chip from cache only — never spawn the scorer."""
+    keeper_path = group["keeper"]["path"]
+    keeper_row = db.get(keeper_path)
+    fp_a = _row_fingerprint(keeper_row, keeper_path)
+    pairs: list[dict] = []
+    for extra in group.get("duplicates") or []:
+        extra_path = extra["path"]
+        extra_row = db.get(extra_path)
+        fp_b = _row_fingerprint(extra_row, extra_path)
+        hit = db.get_edition_advice(
+            keeper_path, extra_path, fingerprint_a=fp_a, fingerprint_b=fp_b
+        )
+        if hit:
+            pairs.append(
+                _pair_payload(
+                    path_a=keeper_path, path_b=extra_path, cached=True, result=hit
+                )
+            )
+    if not pairs:
+        return {
+            "state": "pending",
+            "relation": None,
+            "confidence": None,
+            "label": chip_label("pending", None, None),
+        }
+    agg = _aggregate(pairs)
+    return {
+        "state": agg["state"],
+        "relation": agg["relation"],
+        "confidence": agg["confidence"],
+        "label": agg["chip"],
+    }
+
+
 def score_group(db, group: dict, *, force: bool = False) -> dict[str, Any]:
     """Score keeper↔each extra. Cache hits skip the sidecar unless ``force``."""
     group_id = group.get("key") or ""

@@ -13,9 +13,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
+from pydantic import BaseModel
 
 from tidal_dl.gui.api.upgrade import _tier_rank_for_quality
+from tidal_dl.gui.services.edition_advice_adapter import (
+    preview_chip_from_cache,
+    score_group,
+)
+from tidal_dl.gui.services.edition_advice_policy import resolve_delete_paths
 from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.library_scanner import is_skipped_scan_dir
 from tidal_dl.helper.path import path_config_base
@@ -60,6 +66,15 @@ def _get_db() -> LibraryDB:
     db = LibraryDB(Path(path_config_base()) / "library.db")
     db.open()
     return db
+
+
+def _edition_advice_enabled() -> bool:
+    try:
+        from tidal_dl.config import Settings
+
+        return bool(getattr(Settings().data, "edition_advice_enabled", False))
+    except Exception:
+        return False
 
 
 def _staging_base() -> Path:
@@ -476,6 +491,9 @@ def _preview_sync() -> dict:
         total_duplicates = _count_cleanable_duplicates(groups)
         truncated = len(groups) > _PREVIEW_GROUP_LIMIT
         shown = groups[:_PREVIEW_GROUP_LIMIT]
+        if _edition_advice_enabled():
+            for group in shown:
+                group["edition_chip"] = preview_chip_from_cache(db, group)
 
         # Check if there's an active undo manifest (from this or a previous run)
         active_manifest = _find_active_manifest()
@@ -497,7 +515,44 @@ async def preview_duplicates() -> dict:
     return await asyncio.to_thread(_preview_sync)
 
 
-def _clean_sync() -> dict:
+def _extra_paths_by_group(groups: list[dict]) -> tuple[set[str], dict[str, dict]]:
+    keepers: set[str] = set()
+    extras: dict[str, dict] = {}
+    for group in groups:
+        keepers.add(group["keeper"]["path"])
+        for dup in group["duplicates"]:
+            extras[dup["path"]] = group
+    return keepers, extras
+
+
+def _delete_targets(
+    db: LibraryDB,
+    groups: list[dict],
+    selected_paths: list[str] | None,
+) -> set[str]:
+    """Resolve extras to move. Flag off / omitted body = all auto extras."""
+    keepers, extras = _extra_paths_by_group(groups)
+    if not _edition_advice_enabled() or selected_paths is None:
+        return {
+            dup["path"]
+            for group in groups
+            if group.get("status") != "uncertain"
+            for dup in group["duplicates"]
+        }
+    posted = set(selected_paths) - keepers
+    posted &= set(extras)
+    advice_by_path: dict[str, dict] = {}
+    for path in posted:
+        group = extras[path]
+        row = db.get_edition_advice(group["keeper"]["path"], path)
+        if row:
+            advice_by_path[path] = row
+    return resolve_delete_paths(
+        selected_paths=posted, advice_by_path=advice_by_path, honor_uncheck=True
+    )
+
+
+def _clean_sync(selected_paths: list[str] | None = None) -> dict:
     """Move duplicate files to staging and remove from DB."""
     from tidal_dl.gui.api.library import _scan_running
 
@@ -514,15 +569,18 @@ def _clean_sync() -> dict:
         reachable = _reachable_scan_dirs()
         stale_pruned = _prune_stale(db, reachable)
         groups = _find_duplicate_groups(db)
+        targets = _delete_targets(db, groups, selected_paths)
 
         ts = int(time.time())
         staging = _staging_dir(ts)
         moved_files: list[dict[str, Any]] = []
+        groups_touched: set[str] = set()
 
-        auto_groups = [group for group in groups if group.get("status") != "uncertain"]
-        for group in auto_groups:
+        for group in groups:
             for dup in group["duplicates"]:
                 original_path = dup["path"]
+                if original_path not in targets:
+                    continue
                 if not os.path.exists(original_path):
                     continue
                 # Store full DB row before removal
@@ -545,6 +603,7 @@ def _clean_sync() -> dict:
                     "db_row": dict(row),
                 })
                 db.remove(original_path)
+                groups_touched.add(group["key"])
 
         db.commit()
 
@@ -554,7 +613,7 @@ def _clean_sync() -> dict:
 
         return {
             "stale_pruned": stale_pruned,
-            "groups_cleaned": len(auto_groups),
+            "groups_cleaned": len(groups_touched),
             "duplicates_moved": len(moved_files),
             "undo_available": len(moved_files) > 0,
             "undo_expires_at": expires_at,
@@ -564,9 +623,50 @@ def _clean_sync() -> dict:
         db.close()
 
 
+class CleanRequest(BaseModel):
+    paths: list[str] | None = None
+
+
+class ScoreRequest(BaseModel):
+    group_key: str
+    force: bool = False
+
+
+def _score_sync(group_key: str, force: bool = False) -> dict:
+    from tidal_dl.gui.api.library import _scan_running
+
+    if _scan_running:
+        raise HTTPException(status_code=409, detail="Library scan in progress")
+    db = _get_db()
+    try:
+        groups = _find_duplicate_groups(db, skip_recycle=True)
+        matched = [group for group in groups if group.get("key") == group_key]
+        if not matched:
+            raise HTTPException(status_code=404, detail="Duplicate group not found")
+        merged = {
+            "key": group_key,
+            "status": matched[0].get("status"),
+            "keeper": matched[0]["keeper"],
+            "duplicates": [
+                dup for group in matched for dup in group.get("duplicates") or []
+            ],
+        }
+        return score_group(db, merged, force=force)
+    finally:
+        db.close()
+
+
+@router.post("/duplicates/score")
+async def score_duplicates(req: ScoreRequest) -> dict:
+    if not _edition_advice_enabled():
+        raise HTTPException(status_code=404, detail="Edition advice disabled")
+    return await asyncio.to_thread(_score_sync, req.group_key, req.force)
+
+
 @router.post("/duplicates/clean")
-async def clean_duplicates() -> dict:
-    return await asyncio.to_thread(_clean_sync)
+async def clean_duplicates(req: CleanRequest | None = Body(default=None)) -> dict:
+    paths = None if req is None else req.paths
+    return await asyncio.to_thread(_clean_sync, paths)
 
 
 @router.post("/duplicates/undo")

@@ -11,8 +11,9 @@ from tidal_dl.gui.api.duplicates import (
     _normalize, _path_score, _find_duplicate_groups, _get_db,
     _staging_base, _write_manifest, _read_manifest, _find_active_manifest,
     _is_cleanup_running, _acquire_lock, _release_lock, _lock_path,
-    _preview_sync, _clean_sync, _PREVIEW_GROUP_LIMIT,
+    _preview_sync, _clean_sync, _PREVIEW_GROUP_LIMIT, _score_sync,
 )
+from tidal_dl.gui.services.edition_advice_policy import fingerprint
 
 
 @pytest.fixture
@@ -611,3 +612,148 @@ class TestPreviewSkipsPruneAndRecycle:
         assert live_b in paths
         assert trash not in paths
         assert not any(path.endswith(".flac") for path in called)
+
+
+def _layout_twin_files(tmp_path, db, *, name="Album"):
+    music = tmp_path / "music"
+    nested = music / "Artist" / name
+    nested.mkdir(parents=True)
+    flat = music / f"Artist - {name}"
+    flat.mkdir(parents=True)
+    nested_file = nested / "01.flac"
+    flat_file = flat / "01.flac"
+    nested_file.write_bytes(b"nested " + name.encode())
+    flat_file.write_bytes(b"flat " + name.encode())
+    isrc = f"US{name[-3:].upper()}1"
+    db.record(
+        str(nested_file), status="tagged", isrc=isrc, artist="Artist", title="Song",
+        album=name, duration=200, quality="44100Hz/16bit", fmt="FLAC", codec="flac",
+        file_size=10, file_mtime=1,
+    )
+    db.record(
+        str(flat_file), status="tagged", isrc=isrc, artist="Artist", title="Song",
+        album=name, duration=200, quality="44100Hz/16bit", fmt="FLAC", codec="flac",
+        file_size=11, file_mtime=2,
+    )
+    db.commit()
+    groups = _find_duplicate_groups(db)
+    paths = {str(nested_file), str(flat_file)}
+    group = next(
+        g for g in groups
+        if {g["keeper"]["path"], g["duplicates"][0]["path"]} == paths
+    )
+    return Path(group["keeper"]["path"]), Path(group["duplicates"][0]["path"])
+
+
+def _run_clean(db, tmp_path, *, enabled, paths=None):
+    db.close = lambda: None
+    with patch("tidal_dl.gui.api.duplicates._get_db", return_value=db), \
+         patch("tidal_dl.gui.api.duplicates._reachable_scan_dirs", return_value=[]), \
+         patch("tidal_dl.gui.api.library._scan_running", False), \
+         patch("tidal_dl.gui.api.duplicates._edition_advice_enabled", return_value=enabled), \
+         patch("tidal_dl.gui.api.duplicates.path_config_base", return_value=str(tmp_path / "cfg")):
+        (tmp_path / "cfg").mkdir(exist_ok=True)
+        return _clean_sync(selected_paths=paths)
+
+
+class TestEditionAdvicePreviewAndClean:
+    def test_preview_flag_off_has_no_edition_chip(self, db):
+        db.record("/music/Artist - Album/01.flac", status="tagged", isrc="US123",
+                  artist="Artist", title="Song", album="Album", duration=200,
+                  quality="44100Hz/16bit", fmt="FLAC", codec="flac")
+        db.record("/music/Artist/Album/01.flac", status="tagged", isrc="US123",
+                  artist="Artist", title="Song", album="Album", duration=200,
+                  quality="44100Hz/16bit", fmt="FLAC", codec="flac")
+        db.commit()
+        with patch("tidal_dl.gui.api.duplicates._edition_advice_enabled", return_value=False):
+            result = _preview(db)
+        assert result["groups"]
+        assert all("edition_chip" not in g for g in result["groups"])
+
+    def test_preview_chip_pending_without_scorer(self, db):
+        db.record("/music/Artist - Album/01.flac", status="tagged", isrc="US123",
+                  artist="Artist", title="Song", album="Album", duration=200,
+                  quality="44100Hz/16bit", fmt="FLAC", codec="flac")
+        db.record("/music/Artist/Album/01.flac", status="tagged", isrc="US123",
+                  artist="Artist", title="Song", album="Album", duration=200,
+                  quality="44100Hz/16bit", fmt="FLAC", codec="flac")
+        db.commit()
+        with patch("tidal_dl.gui.api.duplicates._edition_advice_enabled", return_value=True):
+            result = _preview(db)
+        chip = result["groups"][0]["edition_chip"]
+        assert chip["state"] == "pending"
+        assert chip["label"] == "Edition: —"
+
+    def test_flag_off_ignores_paths_and_cleans_all_auto(self, tmp_path, db):
+        keeper, extra = _layout_twin_files(tmp_path, db)
+        result = _run_clean(db, tmp_path, enabled=False, paths=[])
+        assert result["duplicates_moved"] == 1
+        assert keeper.exists()
+        assert not extra.exists()
+
+    def test_flag_on_cleans_only_posted_extras(self, tmp_path, db):
+        keeper_a, extra_a = _layout_twin_files(tmp_path, db, name="Alpha")
+        keeper_b, extra_b = _layout_twin_files(tmp_path, db, name="Beta")
+        result = _run_clean(db, tmp_path, enabled=True, paths=[str(extra_a)])
+        assert result["duplicates_moved"] == 1
+        assert keeper_a.exists() and keeper_b.exists()
+        assert not extra_a.exists()
+        assert extra_b.exists()
+
+    def test_refuses_keep_both_even_if_path_listed(self, tmp_path, db):
+        keeper, extra = _layout_twin_files(tmp_path, db)
+        db.upsert_edition_advice(
+            path_a=str(keeper),
+            path_b=str(extra),
+            fingerprint_a=fingerprint(str(keeper), 10, 1),
+            fingerprint_b=fingerprint(str(extra), 11, 2),
+            relation="keep_both_editions",
+            confidence=0.99,
+            group_id="isrc:USLUM1|Album",
+        )
+        result = _run_clean(db, tmp_path, enabled=True, paths=[str(extra)])
+        assert result["duplicates_moved"] == 0
+        assert extra.exists()
+        assert keeper.exists()
+
+    def test_score_missing_group_raises_404(self, db):
+        db.close = lambda: None
+        with patch("tidal_dl.gui.api.duplicates._get_db", return_value=db), \
+             patch("tidal_dl.gui.api.duplicates._edition_advice_enabled", return_value=True), \
+             patch("tidal_dl.gui.api.library._scan_running", False):
+            with pytest.raises(Exception) as exc:
+                _score_sync("missing-key", force=False)
+        assert getattr(exc.value, "status_code", None) == 404
+
+    def test_score_does_not_mutate_grouping_table(self, db, monkeypatch):
+        db.record("/music/Artist - Album/01.flac", status="tagged", isrc="US123",
+                  artist="Artist", title="Song", album="Album", duration=200,
+                  quality="44100Hz/16bit", fmt="FLAC", codec="flac",
+                  file_size=10, file_mtime=1)
+        db.record("/music/Artist/Album/01.flac", status="tagged", isrc="US123",
+                  artist="Artist", title="Song", album="Album", duration=200,
+                  quality="44100Hz/16bit", fmt="FLAC", codec="flac",
+                  file_size=11, file_mtime=2)
+        db.commit()
+        groups = _find_duplicate_groups(db)
+        monkeypatch.setattr(
+            "tidal_dl.gui.services.edition_advice_adapter.score_pair",
+            lambda *a, **k: {
+                "relation": "layout_twin_extra",
+                "confidence": 0.97,
+                "probabilities": {},
+                "same_isrc_misleading": False,
+                "clarity": None,
+                "model": "jev",
+                "usage": {},
+            },
+        )
+        db.close = lambda: None
+        with patch("tidal_dl.gui.api.duplicates._get_db", return_value=db), \
+             patch("tidal_dl.gui.api.duplicates._edition_advice_enabled", return_value=True), \
+             patch("tidal_dl.gui.api.library._scan_running", False):
+            payload = _score_sync(groups[0]["key"], force=False)
+        assert payload["aggregate"]["relation"] == "layout_twin_extra"
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM album_grouping_assessments"
+        ).fetchone()[0] == 0
