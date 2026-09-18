@@ -611,9 +611,16 @@ def _clean_sync(selected_paths: list[str] | None = None) -> dict:
         expires_at = time.time() + 300
         _write_manifest(staging, moved_files, expires_at)
 
+        if not _edition_advice_enabled() or selected_paths is None:
+            groups_cleaned = len(
+                [group for group in groups if group.get("status") != "uncertain"]
+            )
+        else:
+            groups_cleaned = len(groups_touched)
+
         return {
             "stale_pruned": stale_pruned,
-            "groups_cleaned": len(groups_touched),
+            "groups_cleaned": groups_cleaned,
             "duplicates_moved": len(moved_files),
             "undo_available": len(moved_files) > 0,
             "undo_expires_at": expires_at,
