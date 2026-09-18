@@ -44,6 +44,12 @@ music-dl sync --yes
 music-dl dl_fav tracks --since 2026-01-01
 ```
 
+## DJAI
+
+DJAI is the GUI home for automation modules (Discord Bot, Edition advice).
+DJAI modules that use AI can make mistakes. Verify important actions yourself
+before you confirm them. See [`docs/djai-modules.md`](docs/djai-modules.md).
+
 ## Discord bot (optional)
 
 A companion Discord bot streams and downloads from your library over voice.
@@ -61,6 +67,14 @@ music-dl gui --setup-bot
 See [`docs/bot-onboarding.md`](docs/bot-onboarding.md) for the GUI setup flow
 and [`../apps/discord-bot/README.md`](../apps/discord-bot/README.md) for the
 bot itself.
+
+## Edition advice (optional)
+
+A DJAI module that shows TypeSafe Jev edition chips on Clean Up. Enable it
+from **DJAI → Edition advice**, not Settings. AI suggestions can be wrong;
+confirm paths yourself before Clean Up. See
+[`docs/djai-edition-advice.md`](docs/djai-edition-advice.md) and the
+[`DJAI overview`](docs/djai-modules.md).
 
 ## Development
 

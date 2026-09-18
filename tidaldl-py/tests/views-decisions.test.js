@@ -1581,14 +1581,104 @@ function duplicatePreviewSource() {
     ?.split('\nfunction _navText(')[0] || '';
 }
 
+function djaiSource() {
+  return viewsSource
+    .split('function renderDjai(container) {')[1]
+    ?.split('\n// ---- LIBRARY VIEW ----')[0] || '';
+}
+
+function settingsSource() {
+  return viewsSource
+    .split('const sections = [')[1]
+    ?.split('sections.forEach(section =>')[0] || '';
+}
+
+describe('DJAI edition advice module', () => {
+  test('Edition advice is a DJAI module card, not a Settings toggle', () => {
+    const djai = djaiSource();
+    const settings = settingsSource();
+    expect(djai).toContain("Edition advice (Jev)");
+    expect(djai).toContain('djai-edition-card');
+    expect(djai).toContain("saveSetting('edition_advice_enabled'");
+    expect(djai).toContain('edition_scorer_status');
+    expect(djai).toContain('Missing binary');
+    expect(djai).toContain('djai-edition-advice.md');
+    expect(djai).toContain('Edition advice guide');
+    expect(djai).toContain('djai-modules.md');
+    expect(djai).toContain('DJAI modules overview');
+    expect(djai).toContain('AI can make mistakes; verify before Clean Up.');
+    expect(djai).toContain('DJAI modules that use AI can make mistakes.');
+    expect(djai).not.toMatch(/TYPESAFE_API_KEY|api key/i);
+    expect(djai).not.toMatch(/safe to delete/i);
+    expect(settings).toContain("key: 'skip_duplicate_isrc'");
+    expect(settings).not.toContain("key: 'edition_advice_enabled'");
+  });
+});
+
+function loadEditionAdviceHelpers() {
+  const start = viewsSource.indexOf('function _mayAutoActEdition');
+  const end = viewsSource.indexOf('async function _revealPath');
+  return new Function(
+    `${viewsSource.slice(start, end)}\nreturn { _mayAutoActEdition, _editionDefaultChecked, _editionAdviceChecked, _editionInitChecked, _syncEditionChecks };`
+  )();
+}
+
 describe('duplicate preview', () => {
   test('shows a truncated note and does not add a second clean route', () => {
     const source = duplicatePreviewSource();
     expect(source).toContain("data.truncated");
     expect(source).toContain("Showing the first ");
     expect(source).toContain("api('/duplicates/preview')");
-    expect(source).toContain("api('/duplicates/clean', { method: 'POST' })");
+    expect(source).toContain("api('/duplicates/clean'");
     expect(source.match(/api\('\/duplicates\/clean'/g) || []).toHaveLength(1);
+    expect(source).toContain("api('/duplicates/score'");
+    expect(source).toContain('_revealPath');
+    expect(source).toContain('Reveal in Finder');
+    expect(source).toContain('AI can make mistakes; verify before Clean Up.');
+    expect(source).toMatch(/Score/);
+    expect(source).toMatch(/Re-score/);
+    expect(source).not.toMatch(/safe to delete/i);
+  });
+
+  test('auto-checks only per-extra actable advice, never the group chip', () => {
+    const source = duplicatePreviewSource();
+    expect(source).toContain('_editionInitChecked(g.status, d.edition_advice)');
+    expect(source).not.toContain('_editionDefaultChecked(g.status, chip && chip.relation');
+    expect(source).toContain('_syncEditionChecks(extraChecks, pairByPath, card)');
+    const {
+      _editionDefaultChecked,
+      _editionAdviceChecked,
+      _editionInitChecked,
+      _syncEditionChecks,
+    } = loadEditionAdviceHelpers();
+    const chip = { relation: 'layout_twin_extra', confidence: 0.99 };
+    expect(_editionAdviceChecked(undefined)).toBe(false);
+    expect(_editionAdviceChecked({ relation: chip.relation, confidence: chip.confidence })).toBe(true);
+    expect(_editionAdviceChecked({ relation: null, confidence: null })).toBe(false);
+    expect(_editionAdviceChecked({ error: 'missing', relation: 'layout_twin_extra', confidence: 0.99 })).toBe(false);
+    expect(_editionDefaultChecked('auto', 'keep_both_editions', 0.99)).toBe(false);
+    expect(_editionDefaultChecked('auto', null, null)).toBe(false);
+    expect(_editionDefaultChecked('uncertain', 'true_duplicate_candidate', 0.95)).toBe(true);
+    expect(_editionInitChecked('auto', null)).toBe(true);
+    expect(_editionInitChecked('auto', { relation: null, confidence: null })).toBe(true);
+    expect(_editionInitChecked('auto', { relation: 'keep_both_editions', confidence: 0.99 })).toBe(false);
+    expect(_editionInitChecked('auto', { error: 'missing' })).toBe(false);
+    expect(_editionInitChecked('uncertain', null)).toBe(false);
+    expect(_editionInitChecked('uncertain', { relation: 'true_duplicate_candidate', confidence: 0.95 })).toBe(true);
+
+    const scored = { _path: '/scored.flac', _groupCard: 'auto', checked: false };
+    const unscored = { _path: '/unscored.flac', _groupCard: 'auto', checked: true };
+    const otherCard = { _path: '/other.flac', _groupCard: 'uncertain', checked: true };
+    _syncEditionChecks(
+      [scored, unscored, otherCard],
+      {
+        '/scored.flac': { relation: 'layout_twin_extra', confidence: 0.97 },
+      },
+      'auto',
+    );
+    expect(scored.checked).toBe(true);
+    expect(unscored.checked).toBe(false);
+    expect(otherCard.checked).toBe(true);
   });
 });
 

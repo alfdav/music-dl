@@ -821,6 +821,15 @@ class TestDuplicatesPreview:
         assert "stale_count" in data
         assert "truncated" in data
 
+    def test_flag_off_preview_omits_edition_chip(self, client):
+        resp = client.get("/api/duplicates/preview", headers=client._host_header)
+        data = resp.json()
+        assert all("edition_chip" not in group for group in data["groups"])
+
+    def test_clean_empty_body_not_422(self, client):
+        resp = client.post("/api/duplicates/clean", headers=client._headers)
+        assert resp.status_code != 422
+
 
 class TestSettings:
     def test_returns_200(self, client):
@@ -842,6 +851,7 @@ class TestSettings:
             "download_base_path", "quality_audio", "format_track", "format_album",
             "format_playlist", "cover_album_file", "metadata_cover_embed",
             "lyrics_embed", "lyrics_file", "skip_existing", "skip_duplicate_isrc",
+            "edition_advice_enabled", "edition_scorer_status",
             "downloads_concurrent_max", "scan_paths",
         }
         for key in expected_keys:

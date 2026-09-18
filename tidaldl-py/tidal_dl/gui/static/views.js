@@ -2866,7 +2866,15 @@ function renderDjai(container) {
   const header = h('div', { className: 'djai-header' },
     textEl('div', 'DJAI', 'wizard-step-label'),
     textEl('h2', 'DJAI', 'djai-title'),
-    textEl('p', 'Music automation modules live here. Discord Bot is the first deployable module.', 'djai-desc')
+    textEl('p', 'Music automation modules live here. Discord Bot is the first deployable module; Edition advice is the second. DJAI modules that use AI can make mistakes.', 'djai-desc'),
+    h('p', { className: 'djai-module-desc' },
+      h('a', {
+        className: 'djai-modules-docs',
+        href: 'https://github.com/alfdav/music-dl/blob/master/tidaldl-py/docs/djai-modules.md',
+        target: '_blank',
+        rel: 'noopener noreferrer',
+      }, 'DJAI modules overview')
+    )
   );
 
   const moduleGrid = h('div', { className: 'djai-module-grid' });
@@ -2927,6 +2935,43 @@ function renderDjai(container) {
   botCard.appendChild(serviceActions);
   botCard.appendChild(details);
   moduleGrid.appendChild(botCard);
+
+  const editionCard = h('section', { className: 'djai-module-card djai-edition-card' });
+  const editionHeader = h('div', { className: 'djai-module-header' },
+    h('div', {},
+      textEl('div', 'Available now', 'wizard-step-label'),
+      textEl('h3', 'Edition advice (Jev)', 'djai-module-title')
+    ),
+    textEl('p', 'Advisory edition chips on Clean Up. Never deletes keep-both or unclear extras.', 'djai-module-desc'),
+    textEl('p', 'AI can make mistakes; verify before Clean Up.', 'djai-module-desc')
+  );
+  const editionStatus = h('div', { className: 'djai-bot-status' },
+    textEl('span', 'Checking scorer...', 'djai-bot-pill')
+  );
+  const editionEnableRow = h('div', { className: 'djai-edition-enable' });
+  const editionEnableLabel = textEl('span', 'Enable module', 'settings-label');
+  const editionToggle = h('div', {
+    className: 'settings-toggle',
+    tabIndex: '0',
+    role: 'switch',
+    'aria-checked': 'false',
+  });
+  editionEnableRow.appendChild(editionEnableLabel);
+  editionEnableRow.appendChild(editionToggle);
+  editionCard.appendChild(editionHeader);
+  editionCard.appendChild(editionStatus);
+  editionCard.appendChild(editionEnableRow);
+  editionCard.appendChild(h('p', { className: 'djai-module-desc' },
+    'How to use: ',
+    h('a', {
+      className: 'djai-edition-docs',
+      href: 'https://github.com/alfdav/music-dl/blob/master/tidaldl-py/docs/djai-edition-advice.md',
+      target: '_blank',
+      rel: 'noopener noreferrer',
+    }, 'Edition advice guide')
+  ));
+  moduleGrid.appendChild(editionCard);
+
   shell.appendChild(moduleGrid);
   container.appendChild(shell);
 
@@ -3062,6 +3107,61 @@ function renderDjai(container) {
 
   refreshBtn.addEventListener('click', loadStatus);
   loadStatus();
+
+  function _scorerPillLabel(status) {
+    if (status === 'ready') return 'Ready';
+    if (status === 'missing') return 'Missing binary';
+    return 'n/a';
+  }
+
+  function paintEditionModule(data) {
+    const enabled = !!data.edition_advice_enabled;
+    const scorer = data.edition_scorer_status || 'n/a';
+    editionToggle.className = 'settings-toggle' + (enabled ? ' on' : '');
+    editionToggle.setAttribute('aria-checked', enabled ? 'true' : 'false');
+    while (editionStatus.firstChild) editionStatus.removeChild(editionStatus.firstChild);
+    editionStatus.appendChild(textEl(
+      'span',
+      enabled ? 'On' : 'Off',
+      'djai-bot-pill ' + (enabled ? 'ok' : 'warn')
+    ));
+    editionStatus.appendChild(textEl(
+      'span',
+      _scorerPillLabel(scorer),
+      'djai-bot-pill ' + (scorer === 'ready' ? 'ok' : 'warn')
+    ));
+  }
+
+  async function loadEditionModule() {
+    try {
+      const data = state.settings || await api('/settings');
+      state.settings = data;
+      paintEditionModule(data);
+    } catch (err) {
+      toast('Edition advice status failed: ' + err.message, 'error');
+      paintEditionModule({ edition_advice_enabled: false, edition_scorer_status: 'n/a' });
+    }
+  }
+
+  const flipEdition = async () => {
+    if (state.settingsReadOnly) {
+      toast('Settings are read-only until access is restored.', 'error', 5000);
+      return;
+    }
+    const next = editionToggle.getAttribute('aria-checked') !== 'true';
+    editionToggle.className = 'settings-toggle' + (next ? ' on' : '');
+    editionToggle.setAttribute('aria-checked', next ? 'true' : 'false');
+    await saveSetting('edition_advice_enabled', next);
+    if (state.settings) paintEditionModule(state.settings);
+  };
+  editionToggle.addEventListener('click', flipEdition);
+  editionToggle.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();
+      flipEdition();
+    }
+  });
+  loadEditionModule();
 }
 
 // ---- LIBRARY VIEW ----
@@ -3489,6 +3589,56 @@ function renderLibrary(container) {
   }
 }
 
+function _mayAutoActEdition(relation, confidence) {
+  return (relation === 'true_duplicate_candidate' || relation === 'layout_twin_extra')
+    && Number(confidence) >= 0.95;
+}
+
+function _editionAdviceChecked(advice) {
+  if (!advice || advice.error) return false;
+  return _mayAutoActEdition(advice.relation, advice.confidence);
+}
+
+function _editionNeverDelete(advice) {
+  const relation = advice && advice.relation;
+  return relation === 'keep_both_editions' || relation === 'insufficient_evidence';
+}
+
+function _editionInitChecked(status, advice) {
+  if (_editionAdviceChecked(advice)) return true;
+  if (advice && (advice.error || _editionNeverDelete(advice))) return false;
+  return status === 'auto';
+}
+
+function _editionDefaultChecked(status, relation, confidence) {
+  return _editionAdviceChecked({ relation, confidence });
+}
+
+function _syncEditionChecks(checks, pairByPath, groupCard) {
+  (checks || []).forEach(cb => {
+    if (groupCard != null && cb._groupCard !== groupCard) return;
+    cb.checked = _editionAdviceChecked(pairByPath[cb._path]);
+  });
+}
+
+function _editionShortLabel(relation) {
+  return ({
+    keep_both_editions: 'Keep both',
+    insufficient_evidence: 'Unclear',
+    layout_twin_extra: 'Layout twin',
+    true_duplicate_candidate: 'Dup candidate',
+  })[relation] || relation || '—';
+}
+
+async function _revealPath(path) {
+  try {
+    await api('/downloads/reveal', { method: 'POST', body: { path } });
+    toast('Revealed in Finder', 'success');
+  } catch (_) {
+    toast('File not found', 'error');
+  }
+}
+
 async function _showDuplicatePreview(container) {
   while (container.firstChild) container.removeChild(container.firstChild);
   container.appendChild(textEl('div', 'Scanning for duplicates...', 'upgrade-scanner-status'));
@@ -3513,28 +3663,66 @@ async function _showDuplicatePreview(container) {
     }
     container.appendChild(summary);
 
+    const adviceOn = (data.groups || []).some(g => g.edition_chip);
+
     // Clean Up button — only auto extras, never UNCERTAIN edition/quality pairs
     let cleanBtn = null;
-    if (data.total_duplicates > 0) {
+    if (data.total_duplicates > 0 || adviceOn) {
       cleanBtn = h('button', { className: 'pill active dup-clean-btn' });
       cleanBtn.textContent = 'Clean Up ' + data.total_duplicates + ' Duplicates';
       container.appendChild(cleanBtn);
     }
+
+    const extraChecks = [];
+
+    const updateCleanLabel = () => {
+      if (!cleanBtn || !adviceOn) return;
+      const n = extraChecks.filter(cb => cb.checked).length;
+      cleanBtn.textContent = 'Clean Up ' + n + ' Duplicates';
+      cleanBtn.disabled = n === 0;
+    };
 
     // Group list
     const groupList = h('div', { className: 'dup-groups' });
     (data.groups || []).forEach(g => {
       const uncertain = g.status === 'uncertain';
       const card = h('div', { className: 'dup-group-card' + (uncertain ? ' dup-uncertain' : '') });
+      const chip = g.edition_chip || null;
+      let pairByPath = {};
+
       // Keeper
       const keeperRow = h('div', { className: 'dup-keeper' });
       keeperRow.appendChild(textEl('span', '\u2713 KEEP', 'dup-keep-badge'));
       keeperRow.appendChild(textEl('span', (g.keeper.tier || '') + ' \u00B7 ' + (g.keeper.format || ''), 'dup-tier'));
       keeperRow.appendChild(textEl('span', g.keeper.path, 'dup-path'));
+      if (adviceOn) {
+        const chipEl = textEl('span', chip && chip.label ? chip.label : 'Edition: —', 'dup-edition-chip');
+        keeperRow.appendChild(chipEl);
+        g._chipEl = chipEl;
+      }
       card.appendChild(keeperRow);
+
+      const applyAdviceToChecks = (pairs) => {
+        pairByPath = {};
+        (pairs || []).forEach(p => { pairByPath[p.path_b] = p; });
+        _syncEditionChecks(extraChecks, pairByPath, card);
+        updateCleanLabel();
+      };
+
       // Duplicates
       (g.duplicates || []).forEach(d => {
         const dupRow = h('div', { className: 'dup-duplicate' });
+        if (adviceOn) {
+          const cb = h('input', { type: 'checkbox', className: 'dup-extra-check' });
+          cb.checked = _editionInitChecked(g.status, d.edition_advice);
+          cb._path = d.path;
+          cb._groupCard = card;
+          cb._groupKey = g.key;
+          cb.addEventListener('click', (e) => e.stopPropagation());
+          cb.addEventListener('change', updateCleanLabel);
+          extraChecks.push(cb);
+          dupRow.appendChild(cb);
+        }
         dupRow.appendChild(textEl(
           'span',
           uncertain ? 'UNCERTAIN' : '\u2717 REMOVE',
@@ -3542,11 +3730,105 @@ async function _showDuplicatePreview(container) {
         ));
         dupRow.appendChild(textEl('span', (d.tier || '') + ' \u00B7 ' + (d.format || ''), 'dup-tier'));
         dupRow.appendChild(textEl('span', d.path, 'dup-path'));
+        if (adviceOn) {
+          const revealBtn = h('button', {
+            className: 'dup-reveal-btn',
+            type: 'button',
+            title: 'Reveal in Finder',
+            'aria-label': 'Reveal in Finder',
+          });
+          revealBtn.appendChild(svgIcon(ICONS.folder));
+          revealBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            _revealPath(d.path);
+          });
+          dupRow.appendChild(revealBtn);
+        }
         card.appendChild(dupRow);
       });
+
+      if (adviceOn) {
+        const detail = h('div', { className: 'dup-group-detail' });
+        detail.hidden = true;
+        const aggLine = textEl(
+          'div',
+          'AI can make mistakes; verify before Clean Up. Advisory labels. Confirm to remove checked extras — never keep-both, unclear, or unscored.',
+          'dup-advice-note',
+        );
+        detail.appendChild(aggLine);
+        const pairList = h('div', { className: 'dup-advice-pairs' });
+        detail.appendChild(pairList);
+
+        const renderPairs = (pairs, aggregate) => {
+          while (pairList.firstChild) pairList.removeChild(pairList.firstChild);
+          if (g._chipEl && aggregate && aggregate.chip) {
+            g._chipEl.textContent = aggregate.chip;
+          } else if (g._chipEl && aggregate && aggregate.state === 'error') {
+            g._chipEl.textContent = 'Edition: n/a';
+          }
+          (g.duplicates || []).forEach(d => {
+            const pair = (pairs || []).find(p => p.path_b === d.path);
+            const row = h('div', { className: 'dup-advice-pair' });
+            const rel = pair && pair.relation ? _editionShortLabel(pair.relation) : (pair && pair.error ? 'n/a' : '—');
+            const conf = pair && pair.confidence != null ? Number(pair.confidence).toFixed(2) : '—';
+            let line = rel + ' · ' + conf;
+            if (pair && pair.same_isrc_misleading) line += ' · same ISRC can mislead';
+            row.appendChild(textEl('span', line, 'dup-advice-meta'));
+            row.appendChild(textEl('span', d.path, 'dup-path'));
+            const revealBtn = h('button', {
+              className: 'dup-reveal-btn',
+              type: 'button',
+              title: 'Reveal in Finder',
+              'aria-label': 'Reveal in Finder',
+            });
+            revealBtn.appendChild(svgIcon(ICONS.folder));
+            revealBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              _revealPath(d.path);
+            });
+            row.appendChild(revealBtn);
+            pairList.appendChild(row);
+          });
+          applyAdviceToChecks(pairs);
+        };
+
+        const actions = h('div', { className: 'dup-advice-actions' });
+        const scoreBtn = h('button', { className: 'pill dup-score-btn', type: 'button' });
+        const scored = chip && chip.state === 'ready';
+        scoreBtn.textContent = scored ? 'Re-score' : 'Score';
+        scoreBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const force = scoreBtn.textContent === 'Re-score';
+          if (g._chipEl) g._chipEl.textContent = 'Edition: …';
+          scoreBtn.disabled = true;
+          try {
+            const payload = await api('/duplicates/score', {
+              method: 'POST',
+              body: { group_key: g.key, force },
+            });
+            renderPairs(payload.pairs || [], payload.aggregate || {});
+            scoreBtn.textContent = 'Re-score';
+          } catch (err) {
+            if (g._chipEl) g._chipEl.textContent = 'Edition: n/a';
+            toast('Score failed: ' + (err.message || err), 'error');
+          }
+          scoreBtn.disabled = false;
+        });
+        actions.appendChild(scoreBtn);
+        detail.appendChild(actions);
+        card.appendChild(detail);
+        card.classList.add('dup-expandable');
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('button, input, a')) return;
+          detail.hidden = !detail.hidden;
+        });
+      }
+
       groupList.appendChild(card);
     });
     container.appendChild(groupList);
+
+    if (adviceOn) updateCleanLabel();
 
     if (!cleanBtn) {
       return;
@@ -3557,7 +3839,11 @@ async function _showDuplicatePreview(container) {
       cleanBtn.disabled = true;
       cleanBtn.textContent = 'Cleaning...';
       try {
-        const result = await api('/duplicates/clean', { method: 'POST' });
+        const cleanOpts = { method: 'POST' };
+        if (adviceOn) {
+          cleanOpts.body = { paths: extraChecks.filter(cb => cb.checked).map(cb => cb._path) };
+        }
+        const result = await api('/duplicates/clean', cleanOpts);
         cleanBtn.textContent = 'Cleaned ' + result.duplicates_moved + ' duplicates';
         toast('Removed ' + result.duplicates_moved + ' duplicates. Undo available for 5 minutes.', 'success', 8000);
 

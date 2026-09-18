@@ -1691,6 +1691,17 @@ body {
   border-color: rgba(212, 160, 83, 0.22);
 }
 
+.djai-edition-card {
+  border-color: rgba(212, 160, 83, 0.22);
+}
+
+.djai-edition-enable {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .djai-module-header {
   display: flex;
   flex-direction: column;
@@ -4266,6 +4277,34 @@ body {
 .dup-group-card.dup-uncertain .dup-duplicate { opacity: 0.85; text-decoration: none; }
 .dup-tier { font-size: 11px; color: var(--text-secondary); flex-shrink: 0; width: 80px; }
 .dup-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 11px; direction: rtl; text-align: left; }
+.dup-edition-chip {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.dup-group-card.dup-expandable { cursor: pointer; }
+.dup-group-detail {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--glass-border);
+}
+.dup-advice-note { font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; }
+.dup-advice-pair, .dup-advice-actions { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.dup-advice-meta { font-size: 11px; color: var(--text-secondary); flex-shrink: 0; }
+.dup-extra-check { flex-shrink: 0; }
+.dup-reveal-btn {
+  background: none;
+  border: 0;
+  padding: 2px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+}
+.dup-score-btn { margin-top: 6px; }
 
 /* ---- SETUP WIZARD ---- */
 .setup-wizard {

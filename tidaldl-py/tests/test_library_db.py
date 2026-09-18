@@ -761,7 +761,7 @@ class TestMigration:
         assert "release_id" in cols
         assert "file_size" in cols
         assert "missing_since" in cols
-        assert LibraryDB._SCHEMA_VERSION == 10
+        assert LibraryDB._SCHEMA_VERSION == 11
         assert (
             db._conn.execute("PRAGMA user_version").fetchone()[0]
             == LibraryDB._SCHEMA_VERSION

@@ -396,6 +396,8 @@ class TestAppJsFeatureMarkers:
         assert ">lab</span>" in html
         assert ">soon</span>" not in html
         assert ".djai-module-card" in css
+        assert "textEl('h3', 'Edition advice (Jev)'" in js
+        assert "djai-edition-card" in js
 
     def test_has_static_bug_report_link(self):
         html = (STATIC_DIR / "index.html").read_text()
@@ -434,6 +436,21 @@ class TestAppJsFeatureMarkers:
         assert ".djai-config-summary" not in css
         assert "var(--green)" in css
         assert "djai-discord-card" in css
+
+    def test_edition_advice_is_djai_module_not_settings_toggle(self):
+        js = read_gui_js()
+        css = (STATIC_DIR / "style.css").read_text()
+        assert "textEl('h3', 'Edition advice (Jev)'" in js
+        assert "djai-edition-card" in js
+        assert "edition_scorer_status" in js
+        assert "Missing binary" in js
+        assert "saveSetting('edition_advice_enabled'" in js
+        assert "djai-edition-advice.md" in js
+        assert "djai-modules.md" in js
+        assert "AI can make mistakes; verify before Clean Up." in js
+        assert "{ key: 'edition_advice_enabled'" not in js
+        assert "{ key: 'skip_duplicate_isrc'" in js
+        assert ".djai-edition-card" in css
 
     def test_library_artist_view_uses_page_size(self):
         js = read_gui_js()

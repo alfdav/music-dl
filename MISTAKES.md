@@ -1,5 +1,37 @@
 # Mistakes
 
+## 2026-09-18 — Module-on delete gate kept only Jev-actable extras
+
+**What happened:** After the group-chip checkbox fix, `resolve_delete_paths` kept only ≥0.95 layout_twin / true_dup. Posted engine-auto extras with no cache, missing scorer, or pair error were dropped. Enabling the module blocked ordinary Clean Up.
+
+**Root cause:** Jev auto-check (UI) was copied onto the server allowlist. Design: Jev never auto-deletes unscored; it also never blocks engine/manual cleanup of unscored. Only strip keep_both / insufficient.
+
+**Prevention:** Server strips only those two relations. Unscored / error posted paths stay. UI still auto-checks Jev-actable per extra only; engine `auto` extras with no keep/unclear/error still start checked so missing-scorer Clean Up works.
+
+## 2026-09-18 — Group edition chip drove every extra’s checkbox
+
+**What happened:** Clean Up initialized extra checkboxes from the group `edition_chip` and `status === 'auto'`. `applyAdviceToChecks` matched by shared `g.key` (auto + uncertain cards reuse it) and left missing/error pairs unchanged. Partial cache marked the group `ready`, so one actable sibling auto-checked unscored remasters; reload re-checked `keep_both_editions` autos.
+
+**Root cause:** Aggregate chip is display-only. Act rules are per extra. Group status is not Jev advice.
+
+**Prevention:** Init and sync checkboxes from that extra’s pair / `edition_advice.default_checked`. Auto-check only `layout_twin_extra` / `true_duplicate_candidate` at ≥0.95. Partial cache is not `ready`. Server `resolve_delete_paths` keeps only actable per-path advice when the module is on.
+
+## 2026-09-18 — Shipped DJAI AI docs without a shared “can be wrong” stance
+
+**What happened:** Edition advice and DJAI cards described advisory chips and “never safe to delete” in the Clean Up path, but DJAI overview / bot onboarding / module cards did not share one AI-mistake disclaimer.
+
+**Root cause:** Docs were written around TypeSafe key facts and module placement first. The “AI can err” line was treated as implied by “advisory” instead of being copied into every DJAI surface.
+
+**Prevention:** Keep the same phrases in `djai-modules.md`, `djai-edition-advice.md` (top + How to use), a light pointer in `bot-onboarding.md`, and the Edition advice card. Tests lock the disclaimer strings. Never write “safe to delete” as a promise.
+
+## 2026-09-18 — Assumed nested Artist/Album path is the Clean Up keeper
+
+**What happened:** Edition-advice selective-clean tests labeled `Artist/Album` as keeper and `Artist - Album` as extra. Grouping actually keeps the flatter `Artist - Album` path (`_path_score` prefers fewer slashes). Tests then posted the keeper and asserted the extra vanished.
+
+**Root cause:** Fixture invented keeper/extra instead of reading `_find_duplicate_groups`.
+
+**Prevention:** After seeding layout twins, resolve keeper/extra from grouping. Never assume nested vs flat.
+
 ## 2026-09-11 — Joined album_artist missed identity SQL membership
 
 **What happened:** Bugbot on PR #184: `_tag_join` stores multi-value album-artist as `host; guest`, but `tracks_for_album_artist` and the leftover `Album [FLAC]` clause required `fold_search(album_artist)` whole-string equality. Guest rows never entered the album identity pool when the album tag was not an exact title match, so leftover codec-bracket guests kept Download.

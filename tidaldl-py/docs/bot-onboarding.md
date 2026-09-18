@@ -4,6 +4,9 @@ End-to-end flow for going from zero to a running Discord bot via the
 music-dl GUI. Bot setup lives in the **DJAI panel** and is driven by
 the **Bot Control** API (`/bot-control/*`).
 
+DJAI hosts automation modules; AI-powered modules can err — see
+[`djai-modules.md`](djai-modules.md).
+
 ## Design principles
 
 1. **No terminal hijack on normal startup.** `music-dl gui` prints
@@ -196,5 +199,6 @@ Deploying the bot can also provision `discord-bot-runtime/` and creates
 
 ## Related
 
+- [`djai-modules.md`](djai-modules.md) — DJAI module list
 - [`apps/discord-bot/README.md`](../../apps/discord-bot/README.md) —
   bot runtime, commands, architecture
