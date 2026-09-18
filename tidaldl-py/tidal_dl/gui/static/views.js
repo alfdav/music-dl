@@ -5276,6 +5276,7 @@ async function loadSettingsForm(container, accessContainer) {
       { title: 'Library', fields: [
         { key: 'scan_paths', label: 'Scan Paths', type: 'text', helper: 'Additional folders to scan for music' },
         { key: 'skip_duplicate_isrc', label: 'Skip Duplicate ISRC', type: 'toggle', helper: 'Skips tracks with the same recording code' },
+        { key: 'edition_advice_enabled', label: 'Edition advice (Jev)', type: 'toggle', helper: 'Shows edition chips on Clean Up; never deletes keep-both/unclear' },
       ]},
     ];
 

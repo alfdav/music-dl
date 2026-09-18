@@ -842,6 +842,7 @@ class TestSettings:
             "download_base_path", "quality_audio", "format_track", "format_album",
             "format_playlist", "cover_album_file", "metadata_cover_embed",
             "lyrics_embed", "lyrics_file", "skip_existing", "skip_duplicate_isrc",
+            "edition_advice_enabled",
             "downloads_concurrent_max", "scan_paths",
         }
         for key in expected_keys:

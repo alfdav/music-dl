@@ -42,6 +42,7 @@ def get_settings() -> dict:
         "upgrade_target_quality": d.upgrade_target_quality,
         "extract_flac": d.extract_flac,
         "download_delay": d.download_delay,
+        "edition_advice_enabled": bool(getattr(d, "edition_advice_enabled", False)),
     }
 
 
@@ -655,6 +656,7 @@ class SettingsUpdate(BaseModel):
     extract_flac: bool | None = None
     download_delay: bool | None = None
     upgrade_target_quality: str | None = None
+    edition_advice_enabled: bool | None = None
 
 
 @router.post("/browse-directory")

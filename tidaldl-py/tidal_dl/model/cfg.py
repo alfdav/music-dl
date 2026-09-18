@@ -166,6 +166,14 @@ SETTINGS_HELP: dict[str, str] = {
         'Preferred cap for upgrade jobs: "HI_RES" or "HI_RES_LOSSLESS". '
         "Jobs request Tidal's available tier when it is below this cap."
     ),
+    "edition_advice_enabled": (
+        "Show TypeSafe/Jev edition chips on Clean Up. "
+        "Never auto-deletes keep-both, unclear, or unscored extras."
+    ),
+    "edition_scorer_path": (
+        "Optional path to the typesafe-music-edition sidecar. "
+        "When empty, music-dl looks on PATH and well-known install locations."
+    ),
 }
 
 
@@ -219,6 +227,8 @@ class Settings(_JsonDataclassMixin):
     api_cache_ttl_sec: int = 300
     scan_paths: str = ""
     upgrade_target_quality: str = "HI_RES_LOSSLESS"
+    edition_advice_enabled: bool = False
+    edition_scorer_path: str = ""
 
 
 @dataclass
