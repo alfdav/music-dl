@@ -1,7 +1,7 @@
 """music-dl GUI — FastAPI application factory."""
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
-import threading
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +25,13 @@ if getattr(_sys, "frozen", False) and hasattr(_sys, "_MEIPASS"):
     _STATIC_DIR = Path(_sys._MEIPASS) / "tidal_dl" / "gui" / "static"
 else:
     _STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _refresh_tidal_token_if_needed() -> None:
+    """Run token refresh off the event loop (download workers share this lock)."""
+    from tidal_dl.config import Tidal as _Tidal
+
+    _Tidal()._ensure_token_fresh()
 
 
 def create_app(
@@ -119,6 +126,27 @@ def create_app(
                 daemon=True,
             )
         )
+
+        def _startup_path_reconcile() -> None:
+            if shutting_down.is_set():
+                return
+            try:
+                from tidal_dl.gui.api.library import request_path_reconcile
+                from tidal_dl.helper.path import path_config_base
+
+                if not (Path(path_config_base()) / "library.db").is_file():
+                    return
+                request_path_reconcile()
+            except Exception:  # noqa: BLE001, S110
+                pass
+
+        after_ready.append(
+            threading.Thread(
+                target=_startup_path_reconcile,
+                name="library-path-reconcile",
+                daemon=True,
+            )
+        )
         for thread in after_ready:
             thread.start()
         try:
@@ -153,9 +181,13 @@ def create_app(
     from starlette.requests import Request
 
     class TokenRefreshMiddleware(BaseHTTPMiddleware):
+        # Local playback must never wait on Tidal token I/O. Download workers
+        # hold `_token_fresh_lock` during refresh/persist; a sync check on the
+        # sidecar event loop freezes `/api/playback/*` (0:00 / wrong duration).
         _SKIP_PREFIXES = (
             "/api/settings", "/api/setup",
-            "/api/library/scan", "/api/queue",
+            "/api/library/scan", "/api/library/reconcile", "/api/queue",
+            "/api/playback",
         )
 
         async def dispatch(self, request: Request, call_next):
@@ -164,8 +196,9 @@ def create_app(
                 path.startswith(p) for p in self._SKIP_PREFIXES
             ):
                 try:
-                    from tidal_dl.config import Tidal as _Tidal
-                    _Tidal()._ensure_token_fresh()
+                    import asyncio
+
+                    await asyncio.to_thread(_refresh_tidal_token_if_needed)
                 except Exception:
                     pass
             return await call_next(request)

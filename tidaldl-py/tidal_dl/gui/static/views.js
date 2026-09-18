@@ -155,7 +155,8 @@ function navigate(view, opts) {
       } else if (safeView.startsWith('localrelease:')) {
         renderLocalReleaseDetail(container, safeView.substring(13));
       } else if (safeView.startsWith('artist:')) {
-        renderArtistGallery(container, decodeURIComponent(safeView.substring(7)));
+        const parsed = parseArtistView(safeView);
+        renderArtistGallery(container, parsed.name, parsed.tidalId);
       } else if (safeView.startsWith('album:')) {
         renderAlbumDetail(container, safeView.split(':')[1]);
       } else {
@@ -183,6 +184,12 @@ function navigate(view, opts) {
 navItems.forEach(n => {
   n.addEventListener('click', () => navigate(n.dataset.view, { jump: true }));
   a11yClick(n);
+});
+
+window.addEventListener('focus', () => {
+  if (state.view === 'library' || state.view === 'recent-added') {
+    api('/library/reconcile', { method: 'POST' }).catch(() => {});
+  }
 });
 
 window.addEventListener('hashchange', () => {
@@ -626,8 +633,11 @@ function _onRepeatHalf(track) {
   half.appendChild(body);
   half.addEventListener('click', (e) => {
     e.stopPropagation();
-    const t = { ...track, local_path: track.path, is_local: true };
-    playTrack(t);
+    if (trackIsPlayable(track)) {
+      playTrack({ ...track, local_path: track.local_path || track.path, is_local: true });
+      return;
+    }
+    if (track.id) playTrack(track);
   });
   a11yClick(half);
   return half;
@@ -737,11 +747,11 @@ function _renderRecentStrip(container) {
     artistEl.addEventListener('click', (e) => {
       e.stopPropagation();
       if (!track.artist) return;
-      navigate('artist:' + encodeURIComponent(track.artist));
+      navigate(buildArtistView(track.artist, track.artist_id));
     });
     card.appendChild(artistEl);
     card.addEventListener('click', () => {
-      if (track.is_local && track.local_path) startPlaybackFromList(track, recentlyPlayed);
+      if (trackIsPlayable(track)) startPlaybackFromList(track, recentlyPlayed);
       else if (track.id) startPlaybackFromList(track, recentlyPlayed);
     });
     a11yClick(card);
@@ -766,6 +776,118 @@ const HOME_FAN_POSITIONS = [
 
 let _homeFan = null;
 
+const HOME_FAN_WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+function _homePushFact(facts, text) {
+  if (!text || facts.length >= 3) return;
+  facts.push(text);
+}
+
+function _homePlaysPhrase(count) {
+  const n = Number(count);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  return n === 1 ? '1 play' : n.toLocaleString('en-US') + ' plays';
+}
+
+function _homeHoursAmount(hours) {
+  const n = Math.round(Number(hours) * 10) / 10;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function _homeHoursLabel(hours) {
+  const n = _homeHoursAmount(hours);
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
+function _homeReplayFact(track) {
+  if (!track || !track.name) return '';
+  const plays = _homePlaysPhrase(track.play_count);
+  return plays ? track.name + ' on repeat — ' + plays : track.name + ' on repeat';
+}
+
+function _homePeakWeekday(weekly) {
+  if (!Array.isArray(weekly) || weekly.length < 7) return '';
+  let max = 0;
+  let idx = -1;
+  for (let i = 0; i < 7; i++) {
+    const hours = Number(weekly[i]) || 0;
+    if (hours > max) {
+      max = hours;
+      idx = i;
+    }
+  }
+  return idx >= 0 ? HOME_FAN_WEEKDAYS[idx] : '';
+}
+
+function _homeArtistFacts(artist) {
+  const facts = [];
+  if (!artist) return facts;
+  if (artist.genre) _homePushFact(facts, artist.genre);
+  const albums = artist.album_count > 0
+    ? artist.album_count + (artist.album_count === 1 ? ' album' : ' albums')
+    : '';
+  const tracks = artist.track_count > 0
+    ? artist.track_count + (artist.track_count === 1 ? ' track' : ' tracks')
+    : '';
+  if (albums && tracks) _homePushFact(facts, albums + ' · ' + tracks);
+  else if (albums) _homePushFact(facts, albums);
+  else if (tracks) _homePushFact(facts, tracks);
+  return facts;
+}
+
+function _homeInsightFacts(id, data) {
+  const facts = [];
+  if (!data) return facts;
+
+  if (id === 'total_plays') {
+    if (data.streak > 0) {
+      _homePushFact(facts, data.streak === 1 ? '1-day streak' : data.streak + '-day streak');
+    }
+    _homePushFact(facts, _homeReplayFact(data.most_replayed));
+    if (data.track_count > 0 && data.album_count > 0) {
+      _homePushFact(facts, Number(data.track_count).toLocaleString('en-US') + ' tracks · ' + Number(data.album_count).toLocaleString('en-US') + ' albums');
+    } else if (data.album_count > 0 && data.total_plays > 0) {
+      const per = data.total_plays / data.album_count;
+      const shown = per >= 10 ? String(Math.round(per)) : per.toFixed(1);
+      _homePushFact(facts, shown + ' plays per album');
+    }
+    if (data.top_album && data.top_album.album && data.top_album.play_count > 0) {
+      _homePushFact(facts, data.top_album.album + ' — ' + _homePlaysPhrase(data.top_album.play_count));
+    }
+    if (data.collection_growth > 0) {
+      _homePushFact(facts, Number(data.collection_growth).toLocaleString('en-US') + ' added in the last 30 days');
+    }
+  } else if (id === 'listening_time_hours') {
+    const peak = _homePeakWeekday(data.weekly_activity);
+    if (peak) _homePushFact(facts, peak + ' was the peak this week');
+    const allHours = _homeHoursAmount(data.listening_time_hours);
+    let weekHours = Array.isArray(data.weekly_activity)
+      ? _homeHoursAmount(data.weekly_activity.reduce((sum, hours) => sum + (Number(hours) || 0), 0))
+      : 0;
+    if (weekHours > allHours) weekHours = allHours;
+    if (weekHours > 0 && allHours > 0) {
+      _homePushFact(facts, _homeHoursLabel(weekHours) + 'h this week of ' + _homeHoursLabel(allHours) + 'h all-time');
+    }
+  } else if (id === 'this_week') {
+    const week = data.this_week || {};
+    _homePushFact(facts, _homeReplayFact(week.most_replayed));
+    const lead = (week.genre_breakdown || [])[0];
+    if (lead && lead.genre && lead.count > 0) {
+      _homePushFact(facts, lead.genre);
+    }
+  } else if (id === 'top_artist') {
+    return _homeArtistFacts(data.top_artist);
+  } else if (id.indexOf('top_artists:') === 0) {
+    const name = id.slice('top_artists:'.length);
+    const artist = (data.top_artists || []).find(item => item && item.name === name);
+    return _homeArtistFacts(artist);
+  } else if (id === 'weekly_activity') {
+    const peak = _homePeakWeekday(data.weekly_activity);
+    if (peak) _homePushFact(facts, 'Peak ' + peak);
+  }
+  return facts;
+}
+
 function _homeInsightCards(data) {
   const cards = [];
   if (!data) return cards;
@@ -776,6 +898,7 @@ function _homeInsightCards(data) {
       value: data.total_plays,
       display: Number(data.total_plays).toLocaleString(),
       label: 'Total plays',
+      facts: _homeInsightFacts('total_plays', data),
     });
   }
   if (data.listening_time_hours) {
@@ -786,6 +909,7 @@ function _homeInsightCards(data) {
       label: 'Listening time',
       unit: 'h',
       weekly: Array.isArray(data.weekly_activity) ? data.weekly_activity : null,
+      facts: _homeInsightFacts('listening_time_hours', data),
     });
   }
 
@@ -797,6 +921,7 @@ function _homeInsightCards(data) {
       display: top.name,
       label: 'Top artist',
       detail: top.play_count ? top.play_count + ' plays' : null,
+      facts: _homeInsightFacts('top_artist', data),
     });
   }
   for (const artist of data.top_artists || []) {
@@ -808,6 +933,7 @@ function _homeInsightCards(data) {
       display: artist.name,
       label: 'Also playing',
       detail: artist.play_count + ' plays',
+      facts: _homeInsightFacts('top_artists:' + artist.name, data),
     });
   }
 
@@ -857,6 +983,7 @@ function _homeInsightCards(data) {
       label: 'Weekly activity',
       unit: 'h',
       weekly: data.weekly_activity,
+      facts: _homeInsightFacts('weekly_activity', data),
     });
   }
   const week = data.this_week;
@@ -867,6 +994,7 @@ function _homeInsightCards(data) {
       display: String(week.total_plays),
       label: 'This week',
       detail: week.top_artist && week.top_artist.name ? week.top_artist.name : null,
+      facts: _homeInsightFacts('this_week', data),
     });
   }
   if (data.recent_albums && data.recent_albums.length) {
@@ -968,6 +1096,13 @@ function _renderHomeFanCard(card, slot, state, motion) {
     for (const name of card.names) {
       el.appendChild(textEl('div', name, 'home-fan-name'));
     }
+  }
+  if (card.facts && card.facts.length) {
+    const facts = h('div', { className: 'home-fan-facts' });
+    for (const fact of card.facts) {
+      facts.appendChild(textEl('div', fact, 'home-fan-fact'));
+    }
+    el.appendChild(facts);
   }
   if (card.bars && card.bars.length) el.appendChild(_barChart(card.bars));
   else if (card.weekly && card.weekly.some(v => v > 0)) el.appendChild(_weeklyChart(card.weekly));
@@ -1158,7 +1293,7 @@ function _renderRecentSearches(recentEl, input, resultsArea) {
   const chips = h('div', { className: 'recent-searches-chips' });
   for (const item of recent) {
     const chip = h('div', { className: 'recent-chip' });
-    chip.appendChild(textEl('span', item.query));
+    chip.appendChild(textEl('span', item.query, 'recent-chip-query'));
     chip.appendChild(textEl('span', item.type, 'recent-chip-type'));
     const x = textEl('span', '\u00d7', 'recent-chip-x');
     x.addEventListener('click', (e) => {
@@ -1273,7 +1408,7 @@ function renderSearch(container) {
   const input = h('input', {
     className: 'search-input',
     type: 'text',
-    placeholder: 'Search artists, albums, tracks on Tidal...',
+    placeholder: 'Search or paste a Tidal URL...',
   });
   input.value = state.searchQuery;
   searchField.appendChild(input);
@@ -1410,6 +1545,33 @@ function renderSearchSkeleton(container) {
   }
 }
 
+function _searchStillWaitingForTidal(localData, type, tidalSettled, tidalAuthRequired) {
+  if (tidalSettled || tidalAuthRequired) return false;
+  const localItems = localData ? (localData[type] || []) : [];
+  return localItems.length === 0;
+}
+
+function _followSearchResolve(resultsArea, tidalData) {
+  const resolved = tidalData && tidalData.resolve;
+  if (!resolved) return;
+  if (resolved.kind === 'album' && resolved.id) {
+    navigateAlbum(resolved.id);
+    return;
+  }
+  if (resolved.kind === 'artist') {
+    navigate(buildArtistView(resolved.name || '', resolved.id));
+    return;
+  }
+  if (resolved.kind === 'playlist' && resolved.id) {
+    loadPlaylistTracks(resultsArea, {
+      id: resolved.id,
+      name: resolved.name,
+      cover_url: resolved.cover_url,
+      num_tracks: resolved.num_tracks,
+    });
+  }
+}
+
 async function doSearch(resultsArea) {
   const query = state.searchQuery.trim();
   const type = state.searchType;
@@ -1422,28 +1584,41 @@ async function doSearch(resultsArea) {
   _saveRecentSearch(query, type);
   renderSearchSkeleton(resultsArea);
 
-  // Local results first (instant from SQLite)
   let localData = null;
-  try {
-    localData = await api('/library/search?q=' + encodeURIComponent(query) + '&type=' + type + '&limit=20');
-  } catch (_) { /* local search optional */ }
-
-  // Tidal results (async, may require a user-initiated login)
   let tidalData = null;
   let tidalAuthRequired = false;
-  try {
-    tidalData = await api('/search?q=' + encodeURIComponent(query) + '&type=' + type + '&limit=50');
-  } catch (error) {
-    if (_isTidalAuthError(error)) {
-      tidalAuthRequired = true;
+  let tidalSettled = false;
+  const isStale = () => state.searchQuery.trim() !== query || state.searchType !== type;
+  const paint = () => {
+    if (isStale()) return;
+    state.searchResults = { query, type, local: localData, tidal: tidalData, tidalAuthRequired };
+    if (_searchStillWaitingForTidal(localData, type, tidalSettled, tidalAuthRequired)) {
+      renderSearchSkeleton(resultsArea);
+      refreshStatusLights();
+      return;
     }
-  }
+    renderUnifiedSearchResults(resultsArea, localData, tidalData, tidalAuthRequired);
+    refreshStatusLights();
+  };
 
-  if (state.searchQuery.trim() !== query || state.searchType !== type) return;
+  const localP = api(
+    '/library/search?q=' + encodeURIComponent(query) + '&type=' + type + '&limit=20',
+    { timeoutMs: 2500 }
+  ).then((data) => { localData = data; paint(); }).catch(() => { /* local search optional */ });
 
-  state.searchResults = { query, type, local: localData, tidal: tidalData, tidalAuthRequired };
-  renderUnifiedSearchResults(resultsArea, localData, tidalData, tidalAuthRequired);
-  refreshStatusLights();
+  const tidalP = api('/search?q=' + encodeURIComponent(query) + '&type=' + type + '&limit=50')
+    .then((data) => { tidalData = data; tidalSettled = true; paint(); })
+    .catch((error) => {
+      if (_isTidalAuthError(error)) {
+        tidalAuthRequired = true;
+      }
+      tidalSettled = true;
+      paint();
+    });
+
+  await Promise.all([localP, tidalP]);
+  if (isStale()) return;
+  _followSearchResolve(resultsArea, tidalData);
 }
 
 function renderTidalSearchAuthPanel(container) {
@@ -1477,7 +1652,7 @@ function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRe
   if (localItems.length > 0) {
     const localHeader = h('div', { className: 'results-header' });
     localHeader.appendChild(textEl('h3', 'Your Library', 'results-section-title'));
-    localHeader.appendChild(textEl('span', localItems.length + ' results', 'results-count'));
+    localHeader.appendChild(textEl('span', localItems.length === 1 ? '1 result' : localItems.length + ' results', 'results-count'));
     container.appendChild(localHeader);
 
     if (type === 'tracks') {
@@ -1538,7 +1713,7 @@ function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRe
         meta.appendChild(textEl('div', a.name || 'Unknown', 'album-card-title'));
         meta.appendChild(textEl('div', a.track_count + ' tracks', 'album-card-sub'));
         card.appendChild(meta);
-        card.addEventListener('click', () => navigate('artist:' + encodeURIComponent(a.name)));
+        card.addEventListener('click', () => navigate(buildArtistView(a.name)));
         a11yClick(card);
         grid.appendChild(card);
       });
@@ -1556,7 +1731,10 @@ function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRe
   const tidalResponse = type === 'albums'
     ? { ...(tidalData || {}), albums: tidalItems, unfiltered_total: originalTidalItems.length }
     : tidalData;
-  if (type !== 'albums' && localItems.length > 0 && tidalItems.length > 0) {
+  const showTidalSection = type === 'albums'
+    ? originalTidalItems.length > 0
+    : tidalItems.length > 0;
+  if (localItems.length > 0 && showTidalSection) {
     const divider = h('div', { className: 'search-divider' });
     divider.appendChild(textEl('span', 'Tidal', 'search-divider-label'));
     container.appendChild(divider);
@@ -1580,7 +1758,7 @@ function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRe
     if (localItems.length === 0) {
       const tidalHeader = h('div', { className: 'results-header' });
       tidalHeader.appendChild(textEl('h3', 'Tidal', 'results-section-title'));
-      tidalHeader.appendChild(textEl('span', tidalItems.length + ' results', 'results-count'));
+      tidalHeader.appendChild(textEl('span', tidalItems.length === 1 ? '1 result' : tidalItems.length + ' results', 'results-count'));
       container.appendChild(tidalHeader);
     }
 
@@ -1603,7 +1781,14 @@ function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRe
 
   if (localItems.length === 0 && tidalItems.length === 0
       && originalTidalItems.length === 0 && !tidalAuthRequired) {
-    container.appendChild(textEl('div', 'No results found', 'search-empty-text'));
+    if (tidalData && tidalData.error) {
+      container.appendChild(h('div', { className: 'empty-state' },
+        textEl('div', 'Could not open that Tidal link', 'empty-state-title'),
+        textEl('div', tidalData.error, 'empty-state-sub')
+      ));
+    } else {
+      container.appendChild(textEl('div', 'No results found', 'search-empty-text'));
+    }
   }
 }
 
@@ -1708,7 +1893,7 @@ function renderSearchResults(container, data, showHeader = true) {
       if (state.searchType === 'albums' && item.id) {
         card.addEventListener('click', () => navigateAlbum(item.id));
       } else if (state.searchType === 'artists') {
-        card.addEventListener('click', () => navigate('artist:' + encodeURIComponent(item.name)));
+        card.addEventListener('click', () => navigate(buildArtistView(item.name, item.id)));
       } else if (state.searchType === 'playlists') {
         card.addEventListener('click', () => loadPlaylistTracks(container, item));
       }
@@ -1868,10 +2053,30 @@ function _queueTrackLast(track) {
   toast((track.name || 'Track') + ' added to queue', 'success');
 }
 
+function trackIsPlayable(track) {
+  if (!track) return false;
+  if (track.playable === true) return !!(track.local_path || track.path);
+  if (track.playable === false) return false;
+  if (track.missing_since) return false;
+  if (!track.is_local) return false;
+  return !!(track.local_path || track.path);
+}
+
+function trackRowUnplayable(track) {
+  if (!track) return false;
+  if (trackIsPlayable(track)) return false;
+  const claimedLocal = !!(track.is_local || track.local_path || track.path);
+  if (!claimedLocal) return false;
+  if (track.playable === false) return true;
+  if (track.missing_since) return true;
+  if (track.is_local && !(track.local_path || track.path)) return true;
+  return false;
+}
+
 function renderTrackRow(track, num, allTracks) {
   const current = state.queue[state.queueIndex];
   const isPlaying = current && _trackKey(current) === _trackKey(track) && _trackKey(track) !== '' && state.playing;
-  const row = h('div', { className: 'track' + (isPlaying ? ' playing' : ''), 'data-track-id': _trackKey(track) });
+  const row = h('div', { className: 'track' + (isPlaying ? ' playing' : '') + (trackRowUnplayable(track) ? ' unplayable' : ''), 'data-track-id': _trackKey(track) });
 
   // Number / equalizer
   const numCell = h('div', { className: 'track-num', 'data-num': String(num) });
@@ -1903,7 +2108,7 @@ function renderTrackRow(track, num, allTracks) {
     artistEl.style.cursor = 'pointer';
     artistEl.addEventListener('click', (e) => {
       e.stopPropagation();
-      navigate('artist:' + encodeURIComponent(track.artist));
+      navigate(buildArtistView(track.artist, track.artist_id));
     });
   }
   row.appendChild(h('div', { className: 'track-meta' },
@@ -1947,10 +2152,10 @@ function renderTrackRow(track, num, allTracks) {
   // Actions
   const actions = h('div', { className: 'track-actions visible' });
   const sourceTag = h('span', {
-    className: 'source-tag ' + (track.is_local ? 'local-tag' : 'tidal-tag'),
-  }, track.is_local ? 'local' : 'tidal');
+    className: 'source-tag ' + (trackIsPlayable(track) ? 'local-tag' : 'tidal-tag'),
+  }, trackIsPlayable(track) ? 'local' : 'tidal');
   actions.appendChild(sourceTag);
-  if (!track.is_local) {
+  if (!trackIsPlayable(track) && track.id) {
     const btn = h('button', { className: 'dl-btn', title: 'Download' });
     btn.appendChild(svgIcon(ICONS.download));
     btn.addEventListener('click', (e) => {
@@ -2068,6 +2273,7 @@ function renderTrackRow(track, num, allTracks) {
 
   // Click to play
   row.addEventListener('click', () => {
+    if (!trackIsPlayable(track) && !track.id) return;
     startPlaybackFromList(track, allTracks);
   });
   a11yClick(row);
@@ -2102,8 +2308,55 @@ function breadcrumb(crumbs) {
   return nav;
 }
 
-// ---- ARTIST ALBUM GALLERY (local library) ----
-async function renderArtistGallery(container, artistName) {
+function _albumDedupKey(name) {
+  return String(name || '').toLowerCase().replace(/[^\w]+/g, ' ').trim();
+}
+
+function _mergeArtistAlbums(localAlbums, tidalAlbums) {
+  const seen = new Set();
+  const merged = [];
+  for (const album of localAlbums || []) {
+    seen.add(_albumDedupKey(album.name));
+    merged.push({ ...album, is_local: true });
+  }
+  for (const album of tidalAlbums || []) {
+    const key = _albumDedupKey(album.name);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push({
+      ...album,
+      is_local: false,
+      tidal_id: album.id,
+      track_count: album.track_count || album.num_tracks || 0,
+      best_quality: album.best_quality || album.quality || '',
+    });
+  }
+  return merged;
+}
+
+async function _tidalArtistAlbums(artistName, tidalArtistId) {
+  let id = tidalArtistId;
+  if (!id) {
+    try {
+      const found = await api('/search?q=' + encodeURIComponent(artistName) + '&type=artists&limit=5');
+      const artists = found.artists || [];
+      const exact = artists.find(a => (a.name || '').toLowerCase() === String(artistName || '').toLowerCase());
+      id = (exact || artists[0] || {}).id;
+    } catch (_) {
+      return [];
+    }
+  }
+  if (!id) return [];
+  try {
+    const data = await api('/artists/' + id + '/albums');
+    return data.albums || [];
+  } catch (_) {
+    return [];
+  }
+}
+
+// ---- ARTIST ALBUM GALLERY (local library + Tidal) ----
+async function renderArtistGallery(container, artistName, tidalArtistId) {
   const header = h('div', { className: 'artist-gallery-header' });
   const crumbRow = h('div', { className: 'nav-back-row' });
   const back = _navBackControl();
@@ -2123,10 +2376,14 @@ async function renderArtistGallery(container, artistName) {
   grid.appendChild(textEl('p', 'Loading albums…', 'home-loading-hint'));
 
   try {
-    const data = await api('/library/artist/' + encodeURIComponent(artistName) + '/albums');
+    const localP = api('/library/artist/' + encodeURIComponent(artistName) + '/albums')
+      .catch(() => ({ albums: [] }));
+    const tidalP = _tidalArtistAlbums(artistName, tidalArtistId);
+    const [localData, tidalAlbums] = await Promise.all([localP, tidalP]);
+    const albums = _mergeArtistAlbums(localData.albums || [], tidalAlbums);
     while (grid.firstChild) grid.removeChild(grid.firstChild);
 
-    if (!data.albums || data.albums.length === 0) {
+    if (!albums.length) {
       grid.appendChild(h('div', { className: 'empty-state' },
         textEl('div', 'No albums found', 'empty-state-title'),
         textEl('div', 'Try syncing your library first', 'empty-state-sub')
@@ -2134,10 +2391,10 @@ async function renderArtistGallery(container, artistName) {
       return;
     }
 
-    const titleRow = header.querySelector('.artist-gallery-title-row');
-    if (titleRow) titleRow.appendChild(textEl('span', data.albums.length + ' album' + (data.albums.length !== 1 ? 's' : ''), 'artist-gallery-count'));
+    const countRow = header.querySelector('.artist-gallery-title-row');
+    if (countRow) countRow.appendChild(textEl('span', albums.length + ' album' + (albums.length !== 1 ? 's' : ''), 'artist-gallery-count'));
 
-    data.albums.forEach((album, index) => {
+    albums.forEach((album, index) => {
       const card = h('div', { className: 'album-card' });
 
       const artWrap = h('div', { className: 'album-card-art-wrap' });
@@ -2163,7 +2420,11 @@ async function renderArtistGallery(container, artistName) {
       card.appendChild(meta);
 
       card.addEventListener('click', () => {
-        navigate(album.id ? buildLocalReleaseView(album.id) : buildLocalAlbumView(artistName, album.name));
+        if (album.is_local) {
+          navigate(album.id ? buildLocalReleaseView(album.id) : buildLocalAlbumView(artistName, album.name));
+        } else {
+          navigateAlbum(album.tidal_id || album.id);
+        }
       });
       a11yClick(card);
 
@@ -2535,7 +2796,7 @@ async function renderAlbumDetail(container, albumId) {
     const playBtn = h('button', { className: 'pill active' });
     playBtn.textContent = '\u25B6  Play';
     playBtn.addEventListener('click', () => {
-      const playable = tracks.filter(t => t.is_local);
+      const playable = tracks.filter(trackIsPlayable);
       if (!playable.length) { toast('No local tracks to play', 'info'); return; }
       state.shuffle = false;
       btnShuffle.classList.remove('active');
@@ -2546,7 +2807,7 @@ async function renderAlbumDetail(container, albumId) {
     const shuffleBtn = h('button', { className: 'pill' });
     shuffleBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Shuffle';
     shuffleBtn.addEventListener('click', () => {
-      const playable = tracks.filter(t => t.is_local);
+      const playable = tracks.filter(trackIsPlayable);
       if (!playable.length) { toast('No local tracks to play', 'info'); return; }
       state.shuffle = true;
       btnShuffle.classList.add('active');
@@ -3186,6 +3447,13 @@ function renderLibrary(container) {
   dupBtn.addEventListener('click', () => _showDuplicatePreview(resultsArea));
   pills.appendChild(dupBtn);
 
+  const refreshBtn = h('button', { className: 'pill' });
+  refreshBtn.textContent = 'Refresh changed folders';
+  refreshBtn.addEventListener('click', () => triggerReconcile(refreshBtn, resultsArea));
+  pills.appendChild(refreshBtn);
+
+  api('/library/reconcile', { method: 'POST' }).catch(() => {});
+
   searchArea.appendChild(pills);
   container.appendChild(searchArea);
 
@@ -3240,17 +3508,24 @@ async function _showDuplicatePreview(container) {
       return;
     }
     summary.appendChild(textEl('div', 'Found ' + data.total_groups + ' duplicate groups (' + data.total_duplicates + ' extra copies)', 'dup-summary-text'));
+    if (data.truncated) {
+      summary.appendChild(textEl('div', 'Showing the first ' + (data.groups || []).length + ' groups.', 'dup-stale-note'));
+    }
     container.appendChild(summary);
 
-    // Clean Up button
-    const cleanBtn = h('button', { className: 'pill active dup-clean-btn' });
-    cleanBtn.textContent = 'Clean Up ' + data.total_duplicates + ' Duplicates';
-    container.appendChild(cleanBtn);
+    // Clean Up button — only auto extras, never UNCERTAIN edition/quality pairs
+    let cleanBtn = null;
+    if (data.total_duplicates > 0) {
+      cleanBtn = h('button', { className: 'pill active dup-clean-btn' });
+      cleanBtn.textContent = 'Clean Up ' + data.total_duplicates + ' Duplicates';
+      container.appendChild(cleanBtn);
+    }
 
     // Group list
     const groupList = h('div', { className: 'dup-groups' });
     (data.groups || []).forEach(g => {
-      const card = h('div', { className: 'dup-group-card' });
+      const uncertain = g.status === 'uncertain';
+      const card = h('div', { className: 'dup-group-card' + (uncertain ? ' dup-uncertain' : '') });
       // Keeper
       const keeperRow = h('div', { className: 'dup-keeper' });
       keeperRow.appendChild(textEl('span', '\u2713 KEEP', 'dup-keep-badge'));
@@ -3260,7 +3535,11 @@ async function _showDuplicatePreview(container) {
       // Duplicates
       (g.duplicates || []).forEach(d => {
         const dupRow = h('div', { className: 'dup-duplicate' });
-        dupRow.appendChild(textEl('span', '\u2717 REMOVE', 'dup-remove-badge'));
+        dupRow.appendChild(textEl(
+          'span',
+          uncertain ? 'UNCERTAIN' : '\u2717 REMOVE',
+          uncertain ? 'dup-uncertain-badge' : 'dup-remove-badge',
+        ));
         dupRow.appendChild(textEl('span', (d.tier || '') + ' \u00B7 ' + (d.format || ''), 'dup-tier'));
         dupRow.appendChild(textEl('span', d.path, 'dup-path'));
         card.appendChild(dupRow);
@@ -3268,6 +3547,10 @@ async function _showDuplicatePreview(container) {
       groupList.appendChild(card);
     });
     container.appendChild(groupList);
+
+    if (!cleanBtn) {
+      return;
+    }
 
     // Wire clean button
     cleanBtn.addEventListener('click', async () => {
@@ -3342,6 +3625,39 @@ function _scanStatusLabel(status) {
   return ' Scanning...';
 }
 
+async function triggerReconcile(btn, resultsArea) {
+  if (!btn) return;
+  const origLabel = btn.textContent;
+  btn.textContent = 'Refreshing...';
+  btn.disabled = true;
+  try {
+    await api('/library/reconcile?force=true', { method: 'POST' });
+  } catch (_) { /* already running or debounced is fine */ }
+  const poll = setInterval(async () => {
+    try {
+      const status = await api('/library/reconcile/status');
+      if (status.done || !status.reconciling) {
+        clearInterval(poll);
+        btn.textContent = origLabel;
+        btn.disabled = false;
+        libraryOffset = 0;
+        _libraryAlbumCache.clear();
+        await loadLibrary(resultsArea, false);
+        const moved = (status.migrated || 0) + (status.indexed || 0);
+        if (status.phase === 'error' || status.error) {
+          toast('Folder refresh failed', 'error');
+        } else if (moved > 0) {
+          toast('Updated ' + moved + ' moved or new files', 'success');
+        }
+      }
+    } catch (_) {
+      clearInterval(poll);
+      btn.textContent = origLabel;
+      btn.disabled = false;
+    }
+  }, 1500);
+}
+
 async function triggerScan(btn, resultsArea, rescan) {
   if (!btn) return;
   const textNode = _navText(btn);
@@ -3403,7 +3719,6 @@ async function loadLibrary(resultsArea, append) {
         textEl('div', 'Library', 'results-title'),
         textEl('div', libraryTotal + ' tracks', 'results-count')
       ));
-
       if (tracks.length === 0) {
         const emptyTitle = libraryQuery ? 'Nothing for "' + libraryQuery + '"' : 'No music here yet';
         const emptySub = libraryQuery ? 'Try different words or check the spelling.' : 'Hit Sync Library in the sidebar to bring in your collection.';
@@ -4061,6 +4376,7 @@ function _dlComplete(trackId, success) {
   }
   _downloading.delete(trackId);
   refreshDlBadge();
+  _scheduleHistoryReload();
 }
 
 // Global SSE for download progress (shared across views)
@@ -4949,7 +5265,7 @@ async function loadSettingsForm(container, accessContainer) {
       ]},
       { title: 'Downloads', fields: [
         { key: 'downloads_concurrent_max', label: 'Max Concurrent Downloads', type: 'number', helper: '1\u201310 recommended for stability' },
-        { key: 'download_delay', label: 'Download Delay', type: 'toggle', helper: 'Adds a pause between downloads to avoid rate limits' },
+        { key: 'download_delay', label: 'Download Delay', type: 'toggle', helper: 'Paces Tidal API/auth calls only. Media streams use full bandwidth.' },
       ]},
       { title: 'Metadata', fields: [
         { key: 'metadata_cover_embed', label: 'Embed Cover Art', type: 'toggle', helper: 'Saves album art inside the audio file' },

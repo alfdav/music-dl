@@ -110,6 +110,8 @@ function _qualityTier(q, fmt, codec) {
     return { tier: 'Lossless', cls: 'quality-lossless', desc: q + ' · Lossless', rank: 2 };
   if (ql === 'MP3' || ql === 'AAC' || ql === 'OGG')
     return { tier: 'Lossy', cls: 'quality-lossy', desc: q + ' · Lossy', rank: 1 };
+  if ((fmt || '').toLowerCase() === 'm4a')
+    return { tier: 'Unknown', cls: 'quality-unknown', desc: 'M4A · Unknown', rank: 0 };
 
   return { tier: 'Unknown', cls: 'quality-unknown', desc: q || fmt || 'Unknown quality', rank: 0 };
 }
@@ -417,8 +419,12 @@ const _origFetch = window.fetch;
 window.fetch = async (...args) => {
   const resp = await _origFetch(...args);
   if (resp.status === 409) {
-    const data = await resp.clone().json().catch(() => null);
-    toast(data?.detail || 'Operation in progress \u2014 try again shortly.', 'error');
+    const raw = args[0];
+    const url = typeof raw === 'string' ? raw : (raw && raw.url) || '';
+    if (!String(url).includes('/api/playback/local')) {
+      const data = await resp.clone().json().catch(() => null);
+      toast(data?.detail || 'Operation in progress \u2014 try again shortly.', 'error');
+    }
   }
   return resp;
 };
@@ -436,11 +442,19 @@ async function api(path, options) {
     headers['Content-Type'] = 'application/json';
   }
 
-  const resp = await fetch('/api' + path, {
-    method,
-    headers,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
+  const controller = opts.timeoutMs ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), opts.timeoutMs) : null;
+  let resp;
+  try {
+    resp = await fetch('/api' + path, {
+      method,
+      headers,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      signal: controller ? controller.signal : undefined,
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 
   if (!resp.ok) {
     const detail = await resp.json().catch(() => ({}));

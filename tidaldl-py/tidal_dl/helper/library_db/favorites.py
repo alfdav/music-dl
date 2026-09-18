@@ -19,6 +19,7 @@ class FavoritesMixin:
         assert self._conn
         now = int(time.time())
         if path:
+            path = canonical_library_path(path)
             existing = self._conn.execute(
                 "SELECT id FROM favorites WHERE path = ?", (path,)
             ).fetchone()
@@ -40,7 +41,10 @@ class FavoritesMixin:
         """Remove a favorite by path or tidal_id."""
         assert self._conn
         if path:
-            self._conn.execute("DELETE FROM favorites WHERE path = ?", (path,))
+            self._conn.execute(
+                "DELETE FROM favorites WHERE path = ?",
+                (canonical_library_path(path),),
+            )
         elif tidal_id:
             self._conn.execute("DELETE FROM favorites WHERE tidal_id = ?", (tidal_id,))
 
@@ -49,7 +53,8 @@ class FavoritesMixin:
         assert self._conn
         if path:
             return self._conn.execute(
-                "SELECT 1 FROM favorites WHERE path = ?", (path,)
+                "SELECT 1 FROM favorites WHERE path = ?",
+                (canonical_library_path(path),),
             ).fetchone() is not None
         if tidal_id:
             return self._conn.execute(

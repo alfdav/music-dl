@@ -17,6 +17,7 @@ from tidal_dl.helper.library_scanner import (
     is_skipped_scan_dir,
     path_has_skipped_scan_dir,
     scan_directory,
+    visible_scanned_path_sql,
 )
 
 PRIOR_CACHE_ROWS = 11_974
@@ -206,7 +207,7 @@ class TestInterruptedScanPreservesCache:
         db = LibraryDB(tmp_path / "library.db")
         db.open()
         for index in range(80):
-            _seed_row(db, tmp_path / "prior" / f"track{index:04d}.wav", title=f"Prior {index}")
+            _seed_row(db, library_dir / "prior" / f"track{index:04d}.wav", title=f"Prior {index}")
         _seed_row(db, recycle, artist="#recycle", title="08 Menu Groove Edit")
         db.commit()
         prior_count = len(db.known_paths())
@@ -296,8 +297,6 @@ class TestSuccessfulSweepHappensAfterCompletion:
     def test_fingerprint_fast_path_still_sweeps_stale_recycle_rows(
         self, library_scan, monkeypatch,
     ) -> None:
-        import json
-
         library_api, library_dir, tmp_path = library_scan
         keep = library_dir / "Horizon Chase" / "Soundtrack" / "keep.wav"
         recycle = library_dir / "#recycle" / "Soundtrack" / "08 Menu Groove Edit.wav"
@@ -307,13 +306,13 @@ class TestSuccessfulSweepHappensAfterCompletion:
         db = LibraryDB(tmp_path / "library.db")
         db.open()
         _seed_row(db, keep, artist="Horizon Chase", title="keep")
+        db.commit()
+        db.close()
+        _run_background_scan(library_api)
+
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
         _seed_row(db, recycle, artist="#recycle", title="08 Menu Groove Edit")
-        finger = json.dumps({
-            "dirs": [str(library_dir)],
-            "mtimes": [os.stat(str(library_dir)).st_mtime],
-            "known_count": 2,
-        }, sort_keys=True)
-        db.set_meta("scan_fingerprint", finger)
         db.commit()
         db.close()
 
@@ -471,7 +470,7 @@ class TestConcurrentReadsDuringScan:
         db = LibraryDB(tmp_path / "library.db")
         db.open()
         for index in range(40):
-            _seed_row(db, tmp_path / "cached" / f"old{index:02d}.wav", title=f"Cached {index}")
+            _seed_row(db, library_dir / "cached" / f"old{index:02d}.wav", title=f"Cached {index}")
         db.commit()
         db.close()
 
@@ -713,3 +712,6 @@ def test_drop_skipped_scan_paths_still_centralized() -> None:
     assert callable(drop_skipped_scan_paths)
     assert is_skipped_scan_dir("#recycle")
     assert is_skipped_scan_dir(".Trash")
+    sql = visible_scanned_path_sql()
+    assert "/#recycle/" in sql
+    assert "/.trash/" in sql

@@ -11,6 +11,13 @@ from fastapi import APIRouter, HTTPException, Request
 from tidal_dl.config import Tidal
 from tidal_dl.gui.api.search import _serialize_track
 from tidal_dl.helper.library_db import LibraryDB
+from tidal_dl.helper.local_identity import (
+    candidate_rows_for_track,
+    finish_stamp,
+    indexed_path_for_row,
+    match_local_row,
+    stamp_track,
+)
 from tidal_dl.helper.path import path_config_base
 
 router = APIRouter()
@@ -69,44 +76,14 @@ def _best_local_row(
     all_tracks: list[dict],
     fallback_index: dict[tuple[str, str], list[dict]] | None = None,
 ) -> dict | None:
-    isrc = track_data.get("isrc") or ""
-    candidates: list[dict] = []
-
-    if isrc:
-        candidates = db.tracks_by_isrc(isrc)
-
-    target_album = _normalize(track_data.get("album"))
-
-    if not candidates:
+    candidates = candidate_rows_for_track(db, track_data)
+    if not candidates and all_tracks:
+        candidates = list(all_tracks)
+    if not candidates and fallback_index:
         key = _title_artist_key(track_data.get("name"), track_data.get("artist"))
         if key is not None:
-            if fallback_index is not None:
-                candidates = list(fallback_index.get(key, []))
-            else:
-                candidates = [
-                    row for row in all_tracks
-                    if _title_artist_key(row.get("title"), row.get("artist")) == key
-                ]
-
-            if len(candidates) > 1 and target_album:
-                album_matches = [
-                    row for row in candidates
-                    if _normalize(row.get("album")) == target_album
-                ]
-                if album_matches:
-                    candidates = album_matches
-                else:
-                    return None
-
-    if not candidates:
-        return None
-
-    candidates.sort(key=lambda row: (
-        0 if _normalize(row.get("album")) == target_album else 1,
-        len(row.get("path") or ""),
-        row.get("path") or "",
-    ))
-    return candidates[0]
+            candidates = list(fallback_index.get(key, []))
+    return match_local_row(track_data, candidates)
 
 
 
@@ -126,21 +103,25 @@ def _serialize_playlist_tracks(session, playlist_id: str) -> list[dict]:
 
     db = _get_playlist_db()
     try:
+        from tidal_dl.helper.library_reconcile import present_playable_path
+
         all_tracks = db.all_tracks()
         fallback_index = _build_title_artist_index(all_tracks)
         serialized = []
         for track in tracks:
             data = _serialize_track(track)
             local_row = _best_local_row(data, db, all_tracks, fallback_index=fallback_index)
-            data["is_local"] = bool(local_row)
+            data["is_local"] = False
+            data.pop("playable", None)
+            data.pop("local_path", None)
+            data.pop("path", None)
             if local_row:
-                data["local_path"] = local_row.get("path") or ""
-                data["path"] = local_row.get("path") or ""
-                if local_row.get("quality"):
-                    data["quality"] = local_row["quality"]
-                if local_row.get("format"):
-                    data["format"] = local_row["format"]
-                data["codec"] = local_row.get("codec") or "unknown"
+                served, ok = present_playable_path(indexed_path_for_row(local_row), db)
+                if ok and served:
+                    local_row = {**local_row, "path": served}
+                else:
+                    local_row = None
+            finish_stamp(stamp_track(data, local_row))
             serialized.append(data)
     finally:
         db.close()

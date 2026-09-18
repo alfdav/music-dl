@@ -38,6 +38,56 @@ class TestLibraryTracks:
         resp = client.get("/api/library?q=test", headers=client._host_header)
         assert resp.status_code == 200
 
+    def test_search_returns_tagged_remaster_for_ascii_fria(self, tmp_path, monkeypatch):
+        import tidal_dl.gui.api.library as library_api
+
+        db = LibraryDB(tmp_path / "library.db")
+        db.open()
+        remastered = (
+            "/music/Carlos Vives/"
+            "Clásicos de la Provincia 30 Años (Remastered & Expanded)/"
+            "La gota fría (Remastered 30 años).flac"
+        )
+        db.record(
+            remastered,
+            status="tagged",
+            artist="Carlos Vives",
+            title="La gota fría (Remastered 30 años)",
+            album="Clásicos de la Provincia 30 Años (Remastered & Expanded)",
+            quality="44100Hz/24bit",
+            fmt="FLAC",
+            codec="flac",
+        )
+        db.record(
+            "/music/Carlos Vives/Clasicos de la Provincia/Carlos Vives - La Gota Fria.flac",
+            status="tagged",
+            artist="Carlos Vives",
+            title="La Gota Fria",
+            album="Clasicos de la Provincia",
+            quality="44100Hz/16bit",
+            fmt="FLAC",
+            codec="flac",
+        )
+        db.commit()
+        monkeypatch.setattr(library_api, "_get_db", lambda: db)
+
+        try:
+            for query in ("Fria", "gota fria"):
+                payload = library_api.library(sort="title", limit=50, offset=0, q=query)
+                by_name = {track["name"]: track for track in payload["tracks"]}
+                remaster = by_name.get("La gota fría (Remastered 30 años)")
+                assert remaster is not None, query
+                assert remaster["album"] == (
+                    "Clásicos de la Provincia 30 Años (Remastered & Expanded)"
+                )
+                assert remaster["quality"] == "44100Hz/24bit"
+                short = by_name.get("La Gota Fria")
+                assert short is not None, query
+                assert short["album"] == "Clasicos de la Provincia"
+                assert short["quality"] == "44100Hz/16bit"
+        finally:
+            db.close()
+
     def test_sort_params_accepted(self, client):
         for sort in ("recent", "artist", "album", "title"):
             resp = client.get(f"/api/library?sort={sort}", headers=client._host_header)
@@ -363,7 +413,10 @@ class TestLocalArtworkAvailability:
 
         db = LibraryDB(tmp_path / "library.db")
         db.open()
-        path = "/music/artist/album/with-art.flac"
+        audio = tmp_path / "artist" / "album" / "with-art.flac"
+        audio.parent.mkdir(parents=True)
+        audio.write_bytes(b"fLaC")
+        path = str(audio)
         db.record(path, status="tagged", artist="Artist", title="With Art", art_available=True)
         db.commit()
         monkeypatch.setattr(library_api, "_get_db", lambda: db)
@@ -464,12 +517,14 @@ class TestRecentAlbums:
 
 
 class TestLibraryFavorites:
-    def test_local_favorite_exposes_local_path_alias(self, monkeypatch):
+    def test_local_favorite_exposes_local_path_alias(self, tmp_path, monkeypatch):
         from tidal_dl.gui.api import library as library_api
 
+        audio = tmp_path / "favorite.flac"
+        audio.write_bytes(b"fLaC")
         favorite = {
             "id": 1,
-            "path": "/music/favorite.flac",
+            "path": str(audio),
             "tidal_id": 7,
             "artist": "Artist",
             "title": "Favorite",
@@ -485,7 +540,7 @@ class TestLibraryFavorites:
 
         payload = library_api.get_favorites()
 
-        assert payload["favorites"][0]["local_path"] == "/music/favorite.flac"
+        assert payload["favorites"][0]["local_path"] == str(audio)
 
     def test_returns_200(self, client):
         resp = client.get("/api/library/favorites", headers=client._host_header)
@@ -764,6 +819,7 @@ class TestDuplicatesPreview:
         resp = client.get("/api/duplicates/preview", headers=client._host_header)
         data = resp.json()
         assert "stale_count" in data
+        assert "truncated" in data
 
 
 class TestSettings:

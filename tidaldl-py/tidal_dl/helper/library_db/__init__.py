@@ -2,6 +2,7 @@
 
 from tidal_dl.helper.library_db.browse import BrowseMixin
 from tidal_dl.helper.library_db.core import LibraryDBCore, is_sqlite_lock_error
+from tidal_dl.helper.library_db.utils import canonical_library_path, library_path_forms
 from tidal_dl.helper.library_db.downloads import DownloadsMixin
 from tidal_dl.helper.library_db.favorites import FavoritesMixin
 from tidal_dl.helper.library_db.images import ImagesMixin
@@ -25,4 +26,4 @@ class LibraryDB(
     """Thin wrapper around a SQLite scan ledger."""
 
 
-__all__ = ["LibraryDB", "is_sqlite_lock_error"]
+__all__ = ["LibraryDB", "canonical_library_path", "is_sqlite_lock_error", "library_path_forms"]

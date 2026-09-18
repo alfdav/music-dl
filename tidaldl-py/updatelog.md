@@ -20,6 +20,42 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
+## v1.7.11 (2026-09-11)
+- Stamp album-detail / album-lookup `is_local` for guest-credit tracks when `album_artist` is missing or joined (`host; guest`), including accent-folded artist identity and Vorbis `ALBUM ARTIST` tags ([#184](https://github.com/alfdav/music-dl/pull/184)).
+
+## v1.7.10 (2026-09-08)
+- Waveform bars breathe for any playable local track by fetching peaks from the same path playback uses, not only `is_local` + `local_path` ([#177](https://github.com/alfdav/music-dl/pull/177)).
+- Local playback stays live while downloads run; `/api/playback` skips token refresh and serves on-disk files without waiting on shared token or library-index locks ([#178](https://github.com/alfdav/music-dl/pull/178)).
+- Upgrade and skip treat same-folder recordings as one ISRC identity: skip when a live sibling already exists, replace twins on upgrade, and migrate the live index path instead of minting `Title.flac` beside `01 - Title.flac` ([#179](https://github.com/alfdav/music-dl/pull/179)).
+- Stamp `is_local` from live library identity on search, album lookup, Tidal album tracks, and playlists, then restamp album rows so leftover tags and layout-moved paths hide Download when the file is already here ([#180](https://github.com/alfdav/music-dl/pull/180)).
+- Pace Tidal API and auth only; media streams use full CDN bandwidth. GUI workers follow `downloads_concurrent_max` so transfers can overlap while 429s still widen API delay ([#181](https://github.com/alfdav/music-dl/pull/181)).
+- Heal stale `Artist/Artist - Album` index paths to `Artist/Album` without wiping play history, even when directory signatures already match the new tree ([#182](https://github.com/alfdav/music-dl/pull/182)).
+- Playability honesty: gray local means the claimed file is unplayable; Tidal-only rows stay streamable and are not marked `playable: false` ([#182](https://github.com/alfdav/music-dl/pull/182)).
+
+## v1.7.9 (2026-09-04)
+- Keep the current lyric on-screen as it plays and add a manual Sync control; opening lyrics no longer hides heart/download or shifts the player bar ([#168](https://github.com/alfdav/music-dl/pull/168)).
+- Heal moved library folders in the background without wiping play history. Vanished in-root rows stay on `missing_since` until reconcile migrates them; local playback retries once after 202/409 ([#169](https://github.com/alfdav/music-dl/pull/169)).
+- History reloads after a download finishes so a new done row paints without restarting the app ([#157](https://github.com/alfdav/music-dl/pull/157)).
+- Local library search matches accented titles (`Fria` finds `fría`) and keeps tagged remaster titles, albums, and Hz/bit quality in the list ([#158](https://github.com/alfdav/music-dl/pull/158)).
+- New downloads keep `Artist/Album/track` and reuse a leftover matching album folder (accent-folded, `Artist - ` prefix and codec brackets stripped) instead of minting another layout. Remastered edition titles stay separate ([#159](https://github.com/alfdav/music-dl/pull/159)).
+- Clean Up no longer treats remasters, deluxe/special/expanded editions, or CD rips as duplicates of the original. Same ISRC is not enough; only same-edition folder-layout twins stay auto-cleanable ([#161](https://github.com/alfdav/music-dl/pull/161)).
+- Never label lossy AAC as CD lossless. AAC in M4A that reports 44100/16 stays Lossy, not `44100Hz/16bit` ([#162](https://github.com/alfdav/music-dl/pull/162)).
+- Skip Upgrade when a cloned ISRC maps to different titles. Playlist dumps that share one ISRC no longer all upgrade to one Tidal track ([#163](https://github.com/alfdav/music-dl/pull/163)).
+- Clean Up preview returns in a couple of seconds on large libraries by skipping a full-library `exists()` walk and capping groups ([#164](https://github.com/alfdav/music-dl/pull/164)).
+- Library index stores NFC paths and collapses NFC/NFD twins of the same inode so search, album, and artist counts no longer double-count one file ([#165](https://github.com/alfdav/music-dl/pull/165)).
+- Hide NAS `#recycle` trash (UGreen, Synology, and any NAS that uses that path component) from library, albums, unified search, and home — including leftover rows when Sync is skipped. Never treat `#recycle` as an artist, never rank those paths first, and do not show an album as Various Artists when it is mostly recycle files ([#166](https://github.com/alfdav/music-dl/pull/166)).
+- Drop leftover library rows whose path is outside configured music roots without waiting for a full Sync. Vanished in-root files stay so the path reconciler can heal them ([#167](https://github.com/alfdav/music-dl/pull/167)).
+- Give track-row source labels (`tidal` / `local`) breathing room before the download icon so they no longer sit flush ([#156](https://github.com/alfdav/music-dl/pull/156)).
+
+## v1.7.8 (2026-08-31)
+- Search accepts a pasted Tidal track, album, artist, or playlist URL (or a bare id) and resolves it for add/download instead of sending the URL to catalog search ([#154](https://github.com/alfdav/music-dl/pull/154)).
+- Track search falls back to a close album-title match when Tidal returns no tracks (Clásicos de la Provincia 30 Años); artist-name queries on the Tracks pill keep their track hits.
+- Artist drill-in is hybrid: local library albums plus Tidal discography.
+- Albums pill search no longer regroups the whole library; local and Tidal album sections stay visually separated.
+- Recent-search chips truncate the query so the dismiss control stays visible.
+- Search keeps the skeleton while Tidal is still in flight, and host parsing cannot 500 on titles like `100% Pure Love`.
+- Home insight cards fill the empty middle from unused `/api/home` facts (streak, most replayed, this-week genre, artist genre/counts, week vs all-time) instead of a hero-only void ([#155](https://github.com/alfdav/music-dl/pull/155)).
+
 ## v1.7.7 (2026-08-31)
 - Hi-Res downloads write real 24-bit/96 kHz audio when Tidal lists the track as HiRes, instead of falling back to 16-bit/44.1 ([#149](https://github.com/alfdav/music-dl/pull/149), [#148](https://github.com/alfdav/music-dl/issues/148)).
 - Hi-Res / lossless streams write a real `.flac` container instead of FLAC stuffed in `.m4a` ([#150](https://github.com/alfdav/music-dl/pull/150)).

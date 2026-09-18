@@ -23,7 +23,7 @@ class CollectionMixin:
             media_id (str | None, optional): Media ID. Defaults to None.
             media_type (MediaType | None, optional): Media type. Defaults to None.
             video_download (bool, optional): Whether to allow video downloads. Defaults to False.
-            download_delay (bool, optional): Whether to delay between downloads. Defaults to True.
+            download_delay (bool, optional): Whether to pace Tidal API/auth calls. Defaults to True.
             quality_audio (Quality | None, optional): Audio quality. Defaults to None.
             quality_video (QualityVideo | None, optional): Video quality. Defaults to None.
             event_stop (Event | None, optional): Event to stop the download. Defaults to None.

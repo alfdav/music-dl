@@ -91,8 +91,14 @@ def _get_db() -> LibraryDB:
             _db_local.db = db
             _db_local.generation = _db_generation
 
+    from tidal_dl.helper.library_scanner import purge_skipped_library_rows
+
+    purge_skipped_library_rows(db)
     _db = db
     return db
+
+
+_real_get_db = _get_db
 
 
 class PlayEvent(BaseModel):
@@ -175,13 +181,27 @@ def record_play(event: PlayEvent):
 def recent_plays(limit: int = Query(50, ge=1, le=100)):
     """Return persisted recently played local tracks."""
     db = _get_db()
+    if _get_db is _real_get_db:
+        from tidal_dl.gui.api.library import _purge_stale_library_rows
+
+        _purge_stale_library_rows(db)
     tracks = db.recent_plays(limit=limit)
 
     from tidal_dl.gui.api.library import _local_cover_url
+    from tidal_dl.helper.library_reconcile import present_playable_path
 
     for track in tracks:
-        if track.get("path"):
-            track["cover_url"] = _local_cover_url(track["path"], track.get("art_available"))
+        served, playable = present_playable_path(track.get("path"), db)
+        track["is_local"] = playable
+        track["playable"] = playable
+        if playable:
+            track["path"] = served
+            track["local_path"] = served
+            track["missing_since"] = None
+            track["cover_url"] = _local_cover_url(served, track.get("art_available"))
+        else:
+            track["local_path"] = None
+            track["cover_url"] = ""
     return {"tracks": tracks}
 
 

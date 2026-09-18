@@ -1,5 +1,533 @@
 # Mistakes
 
+## 2026-09-11 — Joined album_artist missed identity SQL membership
+
+**What happened:** Bugbot on PR #184: `_tag_join` stores multi-value album-artist as `host; guest`, but `tracks_for_album_artist` and the leftover `Album [FLAC]` clause required `fold_search(album_artist)` whole-string equality. Guest rows never entered the album identity pool when the album tag was not an exact title match, so leftover codec-bracket guests kept Download.
+
+**Root cause:** Identity SQL treated the stored credit string as one artist. `filter_album_rows` already kept joined credits via `artists_compatible` substring once a row was in the pool, but the pool query never loaded those rows.
+
+**Prevention:** Parse `;` / `,` list members under `fold_identity` / `fold_search`. SQL uses `credit_includes(album_artist, host)` for album-artist and leftover-codec clauses. Do not unscope leftover `Album [FLAC]` to whole-library title matches. Cover joined host+guest leftover codec, accented members, and Greatest Hits / cross-album ISRC steal.
+
+## 2026-09-09 — Guest-credit album rows never restamped is_local
+
+**What happened:** Tidal album detail/lookup dropped the catalog-wide ISRC stamp, then restamped from `tracks_for_album_identity` → `filter_album_rows`. Host-credited tracks stamped `is_local`. Guest-credited tracks on the same disc (file on disk, History Done, matching ISRC) kept Download. Scanner stored `album_artist` NULL even when ffprobe showed a host;guest album artist.
+
+**Root cause:** `filter_album_rows` required `artists_compatible(host, row.artist) OR artists_compatible(host, row.album_artist)`. Guest rows with a different track artist and empty `album_artist` left the candidate pool, so album-scoped ISRC never saw them. Tag read only looked for `albumartist`/`ALBUMARTIST`/`TPE2`/`aART`, so Vorbis `ALBUM ARTIST` (space) never reached `scanned`.
+
+**Prevention:** After album titles match, keep rows under `/{host_artist}/` and same-folder siblings of a host match. Do not unscope same-title across the library. Persist every album-artist tag alias, including spaced/underscore keys and multi-value lists. Cover host+guest, missing `album_artist`, shared folder + ISRC, Greatest Hits isolation, and scan/register persistence. `fold_identity` already equates accented credits; artist SQL must use `fold_search`, not ASCII `COLLATE NOCASE`, or featured-guest rows stay out of the identity pool once any host credit matches.
+
+## 2026-09-07 — Playback 403’d a successful cheap layout heal
+
+**What happened:** Bugbot on PR #182 after the #180 rebase: `request_playback_path_heal` returned `status: healed` with the dest path, but `_resolve_local_playback_path` only handled `already_running` / `started` / `debounced` and fell through to 403.
+
+**Root cause:** The cheap heal was added to the helper, not to the GET status switch. The first layout loop can miss (no candidate, or dest only via the DB-backed heal) and still succeed inside `request_playback_path_heal`.
+
+**Prevention:** If heal returns a live dest path (`status: healed` or any other success), serve `_resolve_on_disk_audio` of that path. Do not 403 on the status string. Cover a request that skips the first layout loop and only wins via `request_playback_path_heal`.
+
+## 2026-09-07 — Identity rewrite skipped album-lookup persist-heal
+
+**What happened:** After rebasing #182 onto merged #180, `test_album_lookup_persists_artist_album_layout_heal` returned the dest path but left `scanned` on the vanished `Artist - Album` folder.
+
+**Root cause:** `match_local_row` → `with_identity_path` already rewrites `path` via `resolve_live_library_path`. `present_playable_path(dest, db)` then `db.get(dest)` misses and serves the file without `migrate_path`. Persist only runs when the helper sees the scanned key.
+
+**Prevention:** Keep `indexed_path` on identity-rewritten rows. Pass `indexed_path_for_row` into `present_playable_path`. Do not present-heal the already-rewritten dest.
+
+## 2026-09-07 — VA album pool fallback returned unfiltered exact rows
+
+**What happened:** Bugbot on PR #180 after the #179 rebase: `tracks_for_album_identity` ran `filter_album_rows`, then `if exact: return exact` when the filter was empty. VA `album_tracks` is title-only (`WHERE album = ?`), so another artist's same-named album re-entered and album-scoped ISRC could stamp the wrong release.
+
+**Root cause:** The leftover-codec VA test used `Harbor Radio [FLAC]`, which never populated `exact`. The fallback treated "any exact album-tag rows" as a safe last resort. For VA that set is not artist-scoped.
+
+**Prevention:** If `filter_album_rows` rejects the pool, return `[]` or a still-filtered VA fallback. Never return unfiltered `exact`. Cover an exact album-tag foreign file (`Harbor Radio` + `album_artist=Juniper Vale`) in `test_local_identity.py`.
+
+## 2026-09-07 — Featured-artist files missed the identity candidate pool
+
+**What happened:** Bugbot on PR #180: `tracks_for_identity` and `candidate_rows_for_track` queried only the first comma-separated artist, then skipped the album query once any rows existed. A live file tagged as a later featured artist never entered the pool.
+
+**Root cause:** The first credit's rows were treated as "the" candidate set. Featured guests are often tagged under their own artist, not the host.
+
+**Prevention:** Query every comma-separated credit. Always add the album query. Keep title LIKE bounded (`if title and not rows`). Cover a catalog `Host, Guest` credit whose file is tagged only as Guest.
+
+## 2026-09-07 — Album lookup healed the path but left the index stranded
+
+**What happened:** Bugbot on PR #182: `/albums/lookup` called `present_playable_path` without the library DB. A stale `Artist/Artist - Album` path was rewritten on the response, but `scanned` / `play_events` / favorites stayed on the vanished folder. Playback of the rewritten path found the file on disk and skipped cheap heal, so the old row never migrated.
+
+**Root cause:** Heal persist is `db.migrate_path` inside `heal_artist_album_layout_path`. Without `db`, the helper still returns the candidate path.
+
+**Prevention:** Keep one library handle open for album lookup. Pass it to `present_playable_path`. Cover lookup of a vanished `Artist - Album` folder whose dest file is live.
+
+## 2026-09-07 — Tidal-only playable:false grayed catalog rows
+
+**What happened:** Bugbot on PR #182 after the #179 rebase: search/playlist set `playable` to the same boolean as `is_local`. Tidal-only rows arrived with `playable: false`. `trackRowUnplayable` treated any `playable === false` as a dead local and grayed the row at 45% opacity.
+
+**Root cause:** `playable` was used as both "this local file is readable" and "this catalog row is not local." The honesty test only covered a fixture that omitted `playable`.
+
+**Prevention:** Omit `playable` unless there is a local-file opinion. `trackRowUnplayable` may treat `playable === false` as dead only when the row claimed local (`is_local`, `path`, or `local_path`). Cover `{ is_local: false, playable: false, id }` as still Tidal-playable.
+
+## 2026-09-07 — Leftover missing_since blocked a healed live file
+
+**What happened:** Bugbot on PR #182: `present_playable_path` marked a file playable when it was back on disk, but serializers still emitted leftover `missing_since`. `trackIsPlayable` and `_playableLocalPath` rejected any truthy `missing_since`.
+
+**Root cause:** Heal/present is the live-file opinion. `missing_since` on the index row is stale until reconcile commits a clear. The frontend treated the leftover stamp as stronger than `playable: true`.
+
+**Prevention:** If playable, emit `missing_since: None`. If `playable === true`, do not reject on leftover `missing_since`. Cover a live file whose scanned row still has `missing_since`.
+
+## 2026-09-07 — Rebase #182 onto merged #180 dropped one of two products
+
+**What happened:** After PR #180 merged, rebasing #182 onto master conflicted in search/playlist/album serialize. Taking only `stamp_track` would drop `present_playable_path` and playable honesty. Taking only #182 serializers would drop album-scoped identity.
+
+**Root cause:** Both PRs restamp the same API rows. #180 owns identity/`is_local`. #182 owns heal-then-serve and omit-`playable` on Tidal-only.
+
+**Prevention:** Keep both: `playable_library_row_for_isrc` first, then `present_playable_path`, then identity. Heal the matched row, then `stamp_track`. Omit `playable` unless local. Concatenate `MISTAKES.md`. Do not open a new PR.
+
+## 2026-09-07 — Rebase onto #179 dropped one of two search live-row gates
+
+**What happened:** After PR #179 merged, rebasing #180 and #182 onto master conflicted in `search.py` `_live_library_row`. Taking only master would drop identity/heal. Taking only the PR would drop `playable_library_row_for_isrc`.
+
+**Root cause:** Both products replace the same helper. #179 made it the shared playable-ISRC gate (twin-file adopt / download skip). #180 wraps stale index paths with identity; #182 heals `Artist/Artist - Album` then serves a readable file.
+
+**Prevention:** Keep both: call `playable_library_row_for_isrc` first, then identity/heal fallback for stale index paths. Concatenate `MISTAKES.md` entries. Do not take one side of `_live_library_row`.
+
+## 2026-09-07 — Post-migrate ISRC re-register wiped row metadata
+
+**What happened:** Bugbot on PR #179 after the adopt/index fix: `_index_adopted_path` called `register_isrc_path` after a successful `migrate_path`, and `item()` did it again on the final path. `record()` conflict-wrote `artist`/`title`/`album`/`quality`/`duration` to null. Upgrade jobs then `commit`ted those stubs after `register_downloaded_track`.
+
+**Root cause:** `register_isrc_path` is a stub upsert, not a migrate. Re-registering a path that already has a migrated complete row destroys metadata.
+
+**Prevention:** After a successful `migrate_path`, do not `register_isrc_path` that same path. Re-register only when migrate failed or there was no keep-row. Assert adopted rows keep artist/title/album/quality/duration.
+
+## 2026-09-07 — Adopt/rename dropped the live ISRC index row
+
+**What happened:** Bugbot on PR #179: after a replace, `adopt_original_name` renamed the kept file onto the freed original name and `db.remove`d the keep path. Collapse had already deleted the original's row. `has_live_isrc` / search `is_local` stayed false even though the file was on disk.
+
+**Root cause:** The only remaining index write was best-effort `register_downloaded_track`, which needs readable tags and a separate DB connection. Adopt deleted the keep row without migrating it to the final path.
+
+**Prevention:** After adopt/rename, migrate or `register_isrc_path` the final on-disk path. Do not rely on tag registration for live-ISRC. Cover collapse+adopt and `item()` with `register_downloaded_track` patched out in `test_recording_identity.py`.
+
+## 2026-09-07 — Live ISRC recovery treated unplayable siblings as local
+
+**What happened:** Bugbot on PR #179: `has_live_isrc` returned true for a tag-scan sibling under a dead path. Download skip / bot `is_local` then blocked even when search could not resolve a playable indexed library path.
+
+**Root cause:** Recovery and library lookup used different "live" gates. Tag-scan siblings counted as present for skip, but search only accepted an indexed `tracks_by_isrc` row whose file exists and is not under a skipped scan dir.
+
+**Prevention:** One playability helper (`playable_library_row_for_isrc`) for `has_live_isrc`, download skip, and search. A recovered sibling is live only when library lookup can play it. Cover dead-path + unindexed sibling vs indexed playable sibling in `test_recording_identity.py`.
+
+## 2026-09-07 — Identity skip tests used an unresolved album template
+
+**What happened:** First RED run of the upgrade-twin tests asserted against `library/_/{album_title}/Opening.flac`. `{album_artist}` / `{album_title}` never expanded on the Track mock.
+
+**Root cause:** The fixture treated `format_path_media` as a string format. Unresolved tokens are left in the path, so skip/redownload never saw the numbered CD-rip sibling in the same album folder.
+
+**Prevention:** Same-folder identity tests must write `01 - Title.flac` and the template dest in one directory (`{track_title}` → `Title.flac`). Give the Track mock album/artist only when the template actually needs those tokens.
+
+## 2026-09-07 — Shared 429 window never recovered; Hi-Fi stream-info paced only at some callers
+
+**What happened:** Bugbot on PR #181 after `5bcf6e8`: (1) new GUI `Download` instances inherited the widened pacer delays but kept `_rate_limit_hits = 0`, so `_on_successful_track` never halved the shared window; (2) `_get_track_stream_info_hifi` (the actual Hi-Fi stream-info HTTP call) still did not call `_pace_stream_api`. Caller-side pacing in `_prefer_listed_hires` could be skipped by any other path.
+
+**Root cause:** Recovery was a per-instance latch. Hi-Fi pacing lived next to some callers instead of at the request site.
+
+**Prevention:** `TidalApiPacer.note_success` owns the 50-success recovery; any later job can relax the process-wide window. Pace inside `_get_track_stream_info_hifi` so every Hi-Fi stream-info request goes through the shared pacer. Cover both in `test_download_pacing.py`.
+
+## 2026-09-07 — Download 429 backoff reset per job; Hi-Res fallback skipped API pacing
+
+**What happened:** Bugbot on PR #181: (1) `_on_rate_limit_hit` doubled the current `Download` then overwrote the process-wide pacer, so each GUI job started at baseline and a later 429 never reached the 30s cap; `note_429` existed but was unused on the download path. (2) `_prefer_listed_hires` called `_get_track_stream_info_hifi` after paced OAuth without `_pace_stream_api`.
+
+**Root cause:** Per-instance delay was treated as source of truth and synced outward. The extra Hi-Res stream-info request was added beside the paced OAuth call, not through the same pacer helper.
+
+**Prevention:** Escalate via `note_429` on the shared pacer and inherit that window in new `Download` instances. Pace every stream-info request, including Hi-Res fallback, through `_pace_stream_api`. Cover cross-job escalation and the fallback pace in `test_download_pacing.py`.
+
+## 2026-09-07 — Cancel-all and shared session quality raced across GUI workers
+
+**What happened:** Bugbot on PR #181: (1) each worker cleared `_cancel_all` when it saw the flag, so an idle worker could reset it while another was inside `dl.item()`; (2) concurrent GUI workers share the Tidal singleton and `_adjust_quality_settings` raced.
+
+**Root cause:** Cancel was a single boolean with first-observer-clears. Quality was a long-lived mutation of `session.audio_quality` for the whole `item()` call.
+
+**Prevention:** Cancel-all stays set until every worker acks and `_in_flight == 0`. Bind quality only inside `stream_lock` around `get_stream` / Hi-Fi mapping, then restore. Cover both races in `test_download_jobs_service.py` and `test_phase2_resilience.py`.
+
+## 2026-09-07 — StreamMixin stubs and `*_args` overrides broke when API pacing was wired in
+
+**What happened:** `_get_stream_info` called `_pace_tidal_api` on StreamMixin-only test subjects (`OAuthStreamSubject`). `item()` passed `download_delay=` as a keyword into `_download_and_process_media` overrides that only accept `*_args`.
+
+**Root cause:** Pacing lived on `DownloadCore`, not `StreamMixin`. Keyword args are not swallowed by `*_args`.
+
+**Prevention:** Call pacing through a StreamMixin helper that falls back to the shared pacer. Pass new `item()` → mixin arguments positionally so existing `*_args` test doubles keep working.
+
+## 2026-09-07 — Leftover Album [FLAC] tags ignored artist scope on VA compilations
+
+**What happened:** Bugbot on PR #180: `tracks_for_leftover_album_tags` always added an unscoped `album LIKE '{album} [%'` clause. `filter_album_rows` then treated codec-stripped titles as the same release and, for Various Artists, skipped the artist check. Another artist's leftover `Greatest Hits [FLAC]` could stamp `is_local` on a VA compilation.
+
+**Root cause:** Leftover codec-bracket discovery was title-only. VA guest-credit matching correctly skips track-artist equality, so an unscoped leftover LIKE has no second gate.
+
+**Prevention:** Scope leftover `Album [codec]` rows to artist/album_artist. Do not use any-artist `% - Album%` leftovers on VA. `filter_album_rows` rejects leftover codec titles from a solo album_artist on VA lookups. Cover the foreign leftover VA case in `test_local_identity.py`.
+
+## 2026-09-07 — Playlist stamp leaked `_catalog_quality`
+
+**What happened:** Bugbot on PR #180: `stamp_track` writes an internal `_catalog_quality` stash. Search and album APIs call `finish_stamp`; playlist serialization did not. When bounded candidates missed and `all_tracks` fallback hit, the playlist JSON included `_catalog_quality`.
+
+**Root cause:** The stash is a restamp helper, not an API field. Every surface that stamps must finish.
+
+**Prevention:** Playlist track serialization calls `finish_stamp`. Cover the all_tracks fallback in `test_gui_playlist_local_preference.py`.
+
+## 2026-09-07 — Feat strip required the credit to be the last parenthetical
+
+**What happened:** Bugbot on PR #180: `_FEAT_MARKER` only stripped feat/ft/with when it was the last parenthetical. After dropping `base_title` fallback, `Title (feat. X) [Explicit]` and `Title (feat. X) (Bonus Track)` no longer shared a variant with a live file tagged `Title`.
+
+**Root cause:** Version-preserving titles still need leftover metadata suffixes (explicit/clean/bonus) and mid-title feat credits stripped. Those are the same recording; remix/live/radio-edit are not.
+
+**Prevention:** Strip feat/ft/with anywhere, then leftover explicit/clean/bonus suffixes. Keep remix/live/radio-edit. Cover both suffix shapes in `test_local_identity.py`.
+
+## 2026-09-07 — Loose titles stamped remix/live/radio-edit onto the original
+
+**What happened:** Bugbot on PR #180: title identity used `base_title`, which strips every trailing parenthetical. Remix, live, and radio-edit rows shared a key with the original. `_pick_identity_row` then preferred the shortest path, so a live file could lose to the studio cut (or the reverse). Download hid and playback used the wrong recording.
+
+**Root cause:** `_title_variants` and `titles_compatible` treated feat-credit robustness as "strip all parentheticals." Version tokens are different recordings. Shortest-path is only a tie-break inside one recording.
+
+**Prevention:** Identity titles keep remix/live/radio-edit tokens. Strip only feat/ft/with credits and leftover codec brackets. Prefer a version-preserving title match over shortest path. Cover original vs live/remix/radio-edit (and shortest-path) in `test_local_identity.py`.
+
+## 2026-09-07 — Album restamp left another release's quality fields
+
+**What happened:** Bugbot on PR #180: album-scoped `stamp_track` with no match cleared `is_local` and paths but left `quality` / `format` / `codec` from the catalog-wide `_serialize_track` stamp. Shared-ISRC album rows showed another release's on-disk quality while remaining remote.
+
+**Root cause:** `stamp_track(None)` only dropped locality and paths. Local media fields are written by the same function and must be undone together. Catalog quality has to be restored from the Tidal track, not from the leftover on-disk stamp.
+
+**Prevention:** On a miss, clear `format` / `codec` and restore catalog `quality`. Do not re-stash an already-local quality as catalog. Cover the restamp-miss unit and `GET /albums/{id}/tracks` shared-ISRC case in `test_local_identity.py`.
+
+## 2026-09-07 — Guest leftover Artist - Album tags missed the album pool
+
+**What happened:** Bugbot on PR #180: `tracks_for_album_identity` only found guest credits through an exact `tracks_for_albums` title. Leftover `Artist - Album` tags missed that query, and `tracks_for_artist` uses the host artist, so `filter_album_rows` never saw the `album_artist` row. Album pages still showed Download for those live files.
+
+**Root cause:** Discovery was exact album-tag plus host track-artist. Guest leftover rows are keyed by `album_artist` and a leftover album string. `filter_album_rows` already keeps those once they are in the pool.
+
+**Prevention:** Also collect `album_artist` rows and leftover `Artist - Album` / codec-bracket album tags, then let `filter_album_rows` keep the matching release. Cover a guest leftover tag in `test_local_identity.py`.
+
+## 2026-09-07 — Album detail skipped album-scoped restamp
+
+**What happened:** Bugbot on PR #180: `GET /albums/{id}/tracks` stamped `is_local` from catalog-wide ISRC / title+artist via `_serialize_track`. A live file from another release hid Download on this album page.
+
+**Root cause:** `album_lookup` drops that catalog-wide stamp and restamps with `match_local_row(..., album_scoped=True)`. The album-detail endpoint never did.
+
+**Prevention:** Apply the same album-scoped restamp on `album_tracks`. Cover shared-ISRC and title+artist cross-release cases in `test_local_identity.py` against `GET /albums/{id}/tracks`, not only `album_lookup`.
+
+## 2026-09-07 — Album scope_artist replaced track artist and dropped compilations
+
+**What happened:** Bugbot on PR #180: `match_local_row` overwrote the catalog track artist with album `scope_artist`. Various Artists / guest-credit files missed live matches when ISRC did not match.
+
+**Root cause:** Album lookup passed the album artist into title matching. Title+artist compatibility then required the file's track artist to match the album artist, which compilations and guest credits do not.
+
+**Prevention:** Use `scope_artist` only to narrow the release. Title matching uses the catalog track artist. Keep guest rows via `album_artist`. Cover VA / guest / other-album reject cases in `test_local_identity.py`.
+
+## 2026-09-07 — PR 169 missed Artist/Artist - Album → Artist/Album when signatures already matched
+
+**What happened:** After folders were rewritten from `Artist/Artist - Album/` to `Artist/Album/`, `scanned` rows kept the old path. Files were live at the new path. Library/search still painted green local+FLAC, then playback grayed the row because the stored path was dead. Covers 403'd. Incremental reconcile did not heal the library.
+
+**Root cause:** Directory-move matching only paired vanished rows to *unindexed* appeared files, and only when dir-signatures changed. A scan (or any walk) that recorded the new tree without migrating left signatures current, so reconcile early-exited. Same-size `01.flac` fingerprints across albums also blocked 1:1 directory matches. There was no cheap `Artist - ` prefix rewrite. `_db_row_to_track` hardcoded `is_local: True` from the index.
+
+**Prevention:** Deterministic layout candidate `Artist/Artist - Album/file` → `Artist/Album/file`. Run that heal on signature-unchanged reconcile, on playback resolve, and on library/search serialize. Pair layout twins even when size fingerprints collide. Merge play_events/favorites onto an already-indexed dest. Never stamp playable-local unless the path is a readable audio file. Do not mark_missing from GET (remount). Edition suffixes stay on the album folder so remasters are not false-healed.
+
+## 2026-09-07 — List/detail still stamped local+FLAC from SQLite after path heal
+
+**What happened:** `_db_row_to_track` learned to check the file, but `/albums/lookup`, playlist serialize, Home recents, and the green `views.js` badge still trusted `is_local` from the index. Play album queued those rows. `/albums/{id}/tracks` already used `is_file()`.
+
+**Root cause:** Playability was not one helper. Lookup and playlists set `is_local = bool(row)`. Recents hardcoded `True`. The UI never read `playable` or `missing_since`.
+
+**Prevention:** `present_playable_path` is the only stamp. `is_local`/`playable` require a readable audio file (heal first, no `mark_missing` on GET). Play/Shuffle album filters `trackIsPlayable`. Badge and `.track.unplayable` use that helper. Playback GET stays the hard check.
+
+## 2026-09-07 — Layout edition check treated artist name Live as an album edition
+
+**What happened:** `directory_editions_compatible` tokenized the raw `Artist - Album` folder. Artists named Live or Acoustic injected those words, so the rewrite to `Artist/Album` looked like an edition change and heal skipped a present file.
+
+**Root cause:** Edition tokens were compared before stripping the `Artist - ` prefix. Remaster protection already comes from the exact layout candidate path.
+
+**Prevention:** Layout pairs use `layout_editions_compatible` (compare after the rewrite). Fingerprint directory matches still use the raw folder names. Keep a Live-artist heal test next to the remaster non-heal test.
+
+## 2026-09-07 — Dead index path still played as local, then toasted as Tidal
+
+**What happened:** Honesty set `is_local` false but left `path`. `playTrack` used `local_path || path`, so a dead row still hit `/api/playback/local`. The error handler only retried heal when `is_local` was true, so the miss toasted Tidal-unavailable and set the session flag.
+
+**Root cause:** Path presence was treated as a playable local source. Error classification used the flag, not the request.
+
+**Prevention:** `_playableLocalPath` requires `local_path` or (`is_local` and `path`), and rejects `playable === false` / `missing_since`. Classify audio errors as local when `is_local` or `audio.src` is `/playback/local`.
+
+## 2026-09-07 — Playlist kept another album's live ISRC path
+
+**What happened:** `_serialize_track` stamps `path` from any live ISRC hit. Playlist then preferred an album-scoped dead row, set `is_local` false, and left the other album's path on the payload.
+
+**Root cause:** Honesty only wrote paths on success and never cleared the ISRC stamp.
+
+**Prevention:** Pop `path` / `local_path` after `_serialize_track`. Restamp only when the album-scoped row is a readable file.
+
+## 2026-09-07 — Tidal rows used the dead-local unplayable style
+
+**What happened:** `.unplayable` was `!trackIsPlayable`. Tidal search/album rows are not local, so they rendered at 45% opacity while still streaming.
+
+**Root cause:** Local-file playability was reused as a row-disabled flag.
+
+**Prevention:** `trackRowUnplayable` is `playable === false`, `missing_since`, or a claimed-local row with no path. Tidal-only rows stay full opacity.
+
+## 2026-09-04 — Rust Tauri plugin bump left JS packages behind
+
+**What happened:** After PR #172, edge-desktop aborted on macOS, Windows, and Linux before compile: `tauri-plugin-updater (v2.11.0) : @tauri-apps/plugin-updater (v2.10.1)`.
+
+**Root cause:** The Tauri bump updated Rust `tauri-plugin-*` crates in `Cargo.toml` / `Cargo.lock` but left `@tauri-apps/plugin-updater` at 2.10.1. `bunx tauri build` checks major/minor lockstep first. qa.yml only ran `bunx tauri --version` when `package.json` changed, so a Cargo-only bump never hit that check.
+
+**Prevention:** After bumping Rust Tauri plugins, bump matching `@tauri-apps/*` JS packages (and the lockfile) to the same major.minor. `edge-desktop` / `bunx tauri build` fails before compile if they drift.
+
+## 2026-09-04 — Dependabot could not unlock glib 0.18.5 or rand 0.7.3
+
+**What happened:** Dependabot security updater failed `security_update_not_possible` on master @1d3d780 for transitive `glib` 0.18.5 (GHSA-wrw7-89jp-8q8g) and `rand` 0.7.3 (GHSA-cq8v-f236-94qc). Neither is a direct `Cargo.toml` dep.
+
+**Root cause:** `glib` 0.18 is required by gtk3-rs (`gtk`/`webkit2gtk`) on Tauri 2 Linux. `glib` 0.20 is gtk4-rs only — that is a Tauri 3 / WebKitGTK 6 ABI move. `rand` 0.7 came from `tauri-utils` 2.9.1 `html-manipulation` → `kuchikiki` → `selectors` 0.24 → `phf_generator` 0.8.
+
+**Prevention:** Bump Tauri to 2.11.5 / `tauri-utils` 2.9.3 (`build-2` / `dom_query`) to drop `kuchikiki` and all `rand`. Do not `cargo update -p glib` and do not `[patch]` glib 0.20 onto gtk 0.18. Ignore glib `<0.20` in `.github/dependabot.yml` until Tauri 3 GTK4. Re-run `cargo tree -i glib` / `cargo tree -i rand` after every Tauri minor.
+
+## 2026-09-04 — 165 Alizée search test looked unrooted after 167
+
+**What happened:** Bag integration of #165 + #167 made `GET /api/library/search?q=Alizée` return `total=0`. The 165 fixture inserted `/Volumes/Music/Alizée/...` NFC/NFD twins into the pytest library DB.
+
+**Root cause:** #167 `_library_db()` drops rows outside configured roots. Pytest Settings default to `~/download`, so the live-shaped `/Volumes/Music` twins were treated as leftover QA paths.
+
+**Prevention:** Endpoint tests for in-root NFC/NFD twins must pin `download_base_path` / `scan_paths` to that music root. Do not skip the unrooted purge. Vanished in-root rows stay on `missing_since`.
+
+## 2026-09-01 — Library served leftover QA rows outside the music root
+
+**What happened:** Live 1.7.8 search (`Night Watch`) and Recents showed Sting *The Last Ship (Live at the Rijksmuseum)* at `/Users/hackbook/.cache/tactica/music-dl-pr149-qa/...flac`. The file was gone. Art returned 403 because the path was outside `/Volumes/Music`. Settings scan path was only `/Volumes/Music`.
+
+**Root cause:** `scanned` is a shared ledger. Search/Recents return every row. Sync prune waits for a successful walk, and the fingerprint fast-path only drops `#recycle` rows, so leftover rows from an isolated QA profile stayed forever.
+
+**Prevention:** On library open, Recents, and scan start, drop rows whose path is outside configured `download_base_path` / `scan_paths`. Never DELETE vanished in-root rows (or their play history) — those use `missing_since` + reconcile migrate. Skip an unrooted drop when it would remove more than half of a library larger than 100 rows (empty mount / remount). `OSError` on `is_dir()` treats the root as unmounted; a purge `OSError` must not 500 library/search/Recents. Do not delete files on disk. Do not change `#recycle` policy.
+
+## 2026-09-03 — Local heal retry looped and replayed a stale track
+
+**What happened:** After 202/409/200 the player always `playTrack`ed the captured track and returned success, so `_consecutiveErrors` never advanced. A user skip during the 30s wait still restarted the old file.
+
+**Root cause:** One-shot heal was not one-shot. In-flight was treated as handled for every error. Reconcile `done` was treated as "file is playable".
+
+**Prevention:** One retry per path. After 202/409, probe again; only play on 200/206. Abort if the queue track changed. A second error on the same path skips.
+
+## 2026-09-03 — Playback allowlist loaded every scanned path
+
+**What happened:** After the CodeQL path-injection fix, `_exact_scanned_path` loaded `SELECT path FROM scanned` and linearly compared, three times per CSRF-exempt GET, including for `/etc/passwd`.
+
+**Root cause:** Treating "do not `Path.resolve` the request" as "do not query by request path". Parameterized `WHERE path = ?` is safe; returning the DB column is the sanitizer.
+
+**Prevention:** Indexed `LibraryDB.get(path)` / `WHERE path = ?` only. Never `SELECT path FROM scanned` without a WHERE on the playback path.
+
+## 2026-09-03 — Player treated 202/409 heal as a skip; Home counted missing rows
+
+**What happened:** GET `/api/playback/local` correctly returned 202/409 without a sync walk, but `audio` error still toasted and auto-skipped. Home recents and collection tiles still joined `scanned` rows with `missing_since` set.
+
+**Root cause:** The player never probed the playback status or polled reconcile. Home stats reused unfiltered `scanned` counts.
+
+**Prevention:** On local media error, probe GET status. 202/409 poll `/library/reconcile/status` then retry the same track. 403 after that may skip. Filter `missing_since IS NULL` on Home/recents `scanned` queries. Do not DELETE vanished in-root rows.
+
+## 2026-09-03 — Reconcile/scan missed remount, restore, and force-refresh
+
+**What happened:** Bugbot found startup reconcile could hide a library on a readable empty mount (no 50% prune guard), Sync left `missing_since` set after a file returned at the same path, scan migrations skipped the playback cache, and the Refresh button inherited the 60s debounce.
+
+**Root cause:** Scan already had remount/restore-adjacent logic; reconcile and the playback cache were wired only to the background job. POST reconcile defaulted to `force=False`.
+
+**Prevention:** Same 50% / 100-row remount skip for mark_missing (and do not replace signatures). Clear `missing_since` for any missing row still on disk after scan, and clear resurfaced rows on the unchanged-signature reconcile exit. Record scan migrations in the playback cache. Refresh POSTs `?force=true`; startup, focus, and library-view paint stay `force=False`.
+
+## 2026-09-03 — Parallel path helper failed CodeQL py/path-injection
+
+**What happened:** `path_string_under_allowed_dirs` called `Path(user).resolve(strict=False)` so missing library rows could be bounded to configured roots. CodeQL reported seven uncontrolled-path flows at that `resolve`.
+
+**Root cause:** CodeQL treats `Path.resolve`/`stat` on request data as a sink. A second helper next to `validate_audio_path` is not a proven sanitizer, even if it later checks `is_relative_to`.
+
+**Prevention:** Exact-match the request string against the DB `scanned.path` allowlist and configured root strings first. Only then pass the selected DB value into `validate_audio_path`. Lexical `..` / encoded / `~` checks stay string-only.
+
+## 2026-09-03 — Playback GET ran synchronous full reconcile on arbitrary paths
+
+**What happened:** `GET /api/playback/local` called `heal_playback_path`, which ran `_run_path_reconcile` synchronously for any DB-trusted path, bypassing `_scan_lock`, debounce, and single-flight guards. Forbidden or non-library paths could trigger expensive walks from a CSRF-exempt GET.
+
+**Root cause:** The backstop optimized for one-request heal and reused the full reconciler inline instead of the guarded background job.
+
+**Prevention:** Only queue reconcile for rows that exist in `scanned` and sit under configured roots. Serve moved files via an in-memory migration cache populated when background reconcile finishes. Return 202 when reconcile is queued/debounced and 409 when one is already running. Compare the request string to the DB allowlist and configured roots first (no filesystem). Only then call `validate_audio_path` on the selected DB path. Never `Path.resolve` a request string in a parallel helper.
+
+## 2026-09-03 — First-run reconcile missed whole-album directory renames
+
+**What happened:** After a live 1.7.8 reorg, 2,426 of 7,634 audio files were stale rows and 1,594 on-disk files had no row. The dominant pattern was whole-album directory renames (strip a redundant `Artist - ` prefix), with vanished and appeared directory counts matching 1:1. The first reconciler only collected vanished rows from stored `scanned_dirs` keys. On upgrade that table is empty, so the 2,426 stale paths were never candidates. Per-file matching was also O(vanished × appeared) and applied every migration in one transaction.
+
+**Root cause:** Change detection treated "no stored signatures" as "every current dir is new" and never set-diffed known paths against the walk. Album-scale renames were then planned as N independent file searches.
+
+**Prevention:** Collect vanished/appeared as a known-vs-walk path set (one `identity_rows` query, walk `audio_names`, no extra file `stat`). Try a directory-move fast path first: unique 1:1 parent dirs with the same member count and basename+size (or basename+duration for legacy `NULL` size). Refuse when directory edition tokens differ. Fall back to an indexed per-file ladder. Commit directory moves atomically, then leftover work in batches of 50, on a background thread with status progress.
+
+## 2026-09-03 — Root-only scan fingerprint skipped nested folder moves
+
+**What happened:** After a live 1.7.8 user reorganized `/Volumes/Music`, 2,426 of 11,970 `scanned` rows (20.3%) pointed at deleted paths. Albums rendered as 2/16 tracks. `POST /api/library/scan` printed "Scan directories unchanged — skipping" because `scan_fingerprint` only hashed configured-root mtimes + row count.
+
+**Root cause:** `scanned.path` was the only identity. Nested moves do not change a root's mtime or the row count, so the fast-path skipped the walk. When a walk did run, vanished paths were pruned and new paths inserted, wiping `play_count` / favorites / `play_events`.
+
+**Prevention:** Persist per-directory signatures (`mtime_ns:audio_count`) in `scanned_dirs`. Reconcile only changed directories. Migrate row identity on a unique strong match. Never skip on root mtime alone. Never merge editions that differ by remaster/year tokens. Mark unresolved vanished rows missing instead of deleting them.
+
+## 2026-09-03 — Synced lyrics looked desynced because auto-scroll geometry was wrong
+
+**What happened:** Live 1.7.8 Adele "Hello" (Tidal track 165814026, `tidal-synced`, 48 lines) highlighted the correct line from `audio.currentTime`, but that line was off-screen for 14/15 probes. The panel sat on line 23 for the first ~35s, which users reported as lyrics desync.
+
+**Root cause:** `.lyrics-synced-viewport` flex-centered a tall list, then JS added a list-relative `translateY` from `activeEl.offsetTop`. It also used `lyricsBody.clientHeight` (padding included, 716px) instead of the viewport (620px), and `Math.max(0, …)` plus `translateY(0)` on gaps froze or snapped the list.
+
+**Prevention:** Drive a real scroll container (`overflow-y: auto`, no flex-center, no transform). Center with `_lyricsScrollTarget` using viewport `clientHeight`/`scrollHeight`, clamp both ends, hold position when no line is active, write `scrollTop` only when the target changes. Do not treat time-selection, playback-rate, or Tidal-vs-local as the first hypothesis when the active index is already correct.
+
+## 2026-09-03 — Programmatic lyrics scroll self-detached; padding-block was width-relative
+
+**What happened:** PR 168 click gate failed. Resizing the browser with lyrics open and playing detached auto-follow even without wheel/keys/pointer — active line went off-screen. At 700×1400, `padding-block: 50%` on `.lyrics-synced-list` resolved against panel width (380px → 182.5px spacer) instead of viewport height (~604px needed); first line sat ~347px off center.
+
+**Root cause:** (A) A single `scrollend` boolean cleared `lyricsProgrammaticScroll`; no-op/interrupted `scrollTo` or layout scroll after clear looked user-driven and detached follow. (B) CSS percentage padding on block axis used width, not height.
+
+**Prevention:** Tag programmatic writes with a generation counter + target; only detach on trusted user wheel/touch/pointer/keyboard or scroll when `lyricsUserScrollPending` is set — never on layout scroll alone. `ResizeObserver` reflows height-relative spacers via `_lyricsEdgeSpacerPx(viewport.clientHeight, lineHeight)` and recenters while attached. Do not use `padding-block: 50%` for vertical centering slack.
+
+## 2026-09-03 — Attached resize left the current lyric 101px above center until the next line
+
+**What happened:** Click gate on PR 168 (`ec50ac9`): 1280×900 → 1000×700 stayed attached and the active line stayed on-screen, but it sat ~101px above center for >8s while paused. Playing trials only recentered when the next lyric activated 5.49–5.66s later.
+
+**Root cause:** With height-relative end padding, `_lyricsScrollTarget` for a mid-list line is `index * step` and does not change with viewport height. `_lyricsWriteScrollTop` skipped whenever the cached target matched, even after scroll-anchoring drifted `scrollTop` by Δpad ≈ Δviewport/2 (~100px). rAF ticks kept skipping until the active index (and therefore the target number) changed.
+
+**Prevention:** Skip a write only when `scrollTop` is already at the target, or when a programmatic write toward that target is in flight. On resize, invalidate the cached target, recompute spacers, then force an instant recenter after two layout frames while attached. While detached, restore the captured reading anchor — do not recenter.
+
+## 2026-09-01 — NFC/NFD path twins double-counted one inode
+
+**What happened:** Live 1.7.8 Zeratool `GET /api/library/search?q=Alizée` returned two rows for one FLAC. `os.stat` inodes matched. Album/artist counts were 2x.
+
+**Root cause:** macOS `os.walk` yields NFD (`Alizée`). Tags/downloads record NFC (`Alizée`). `scanned.path` is a raw-string PK, so both rows survived. `known_paths()` set-diff treated them as different files.
+
+**Prevention:** Index `unicodedata.normalize("NFC", path)`. Collapse existing NFC/NFD (or same-inode NFC-equal) twins on open/scan. Do not rewrite files or rename artist folders. Teach 169 allowlist / `_exact_scanned_path` / path lookups to accept both forms without treating them as a move.
+
+## 2026-09-01 — Upgrade treated a cloned playlist ISRC as identity
+
+**What happened:** Live 1.7.8 `GET /api/upgrade/scan/status?include_results=true` showed Aylaylay, Golpe De Alabanza, La Hermanda, and Patras all with `isrc: USJ3V1497673` / `tidal_track_id: 241908392`. Distinct playlist rips would have upgraded to one Tidal track.
+
+**Root cause:** Probe cache and match are ISRC-keyed. Playlist dumps clone one ISRC onto many titles. `_probe_tidal_isrc` accepted the first ISRC hit without a title check, then scan/status/start reused that one Tidal id.
+
+**Prevention:** Do not match Upgrade on ISRC alone when titles differ. Prefer title+artist+duration. Colliding ISRC across different titles is UNCERTAIN / skip. Never Upgrade All from a shared Tidal id. Sample-one remains law. Clean Up duplicates is a separate ticket.
+
+## 2026-09-01 — Flat `Artist - Album` plus a disc folder minted a leftover layout
+
+**What happened:** `_canonicalize_album_dirs` only split `Artist - Album [FLAC]` when it was the sole parent. `.../CD1/track` treated the leftover folder as the artist and `CD1` as the album, then minted `Artist - Album/CD1`.
+
+**Root cause:** Flat leftover detection was gated on `len(dir_parts) == 1`.
+
+**Prevention:** Split a first-segment `Artist - Album` (codec brackets stripped) even when later segments are disc extras. Test both reuse and mint for that shape.
+
+## 2026-09-01 — Root reuse treated `Album [FLAC]` as an artist match
+
+**What happened:** `_find_legacy_album_dir` reused a music-root folder if it had a trailing codec bracket, even with no `Artist - ` prefix. `Greatest Hits [FLAC]` would steal a Billy Idol download.
+
+**Root cause:** Codec brackets were treated as enough leftover signal at the library root.
+
+**Prevention:** Root reuse requires a stripped `Artist - ` prefix. Codec-only folders under an artist dir can still match.
+
+## 2026-09-01 — ruff --fix resorted a star-import barrel
+
+**What happened:** `ruff check` on download writers auto-sorted `_common.py` `__all__` and imports because `fix = true` is set in pyproject.
+
+**Root cause:** Touching a barrel file for one export re-lints the whole unsorted list.
+
+**Prevention:** Import the new helper at the call site. Do not `--fix` files whose only job is re-export.
+
+## 2026-09-01 — Lossy AAC labeled as CD 16/44.1 lossless
+
+**What happened:** Live 1.7.8 upgrade scan showed Los Hermanos `04 Aylaylay.m4a` as `current_quality: "44100Hz/16bit"`. `afinfo` on disk was AAC ~292 kbps. Badge/API looked like CD lossless.
+
+**Root cause:** `_read_metadata` wrote `sample_rate/bits_per_sample` whenever mutagen exposed `bits_per_sample`. AAC MP4 still reports 44100/16. Upgrade results returned that string without codec, so the jump label echoed the CD lossless fact.
+
+**Prevention:** Codec/container first. Hz/bit only after the codec is lossless. Persist `AAC` for lossy M4A. Unknown M4A stays `M4A`, never `44100Hz/16bit`. Rewrite stored AAC Hz/bit on the way out of upgrade scan.
+
+## 2026-09-01 — Clean Up preview timed out on an 11.8k library
+
+**What happened:** Live 1.7.8 Zeratool `GET /api/duplicates/preview` sat ~30s and never painted. No `POST /api/duplicates/clean` was sent.
+
+**Root cause:** `_preview_sync` called `_prune_stale`, which `os.path.exists` every scanned path. On a NAS that is a full-library stat. Grouping also mixed `#recycle` path-component trash with live extras.
+
+**Prevention:** Preview is a UI read. Do not prune/stat the library. Skip `#recycle` directory-component rows first (UGreen/Synology/any NAS trash, not a title substring). Cap returned groups. Leave Clean Up grouping and deletion on the existing `_find_duplicate_groups` default / PR 161 edition-safe law.
+
+## 2026-08-31 — Track-row source label kissed the download icon
+
+**What happened:** Tetrarch on live 1.7.8 saw duration `3:35`, then lowercase `tidal`, then a download-tray icon sitting on the final `l`. Duration-to-source looked fine. Search, library, and album tracks share that row.
+
+**Root cause:** `.track-actions` is a 40px grid column holding both the source-tag and a 40px `.dl-btn`, with `display: flex` and no `gap`.
+
+**Prevention:** Flex-gap the actions cluster using the 12px track-row rhythm. Size the actions column for label + gap + icon (84px). Do not letter-space `tidal`. Cover with a CSS contract test.
+
+## 2026-08-31 — History stayed on the old card after a successful download
+
+**What happened:** Live `/api/downloads/history` returned two done rows (La gota fría + The Call) but Downloads History still painted only the old The Call card until a full app restart.
+
+**Root cause:** v1.7.5 moved Active updates to the queue snapshot. SSE `complete`/`error`/`cancelled` call `_dlComplete` + `refreshActiveDownloads`, and never `updateActiveDownload`, so `_scheduleHistoryReload` (only wired from that dead path, Cancel All, and `queue_cancelled`) never ran.
+
+**Prevention:** Schedule the existing history debounce from `_dlComplete`. Keep a 2-item `/downloads/history` fixture test so both cards paint, newest first.
+
+## 2026-08-31 — Library search missed `fría` and hid the remaster
+
+**What happened:** Tetrarch searched Library for `Fria` and got four identical 16-bit `La Gota Fria` / `Clasicos de la Provincia` rows. The 24-bit remaster `La gota fría (Remastered 30 años)` was in the DB but did not match.
+
+**Root cause:** `tracks_page` used ASCII `LIKE` on title/artist/album. `í` does not match `i`. The remastered row already stored the full tagged title/album/Hz-bit; search never returned it.
+
+**Prevention:** Fold query and stored text (`NFKD` + strip combining marks) in the SQL `LIKE`. Test `q=Fria` and `q=gota fria` at `tracks_page` / `GET /api/library`. Do not rewrite tagged remaster titles to the short name. One `fold_search` UDF on concatenated title/artist/album is ~40ms p95 on the 10k QA probe; raise that search ceiling instead of adding a schema column.
+
+## 2026-08-31 — Clean Up treated remasters, deluxe editions, and CD rips as extras
+
+**What happened:** Live 1.7.8 `/api/duplicates/preview` grouped 3027 ISRC+album sets and would have deleted 4513 extras. Quality-rank kept a 24-bit Tidal file over a 16-bit CD rip of the same ISRC+album, playlist FLACs were grouped with a deluxe m4a, and 34 groups had remaster/deluxe tokens that differed between keeper and extra.
+
+**Root cause:** `_find_duplicate_groups` keyed on ISRC+album (or title+artist) then sorted by `_tier_rank_for_quality`. Same ISRC is not the same edition. A unique CD rip or remaster loses to a higher-ranked twin.
+
+**Prevention:** Auto-extra only for folder-layout twins of the same edition (Artist - Album vs Artist/Album, or a `#recycle` copy) with matching edition tokens, same album, and same quality class. Remaster/deluxe/special/expanded/anniversary/bonus/digitized, bit-depth/sample-rate/format mismatch, or a `- Playlists` path marks the group UNCERTAIN and excludes it from `total_duplicates` and Clean Up. Never keep `#recycle` over a live path. Never keep lossy over lossless.
+
+## 2026-08-31 — 1.7.8 still served `/Volumes/Music/#recycle/...` as artist, search, and VA
+
+**What happened:** Live 1.7.8 Zeratool 2026-08-31 still showed `GET /api/library?sort=artist` starting with `artist: "#recycle"` (untagged wavs under `/Volumes/Music/#recycle/High Bit Rate/...`), `GET /api/search?q=Carlos%20Vives%20Fria` ranking the `#recycle` La Gota Fria first, and Various Artists *Hybrid Theory* with 38 tracks (36 under `#recycle/.../Hybrid Theory 20th Anniversary Edition/`). `#recycle` is a NAS recycle/trash path component (UGreen, Synology, and any NAS that uses it), not a Synology-only name.
+
+**Root cause:** Untagged files take the first relative folder as artist, so `#recycle` wins. `tracks_by_isrc` / search attach `ORDER BY path ASC`, and `#` sorts before live copies. Album grouping counts leftover recycle rows (`#recycle` + tagged deluxe artists) as extra artists, so Hybrid Theory becomes Various Artists. Walk skip and fingerprint sweep already existed; leftover rows stayed visible until Sync, and `/api/search` never filtered them.
+
+**Prevention:** Drop skipped-directory rows on first library/home/search DB open (no walk). Filter those paths out of library/albums/search/home/`tracks_by_isrc`. Never use a skipped path component as path-fallback artist. Prefer live files in unified search. Keep Recycle *titles*. Do not brand `#recycle` as Synology-only. Do not delete disk files or POST `/api/duplicates/clean`.
+
+## 2026-08-31 — Bugbot: album fallback, empty-before-Tidal, hostname ValueError
+
+**What happened:** Artist-name track search (Carlos Vives) replaced real track hits with a self-titled album. Local-empty paint showed `No results found` while Tidal was still in flight. `urlparse(...).hostname` can raise `ValueError` on broken IPv6 zones / trailing `%`, which would 500 `/api/search`.
+
+**Root cause:** Album-title fallback ran whenever titles scored `< 0.7`, including artist queries. `paint()` treated `tidalData === null` as settled empty. Host parse had no `ValueError` guard.
+
+**Prevention:** Album fallback only when track search is empty or the query is not a strong artist match on those hits. Keep the skeleton while Tidal is pending and local is empty. Catch `ValueError` in `_hostname`.
+
+## 2026-08-31 — Albums search skipped the local/Tidal divider
+
+**What happened:** Albums pill Search showed one Your Library card (Various Artists) then "Tidal Albums 50 albums" flush against the card. The header collided with the local gallery.
+
+**Root cause:** `renderUnifiedSearchResults` skipped `.search-divider` when `type === 'albums'` because albums already paint a "Tidal Albums" h3. The local `.album-gallery` has no bottom margin, so that h3 sat on the card. `.results-header` also used `align-items: baseline`, so the count sat off the title.
+
+**Prevention:** Show the divider whenever local results and a Tidal section both exist, including albums (`originalTidalItems.length > 0`). Keep `.album-gallery + .search-divider` padding. Center `.results-header` (`align-items: center`). Singularize `1 result`.
+
+## 2026-08-31 — CodeQL flagged `"tidal.com/" in url` as incomplete sanitization
+
+**What happened:** PR 154's `looks_like_web_url` used `"tidal.com/" in raw` so a scheme-less Tidal paste would not go to `session.search`. CodeQL High: Incomplete URL substring sanitization (`py/incomplete-url-substring-sanitization`).
+
+**Root cause:** A path can contain the substring (`https://evil.example/tidal.com/track/1`) without the host being Tidal. Substring host checks are the CodeQL pattern.
+
+**Prevention:** Parse the host (`urlparse`, then `hostname == "tidal.com"` or `.endswith(".tidal.com")`). Scheme-prefixed queries still count as URLs so they never hit `session.search`. `parse_tidal_ref` still requires a Tidal host at the start of the string, so a planted path is `None` and Search returns the recognized-URL error.
+
+## 2026-08-31 — Search hid a live Tidal album and froze the Albums pill
+
+**What happened:** Pasting `https://tidal.com/track/330865538/u` or searching the album title `Clásicos de la Provincia 30 Años (Remastered & Expanded)` returned 0 tracks even though Tidal had album 330865537 / track 330865538. Artist cards routed to local-only `/library/artist/{name}/albums`. Albums pill for `Los Grandes Del Vallenato` sat on the skeleton for ~26s.
+
+**Root cause:** Search sent the raw URL/id to `session.search`. Track search never fell back to album search. Artist drill-in ignored Tidal ids. `doSearch` awaited `/library/search` first, and album library search called `_album_cards(db)` on the whole library.
+
+**Prevention:** Parse Tidal URLs/ids and resolve with `session.track/album/artist/playlist`. Never `session.search(url)`. When track search misses a title, fetch tracks from a close album-name match. Artist view is hybrid (local + `/artists/{id}/albums`). Fire library and Tidal search in parallel and bound library album search to SQL `all_albums(q, limit)` — never full-library grouping. Truncate recent-search query text so the dismiss x stays visible.
+
+## 2026-08-31 — Listening-time fact rounded week and all-time to different precision
+
+**What happened:** The insight line kept this-week hours at one decimal and `Math.round` on all-time. A 2.4h week of 2.4h all-time read `2.4h this week of 2h all-time`. Under 0.5h all-time rounded to `0h`.
+
+**Root cause:** Two formatters for the same unit. Calendar-week hours can equal or (after rounding) exceed all-time.
+
+**Prevention:** Format both sides with the same one-decimal amount. Cap displayed week hours at all-time. Test week==all-time (2.4), all-time under 0.5h, and week hours above all-time.
+
+## 2026-08-31 — Home insight cards showed a hero and left the listening facts unused
+
+**What happened:** The Home insight fan already had `/api/home` fields (`streak`, `most_replayed`, `this_week.most_replayed` / `genre_breakdown`, `top_artist.genre` / `album_count` / `track_count`, `weekly_activity`). Cards rendered a gold hero and label, then a void. Total plays, this week, and listening time taught almost nothing.
+
+**Root cause:** `_homeInsightCards` treated unused payload keys as optional extras instead of the middle of the card. The test loader later started at `_homeInsightFacts` and omitted sibling helpers (`_homePushFact`), so extracted tests threw `not defined`.
+
+**Prevention:** Fill each insight card with 1–3 facts from the already-loaded `/home` payload. Skip missing or zero values. Empty library stays empty — never invent numbers. When a views.js test extracts a helper, include the sibling functions it calls. Do not add API fields when the fact is already on first-paint `/home`.
+
 ## 2026-08-31 — Bugbot: refresh success treated as a live session, skip treated as rejected
 
 **What happened:** PR 152 stayed merge-blocked. Startup persist after a Hi-Fi-only `resolve_source` could write an empty `token.json`. `login_token` / `call_tidal` / `require_tidal` treated `_ensure_token_fresh` True as a usable session without `load_oauth_session` / `check_login`, so `session.user` stayed unset and `list_playlists` crashed. `auth_login` mapped a non-rejected refresh to expired and aborted an in-flight device-code wait. Reset raced keepalive persist. A window skip (`False` because the token was still inside the window) was cached as `REFRESH_REJECTED` and could start `login_oauth`.

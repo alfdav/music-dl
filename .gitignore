@@ -84,6 +84,7 @@ output/
 !/scripts/edge_channel.py
 !/scripts/release_version.py
 !/scripts/check_repository_privacy.py
+!/scripts/check_tauri_cli_plugin_versions.py
 /tidaldl-py/scripts/
 
 # Local MCP config

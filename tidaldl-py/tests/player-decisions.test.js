@@ -19,7 +19,7 @@ function loadDecisionHelpers() {
 
 function loadNowPlayingDownloadHidden() {
   const helperSource = playerSource.match(
-    /function _nowPlayingDownloadHidden\(track, audioSrc\) \{[\s\S]*?\n\}/,
+    /function _hasLocalPlayAffordance\(track\) \{[\s\S]*?\n\}\n\nfunction _nowPlayingDownloadHidden\(track, audioSrc\) \{[\s\S]*?\n\}/,
   );
 
   if (!helperSource) throw new Error('now-playing download helper not found');
@@ -29,7 +29,7 @@ function loadNowPlayingDownloadHidden() {
 
 function loadNowPlayingSource() {
   const helperSource = playerSource.match(
-    /function _nowPlayingSource\(track, audioSrc\) \{[\s\S]*?\n\}/,
+    /function _hasLocalPlayAffordance\(track\) \{[\s\S]*?\n\}\n\nfunction _nowPlayingDownloadHidden\(track, audioSrc\) \{[\s\S]*?\n\}\n\nfunction _nowPlayingSource\(track, audioSrc\) \{[\s\S]*?\n\}/,
   );
 
   if (!helperSource) throw new Error('now-playing source helper not found');
@@ -52,6 +52,17 @@ function loadSearchRefreshHelper(state, document, doSearch) {
   )(state, document, doSearch);
 }
 
+function loadPlayableLocalPath() {
+  const start = playerSource.indexOf('function _playableLocalPath(');
+  if (start < 0) throw new Error('_playableLocalPath is missing');
+  const end = playerSource.indexOf('\nfunction ', start + 1);
+  return new Function(`${playerSource.slice(start, end)}\nreturn _playableLocalPath;`)();
+}
+
+function _playableLocalPathForTest(track) {
+  return loadPlayableLocalPath()(track);
+}
+
 function loadPlayTrack(audio, state) {
   const functionSource = playerSource.split('function playTrack(track) {')[1]
     .split('\nfunction updateNowPlaying(track) {')[0];
@@ -63,6 +74,7 @@ function loadPlayTrack(audio, state) {
     'audio',
     'state',
     '_currentTrackLocalPath',
+    '_playableLocalPath',
     '_resetPlayCount',
     '_recordRecentlyPlayed',
     'toast',
@@ -75,7 +87,7 @@ function loadPlayTrack(audio, state) {
     'updatePlayerHeart',
     '_saveQueue',
     `function playTrack(track) {${functionSource}\nreturn playTrack;`,
-  )(audio, state, track => track?.local_path || track?.path || null, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop);
+  )(audio, state, track => track?.local_path || track?.path || null, _playableLocalPathForTest, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop);
 }
 
 function loadPreloadNext(state) {
@@ -88,8 +100,9 @@ function loadPreloadNext(state) {
     'state',
     '_preloadAudio',
     '_currentTrackLocalPath',
+    '_playableLocalPath',
     `let _preloadedSrc = '';\nfunction _preloadNext() {${functionSource}\nreturn _preloadNext;`,
-  )(state, preloadAudio, track => track?.local_path || track?.path || null);
+  )(state, preloadAudio, track => track?.local_path || track?.path || null, _playableLocalPathForTest);
   return { preloadAudio, preloadNext };
 }
 
@@ -101,7 +114,7 @@ function loadRestorePosition(state, savedPosition) {
   const audio = { src: '', addEventListener: () => {} };
   const restorePosition = new Function(
     'state', 'localStorage', '_trackKey', '_isResumePositionUsable',
-    '_currentTrackLocalPath', 'audio', 'timeElapsed', 'formatTime',
+    '_currentTrackLocalPath', '_playableLocalPath', 'audio', 'timeElapsed', 'formatTime',
     'timeTotal', 'progressFill', '_fetchWaveform',
     `function _restorePosition() {${functionSource}\nreturn _restorePosition;`,
   )(
@@ -110,6 +123,7 @@ function loadRestorePosition(state, savedPosition) {
     track => track.key,
     () => true,
     track => track?.local_path || track?.path || null,
+    _playableLocalPathForTest,
     audio,
     {},
     value => String(value),
@@ -160,6 +174,47 @@ function loadPlayButtonHandler(audio, state, playTrack) {
     'updatePlayButton',
     `return () => {${handlerBody}};`,
   )(audio, state, { href: 'http://localhost/' }, playTrack, () => {});
+}
+
+function loadFetchWaveform(fetchFn, generateWaveform) {
+  const pathHelper = playerSource.match(
+    /function _currentTrackLocalPath\(track\) \{[\s\S]*?\n\}/,
+  );
+  const fetchHelper = playerSource.match(
+    /function _fetchWaveform\(track\) \{[\s\S]*?\n\}/,
+  );
+  if (!pathHelper || !fetchHelper) throw new Error('waveform fetch helpers not found');
+  return new Function(
+    'fetch',
+    'generateWaveform',
+    `${pathHelper[0]}\n${fetchHelper[0]}\nreturn _fetchWaveform;`,
+  )(fetchFn, generateWaveform);
+}
+
+function loadWfLoop({ audio, bars, hires }) {
+  const loopSource = playerSource.match(
+    /function _wfLoop\(\) \{[\s\S]*?\n\}/,
+  );
+  if (!loopSource) throw new Error('_wfLoop not found');
+  return new Function(
+    'audio',
+    '_wfBars',
+    '_wfHires',
+    'requestAnimationFrame',
+    `let _wfAnimId = null;\n${loopSource[0]}\nreturn _wfLoop;`,
+  )(audio, bars, hires, () => {});
+}
+
+function makeWfBar(baseScale) {
+  return {
+    _baseScale: baseScale,
+    style: { transform: `scaleY(${baseScale.toFixed(3)})` },
+    classList: {
+      added: new Set(),
+      add(name) { this.added.add(name); },
+      remove(name) { this.added.delete(name); },
+    },
+  };
 }
 
 function loadUpgradeQualityJump(qualityTitle) {
@@ -222,7 +277,7 @@ function loadTidalStatusHelpers(sessionStorage) {
   )(sessionStorage);
 }
 
-function loadPlaybackStatusEvents(state, sessionStorage, refreshTidalStatus) {
+function loadPlaybackStatusEvents(state, sessionStorage, refreshTidalStatus, extras = {}) {
   const sessionSource = playerSource.match(
     /const _REMOTE_PLAYBACK_UNAVAILABLE_KEY = 'remotePlaybackUnavailable';[\s\S]*?\n\}\n\nfunction _tidalStatusPresentation/,
   );
@@ -238,7 +293,10 @@ function loadPlaybackStatusEvents(state, sessionStorage, refreshTidalStatus) {
     addEventListener(name, handler) { this.handlers[name] = handler; },
   };
   const document = { querySelectorAll: () => [] };
-  const playTrack = () => { throw new Error('remote failure must not auto-skip'); };
+  const playTrack = extras.playTrack || (() => { throw new Error('remote failure must not auto-skip'); });
+  const api = extras.api || (async () => ({ done: true, reconciling: false }));
+  const fetchFn = extras.fetch || (async () => ({ status: 403 }));
+  const localPath = extras.localPath || (track => track?.local_path || track?.path || null);
   new Function(
     'audio',
     'state',
@@ -250,10 +308,17 @@ function loadPlaybackStatusEvents(state, sessionStorage, refreshTidalStatus) {
     'setWaveformPlaying',
     'playTrack',
     'setTimeout',
+    'api',
+    'fetch',
+    '_currentTrackLocalPath',
     `${sessionHelpers}\n${eventSource[0]}\nreturn audio.handlers;`,
-  )(audio, state, document, sessionStorage, refreshTidalStatus, () => {}, () => {}, () => {}, playTrack, () => {});
+  )(
+    audio, state, document, sessionStorage, refreshTidalStatus,
+    extras.toast || (() => {}), () => {}, () => {}, playTrack, extras.setTimeout || (() => {}),
+    api, fetchFn, localPath,
+  );
 
-  return { events: audio.handlers };
+  return { events: audio.handlers, audio };
 }
 
 function loadTidalStatusRefresh(document, refreshStatusLights, loadAuthStatus) {
@@ -462,8 +527,9 @@ describe('now-playing download visibility', () => {
     }, '/api/playback/stream/42')).toBe(true);
     expect(hidden({
       id: 42,
+      is_local: false,
       path: '/music/Sandy, PAPO/Otra Vez/Huelepega.flac',
-    }, '/api/playback/stream/42')).toBe(true);
+    }, '/api/playback/stream/42')).toBe(false);
   });
 
   test('hides Download when audio is already a local playback URL', () => {
@@ -494,7 +560,7 @@ describe('now-playing source chip', () => {
     const source = loadNowPlayingSource();
 
     expect(source({ is_local: true, name: 'Huelepega' }, '')).toBe('local');
-    expect(source({ path: '/music/Huelepega.flac' }, '')).toBe('local');
+    expect(source({ path: '/music/Huelepega.flac' }, '')).toBe(null);
     expect(source({ local_path: '/music/Huelepega.flac' }, '')).toBe('local');
     expect(source({ id: 42, name: 'Huelepega' }, '')).toBe('tidal');
   });
@@ -566,6 +632,48 @@ describe('local playback decisions', () => {
     expect(pathAudio.src).not.toContain('null');
     expect(pathAudio.src).not.toContain('undefined');
     expect(invalidLocalAudio.src).toBe('');
+  });
+
+  test('does not play a dead library path as local or Tidal', () => {
+    const deadLocal = {
+      src: '',
+      muted: false,
+      pause: () => {},
+      addEventListener: () => {},
+      load: () => {},
+    };
+    const deadWithTidalId = {
+      src: '',
+      muted: false,
+      pause: () => {},
+      addEventListener: () => {},
+      load: () => {},
+    };
+
+    loadPlayTrack(deadLocal, { playing: false })({
+      is_local: false,
+      playable: false,
+      path: '/music/dead.flac',
+    });
+    loadPlayTrack(deadWithTidalId, { playing: false })({
+      id: 42,
+      is_local: false,
+      playable: false,
+      path: '/music/dead.flac',
+    });
+
+    expect(deadLocal.src).toBe('');
+    expect(deadWithTidalId.src).toBe('/api/playback/stream/42');
+  });
+
+  test('leftover missing_since does not block a playable local file', () => {
+    const playablePath = loadPlayableLocalPath();
+    expect(playablePath({
+      is_local: true,
+      playable: true,
+      missing_since: 1700000000,
+      local_path: '/music/live.flac',
+    })).toBe('/music/live.flac');
   });
 
   test('plays a Tidal item from disk when a local path is stamped', () => {
@@ -681,6 +789,21 @@ describe('local playback decisions', () => {
     })).toBe('44100Hz/24bit · Hi-Res → Hi-Res Lossless · 24-bit FLAC');
   });
 
+  test('upgrade jump does not present stored AAC Hz/bit as CD lossless', () => {
+    const qualityJump = loadUpgradeQualityJump((q, fmt, codec) => {
+      if ((codec || '').toLowerCase() === 'aac') return 'aac · Lossy';
+      if (q === 'HI_RES_LOSSLESS') return 'Hi-Res Lossless · 24-bit FLAC';
+      return q;
+    });
+
+    expect(qualityJump({
+      current_quality: '44100Hz/16bit',
+      current_format: 'M4A',
+      current_codec: 'aac',
+      available_quality: 'HI_RES_LOSSLESS',
+    })).toBe('aac · Lossy → Hi-Res Lossless · 24-bit FLAC');
+  });
+
   test('presents a connected Tidal session as ready', () => {
     const storage = new Map();
     const helpers = loadTidalStatusHelpers({
@@ -777,8 +900,180 @@ describe('local playback decisions', () => {
     expect(localRefreshCalls).toEqual([]);
   });
 
+  test('local GET failure on a dead indexed path does not mark Tidal unavailable', () => {
+    const storage = new Map();
+    const sessionStorage = {
+      getItem: key => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key),
+    };
+    const refreshCalls = [];
+    const toasts = [];
+    const loaded = loadPlaybackStatusEvents(
+      { playing: true, queue: [{ is_local: false, playable: false, path: '/music/dead.flac' }], queueIndex: 0 },
+      sessionStorage,
+      () => refreshCalls.push('refresh'),
+      { toast: (msg) => toasts.push(msg) },
+    );
+    loaded.audio.src = '/api/playback/local?path=%2Fmusic%2Fdead.flac';
+    loaded.events.error();
+
+    expect(storage.get('remotePlaybackUnavailable')).toBeUndefined();
+    expect(refreshCalls).toEqual([]);
+    expect(toasts.some(msg => String(msg).includes('Tidal stream unavailable'))).toBe(false);
+  });
+
   test('reports aggregate local failures as local file access failures', () => {
     expect(playerSource).toContain("toast('Multiple local files failed \\u2014 check file access', 'error');");
+  });
+
+  test('202 and 409 poll reconcile then retry the same local track', async () => {
+    const storage = new Map();
+    const sessionStorage = {
+      getItem: key => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key),
+    };
+    const track = { is_local: true, name: 'Song', local_path: '/music/song.wav' };
+    const state = { playing: true, queue: [track, { is_local: true, name: 'Next' }], queueIndex: 0 };
+    const playCalls = [];
+    const polls = [];
+    const toasts = [];
+    const skips = [];
+    let probes = 0;
+    const { events } = loadPlaybackStatusEvents(state, sessionStorage, () => {}, {
+      playTrack: (item) => playCalls.push(item),
+      api: async (path) => {
+        polls.push(path);
+        return { done: true, reconciling: false };
+      },
+      fetch: async () => ({ status: ++probes === 1 ? 202 : 200 }),
+      toast: (msg) => toasts.push(msg),
+      setTimeout: (fn) => skips.push(fn),
+    });
+
+    events.error();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(playCalls).toEqual([track]);
+    expect(polls).toContain('/library/reconcile/status');
+    expect(probes).toBe(2);
+    expect(state.queueIndex).toBe(0);
+    expect(skips).toEqual([]);
+    expect(toasts).toEqual([]);
+  });
+
+  test('heal retry does not loop when the file is still missing after poll', async () => {
+    const storage = new Map();
+    const sessionStorage = {
+      getItem: key => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key),
+    };
+    const track = { is_local: true, name: 'Song', local_path: '/music/song.wav' };
+    const next = { is_local: true, name: 'Next', local_path: '/music/next.wav' };
+    const state = { playing: true, queue: [track, next], queueIndex: 0 };
+    const playCalls = [];
+    const { events } = loadPlaybackStatusEvents(state, sessionStorage, () => {}, {
+      playTrack: (item) => playCalls.push(item),
+      api: async () => ({ done: true, reconciling: false }),
+      fetch: async () => ({ status: 202 }),
+      setTimeout: (fn) => fn(),
+    });
+
+    events.error();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(playCalls).toEqual([next]);
+    expect(state.queueIndex).toBe(1);
+  });
+
+  test('a second error after a 200 heal retry skips', async () => {
+    const storage = new Map();
+    const sessionStorage = {
+      getItem: key => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key),
+    };
+    const track = { is_local: true, name: 'Broken', local_path: '/music/broken.wav' };
+    const next = { is_local: true, name: 'Next', local_path: '/music/next.wav' };
+    const state = { playing: true, queue: [track, next], queueIndex: 0 };
+    const playCalls = [];
+    const { events } = loadPlaybackStatusEvents(state, sessionStorage, () => {}, {
+      playTrack: (item) => playCalls.push(item),
+      fetch: async () => ({ status: 200 }),
+      setTimeout: (fn) => fn(),
+    });
+
+    events.error();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(playCalls).toEqual([track]);
+
+    events.error();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(playCalls).toEqual([track, next]);
+    expect(state.queueIndex).toBe(1);
+  });
+
+  test('heal retry does not restart a track after the user moves on', async () => {
+    const storage = new Map();
+    const sessionStorage = {
+      getItem: key => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key),
+    };
+    const track = { is_local: true, name: 'Song', local_path: '/music/song.wav' };
+    const next = { is_local: true, name: 'Next', local_path: '/music/next.wav' };
+    const state = { playing: true, queue: [track, next], queueIndex: 0 };
+    const playCalls = [];
+    const { events } = loadPlaybackStatusEvents(state, sessionStorage, () => {}, {
+      playTrack: (item) => playCalls.push(item),
+      api: async () => {
+        state.queueIndex = 1;
+        return { done: true, reconciling: false };
+      },
+      fetch: async () => ({ status: 202 }),
+      setTimeout: (fn) => fn(),
+    });
+
+    events.error();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(playCalls).toEqual([]);
+    expect(state.queueIndex).toBe(1);
+  });
+
+  test('403 after a completed heal may skip the local track', async () => {
+    const storage = new Map();
+    const sessionStorage = {
+      getItem: key => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key),
+    };
+    const track = { is_local: true, name: 'Gone', local_path: '/music/gone.wav' };
+    const next = { is_local: true, name: 'Next' };
+    const state = { playing: true, queue: [track, next], queueIndex: 0 };
+    const playCalls = [];
+    const toasts = [];
+    const { events } = loadPlaybackStatusEvents(state, sessionStorage, () => {}, {
+      playTrack: (item) => playCalls.push(item),
+      fetch: async () => ({ status: 403 }),
+      toast: (msg) => toasts.push(msg),
+      setTimeout: (fn) => fn(),
+    });
+
+    events.error();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(playCalls).toEqual([next]);
+    expect(state.queueIndex).toBe(1);
+    expect(toasts.some((msg) => String(msg).includes('unavailable'))).toBe(true);
   });
 });
 
@@ -840,5 +1135,96 @@ describe('recent history sync decisions', () => {
     expect(recentlyPlayed).toEqual([
       { id: 'duplicate', source: 'server', played_at: 1_700_000_000_000 },
     ]);
+  });
+});
+
+describe('waveform fetch gating', () => {
+  function captureFetch() {
+    const calls = [];
+    const fetchFn = (url) => {
+      calls.push(url);
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ peaks: [0.2, 0.4], hires: [0.1, 0.8] }),
+      });
+    };
+    const generated = [];
+    const generateWaveform = (...args) => generated.push(args);
+    return { calls, generated, fetchWaveform: loadFetchWaveform(fetchFn, generateWaveform) };
+  }
+
+  test('fetches peaks+hires for any playable local path key, not is_local+local_path only', () => {
+    const cases = [
+      { is_local: true, local_path: '/library/any-artist/any-album/track-a.flac' },
+      { is_local: true, path: '/library/any-artist/any-album/track-b.flac' },
+      { path: '/library/any-artist/any-album/track-c.flac' },
+      { local_path: '/library/any-artist/any-album/track-d.flac' },
+      { is_local: false, path: '/library/any-artist/any-album/track-e.flac' },
+    ];
+
+    for (const track of cases) {
+      const { calls, generated, fetchWaveform } = captureFetch();
+      fetchWaveform(track);
+      const expected = track.local_path || track.path;
+      expect(calls).toEqual([
+        '/api/playback/waveform?path=' + encodeURIComponent(expected),
+      ]);
+      expect(generated).toEqual([]);
+    }
+  });
+
+  test('does not fetch when there is no playable local file path', () => {
+    const skipped = [
+      null,
+      { is_local: true },
+      { is_local: true, local_path: '', path: '' },
+      { id: 99, is_local: false, name: 'Remote only' },
+    ];
+
+    for (const track of skipped) {
+      const { calls, generated, fetchWaveform } = captureFetch();
+      fetchWaveform(track);
+      expect(calls).toEqual([]);
+      expect(generated).toEqual([[]]);
+    }
+  });
+});
+
+describe('waveform pulse loop', () => {
+  test('without hires, the loop sweeps played classes but does not pulse scaleY', () => {
+    const bars = [makeWfBar(0.80), makeWfBar(0.60), makeWfBar(0.40), makeWfBar(0.20)];
+    const before = bars.map(bar => bar.style.transform);
+    const loop = loadWfLoop({
+      audio: { currentTime: 5, duration: 10 },
+      bars,
+      hires: null,
+    });
+
+    loop();
+
+    expect(bars.map(bar => bar.style.transform)).toEqual(before);
+    expect(bars[0].classList.added.has('wf-played')).toBe(true);
+    expect(bars[1].classList.added.has('wf-played')).toBe(true);
+    expect(bars[2].classList.added.has('wf-active')).toBe(true);
+    expect(bars[3].classList.added.has('wf-played')).toBe(false);
+  });
+
+  test('with hires, playing modulates scaleY so the waveform breathes', () => {
+    const bars = [makeWfBar(0.80), makeWfBar(0.60), makeWfBar(0.40), makeWfBar(0.20)];
+    const before = bars.map(bar => bar.style.transform);
+    const hires = new Array(20).fill(0);
+    hires[10] = 1;
+    const loop = loadWfLoop({
+      audio: { currentTime: 5, duration: 10 },
+      bars,
+      hires,
+    });
+
+    loop();
+
+    const after = bars.map(bar => bar.style.transform);
+    expect(after).not.toEqual(before);
+    expect(bars[2].style.transform).not.toBe(before[2]);
+    expect(bars[2].classList.added.has('wf-active')).toBe(true);
   });
 });

@@ -116,8 +116,10 @@
   <div class="lyrics-panel-inner" id="lyrics-panel-inner">
     <div class="lyrics-artwork-bg" id="lyrics-artwork-bg" aria-hidden="true"></div>
     <button class="lyrics-save" id="lyrics-save" type="button" hidden>Save lyrics</button>
+    <button class="lyrics-sync" id="lyrics-sync" type="button" hidden disabled aria-label="Sync lyrics">Sync lyrics</button>
+    <div id="lyrics-sync-status" class="lyrics-sync-status" aria-live="polite"></div>
     <button class="lyrics-close" id="lyrics-close" aria-label="Close lyrics">&times;</button>
-    <div class="lyrics-body" id="lyrics-body">
+    <div class="lyrics-body" id="lyrics-body" tabindex="-1">
       <div class="lyrics-shell lyrics-shell-loading">Loading lyrics…</div>
     </div>
   </div>

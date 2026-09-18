@@ -261,6 +261,92 @@ def test_oauth_exact_quality_rejects_before_manifest_reaches_segment_consumption
     assert segment_calls == []
 
 
+def test_concurrent_quality_adjustments_cannot_clobber_peer_get_stream():
+    """Shared Tidal session quality must stay per-call around get_stream."""
+    subject = _oauth_stream_subject()
+    subject.session.audio_quality = Quality.low_96k
+    seen: dict[str, Quality] = {}
+    first_in_stream = threading.Event()
+    errors: list[BaseException] = []
+
+    def make_track(label: str, delivered: Quality):
+        class LocalTrack(Track):
+            def __init__(self):
+                pass
+
+            @property
+            def id(self):
+                return 118 if label == "hires" else 119
+
+            @property
+            def audio_modes(self):
+                return []
+
+            def get_stream(self):
+                if not first_in_stream.is_set():
+                    first_in_stream.set()
+                    time.sleep(0.15)
+                seen[label] = subject.session.audio_quality
+                manifest = type(
+                    "Manifest",
+                    (),
+                    {
+                        "file_extension": ".flac",
+                        "codecs": "flac",
+                        "get_urls": lambda self: ["https://example.invalid/segment"],
+                    },
+                )()
+                return type(
+                    "Stream",
+                    (),
+                    {
+                        "audio_quality": delivered,
+                        "get_stream_manifest": lambda self: manifest,
+                    },
+                )()
+
+        return LocalTrack()
+
+    def run(label: str, quality: Quality, delivered: Quality) -> None:
+        try:
+            subject._get_stream_info(make_track(label, delivered), quality_audio=quality)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    first = threading.Thread(
+        target=run,
+        args=("hires", Quality.hi_res_lossless, Quality.hi_res_lossless),
+        name="quality-hires",
+    )
+    first.start()
+    assert first_in_stream.wait(timeout=2)
+    second = threading.Thread(
+        target=run,
+        args=("cd", Quality.high_lossless, Quality.high_lossless),
+        name="quality-cd",
+    )
+    second.start()
+    first.join(timeout=5)
+    second.join(timeout=5)
+    assert errors == []
+    assert seen["hires"] == Quality.hi_res_lossless
+    assert seen["cd"] == Quality.high_lossless
+    assert subject.session.audio_quality == Quality.low_96k
+
+
+def test_item_passes_quality_into_locked_stream_info():
+    """item() must not leave a long-lived session quality mutation around get_stream."""
+    import inspect
+
+    from tidal_dl.download.items import ItemMixin
+
+    item_src = inspect.getsource(ItemMixin.item)
+    download_src = inspect.getsource(ItemMixin._download_and_process_media)
+    assert "_adjust_quality_settings" not in item_src
+    assert "quality_audio" in download_src
+    assert "_get_stream_info" in download_src
+
+
 def _hifi_stream_subject(result):
     subject = _oauth_stream_subject()
     calls = []
@@ -515,7 +601,7 @@ def test_resolve_source_uses_capped_timeout_for_hifi_and_gist(monkeypatch):
 
 
 def test_refresh_api_keys_honors_explicit_timeout(monkeypatch):
-    import tidal_dl.api as api
+    from tidal_dl import api
 
     seen: dict[str, object] = {}
 

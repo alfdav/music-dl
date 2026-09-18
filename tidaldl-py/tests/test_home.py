@@ -143,6 +143,28 @@ def test_home_stats_with_data(db):
     assert stats["genre_breakdown"][0]["count"] == 15  # 10 + 5 Electronic plays
 
 
+def test_home_stats_excludes_missing_since_rows(db):
+    """Vanished library rows stay off Home recents-adjacent collection tiles."""
+    db.record("keep.flac", status="tagged", artist="Kept", title="Stay",
+              album="Here", duration=180, genre="Rock")
+    db.record("gone.flac", status="tagged", artist="Ghost", title="Missing",
+              album="Away", duration=200, genre="Rock")
+    db.log_play_event(path="keep.flac", artist="Kept", genre="Rock", duration=180)
+    db.log_play_event(path="gone.flac", artist="Ghost", genre="Rock", duration=200)
+    db.log_play_event(path="gone.flac", artist="Ghost", genre="Rock", duration=200)
+    db.mark_missing("gone.flac", since=1_700_000_000)
+    db.commit()
+
+    stats = db.home_stats()
+    assert stats["track_count"] == 1
+    assert stats["album_count"] == 1
+    assert stats["most_replayed"]["name"] == "Stay"
+    assert stats["most_replayed"]["path"] == "keep.flac"
+    assert stats["top_artist"]["name"] == "Kept"
+    assert stats["top_artist"]["track_count"] == 1
+    assert [row["path"] for row in db.recent_plays()] == ["keep.flac"]
+
+
 def test_genre_normalization():
     """Genre variants are normalized to canonical forms."""
     from tidal_dl.gui.api.library import _normalize_genre

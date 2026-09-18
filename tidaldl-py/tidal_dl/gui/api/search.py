@@ -1,19 +1,72 @@
 """GET /api/search — Tidal search with ISRC cross-reference."""
 from __future__ import annotations
 
-from pathlib import Path
+import re
+import unicodedata
 from typing import Any
 
 from fastapi import APIRouter, Query
 
 from tidal_dl.config import Tidal
 from tidal_dl.gui.services.db import get_library_db
+from tidal_dl.gui.tidal_ref import TidalRef, looks_like_web_url, parse_tidal_ref
+from tidal_dl.helper.library_scanner import path_has_skipped_scan_dir
+from tidal_dl.helper.local_identity import (
+    candidate_rows_for_track,
+    finish_stamp,
+    identity_path_for_row,
+    match_local_row,
+    stamp_track,
+)
+from tidal_dl.helper.path import resolve_live_library_path
 
 router = APIRouter()
 
 
 def _get_library_db():
     return get_library_db()
+
+
+def _live_library_row(db: Any, isrc: str) -> dict | None:
+    """Prefer a live library file. Never rank a `#recycle` / trash path first.
+
+    Twin-file ISRC adopt (#179) and download skip share
+    ``playable_library_row_for_isrc``. A stale ``Artist/Artist - Album``
+    index path heals through ``present_playable_path``; identity still
+    resolves layout-move paths so search can stamp ``is_local``.
+    """
+    from tidal_dl.helper.library_reconcile import present_playable_path
+    from tidal_dl.helper.recording_identity import playable_library_row_for_isrc
+
+    if not isrc:
+        return None
+    playable = playable_library_row_for_isrc(db, isrc)
+    if playable:
+        served, ok = present_playable_path(playable.get("path") or "", db)
+        if ok:
+            return {**playable, "path": served}
+        live = resolve_live_library_path(playable.get("path") or "") or identity_path_for_row(
+            playable
+        )
+        if live:
+            stamped = dict(playable)
+            stamped["path"] = live
+            return stamped
+        return playable
+    for row in db.tracks_by_isrc(isrc):
+        path = row.get("path") or ""
+        if path_has_skipped_scan_dir(path):
+            continue
+        served, ok = present_playable_path(path, db)
+        if ok:
+            return {**row, "path": served}
+        live = resolve_live_library_path(path) or identity_path_for_row(row)
+        if not live:
+            continue
+        stamped = dict(row)
+        stamped["path"] = live
+        return stamped
+    return None
 
 
 def get_tidal():
@@ -26,6 +79,17 @@ def get_tidal_session():
     tidal = get_tidal()
     ensure_tidal_logged_in(tidal)
     return tidal.session
+
+
+def _catalog_quality(track: Any) -> str:
+    tags = getattr(track, "media_metadata_tags", None) or []
+    if "HIRES_LOSSLESS" in tags:
+        return "HI_RES_LOSSLESS"
+    if "HIRES" in tags:
+        return "HI_RES"
+    if "DOLBY_ATMOS" in tags:
+        return "DOLBY_ATMOS"
+    return getattr(track, "audio_quality", "") or ""
 
 
 def _serialize_track(track: Any, isrc_index: Any = None) -> dict:
@@ -43,49 +107,231 @@ def _serialize_track(track: Any, isrc_index: Any = None) -> dict:
             pass
 
     isrc = getattr(track, "isrc", "") or ""
-    local_path = None
     local_row = None
+    db = _get_library_db()
     if isrc:
-        db = _get_library_db()
-        local_row = next(
-            (row for row in db.tracks_by_isrc(isrc) if Path(row.get("path") or "").is_file()),
-            None,
-        )
-        if local_row:
-            local_path = local_row["path"]
-    is_local = bool(local_path)
+        local_row = _live_library_row(db, isrc)
+    draft = {
+        "name": track.full_name or track.name,
+        "artist": artist_name,
+        "album": album_name,
+        "isrc": isrc,
+    }
+    if local_row is None:
+        local_row = match_local_row(draft, candidate_rows_for_track(db, draft))
 
-    tags = getattr(track, "media_metadata_tags", None) or []
-    if "HIRES_LOSSLESS" in tags:
-        quality = "HI_RES_LOSSLESS"
-    elif "HIRES" in tags:
-        quality = "HI_RES"
-    elif "DOLBY_ATMOS" in tags:
-        quality = "DOLBY_ATMOS"
-    else:
-        quality = getattr(track, "audio_quality", "") or ""
+    quality = _catalog_quality(track)
 
+    artist_id = getattr(artists[0], "id", None) if artists else None
     result = {
         "id": track.id,
         "name": track.full_name or track.name,
         "artist": artist_name,
         "album": album_name,
         "album_id": album_id,
+        "artist_id": artist_id,
         "cover_url": cover_url,
         "duration": track.duration or 0,
         "quality": quality,
         "isrc": isrc,
-        "is_local": is_local,
+        "is_local": False,
     }
-    if local_row:
-        result.update({
-            "local_path": local_path,
-            "path": local_path,
-            "quality": local_row.get("quality") or quality,
-            "format": local_row.get("format") or "",
-            "codec": local_row.get("codec") or "unknown",
-        })
-    return result
+    return finish_stamp(stamp_track(result, local_row))
+
+
+def _empty(type_str: str, error: str) -> dict:
+    key = type_str if type_str in {"tracks", "albums", "artists", "playlists"} else "tracks"
+    return {key: [], "total": 0, "error": error}
+
+
+def _fold(value: str) -> str:
+    if not value:
+        return ""
+    stripped = "".join(
+        ch for ch in unicodedata.normalize("NFKD", value) if not unicodedata.combining(ch)
+    )
+    cleaned = re.sub(r"[^\w]+", " ", stripped.casefold())
+    return " ".join(cleaned.split())
+
+
+def _token_overlap(left: str, right: str) -> float:
+    a = set(_fold(left).split())
+    b = set(_fold(right).split())
+    if not a or not b:
+        return 0.0
+    return len(a & b) / max(len(a), len(b))
+
+
+def _name_score(query: str, name: str) -> float:
+    q = _fold(query)
+    n = _fold(name)
+    if not q or not n:
+        return 0.0
+    if q == n:
+        return 1.0
+    if q in n or n in q:
+        return 0.85
+    return _token_overlap(q, n)
+
+
+def _strong_title_match(query: str, tracks: list[Any]) -> bool:
+    return any(
+        _name_score(query, getattr(track, "full_name", None) or getattr(track, "name", "") or "")
+        >= 0.7
+        for track in tracks
+    )
+
+
+def _track_artist_names(track: Any) -> list[str]:
+    artists = getattr(track, "artists", None) or []
+    names = [getattr(artist, "name", "") or "" for artist in artists]
+    if not names:
+        artist = getattr(track, "artist", None)
+        if artist is not None:
+            names = [getattr(artist, "name", None) or str(artist)]
+    return [name for name in names if name]
+
+
+def _strong_artist_match(query: str, tracks: list[Any]) -> bool:
+    return any(
+        _name_score(query, name) >= 0.7
+        for track in tracks
+        for name in _track_artist_names(track)
+    )
+
+
+def _use_album_title_fallback(query: str, tracks: list[Any]) -> bool:
+    """Album-title fallback only when track search missed, or the query is an album title."""
+    if not tracks:
+        return True
+    if _strong_title_match(query, tracks):
+        return False
+    return not _strong_artist_match(query, tracks)
+
+
+def _session_get(session: Any, kind: str, item_id: str) -> Any:
+    if kind == "track":
+        try:
+            return session.track(item_id, with_album=True)
+        except TypeError:
+            return session.track(item_id)
+    if kind == "album":
+        return session.album(item_id)
+    if kind == "artist":
+        return session.artist(item_id)
+    if kind == "playlist":
+        return session.playlist(item_id)
+    raise ValueError(f"unsupported Tidal kind: {kind}")
+
+
+def _resolve_ref(tidal: Any, ref: TidalRef) -> dict:
+    from fastapi import HTTPException
+
+    from tidal_dl.gui.api.settings import call_tidal
+
+    try:
+        item = call_tidal(tidal, lambda: _session_get(tidal.session, ref.kind, ref.id))
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        return _empty(
+            {"track": "tracks", "album": "albums", "artist": "artists", "playlist": "playlists"}[
+                ref.kind
+            ],
+            f"Tidal {ref.kind} not found",
+        )
+
+    if ref.kind == "track":
+        serialized = _serialize_track(item)
+        album_id = serialized.get("album_id")
+        return {
+            "tracks": [serialized],
+            "total": 1,
+            "resolve": {"kind": "track", "id": item.id, "album_id": album_id},
+        }
+    if ref.kind == "album":
+        serialized = _serialize_album(item)
+        return {
+            "albums": [serialized],
+            "total": 1,
+            "resolve": {"kind": "album", "id": item.id, "name": serialized.get("name")},
+        }
+    if ref.kind == "artist":
+        serialized = _serialize_item(item)
+        return {
+            "artists": [serialized],
+            "total": 1,
+            "resolve": {
+                "kind": "artist",
+                "id": item.id,
+                "name": serialized.get("name"),
+            },
+        }
+    serialized = _serialize_item(item)
+    return {
+        "playlists": [serialized],
+        "total": 1,
+        "resolve": {
+            "kind": "playlist",
+            "id": item.id,
+            "name": serialized.get("name"),
+            "cover_url": serialized.get("cover_url"),
+            "num_tracks": serialized.get("num_tracks"),
+        },
+    }
+
+
+def _album_tracks_for_query(tidal: Any, query: str, limit: int) -> list[Any] | None:
+    from fastapi import HTTPException
+    from tidalapi.album import Album
+
+    from tidal_dl.gui.api.settings import call_tidal
+
+    try:
+        results = call_tidal(
+            tidal,
+            lambda: tidal.session.search(query, models=[Album], limit=min(limit, 10)),
+        )
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        return None
+
+    albums = results.get("albums", []) or []
+    ranked = sorted(
+        albums,
+        key=lambda album: _name_score(query, getattr(album, "name", "") or ""),
+        reverse=True,
+    )
+    best = next(
+        (album for album in ranked if _name_score(query, getattr(album, "name", "") or "") >= 0.7),
+        None,
+    )
+    if best is None:
+        return None
+
+    def _load_tracks():
+        loaded = tidal.session.album(best.id)
+        return loaded.tracks() or []
+
+    try:
+        return call_tidal(tidal, _load_tracks)
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        try:
+            return list(best.tracks() or [])
+        except Exception:  # noqa: BLE001
+            return None
+
+
+def _serialize_track_hits(tracks: list[Any]) -> list[dict]:
+    serialized = [_serialize_track(track) for track in tracks]
+    serialized.sort(key=lambda item: (
+        path_has_skipped_scan_dir(item.get("path") or item.get("local_path") or ""),
+        not item["is_local"],
+    ))
+    return serialized
 
 
 @router.get("/search")
@@ -99,9 +345,24 @@ def search(
 ) -> dict:
     from fastapi import HTTPException
 
-    from tidal_dl.gui.api.settings import call_tidal
+    from tidal_dl.gui.api.settings import (
+        _login_required_error,
+        _persisted_refresh_token,
+        _session_logged_in,
+        call_tidal,
+    )
 
     tidal = get_tidal()
+    if not _persisted_refresh_token(tidal) and not _session_logged_in(
+        getattr(tidal, "session", None)
+    ):
+        raise _login_required_error()
+
+    ref = parse_tidal_ref(q, type_hint=type)
+    if ref:
+        return _resolve_ref(tidal, ref)
+    if looks_like_web_url(q):
+        return _empty(type, "Not a recognized Tidal URL")
     try:
         results = call_tidal(
             tidal,
@@ -116,16 +377,54 @@ def search(
 
     if type == "tracks":
         tracks = results.get("tracks", []) or []
-        serialized = [_serialize_track(t) for t in tracks]
-        serialized.sort(key=lambda t: (not t["is_local"],))
-        return {
-            "tracks": serialized,
-            "total": len(serialized),
-        }
+        if _use_album_title_fallback(q, tracks):
+            album_tracks = _album_tracks_for_query(tidal, q, limit)
+            if album_tracks:
+                serialized = _serialize_track_hits(album_tracks)
+                return {"tracks": serialized, "total": len(serialized)}
+        serialized = _serialize_track_hits(tracks)
+        return {"tracks": serialized, "total": len(serialized)}
 
     items = results.get(type, []) or []
     serializer = _serialize_album if type == "albums" else _serialize_item
     return {type: [serializer(item) for item in items], "total": len(items)}
+
+
+@router.get("/artists/{artist_id}/albums")
+def artist_albums(artist_id: int) -> dict:
+    """Tidal discography for an artist id — used by the hybrid artist gallery."""
+    from fastapi import HTTPException
+
+    from tidal_dl.gui.api.settings import call_tidal
+
+    tidal = get_tidal()
+
+    def _load():
+        artist = tidal.session.artist(artist_id)
+        albums: list[Any] = []
+        for getter_name in ("get_albums", "get_ep_singles"):
+            getter = getattr(artist, getter_name, None)
+            if not callable(getter):
+                continue
+            try:
+                albums.extend(getter(limit=50) or [])
+            except TypeError:
+                albums.extend(getter() or [])
+        return artist, albums
+
+    try:
+        artist, albums = call_tidal(tidal, _load)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"Artist not found: {exc}") from exc
+
+    serialized = [_serialize_album(album) for album in albums]
+    return {
+        "artist": _serialize_item(artist),
+        "albums": serialized,
+        "total": len(serialized),
+    }
 
 
 def _model_for_type(type_str: str):

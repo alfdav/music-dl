@@ -1,6 +1,7 @@
 """Play events and home dashboard stats."""
 
 from tidal_dl.helper.library_db._common import *
+from tidal_dl.helper.library_scanner import visible_scanned_path_sql
 
 
 class PlaybackMixin:
@@ -8,9 +9,10 @@ class PlaybackMixin:
         """Bump play_count and set last_played for a scanned track."""
         assert self._conn
         now = int(time.time())
+        nfc, nfd = library_path_forms(path)
         self._conn.execute(
-            "UPDATE scanned SET play_count = play_count + 1, last_played = ? WHERE path = ?",
-            (now, path),
+            "UPDATE scanned SET play_count = play_count + 1, last_played = ? WHERE path IN (?, ?)",
+            (now, nfc, nfd),
         )
 
     def log_play_event(
@@ -25,9 +27,10 @@ class PlaybackMixin:
         """Insert a play event for activity charts."""
         assert self._conn
         ts = played_at if played_at is not None else int(time.time())
+        event_path = canonical_library_path(path) if path else path
         self._conn.execute(
             "INSERT INTO play_events (path, artist, genre, duration, played_at) VALUES (?, ?, ?, ?, ?)",
-            (path, artist, genre, duration, ts),
+            (event_path, artist, genre, duration, ts),
         )
 
     def recent_plays(self, limit: int = 50, offset: int = 0) -> list[dict]:
@@ -36,7 +39,7 @@ class PlaybackMixin:
         safe_limit = max(1, min(int(limit), 100))
         safe_offset = max(0, int(offset))
         rows = self._conn.execute(
-            """SELECT s.path, s.isrc, s.artist, s.title, s.album, s.duration,
+            f"""SELECT s.path, s.isrc, s.artist, s.title, s.album, s.duration,
                       s.quality, s.format, s.codec, s.genre, s.play_count, s.last_played,
                       s.art_available,
                       latest.played_at
@@ -47,7 +50,8 @@ class PlaybackMixin:
                    GROUP BY path
                ) latest
                JOIN scanned s ON s.path = latest.path
-               WHERE s.status != 'unreadable'
+               WHERE s.status != 'unreadable' AND s.missing_since IS NULL
+                 AND {visible_scanned_path_sql("s.path")}
                ORDER BY latest.played_at DESC
                LIMIT ? OFFSET ?""",
             (safe_limit, safe_offset),
@@ -73,9 +77,11 @@ class PlaybackMixin:
         ).fetchone()[0]
 
         top_artists_rows = c.execute(
-            """SELECT artist, COUNT(*) as total
-               FROM play_events WHERE artist IS NOT NULL AND played_at >= ?
-               GROUP BY artist ORDER BY total DESC LIMIT 5""",
+            """SELECT pe.artist, COUNT(*) as total
+               FROM play_events pe
+               JOIN scanned s ON s.path = pe.path AND s.missing_since IS NULL
+               WHERE pe.artist IS NOT NULL AND pe.played_at >= ?
+               GROUP BY pe.artist ORDER BY total DESC LIMIT 5""",
             (since,),
         ).fetchall()
 
@@ -90,17 +96,20 @@ class PlaybackMixin:
             ).fetchone()
             if not best_path:
                 best_path = c.execute(
-                    "SELECT path FROM scanned WHERE artist = ? LIMIT 1",
+                    "SELECT path FROM scanned WHERE artist = ? AND missing_since IS NULL LIMIT 1",
                     (r["artist"],),
                 ).fetchone()
             artist_tracks = c.execute(
-                "SELECT COUNT(*) FROM scanned WHERE artist = ?", (r["artist"],)
+                "SELECT COUNT(*) FROM scanned WHERE artist = ? AND missing_since IS NULL",
+                (r["artist"],),
             ).fetchone()[0]
             artist_albums = c.execute(
-                "SELECT COUNT(DISTINCT album) FROM scanned WHERE artist = ?", (r["artist"],)
+                "SELECT COUNT(DISTINCT album) FROM scanned WHERE artist = ? AND missing_since IS NULL",
+                (r["artist"],),
             ).fetchone()[0]
             artist_genre_row = c.execute(
-                "SELECT genre FROM scanned WHERE artist = ? AND genre IS NOT NULL AND genre != '' GROUP BY genre ORDER BY COUNT(*) DESC LIMIT 1",
+                "SELECT genre FROM scanned WHERE artist = ? AND missing_since IS NULL "
+                "AND genre IS NOT NULL AND genre != '' GROUP BY genre ORDER BY COUNT(*) DESC LIMIT 1",
                 (r["artist"],),
             ).fetchone()
             entry = {
@@ -119,7 +128,7 @@ class PlaybackMixin:
         mr = c.execute(
             """SELECT pe.path, s.title, pe.artist, s.album, COUNT(*) as play_count
                FROM play_events pe
-               LEFT JOIN scanned s ON s.path = pe.path
+               JOIN scanned s ON s.path = pe.path AND s.missing_since IS NULL
                WHERE pe.path IS NOT NULL AND pe.played_at >= ?
                GROUP BY pe.path ORDER BY play_count DESC LIMIT 1""",
             (since,),
@@ -168,9 +177,11 @@ class PlaybackMixin:
 
         # Top artist (from play_events — authoritative play counts)
         top_artists_rows = c.execute(
-            """SELECT artist, COUNT(*) as total
-               FROM play_events WHERE artist IS NOT NULL
-               GROUP BY artist ORDER BY total DESC LIMIT 5"""
+            """SELECT pe.artist, COUNT(*) as total
+               FROM play_events pe
+               JOIN scanned s ON s.path = pe.path AND s.missing_since IS NULL
+               WHERE pe.artist IS NOT NULL
+               GROUP BY pe.artist ORDER BY total DESC LIMIT 5"""
         ).fetchall()
 
         top_artist = None
@@ -189,18 +200,21 @@ class PlaybackMixin:
             else:
                 # Fallback: any track by this artist in scanned
                 best = c.execute(
-                    "SELECT path FROM scanned WHERE artist = ? LIMIT 1",
+                    "SELECT path FROM scanned WHERE artist = ? AND missing_since IS NULL LIMIT 1",
                     (r["artist"],),
                 ).fetchone()
             # Per-artist stats: track count, album count, top genre
             artist_tracks = c.execute(
-                "SELECT COUNT(*) FROM scanned WHERE artist = ?", (r["artist"],)
+                "SELECT COUNT(*) FROM scanned WHERE artist = ? AND missing_since IS NULL",
+                (r["artist"],),
             ).fetchone()[0]
             artist_albums = c.execute(
-                "SELECT COUNT(DISTINCT album) FROM scanned WHERE artist = ?", (r["artist"],)
+                "SELECT COUNT(DISTINCT album) FROM scanned WHERE artist = ? AND missing_since IS NULL",
+                (r["artist"],),
             ).fetchone()[0]
             artist_genre_row = c.execute(
-                "SELECT genre FROM scanned WHERE artist = ? AND genre IS NOT NULL AND genre != '' GROUP BY genre ORDER BY COUNT(*) DESC LIMIT 1",
+                "SELECT genre FROM scanned WHERE artist = ? AND missing_since IS NULL "
+                "AND genre IS NOT NULL AND genre != '' GROUP BY genre ORDER BY COUNT(*) DESC LIMIT 1",
                 (r["artist"],),
             ).fetchone()
             entry = {
@@ -220,7 +234,7 @@ class PlaybackMixin:
         mr = c.execute(
             """SELECT pe.path, s.title, pe.artist, s.album, COUNT(*) as play_count
                FROM play_events pe
-               LEFT JOIN scanned s ON s.path = pe.path
+               JOIN scanned s ON s.path = pe.path AND s.missing_since IS NULL
                WHERE pe.path IS NOT NULL
                GROUP BY pe.path ORDER BY play_count DESC LIMIT 1"""
         ).fetchone()
@@ -273,28 +287,30 @@ class PlaybackMixin:
 
         # Track count + genre breakdown by track count
         track_count = c.execute(
-            "SELECT COUNT(*) FROM scanned WHERE status != 'unreadable'"
+            "SELECT COUNT(*) FROM scanned WHERE status != 'unreadable' AND missing_since IS NULL"
         ).fetchone()[0]
 
         track_genres = [
             {"genre": r["genre"], "count": r["cnt"]}
             for r in c.execute(
                 """SELECT genre, COUNT(*) as cnt FROM scanned
-                   WHERE genre IS NOT NULL AND status != 'unreadable'
+                   WHERE genre IS NOT NULL AND status != 'unreadable' AND missing_since IS NULL
                    GROUP BY genre ORDER BY cnt DESC LIMIT 4"""
             ).fetchall()
         ]
 
         # Album count + top artists by album count
         album_count = c.execute(
-            "SELECT COUNT(DISTINCT album) FROM scanned WHERE album IS NOT NULL AND status != 'unreadable'"
+            "SELECT COUNT(DISTINCT album) FROM scanned WHERE album IS NOT NULL "
+            "AND status != 'unreadable' AND missing_since IS NULL"
         ).fetchone()[0]
 
         album_artists = [
             {"artist": r["artist"], "count": r["cnt"]}
             for r in c.execute(
                 """SELECT artist, COUNT(DISTINCT album) as cnt FROM scanned
-                   WHERE artist IS NOT NULL AND album IS NOT NULL AND status != 'unreadable'
+                   WHERE artist IS NOT NULL AND album IS NOT NULL
+                     AND status != 'unreadable' AND missing_since IS NULL
                    GROUP BY artist ORDER BY cnt DESC LIMIT 4"""
             ).fetchall()
         ]
@@ -343,7 +359,8 @@ class PlaybackMixin:
 
             # Tracks never played
             unplayed_count = c.execute(
-                "SELECT COUNT(*) FROM scanned WHERE (play_count = 0 OR play_count IS NULL) AND status != 'unreadable'"
+                "SELECT COUNT(*) FROM scanned WHERE (play_count = 0 OR play_count IS NULL) "
+                "AND status != 'unreadable' AND missing_since IS NULL"
             ).fetchone()[0]
 
             # Track count by audio format
@@ -351,7 +368,7 @@ class PlaybackMixin:
                 {"format": r["format"], "count": r["cnt"]}
                 for r in c.execute(
                     """SELECT format, COUNT(*) as cnt FROM scanned
-                       WHERE format IS NOT NULL AND status != 'unreadable'
+                       WHERE format IS NOT NULL AND status != 'unreadable' AND missing_since IS NULL
                        GROUP BY format ORDER BY cnt DESC"""
                 ).fetchall()
             ]
@@ -361,7 +378,7 @@ class PlaybackMixin:
         ta = c.execute(
             """SELECT s.album, pe.artist, COUNT(*) as total, MIN(pe.path) as cover_path
                FROM play_events pe
-               LEFT JOIN scanned s ON s.path = pe.path
+               JOIN scanned s ON s.path = pe.path AND s.missing_since IS NULL
                WHERE pe.path IS NOT NULL AND s.album IS NOT NULL
                GROUP BY s.album, pe.artist
                ORDER BY total DESC LIMIT 1"""
@@ -381,7 +398,8 @@ class PlaybackMixin:
         # Tracks added in last 30 days
         thirty_days_ago = int(time.time()) - 30 * 86400
         collection_growth = c.execute(
-            "SELECT COUNT(*) FROM scanned WHERE scanned_at >= ? AND status != 'unreadable'",
+            "SELECT COUNT(*) FROM scanned WHERE scanned_at >= ? AND status != 'unreadable' "
+            "AND missing_since IS NULL",
             (thirty_days_ago,),
         ).fetchone()[0]
 
@@ -425,7 +443,7 @@ class PlaybackMixin:
                             COUNT(DISTINCT pe.path) as played_count
                      FROM scanned s
                      LEFT JOIN play_events pe ON pe.path = s.path
-                     WHERE s.album IS NOT NULL AND s.status != 'unreadable'
+                     WHERE s.album IS NOT NULL AND s.status != 'unreadable' AND s.missing_since IS NULL
                      GROUP BY s.album, s.artist
                    )"""
             ).fetchone()
@@ -437,7 +455,7 @@ class PlaybackMixin:
                 for r in c.execute(
                     """SELECT album, artist, MAX(rowid) as latest, MIN(path) as cover_path
                        FROM scanned
-                       WHERE album IS NOT NULL AND status != 'unreadable'
+                       WHERE album IS NOT NULL AND status != 'unreadable' AND missing_since IS NULL
                        GROUP BY album, artist
                        ORDER BY latest DESC LIMIT 3"""
                 ).fetchall()

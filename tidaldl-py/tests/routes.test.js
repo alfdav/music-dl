@@ -6,6 +6,7 @@ const {
   buildLocalReleaseView,
   normalizeLaunchView,
   normalizeView,
+  parseArtistView,
 } = require('../tidal_dl/gui/static/routes.js');
 
 describe('routes', () => {
@@ -16,6 +17,13 @@ describe('routes', () => {
 
   test('keeps encoded deep links', () => {
     expect(normalizeView(buildArtistView('AC/DC'))).toBe('artist:AC%2FDC');
+    expect(normalizeView(buildArtistView('Carlos Vives', 3628717))).toBe(
+      'artist:Carlos%20Vives:3628717',
+    );
+    expect(parseArtistView('artist:Carlos%20Vives:3628717')).toEqual({
+      name: 'Carlos Vives',
+      tidalId: '3628717',
+    });
     expect(normalizeView(buildLocalAlbumView('A Tribe Called Quest', 'Midnight Marauders'))).toBe(
       'localalbum:A%20Tribe%20Called%20Quest:Midnight%20Marauders',
     );

@@ -79,7 +79,14 @@ const lyricsState = {
   lyricsFocusReturnEl: null,
   lyricsLineEls: null,
   lyricsListEl: null,
+  lyricsViewportEl: null,
+  lyricsFollow: true,
+  lyricsProgrammaticGen: 0,
+  lyricsUserScrollPending: false,
+  lyricsFollowScrollTop: null,
+  lyricsReflowScheduled: false,
 };
+let _lyricsResizeObserver = null;
 const _lyricsReduceMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 function _currentTrack() {
@@ -89,6 +96,16 @@ function _currentTrack() {
 function _currentTrackLocalPath(track) {
   if (!track) return null;
   return track.local_path || track.path || null;
+}
+
+function _playableLocalPath(track) {
+  if (!track) return null;
+  if (track.playable === true) return track.local_path || track.path || null;
+  if (track.playable === false) return null;
+  if (track.missing_since) return null;
+  if (track.local_path) return track.local_path;
+  if (track.is_local) return track.path || null;
+  return null;
 }
 
 function _lyricsRequestKey(track) {
@@ -131,8 +148,12 @@ function _lyricsQuery(track) {
   return params.toString();
 }
 
+function _hasLocalPlayAffordance(track) {
+  return !!(track && (track.is_local || track.local_path));
+}
+
 function _nowPlayingDownloadHidden(track, audioSrc) {
-  if (track && (track.is_local || track.local_path || track.path)) return true;
+  if (_hasLocalPlayAffordance(track)) return true;
   return String(audioSrc || '').includes('/playback/local');
 }
 
@@ -141,7 +162,7 @@ function _nowPlayingSource(track, audioSrc) {
   if (src.includes('/playback/local')) return 'local';
   if (src.includes('/playback/stream/')) return 'tidal';
   if (!track) return null;
-  if (track.is_local || track.local_path || track.path) return 'local';
+  if (_hasLocalPlayAffordance(track)) return 'local';
   if (track.id) return 'tidal';
   return null;
 }
@@ -217,8 +238,285 @@ function applyLyricsArtworkBackground(track) {
   lyricsArtworkBg.style.backgroundPosition = '';
 }
 
+function _lyricsScrollTarget(lineOffsetTop, lineHeight, viewportHeight, contentHeight) {
+  const raw = lineOffsetTop + (lineHeight / 2) - (viewportHeight / 2);
+  const max = Math.max(0, contentHeight - viewportHeight);
+  return Math.min(Math.max(0, raw), max);
+}
+
+function _lyricsEdgeSpacerPx(viewportHeight, lineHeight) {
+  return Math.max(0, (viewportHeight - lineHeight) / 2);
+}
+
+function _lyricsMeasureLineHeight(list) {
+  if (!list || !list.firstElementChild) return 0;
+  const el = list.firstElementChild;
+  if (typeof el.getBoundingClientRect === 'function') {
+    const rect = el.getBoundingClientRect();
+    if (rect && rect.height) return rect.height;
+  }
+  return el.offsetHeight || 0;
+}
+
+function _lyricsApplyListSpacer(viewport, list) {
+  if (!viewport || !list) return 0;
+  const lineHeight = _lyricsMeasureLineHeight(list) || 73.5;
+  const pad = _lyricsEdgeSpacerPx(viewport.clientHeight, lineHeight);
+  list.style.paddingTop = pad + 'px';
+  list.style.paddingBottom = pad + 'px';
+  return pad;
+}
+
+function _lyricsScrollBehavior(reduceMotion) {
+  return reduceMotion ? 'instant' : 'smooth';
+}
+
+function _lyricsUserScrollKey(key) {
+  return key === 'ArrowUp' || key === 'ArrowDown' || key === 'PageUp'
+    || key === 'PageDown' || key === 'Home' || key === 'End';
+}
+
+function _lyricsSyncButtonVisible(panelState, follow) {
+  return panelState === 'synced' && follow === false;
+}
+
+function _lyricsDetachFollow(state) {
+  state.lyricsFollow = false;
+}
+
+function _lyricsAttachFollow(state) {
+  state.lyricsFollow = true;
+}
+
+function _lyricsMarkUserScrollIntent(state) {
+  state.lyricsUserScrollPending = true;
+}
+
+function _lyricsOnViewportScroll(state, viewport) {
+  if (!state.lyricsFollow || !viewport) return;
+  if (state.lyricsProgrammaticGen > 0) {
+    if (Math.abs(viewport.scrollTop - state.lyricsFollowScrollTop) < 2) {
+      state.lyricsProgrammaticGen = 0;
+    }
+    return;
+  }
+  if (state.lyricsUserScrollPending) {
+    state.lyricsUserScrollPending = false;
+    _lyricsDetachFollow(state);
+  }
+}
+
+function _lyricsWriteScrollTop(viewport, target, reduceMotion, state, force) {
+  if (!viewport) return false;
+  const atTarget = Math.abs(viewport.scrollTop - target) < 1;
+  if (atTarget) {
+    state.lyricsFollowScrollTop = target;
+    state.lyricsProgrammaticGen = 0;
+    return false;
+  }
+  if (!force && state.lyricsProgrammaticGen > 0 && state.lyricsFollowScrollTop === target) {
+    return false;
+  }
+  state.lyricsFollowScrollTop = target;
+  state.lyricsProgrammaticGen = (state.lyricsProgrammaticGen || 0) + 1;
+  const behavior = _lyricsScrollBehavior(reduceMotion);
+  if (typeof viewport.scrollTo === 'function') {
+    viewport.scrollTo({ top: target, behavior: behavior });
+  } else {
+    viewport.scrollTop = target;
+  }
+  if (behavior === 'instant') state.lyricsProgrammaticGen = 0;
+  return true;
+}
+
+function _lyricsLineCenterError(viewport, lineEl) {
+  if (!viewport || !lineEl) return 0;
+  return (lineEl.offsetTop + lineEl.offsetHeight / 2)
+    - (viewport.scrollTop + viewport.clientHeight / 2);
+}
+
+function _lyricsFollowActiveLine(state, viewport, activeEl, reduceMotion, force) {
+  if (!state.lyricsFollow || !viewport || !activeEl) return false;
+  const target = _lyricsScrollTarget(
+    activeEl.offsetTop,
+    activeEl.offsetHeight,
+    viewport.clientHeight,
+    viewport.scrollHeight,
+  );
+  return _lyricsWriteScrollTop(viewport, target, reduceMotion, state, force);
+}
+
+function _lyricsResyncFollow(state, viewport, activeEl, reduceMotion) {
+  _lyricsAttachFollow(state);
+  state.lyricsFollowScrollTop = null;
+  return _lyricsFollowActiveLine(state, viewport, activeEl, reduceMotion);
+}
+
+function _lyricsApplyActiveClasses(lineEls, activeIndex) {
+  if (!lineEls) return;
+  lineEls.forEach((lineEl, index) => lineEl.classList.toggle('active', index === activeIndex));
+}
+
+function _lyricsActiveIndexAt(lines, currentTimeMs) {
+  let activeIndex = -1;
+  if (!lines) return activeIndex;
+  lines.forEach((line, index) => {
+    if (line.start_ms <= currentTimeMs && currentTimeMs < line.end_ms) activeIndex = index;
+  });
+  return activeIndex;
+}
+
+function _lyricsTickActive(state, lineEls, lines, currentTimeMs, viewport, reduceMotion) {
+  const activeIndex = _lyricsActiveIndexAt(lines, currentTimeMs);
+  _lyricsApplyActiveClasses(lineEls, activeIndex);
+  const activeEl = activeIndex >= 0 && lineEls ? lineEls[activeIndex] : null;
+  _lyricsFollowActiveLine(state, viewport, activeEl, reduceMotion);
+  return activeIndex;
+}
+
+function _lyricsReadingAnchor(viewport, lineEls) {
+  if (!viewport || !lineEls || !lineEls.length) return null;
+  const viewMid = viewport.scrollTop + viewport.clientHeight / 2;
+  let index = 0;
+  let best = Infinity;
+  lineEls.forEach((el, i) => {
+    if (!el) return;
+    const mid = el.offsetTop + (el.offsetHeight || 0) / 2;
+    const dist = Math.abs(mid - viewMid);
+    if (dist < best) {
+      best = dist;
+      index = i;
+    }
+  });
+  const el = lineEls[index];
+  return { index: index, viewOffset: el.offsetTop - viewport.scrollTop };
+}
+
+function _lyricsRestoreReadingAnchor(viewport, lineEls, anchor, state) {
+  if (!viewport || !anchor || !lineEls || !lineEls[anchor.index]) return false;
+  const el = lineEls[anchor.index];
+  const raw = el.offsetTop - anchor.viewOffset;
+  const max = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+  const target = Math.min(Math.max(0, raw), max);
+  return _lyricsWriteScrollTop(viewport, target, true, state, true);
+}
+
+function _lyricsAfterLayout(fn, schedule) {
+  const go = typeof schedule === 'function'
+    ? schedule
+    : (typeof requestAnimationFrame === 'function' ? requestAnimationFrame : function (cb) { cb(); });
+  go(function () { go(fn); });
+}
+
+function _lyricsReflowViewport(state, viewport, list, lineEls, lines, currentTimeMs, reduceMotion, schedule) {
+  const anchor = state.lyricsFollow ? null : _lyricsReadingAnchor(viewport, lineEls);
+  _lyricsApplyListSpacer(viewport, list);
+  state.lyricsFollowScrollTop = null;
+  const settle = function () {
+    if (state.lyricsFollow) {
+      const activeIndex = _lyricsActiveIndexAt(lines, currentTimeMs);
+      const activeEl = activeIndex >= 0 && lineEls ? lineEls[activeIndex] : null;
+      _lyricsFollowActiveLine(state, viewport, activeEl, true, true);
+      return;
+    }
+    if (anchor) _lyricsRestoreReadingAnchor(viewport, lineEls, anchor, state);
+  };
+  settle();
+  if (state.lyricsReflowScheduled) return;
+  state.lyricsReflowScheduled = true;
+  _lyricsAfterLayout(function () {
+    state.lyricsReflowScheduled = false;
+    settle();
+  }, schedule);
+}
+
+function _lyricsReflowAttachedViewport(state, viewport, list, lineEls, lines, currentTimeMs, reduceMotion, schedule) {
+  _lyricsReflowViewport(state, viewport, list, lineEls, lines, currentTimeMs, reduceMotion, schedule);
+}
+
+function _lyricsResetFollowState() {
+  lyricsState.lyricsFollow = true;
+  lyricsState.lyricsProgrammaticGen = 0;
+  lyricsState.lyricsUserScrollPending = false;
+  lyricsState.lyricsFollowScrollTop = null;
+  lyricsState.lyricsReflowScheduled = false;
+}
+
+function _syncLyricsSyncButton() {
+  const btn = document.getElementById('lyrics-sync');
+  if (!btn) return;
+  const show = _lyricsOpen() && _lyricsSyncButtonVisible(lyricsState.lyricsPanelState, lyricsState.lyricsFollow);
+  const hadFocus = document.activeElement === btn;
+  btn.hidden = !show;
+  btn.disabled = !show;
+  const live = document.getElementById('lyrics-sync-status');
+  if (live) {
+    if (show) live.textContent = 'Lyrics auto-scroll paused. Press Sync lyrics to re-center.';
+    else if (_lyricsOpen() && lyricsState.lyricsPanelState === 'synced' && lyricsState.lyricsFollow) {
+      live.textContent = 'Lyrics following playback.';
+    } else {
+      live.textContent = '';
+    }
+  }
+  if (!show && hadFocus) {
+    const closeBtn = document.getElementById('lyrics-close');
+    if (closeBtn && closeBtn.focus) closeBtn.focus();
+    else if (lyricsBody && lyricsBody.focus) lyricsBody.focus();
+  }
+}
+
+function _disconnectLyricsViewportObserver() {
+  if (_lyricsResizeObserver) {
+    _lyricsResizeObserver.disconnect();
+    _lyricsResizeObserver = null;
+  }
+}
+
+function _bindLyricsViewport(viewport, list) {
+  lyricsState.lyricsViewportEl = viewport;
+  viewport.tabIndex = 0;
+  _lyricsApplyListSpacer(viewport, list);
+  _disconnectLyricsViewportObserver();
+  const detachFromUser = () => {
+    if (!lyricsState.lyricsFollow) return;
+    _lyricsDetachFollow(lyricsState);
+    lyricsState.lyricsUserScrollPending = false;
+    _syncLyricsSyncButton();
+  };
+  viewport.addEventListener('wheel', detachFromUser, { passive: true });
+  viewport.addEventListener('touchstart', detachFromUser, { passive: true });
+  viewport.addEventListener('touchmove', detachFromUser, { passive: true });
+  viewport.addEventListener('pointerdown', detachFromUser);
+  viewport.addEventListener('keydown', (e) => {
+    if (!_lyricsUserScrollKey(e.key)) return;
+    _lyricsMarkUserScrollIntent(lyricsState);
+    detachFromUser();
+  });
+  viewport.addEventListener('scroll', () => {
+    const wasFollow = lyricsState.lyricsFollow;
+    _lyricsOnViewportScroll(lyricsState, viewport);
+    if (wasFollow !== lyricsState.lyricsFollow) _syncLyricsSyncButton();
+  });
+  if (typeof ResizeObserver !== 'undefined') {
+    _lyricsResizeObserver = new ResizeObserver(() => {
+      if (!_lyricsOpen() || lyricsState.lyricsPanelState !== 'synced' || !lyricsState.lyricsData) return;
+      _lyricsReflowViewport(
+        lyricsState,
+        viewport,
+        list,
+        lyricsState.lyricsLineEls,
+        lyricsState.lyricsData.lines,
+        Math.floor(audio.currentTime * 1000),
+        _lyricsReduceMotionQuery.matches,
+      );
+    });
+    _lyricsResizeObserver.observe(viewport);
+  }
+}
+
 function renderSyncedLyrics(payload) {
   _clearLyricsBody();
+  _lyricsResetFollowState();
   const shell = h('div', { className: 'lyrics-shell lyrics-shell-synced' });
   const viewport = h('div', { className: 'lyrics-synced-viewport' });
   const list = h('div', { className: 'lyrics-synced-list' });
@@ -228,6 +526,8 @@ function renderSyncedLyrics(payload) {
   shell.appendChild(viewport);
   lyricsBody.appendChild(shell);
   lyricsState.lyricsListEl = list;
+  _bindLyricsViewport(viewport, list);
+  _syncLyricsSyncButton();
   if (_lyricsAnimId) cancelAnimationFrame(_lyricsAnimId);
   _lyricsAnimId = requestAnimationFrame(syncActiveLyricLine);
 }
@@ -238,20 +538,15 @@ function syncActiveLyricLine() {
     return;
   }
   const currentTimeMs = Math.floor(audio.currentTime * 1000);
-  let activeIndex = -1;
-  lyricsState.lyricsData.lines.forEach((line, index) => {
-    if (line.start_ms <= currentTimeMs && currentTimeMs < line.end_ms) activeIndex = index;
-  });
-  lyricsState.lyricsLineEls.forEach((lineEl, index) => lineEl.classList.toggle('active', index === activeIndex));
-  const activeEl = activeIndex >= 0 ? lyricsState.lyricsLineEls[activeIndex] : null;
   const reduceMotion = _lyricsReduceMotionQuery.matches;
-  lyricsState.lyricsListEl.style.transition = reduceMotion ? 'none' : 'transform 220ms ease';
-  if (activeEl) {
-    const targetOffset = Math.max(0, activeEl.offsetTop - ((lyricsBody.clientHeight / 2) - (activeEl.offsetHeight / 2)));
-    lyricsState.lyricsListEl.style.transform = 'translateY(' + (-targetOffset) + 'px)';
-  } else {
-    lyricsState.lyricsListEl.style.transform = 'translateY(0px)';
-  }
+  _lyricsTickActive(
+    lyricsState,
+    lyricsState.lyricsLineEls,
+    lyricsState.lyricsData.lines,
+    currentTimeMs,
+    lyricsState.lyricsViewportEl,
+    reduceMotion,
+  );
   _lyricsAnimId = requestAnimationFrame(syncActiveLyricLine);
 }
 
@@ -294,6 +589,7 @@ function renderLyricsPanel() {
   _setLyricsPanelOpen(true);
   applyLyricsArtworkBackground(_currentTrack());
   _syncLyricsSaveButton();
+  _syncLyricsSyncButton();
   if (lyricsState.lyricsPanelState === 'loading') {
     _renderLyricsShell('lyrics-shell-loading', 'Loading lyrics…', '');
     return;
@@ -392,9 +688,13 @@ function closeLyricsPanel(opts) {
   lyricsState.lyricsError = null;
   lyricsState.lyricsLineEls = null;
   lyricsState.lyricsListEl = null;
+  lyricsState.lyricsViewportEl = null;
+  _disconnectLyricsViewportObserver();
+  _lyricsResetFollowState();
   if (_lyricsAnimId) { cancelAnimationFrame(_lyricsAnimId); _lyricsAnimId = null; }
   _setLyricsPanelOpen(false);
   _syncLyricsSaveButton();
+  _syncLyricsSyncButton();
   if (options.restoreFocus && lyricsState.lyricsFocusReturnEl && lyricsState.lyricsFocusReturnEl.focus) {
     lyricsState.lyricsFocusReturnEl.focus();
   }
@@ -408,6 +708,7 @@ function openLyricsPanel(opts) {
 
   if (queuePanel.classList.contains('open')) toggleQueue();
   lyricsState.lyricsFocusReturnEl = options.focusReturnEl || document.activeElement || nowArt;
+  _lyricsResetFollowState();
   _setLyricsPanelOpen(true);
 
   if (lyricsState.lyricsCache[requestKey]) {
@@ -446,6 +747,7 @@ function handleLyricsTrackChange(track) {
     lyricsState.lyricsData = null;
     lyricsState.lyricsError = null;
     lyricsState.lyricsPanelState = 'loading';
+    _lyricsResetFollowState();
     renderLyricsPanel();
     loadLyricsForCurrentTrack(track);
   }
@@ -461,10 +763,24 @@ if (btnLyricsSave) {
     saveLyricsForCurrentTrack();
   });
 }
-if (lyricsBody) {
-  lyricsBody.addEventListener('wheel', (e) => {
-    if (lyricsState.lyricsPanelState === 'synced') e.preventDefault();
-  }, { passive: false });
+const btnLyricsSync = document.getElementById('lyrics-sync');
+if (btnLyricsSync) {
+  btnLyricsSync.addEventListener('click', () => {
+    if (btnLyricsSync.disabled || btnLyricsSync.hidden) return;
+    const currentTimeMs = Math.floor(audio.currentTime * 1000);
+    const lines = lyricsState.lyricsData && lyricsState.lyricsData.lines;
+    const activeIndex = _lyricsActiveIndexAt(lines, currentTimeMs);
+    const activeEl = activeIndex >= 0 && lyricsState.lyricsLineEls
+      ? lyricsState.lyricsLineEls[activeIndex]
+      : null;
+    _lyricsResyncFollow(
+      lyricsState,
+      lyricsState.lyricsViewportEl,
+      activeEl,
+      _lyricsReduceMotionQuery.matches,
+    );
+    _syncLyricsSyncButton();
+  });
 }
 
 // ── Waveform visualization (no Web Audio API — audio path stays untouched) ──
@@ -570,11 +886,12 @@ function _wfLoop() {
 }
 
 function _fetchWaveform(track) {
-  if (!track || !track.is_local || !track.local_path) {
+  const localPath = _currentTrackLocalPath(track);
+  if (!localPath) {
     generateWaveform();
     return;
   }
-  fetch('/api/playback/waveform?path=' + encodeURIComponent(track.local_path))
+  fetch('/api/playback/waveform?path=' + encodeURIComponent(localPath))
     .then(r => r.ok ? r.json() : null)
     .then(data => {
       if (data && data.peaks && data.peaks.length > 0) {
@@ -840,8 +1157,8 @@ function _recordRecentlyPlayed(track) {
 
 function playTrack(track) {
   if (!track) return;
-  const localPath = _currentTrackLocalPath(track);
-  if (track.is_local && !localPath) {
+  const localPath = _playableLocalPath(track);
+  if (!localPath && !track.id) {
     toast('Local file unavailable', 'error');
     return;
   }
@@ -1129,13 +1446,96 @@ audio.addEventListener('pause', () => {
 });
 
 let _consecutiveErrors = 0;
+let _localHealInFlight = false;
+let _localHealToken = 0;
+let _localHealTrackKey = null;
+let _localHealAttempted = null;
+
+function _trackHealKey(track) {
+  return _currentTrackLocalPath(track) || '';
+}
+
+function _sameQueueTrack(track) {
+  const current = state.queue[state.queueIndex];
+  return !!(current && track && _trackHealKey(current) && _trackHealKey(current) === _trackHealKey(track));
+}
+
+async function _waitForReconcileIdle(token, track) {
+  const started = Date.now();
+  while (Date.now() - started < 30000) {
+    if (token !== _localHealToken || !_sameQueueTrack(track)) return false;
+    try {
+      const status = await api('/library/reconcile/status');
+      if (status.done || !status.reconciling) return true;
+    } catch (_) { /* keep polling */ }
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  return false;
+}
+
+async function _probeLocalPlaybackStatus(track) {
+  const localPath = _currentTrackLocalPath(track);
+  if (!localPath) return 0;
+  const url = '/api/playback/local?path=' + encodeURIComponent(localPath);
+  const resp = await fetch(url, { cache: 'no-store', headers: { Range: 'bytes=0-1' } });
+  return resp.status;
+}
+
+async function _retryLocalPlaybackAfterHeal(track) {
+  const key = _trackHealKey(track);
+  if (!key) return false;
+  if (_localHealInFlight) return key === _localHealTrackKey;
+  if (_localHealAttempted === key) return false;
+
+  _localHealInFlight = true;
+  _localHealTrackKey = key;
+  const token = ++_localHealToken;
+  try {
+    let status = 0;
+    try {
+      status = await _probeLocalPlaybackStatus(track);
+    } catch (_) {
+      return false;
+    }
+    if (status === 202 || status === 409) {
+      await _waitForReconcileIdle(token, track);
+      if (token !== _localHealToken || !_sameQueueTrack(track)) return true;
+      try {
+        status = await _probeLocalPlaybackStatus(track);
+      } catch (_) {
+        return false;
+      }
+    }
+    if (token !== _localHealToken || !_sameQueueTrack(track)) return true;
+    if (status === 200 || status === 206) {
+      _localHealAttempted = key;
+      playTrack(track);
+      return true;
+    }
+    return false;
+  } finally {
+    if (token === _localHealToken) {
+      _localHealInFlight = false;
+      _localHealTrackKey = null;
+    }
+  }
+}
 
 audio.addEventListener('error', () => {
   state.playing = false;
   updatePlayButton();
   setWaveformPlaying(false);
   const current = state.queue[state.queueIndex];
-  if (!current || !current.is_local) {
+  if (_localHealInFlight && current && _trackHealKey(current) !== _localHealTrackKey) {
+    _localHealToken++;
+    _localHealInFlight = false;
+    _localHealTrackKey = null;
+  }
+  const attemptedLocal = !!(current && (
+    current.is_local
+    || String(audio.src || '').includes('/playback/local')
+  ));
+  if (!current || !attemptedLocal) {
     if (current) {
       _setRemotePlaybackUnavailable(true);
       _refreshTidalStatus();
@@ -1144,17 +1544,20 @@ audio.addEventListener('error', () => {
     toast('Tidal stream unavailable \u2014 try again later', 'error');
     return;
   }
-  _consecutiveErrors++;
-  const label = current ? (current.name || 'Track') : 'Track';
-  if (_consecutiveErrors >= 3) {
-    toast('Multiple local files failed \u2014 check file access', 'error');
-    return;
-  }
-  const canAutoSkip = state.queueIndex < state.queue.length - 1;
-  toast(label + ' unavailable', 'error');
-  if (canAutoSkip) {
-    setTimeout(() => { state.queueIndex++; playTrack(state.queue[state.queueIndex]); }, 800);
-  }
+  void (async () => {
+    if (await _retryLocalPlaybackAfterHeal(current)) return;
+    _consecutiveErrors++;
+    const label = current.name || 'Track';
+    if (_consecutiveErrors >= 3) {
+      toast('Multiple local files failed \u2014 check file access', 'error');
+      return;
+    }
+    const canAutoSkip = state.queueIndex < state.queue.length - 1;
+    toast(label + ' unavailable', 'error');
+    if (canAutoSkip) {
+      setTimeout(() => { state.queueIndex++; playTrack(state.queue[state.queueIndex]); }, 800);
+    }
+  })();
 });
 
 audio.addEventListener('play', () => {
@@ -1164,6 +1567,7 @@ audio.addEventListener('play', () => {
     _refreshTidalStatus();
   }
   _consecutiveErrors = 0;
+  _localHealAttempted = null;
   state.playing = true;
   updatePlayButton();
   setWaveformPlaying(true);
@@ -1295,6 +1699,14 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'Escape' && _lyricsOpen()) {
     e.preventDefault();
     closeLyricsPanel({ restoreFocus: true });
+    return;
+  }
+  if (
+    _lyricsOpen()
+    && lyricsState.lyricsViewportEl
+    && lyricsState.lyricsViewportEl.contains(e.target)
+    && _lyricsUserScrollKey(e.key)
+  ) {
     return;
   }
   if (e.altKey) return;
@@ -1879,7 +2291,8 @@ async function renderUpgradeScanner(container) {
 }
 
 function _upgradeQualityJump(result) {
-  return qualityTitle(result.current_quality) + ' \u2192 ' + qualityTitle(result.available_quality);
+  return qualityTitle(result.current_quality, result.current_format, result.current_codec)
+    + ' \u2192 ' + qualityTitle(result.available_quality);
 }
 
 function _renderScanResults(container, results) {
@@ -2205,10 +2618,11 @@ function _preloadNext() {
   const nextIdx = (state.queueIndex + 1) % state.queue.length;
   const next = state.queue[nextIdx];
   if (!next) return;
-  const localPath = _currentTrackLocalPath(next);
-  const src = (next.is_local && localPath)
+  const localPath = _playableLocalPath(next);
+  const src = localPath
     ? '/api/playback/local?path=' + encodeURIComponent(localPath)
-    : '/api/playback/stream/' + next.id;
+    : (next.id ? '/api/playback/stream/' + next.id : '');
+  if (!src) return;
   if (_preloadedSrc === src) return;  // already preloaded
   _preloadedSrc = src;
   _preloadAudio.src = src;
@@ -2308,10 +2722,11 @@ function _restorePosition() {
     const current = state.queue[state.queueIndex];
     if (current && data.key === _trackKey(current) && _isResumePositionUsable(current, data.time)) {
       // Set source and seek to saved position without auto-playing
-      const localPath = _currentTrackLocalPath(current);
-      const src = (current.is_local && localPath)
+      const localPath = _playableLocalPath(current);
+      const src = localPath
         ? '/api/playback/local?path=' + encodeURIComponent(localPath)
-        : '/api/playback/stream/' + current.id;
+        : (current.id ? '/api/playback/stream/' + current.id : '');
+      if (!src) return;
       audio.src = src;
       audio.addEventListener('loadedmetadata', function _onMeta() {
         audio.currentTime = data.time;

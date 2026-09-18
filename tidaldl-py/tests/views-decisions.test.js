@@ -342,10 +342,62 @@ function loadDownloadHistoryRenderer(api) {
     'h',
     'textEl',
     '_dlArtThumb',
+    'qualityClass',
+    'qualityLabel',
+    'qualityTitle',
+    '_timeAgo',
     `const ICONS = {};
 ${rendererSource[0]}
 return loadDownloadHistory;`,
-  )(api, h, textEl, () => element('div'));
+  )(
+    api,
+    h,
+    textEl,
+    () => element('div'),
+    () => 'hires',
+    () => 'HI-RES',
+    () => '',
+    ts => (ts ? String(ts) : ''),
+  );
+}
+
+function historyPaintContainer() {
+  return {
+    children: [],
+    appendChild(child) { this.children.push(child); return child; },
+    get firstChild() { return this.children[0] || null; },
+    removeChild(child) {
+      const index = this.children.indexOf(child);
+      if (index >= 0) this.children.splice(index, 1);
+    },
+  };
+}
+
+function zeratoolHistoryPayload() {
+  return {
+    downloads: [
+      {
+        id: 2083,
+        track_id: 330865538,
+        status: 'done',
+        name: 'La gota fría (Remastered 30 años)',
+        artist: 'Carlos Vives',
+        album: 'Clásicos de la Provincia 30 Años (Remastered & Expanded)',
+        finished_at: 1788220450,
+        quality: 'HI_RES_LOSSLESS',
+      },
+      {
+        id: 2082,
+        track_id: 118,
+        status: 'done',
+        name: 'The Call',
+        artist: 'Backstreet Boys',
+        album: 'The Hits--Chapter One',
+        finished_at: 1787062484,
+        quality: 'HI_RES_LOSSLESS',
+      },
+    ],
+  };
 }
 
 describe('album grouping review decisions', () => {
@@ -374,7 +426,7 @@ describe('download history decisions', () => {
     const loadDownloadHistory = loadDownloadHistoryRenderer(async () => ({
       downloads: [{ track_id: 118, name: 'Song', status: 'error', error: reason }],
     }));
-    const container = { children: [], appendChild(child) { this.children.push(child); }, get firstChild() { return this.children[0] || null; }, removeChild() {} };
+    const container = historyPaintContainer();
 
     await loadDownloadHistory(container);
 
@@ -387,11 +439,34 @@ describe('download history decisions', () => {
     const loadDownloadHistory = loadDownloadHistoryRenderer(async () => ({
       downloads: [{ track_id: 118, name: 'Song', status: 'error', error: '' }],
     }));
-    const container = { children: [], appendChild(child) { this.children.push(child); }, get firstChild() { return this.children[0] || null; }, removeChild() {} };
+    const container = historyPaintContainer();
 
     await loadDownloadHistory(container);
 
     expect(container.children[0].textContent).toBe('SongFailedRetry');
+  });
+
+  test('history payload with two done items paints both cards, newest first', async () => {
+    const loadDownloadHistory = loadDownloadHistoryRenderer(async () => zeratoolHistoryPayload());
+    const container = historyPaintContainer();
+
+    await loadDownloadHistory(container);
+
+    const cards = container.children.filter(child =>
+      String(child.className || '').includes('dl-history-card'),
+    );
+    expect(cards).toHaveLength(2);
+    expect(cards[0].textContent).toContain('La gota fría (Remastered 30 años)');
+    expect(cards[0].textContent).toContain('Carlos Vives');
+    expect(cards[1].textContent).toContain('The Call');
+    expect(cards[1].textContent).toContain('Backstreet Boys');
+  });
+
+  test('finished downloads schedule a history reload so a new done row can paint', () => {
+    const completeFn = viewsSource.split('function _dlComplete(trackId, success) {')[1];
+    expect(completeFn).toBeTruthy();
+    const completeBody = completeFn.split('function _ensureGlobalSSE')[0];
+    expect(completeBody).toContain('_scheduleHistoryReload()');
   });
 });
 
@@ -634,11 +709,65 @@ describe('Tidal connection reset decisions', () => {
   });
 });
 
+function loadTrackRowHelpers() {
+  const playableStart = viewsSource.indexOf('function trackIsPlayable(');
+  if (playableStart < 0) throw new Error('trackIsPlayable is missing');
+  const unplayableStart = viewsSource.indexOf('function trackRowUnplayable(');
+  if (unplayableStart < 0) throw new Error('trackRowUnplayable is missing');
+  const playableEnd = viewsSource.indexOf('\nfunction ', playableStart + 1);
+  const unplayableEnd = viewsSource.indexOf('\nfunction ', unplayableStart + 1);
+  return new Function(
+    `${viewsSource.slice(playableStart, playableEnd)}\n${viewsSource.slice(unplayableStart, unplayableEnd)}\nreturn { trackIsPlayable, trackRowUnplayable };`,
+  )();
+}
+
 describe('track source decisions', () => {
   test('shows local or Tidal source while leaving unknown remote format blank', () => {
-    expect(viewsSource).toContain("track.is_local ? 'local' : 'tidal'");
-    expect(viewsSource).toContain("className: 'source-tag ' + (track.is_local ? 'local-tag' : 'tidal-tag')");
+    expect(viewsSource).toContain("trackIsPlayable(track) ? 'local' : 'tidal'");
+    expect(viewsSource).toContain("className: 'source-tag ' + (trackIsPlayable(track) ? 'local-tag' : 'tidal-tag')");
     expect(viewsSource).toContain("if (track.format) return track.format.toUpperCase();\n  return '';");
+  });
+
+  test('hides the track-row download button when the file is already in the library', () => {
+    expect(viewsSource).toContain('if (!trackIsPlayable(track) && track.id)');
+  });
+});
+
+describe('track playability honesty', () => {
+  test('treats dead local index rows as unplayable', () => {
+    const { trackIsPlayable, trackRowUnplayable } = loadTrackRowHelpers();
+    expect(trackIsPlayable({ is_local: true, local_path: '/music/live.flac' })).toBe(true);
+    expect(trackIsPlayable({ is_local: true, playable: true, path: '/music/live.flac' })).toBe(true);
+    expect(trackIsPlayable({ is_local: true, playable: false, local_path: '/music/dead.flac' })).toBe(false);
+    expect(trackIsPlayable({ is_local: true, missing_since: 1700000000, local_path: '/music/dead.flac' })).toBe(false);
+    expect(trackIsPlayable({ is_local: true })).toBe(false);
+    expect(trackIsPlayable({ is_local: false, id: 91 })).toBe(false);
+    expect(trackRowUnplayable({ is_local: false, id: 91 })).toBe(false);
+    expect(trackRowUnplayable({ is_local: false, playable: false, id: 91 })).toBe(false);
+    expect(trackRowUnplayable({ playable: false, path: '/music/dead.flac' })).toBe(true);
+    expect(trackRowUnplayable({ is_local: true, missing_since: 1700000000, local_path: '/music/dead.flac' })).toBe(true);
+    expect(trackIsPlayable({
+      is_local: true,
+      playable: true,
+      missing_since: 1700000000,
+      local_path: '/music/live.flac',
+    })).toBe(true);
+    expect(trackRowUnplayable({
+      is_local: true,
+      playable: true,
+      missing_since: 1700000000,
+      local_path: '/music/live.flac',
+    })).toBe(false);
+  });
+
+  test('play/shuffle album queues playable local files only', () => {
+    expect(viewsSource).toContain('tracks.filter(trackIsPlayable)');
+    expect(viewsSource).not.toContain('tracks.filter(t => t.is_local)');
+  });
+
+  test('grays unplayable rows and skips local play', () => {
+    expect(viewsSource).toContain("className: 'track' + (isPlaying ? ' playing' : '') + (trackRowUnplayable(track) ? ' unplayable' : '')");
+    expect(viewsSource).toContain('if (!trackIsPlayable(track) && !track.id) return;');
   });
 });
 
@@ -924,11 +1053,58 @@ describe('local album detail cover fetch', () => {
 describe('artist and album loading state', () => {
   test('artist gallery uses a visible loading hint instead of skeleton-row', () => {
     const gallery = viewsSource
-      .split('async function renderArtistGallery(container, artistName) {')[1]
+      .split('async function renderArtistGallery(')[1]
       ?.split('// ---- LOCAL ALBUM DETAIL')[0];
     if (!gallery) throw new Error('artist gallery not found');
     expect(gallery).not.toContain('skeleton-row');
     expect(gallery).toMatch(/Loading albums|home-loading-hint|skeleton-track/);
+  });
+
+  test('artist gallery is hybrid local plus Tidal, not library-only', () => {
+    const gallery = artistGallerySource();
+    expect(gallery).toContain('/library/artist/');
+    expect(gallery).toMatch(/\/artists\/|tidalArtistId/);
+    const results = viewsSource
+      .split('function renderSearchResults(')[1]
+      ?.split('function _trackKey(')[0] || '';
+    expect(results).toContain('buildArtistView(item.name, item.id)');
+  });
+
+  test('recent-search chips give query text a truncating class', () => {
+    const recent = viewsSource
+      .split('function _renderRecentSearches(')[1]
+      ?.split('function _filterTidalAlbums(')[0] || '';
+    expect(recent).toContain('recent-chip-query');
+    expect(recent).toContain('recent-chip-x');
+    expect(recent).toContain('recent-chip-type');
+  });
+
+  test('local-empty plus Tidal-pending keeps the skeleton', () => {
+    const search = viewsSource
+      .split('async function doSearch(resultsArea) {')[1]
+      ?.split('function renderTidalSearchAuthPanel(')[0] || '';
+    expect(search).toContain('_searchStillWaitingForTidal');
+    expect(search).toContain('renderSearchSkeleton(resultsArea)');
+    expect(search).toContain('tidalSettled');
+
+    const helperStart = viewsSource.indexOf('function _searchStillWaitingForTidal(');
+    expect(helperStart).toBeGreaterThan(-1);
+    const helperBody = viewsSource.slice(helperStart).split('\nfunction ')[0];
+    const waiting = new Function(`${helperBody}\nreturn _searchStillWaitingForTidal;`)();
+    expect(waiting(null, 'tracks', false, false)).toBe(true);
+    expect(waiting({ tracks: [] }, 'tracks', false, false)).toBe(true);
+    expect(waiting({ tracks: [{ id: 1 }] }, 'tracks', false, false)).toBe(false);
+    expect(waiting({ tracks: [] }, 'tracks', true, false)).toBe(false);
+    expect(waiting({ tracks: [] }, 'tracks', false, true)).toBe(false);
+  });
+
+  test('album search does not skip the local/Tidal divider', () => {
+    const source = viewsSource
+      .split('function renderUnifiedSearchResults(')[1]
+      ?.split('function renderSearchResults(')[0] || '';
+    expect(source).toContain("className: 'search-divider'");
+    expect(source).not.toContain("type !== 'albums' && localItems.length > 0");
+    expect(source).toMatch(/localItems\.length > 0 && [\s\S]*tidal/);
   });
 
   test('album detail uses a visible loading hint instead of skeleton-row', () => {
@@ -1273,6 +1449,96 @@ describe('artist search card captions', () => {
   });
 });
 
+function loadUnifiedSearchRenderer(searchType) {
+  const functionBody = viewsSource
+    .split('function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRequired) {')[1]
+    ?.split('\nfunction renderSearchResults(')[0];
+  if (!functionBody) throw new Error('renderUnifiedSearchResults not found');
+  const renderSearchResults = loadSearchResultsRenderer(searchType);
+  return new Function(
+    'state',
+    'h',
+    'textEl',
+    'artGradient',
+    'a11yClick',
+    'navigate',
+    'buildLocalReleaseView',
+    'buildLocalAlbumView',
+    'buildArtistView',
+    '_appendGroupingBadge',
+    '_filterTidalAlbums',
+    'renderSearchResults',
+    'renderTidalSearchAuthPanel',
+    `function renderUnifiedSearchResults(container, localData, tidalData, tidalAuthRequired) {${functionBody}
+     return renderUnifiedSearchResults;`,
+  )(
+    {
+      searchType,
+      albumQualityFilter: 'all',
+      albumRatingFilter: 'all',
+    },
+    searchCardH,
+    searchCardTextEl,
+    () => 'gradient',
+    () => {},
+    () => {},
+    () => 'local-release',
+    () => 'local-album',
+    () => 'artist',
+    () => {},
+    (items) => items,
+    renderSearchResults,
+    () => {},
+  );
+}
+
+describe('unified album search sections', () => {
+  test('separates the local gallery from the Tidal Albums header', () => {
+    const render = loadUnifiedSearchRenderer('albums');
+    const container = renderSearchContainer();
+    const tidalAlbums = Array.from({ length: 50 }, (_, i) => ({
+      id: i + 1,
+      name: 'Album ' + i,
+      artist: 'Tidal Artist',
+    }));
+
+    render(
+      container,
+      { albums: [{ id: 'local-1', name: 'Los Grandes Del Vallenato', artist: 'Various Artists' }] },
+      { albums: tidalAlbums },
+      false,
+    );
+
+    const classes = container.children.map(child => child.className);
+    const galleryAt = classes.indexOf('album-gallery');
+    const dividerAt = classes.indexOf('search-divider');
+    const headers = container.children.filter(child => child.className === 'results-header');
+
+    expect(galleryAt).toBeGreaterThan(-1);
+    expect(dividerAt).toBeGreaterThan(galleryAt);
+    expect(headers).toHaveLength(2);
+    expect(headers[0].textContent).toContain('Your Library');
+    expect(headers[0].textContent).toContain('1 result');
+    expect(headers[0].textContent).not.toContain('1 results');
+    expect(headers[1].textContent).toContain('Tidal Albums');
+    expect(headers[1].textContent).toContain('50 albums');
+    expect(container.children.indexOf(headers[1])).toBeGreaterThan(dividerAt);
+  });
+
+  test('search result headers vertically center the count with the title', () => {
+    const css = readFileSync(
+      join(import.meta.dir, '../tidal_dl/gui/static/style.css'),
+      'utf8',
+    );
+    const headerRules = [...css.matchAll(/^\.results-header \{([^}]*)\}/gm)].map(match => match[1]);
+    expect(headerRules.some(body => body.includes('align-items: center'))).toBe(true);
+    expect(headerRules.some(body => body.includes('align-items: baseline'))).toBe(false);
+    const galleryBreak = [...css.matchAll(/^\.album-gallery \+ \.search-divider \{([^}]*)\}/gm)]
+      .map(match => match[1]);
+    expect(galleryBreak.some(body => /padding-top:\s*\d+px/.test(body))).toBe(true);
+  });
+});
+
 function loadNavStackHelpers() {
   const start = viewsSource.indexOf('// ---- NAV STACK ----');
   const end = viewsSource.indexOf('// ---- /NAV STACK ----');
@@ -1287,7 +1553,7 @@ function loadNavStackHelpers() {
 
 function artistGallerySource() {
   return viewsSource
-    .split('async function renderArtistGallery(container, artistName) {')[1]
+    .split('async function renderArtistGallery(')[1]
     ?.split('// ---- LOCAL ALBUM DETAIL')[0] || '';
 }
 
@@ -1308,6 +1574,23 @@ function libraryMountSource() {
     .split('function renderLibrary(container) {')[1]
     ?.split('\nasync function _showDuplicatePreview')[0] || '';
 }
+
+function duplicatePreviewSource() {
+  return viewsSource
+    .split('async function _showDuplicatePreview(container) {')[1]
+    ?.split('\nfunction _navText(')[0] || '';
+}
+
+describe('duplicate preview', () => {
+  test('shows a truncated note and does not add a second clean route', () => {
+    const source = duplicatePreviewSource();
+    expect(source).toContain("data.truncated");
+    expect(source).toContain("Showing the first ");
+    expect(source).toContain("api('/duplicates/preview')");
+    expect(source).toContain("api('/duplicates/clean', { method: 'POST' })");
+    expect(source.match(/api\('\/duplicates\/clean'/g) || []).toHaveLength(1);
+  });
+});
 
 describe('navigation stack', () => {
   test('back from a Plays album restores library sort, query, and scroll', () => {
@@ -1513,11 +1796,13 @@ function clickableTextEl(tag, value, className) {
 }
 
 function loadHomeInsightCards() {
-  const helperSource = viewsSource.match(
-    /function _homeInsightCards\(data\) \{[\s\S]*?\n\}/,
-  );
-  if (!helperSource) throw new Error('home insight cards helper not found');
-  return new Function(`${helperSource[0]}\nreturn _homeInsightCards;`)();
+  const factsStart = viewsSource.indexOf('const HOME_FAN_WEEKDAYS');
+  const cardsStart = viewsSource.indexOf('function _homeInsightCards(data)');
+  const cardsEnd = viewsSource.indexOf('\nfunction _homeFanLayout(');
+  if (factsStart < 0 || cardsStart < factsStart || cardsEnd < cardsStart) {
+    throw new Error('home insight cards helper not found');
+  }
+  return new Function(`${viewsSource.slice(factsStart, cardsEnd)}\nreturn _homeInsightCards;`)();
 }
 
 function loadHomeInsightFan(options = {}) {
@@ -1582,10 +1867,29 @@ function richHomePayload() {
   return {
     total_plays: 847,
     listening_time_hours: 11.4,
-    top_artist: { name: 'Tetrarch', play_count: 40 },
+    streak: 6,
+    top_artist: {
+      name: 'Tetrarch',
+      play_count: 40,
+      genre: 'Metal',
+      album_count: 2,
+      track_count: 9,
+    },
     top_artists: [
-      { name: 'Tetrarch', play_count: 40 },
-      { name: 'Deftones', play_count: 12 },
+      {
+        name: 'Tetrarch',
+        play_count: 40,
+        genre: 'Metal',
+        album_count: 2,
+        track_count: 9,
+      },
+      {
+        name: 'Deftones',
+        play_count: 12,
+        genre: 'Alt Rock',
+        album_count: 3,
+        track_count: 14,
+      },
     ],
     most_replayed: { name: 'Unstable', play_count: 18 },
     track_count: 11974,
@@ -1595,7 +1899,12 @@ function richHomePayload() {
       { genre: 'Alt Rock', count: 12 },
     ],
     weekly_activity: [0, 1.2, 0, 0, 2.4, 0, 0],
-    this_week: { total_plays: 8, top_artist: { name: 'Deftones', play_count: 8 } },
+    this_week: {
+      total_plays: 8,
+      top_artist: { name: 'Deftones', play_count: 8 },
+      most_replayed: { name: 'Change', play_count: 8 },
+      genre_breakdown: [{ genre: 'Alt Rock', count: 8 }],
+    },
     recent_albums: [{ album: 'Unstable' }, { album: 'Otra Vez' }],
   };
 }
@@ -1617,6 +1926,109 @@ describe('Home insight fan decisions', () => {
 
     expect(cards).toEqual([]);
     expect(cards.some(card => card.id === 'recent_albums')).toBe(false);
+  });
+
+  test('total_plays, top_artist, and this_week cards render supporting facts from the fixture', () => {
+    const payload = richHomePayload();
+    const cards = loadHomeInsightCards()(payload);
+    const byId = Object.fromEntries(cards.map(card => [card.id, card]));
+
+    expect(byId.total_plays.facts).toEqual([
+      '6-day streak',
+      'Unstable on repeat — 18 plays',
+      '11,974 tracks · 1,565 albums',
+    ]);
+    expect(byId.top_artist.facts).toEqual([
+      'Metal',
+      '2 albums · 9 tracks',
+    ]);
+    expect(byId.this_week.facts).toEqual([
+      'Change on repeat — 8 plays',
+      'Alt Rock',
+    ]);
+    expect(byId.listening_time_hours.facts).toEqual([
+      'Friday was the peak this week',
+      '3.6h this week of 11.4h all-time',
+    ]);
+    expect(byId.weekly_activity.facts).toEqual(['Peak Friday']);
+    expect(byId['top_artists:Deftones'].facts).toEqual([
+      'Alt Rock',
+      '3 albums · 14 tracks',
+    ]);
+
+    const host = clickableNode('main');
+    host.className = 'main';
+    const fan = loadHomeInsightFan({ host, reducedMotion: true });
+    fan._openHomeInsightFan(payload);
+    const center = host.querySelector('.is-center');
+    expect(center.querySelectorAll('.home-fan-fact').map(node => node.textContent)).toEqual([
+      '6-day streak',
+      'Unstable on repeat — 18 plays',
+      '11,974 tracks · 1,565 albums',
+    ]);
+    expect(center.textContent).toContain('Total plays');
+  });
+
+  test('empty or sparse home does not invent insight facts', () => {
+    const empty = loadHomeInsightCards()({
+      total_plays: 0,
+      listening_time_hours: 0,
+      streak: 0,
+      top_artist: null,
+      top_artists: [],
+      most_replayed: null,
+      track_count: 0,
+      album_count: 0,
+      genre_breakdown: [],
+      weekly_activity: [0, 0, 0, 0, 0, 0, 0],
+      this_week: { total_plays: 0, most_replayed: null, genre_breakdown: [] },
+    });
+    expect(empty).toEqual([]);
+
+    const playsOnly = loadHomeInsightCards()({ total_plays: 859 });
+    expect(playsOnly).toHaveLength(1);
+    expect(playsOnly[0].id).toBe('total_plays');
+    expect(playsOnly[0].facts).toEqual([]);
+    expect(JSON.stringify(playsOnly)).not.toMatch(/0-day|0 genre|0 plays per|0 albums/);
+
+    const artistOnly = loadHomeInsightCards()({
+      top_artist: { name: 'Daft Punk', play_count: 133 },
+    });
+    expect(artistOnly[0].facts).toEqual([]);
+    expect(artistOnly[0].facts.join(' ')).not.toMatch(/0 genre|0 album|0 track/);
+
+    const weekOnly = loadHomeInsightCards()({
+      this_week: { total_plays: 3, top_artist: { name: 'Sister Sledge' } },
+    });
+    expect(weekOnly[0].detail).toBe('Sister Sledge');
+    expect(weekOnly[0].facts).toEqual([]);
+  });
+
+  test('listening time uses the same hour precision and never shows week above all-time', () => {
+    const weekFacts = (payload) => {
+      const card = loadHomeInsightCards()(payload).find(item => item.id === 'listening_time_hours');
+      return (card && card.facts) || [];
+    };
+    const weekLine = (payload) => weekFacts(payload).find(fact => fact.includes('this week of')) || '';
+
+    expect(weekLine({
+      listening_time_hours: 2.4,
+      weekly_activity: [0, 0, 0, 0, 2.4, 0, 0],
+    })).toBe('2.4h this week of 2.4h all-time');
+
+    expect(weekLine({
+      listening_time_hours: 0.4,
+      weekly_activity: [0.4, 0, 0, 0, 0, 0, 0],
+    })).toBe('0.4h this week of 0.4h all-time');
+
+    expect(weekLine({
+      listening_time_hours: 0.4,
+      weekly_activity: [0.8, 0, 0, 0, 0, 0, 0],
+    })).toBe('0.4h this week of 0.4h all-time');
+    expect(weekLine({
+      listening_time_hours: 0.4,
+      weekly_activity: [0.8, 0, 0, 0, 0, 0, 0],
+    })).not.toMatch(/0\.8h this week/);
   });
 
   test('builds local cards only from already-loaded /home fields', () => {
@@ -1684,6 +2096,8 @@ describe('Home insight fan decisions', () => {
     expect(css).toContain('.home-fan-overlay');
     expect(css).toContain('.home-fan-reduced');
     expect(css).toContain('home-fan-spring-in');
+    expect(css).toContain('.home-fan-facts');
+    expect(css).toContain('.home-fan-fact');
 
     overlay.click();
     expect(host.querySelectorAll('.home-fan-overlay')).toHaveLength(0);

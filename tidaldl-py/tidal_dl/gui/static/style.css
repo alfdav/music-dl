@@ -482,6 +482,10 @@ body {
   padding: 20px 0 12px;
 }
 
+.album-gallery + .search-divider {
+  padding-top: 28px;
+}
+
 .search-divider::before,
 .search-divider::after {
   content: '';
@@ -621,7 +625,7 @@ body {
 
 .results-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
   margin-bottom: 20px;
 }
@@ -648,7 +652,7 @@ body {
 
 .track-header {
   display: grid;
-  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 44px 52px 40px 32px;
+  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 44px 52px 84px 32px;
   gap: 12px;
   align-items: center;
   padding: 0 14px 10px;
@@ -670,7 +674,7 @@ body {
 
 .track {
   display: grid;
-  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 44px 52px 40px 32px;
+  grid-template-columns: 40px 44px 1fr 1fr 72px 52px 44px 52px 84px 32px;
   gap: 12px;
   align-items: center;
   padding: 10px 14px;
@@ -685,6 +689,14 @@ body {
 .track:last-child { border-bottom: none; }
 
 .track:hover { background: var(--surface-hover); }
+
+.track.unplayable {
+  opacity: 0.45;
+}
+
+.track.unplayable:hover {
+  background: transparent;
+}
 
 .track.playing {
   background: var(--accent-glow);
@@ -880,7 +892,9 @@ body {
 
 .track-actions {
   display: flex;
-  justify-content: center;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
   transition: opacity 0.15s;
 }
 
@@ -897,6 +911,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
   font-family: var(--mono);
   font-size: 9px;
   letter-spacing: 0.5px;
@@ -1164,6 +1179,7 @@ body {
   align-items: center;
   gap: 16px;
   position: relative;
+  min-width: 0;
 }
 
 .now-art {
@@ -1275,6 +1291,7 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .controls {
@@ -1462,6 +1479,7 @@ body {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
+  min-width: 0;
 }
 
 .vol-btn {
@@ -2282,6 +2300,22 @@ body {
   font-size: 0.85rem;
   color: var(--text-secondary);
 }
+.home-fan-facts {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 6px;
+  min-height: 0;
+  margin-top: 4px;
+}
+.home-fan-fact {
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
 .home-fan-card .mini-bar-chart,
 .home-fan-card .mini-weekly-chart {
   margin-top: auto;
@@ -3009,6 +3043,41 @@ body {
   display: none;
 }
 
+.lyrics-sync {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  z-index: 2;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  background: rgba(15, 14, 13, 0.45);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.lyrics-save:not([hidden]) ~ .lyrics-sync {
+  left: 148px;
+}
+
+.lyrics-sync[hidden] {
+  display: none;
+}
+
+.lyrics-sync-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .lyrics-close {
   position: absolute;
   top: 20px;
@@ -3053,6 +3122,12 @@ body {
   width: 100%;
 }
 
+.lyrics-shell-synced {
+  height: 100%;
+  display: block;
+  text-align: left;
+}
+
 .lyrics-unsynced-copy {
   max-width: 720px;
   margin: 0 auto;
@@ -3071,15 +3146,16 @@ body {
   height: 100%;
   min-height: 220px;
   margin: 0 auto;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  position: relative;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
 }
 
 .lyrics-synced-list {
   width: 100%;
-  will-change: transform;
 }
 
 .lyrics-synced-line {
@@ -3096,11 +3172,6 @@ body {
   color: var(--text);
   opacity: 1;
   transform: scale(1.02);
-}
-
-.lyrics-open #now-heart,
-.lyrics-open #now-download {
-  display: none !important;
 }
 
 /* ---- QUEUE PANEL ---- */
@@ -3397,7 +3468,14 @@ body {
   transition: all 0.2s ease;
   letter-spacing: 0.1px;
   max-width: 220px;
+  min-width: 0;
   overflow: hidden;
+}
+.recent-chip-query {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .recent-chip:hover {
   color: var(--text);
@@ -4184,6 +4262,8 @@ body {
 .dup-duplicate { opacity: 0.5; text-decoration: line-through; }
 .dup-keep-badge { font-size: 10px; font-weight: 700; color: rgba(100, 200, 100, 0.9); flex-shrink: 0; width: 60px; }
 .dup-remove-badge { font-size: 10px; font-weight: 700; color: rgba(200, 100, 100, 0.7); flex-shrink: 0; width: 60px; }
+.dup-uncertain-badge { font-size: 10px; font-weight: 700; color: rgba(220, 180, 80, 0.95); flex-shrink: 0; width: 78px; }
+.dup-group-card.dup-uncertain .dup-duplicate { opacity: 0.85; text-decoration: none; }
 .dup-tier { font-size: 11px; color: var(--text-secondary); flex-shrink: 0; width: 80px; }
 .dup-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 11px; direction: rtl; text-align: left; }
 

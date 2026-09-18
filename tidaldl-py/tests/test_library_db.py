@@ -74,6 +74,7 @@ class TestPragmas:
             "disc_number", "disc_total", "musicbrainz_release_id",
             "musicbrainz_release_group_id", "provider_namespace",
             "provider_album_id", "barcode", "release_id",
+            "file_size", "file_mtime", "file_inode", "file_device", "missing_since",
         } <= cols
         assert row is not None
         assert row["status"] == "tagged"
@@ -248,6 +249,18 @@ class TestRecentPlays:
 
         assert [track["path"] for track in recent] == ["/music/a.flac"]
 
+    def test_recent_plays_hides_missing_since_rows(self, db):
+        db.record("/music/a.flac", status="tagged", artist="A", title="Alpha")
+        db.record("/music/gone.flac", status="tagged", artist="B", title="Gone")
+        db.log_play_event("/music/a.flac", artist="A", played_at=400)
+        db.log_play_event("/music/gone.flac", artist="B", played_at=500)
+        db.mark_missing("/music/gone.flac", since=600)
+        db.commit()
+
+        recent = db.recent_plays(limit=10)
+
+        assert [track["path"] for track in recent] == ["/music/a.flac"]
+
 
 class TestPagination:
     def _seed(self, db, n=10):
@@ -268,6 +281,40 @@ class TestPagination:
         rows, total = db.tracks_page(query="Track 5", limit=50, offset=0)
         assert total == 1
         assert rows[0]["title"] == "Track 5"
+
+    def test_tracks_page_search_folds_accents(self, db):
+        remastered = (
+            "/music/Carlos Vives/"
+            "Clásicos de la Provincia 30 Años (Remastered & Expanded)/"
+            "La gota fría (Remastered 30 años).flac"
+        )
+        db.record(
+            remastered,
+            status="tagged",
+            artist="Carlos Vives",
+            title="La gota fría (Remastered 30 años)",
+            album="Clásicos de la Provincia 30 Años (Remastered & Expanded)",
+            quality="44100Hz/24bit",
+            fmt="FLAC",
+            codec="flac",
+        )
+        db.record(
+            "/music/Carlos Vives/Clasicos de la Provincia/Carlos Vives - La Gota Fria.flac",
+            status="tagged",
+            artist="Carlos Vives",
+            title="La Gota Fria",
+            album="Clasicos de la Provincia",
+            quality="44100Hz/16bit",
+            fmt="FLAC",
+            codec="flac",
+        )
+        db.commit()
+
+        for query in ("Fria", "gota fria"):
+            rows, total = db.tracks_page(query=query, limit=50, offset=0)
+            titles = [row["title"] for row in rows]
+            assert total == 2, query
+            assert "La gota fría (Remastered 30 años)" in titles, query
 
     def test_artists_page(self, db):
         self._seed(db)
@@ -712,7 +759,9 @@ class TestMigration:
         assert "provider_album_id" in cols
         assert "barcode" in cols
         assert "release_id" in cols
-        assert LibraryDB._SCHEMA_VERSION == 9
+        assert "file_size" in cols
+        assert "missing_since" in cols
+        assert LibraryDB._SCHEMA_VERSION == 10
         assert (
             db._conn.execute("PRAGMA user_version").fetchone()[0]
             == LibraryDB._SCHEMA_VERSION

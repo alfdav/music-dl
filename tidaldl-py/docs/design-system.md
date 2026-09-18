@@ -280,6 +280,7 @@ padding: 0;
 ### Home insight fan
 - Quiet overlay on `.main` (not a hash view). Data tiles stash the already-loaded `GET /home` payload on `_homeData` and open `_openHomeInsightFan`. No extra network call. Play history never leaves the machine.
 - Cards are number/label portraits built only from fields present on that payload: `total_plays`, `listening_time_hours`, `top_artist` / `top_artists`, `most_replayed`, `track_count`, `album_count`, `genre_breakdown`, `weekly_activity`, `this_week`, `recent_albums` (names only). Skip empty cards. Do not invent stats. First-paint `/home` uses `extras=False`, so `recent_albums` is usually absent and that card is skipped.
+- Hierarchy on each card: gold serif hero, uppercase label, optional detail, then 1–3 left-aligned `.home-fan-fact` lines in the middle. Facts come from unused `/home` fields already on the payload (`streak`, `most_replayed`, collection size, `this_week.most_replayed` / `genre_breakdown`, `top_artist.genre` / `album_count` / `track_count`, weekly peak). Skip a fact when the value is missing or zero. Empty library stays empty.
 - Motion: max 7 visible, center slot 3, published FAN_POSITIONS. Entrance from a stacked deck (`y: 12rem`, `scale: 0.5`) into the arc. Chevrons cycle `centerIndex`. Dots only when there are more than 7 cards. Counts ease; they do not snap.
 - Dismiss: Escape, overlay click, `.home-fan-back`, and `navigate(view, opts)` (sidebar `{ jump: true }` included). `.nav-back` stays the drill-in stack control. Artist tiles stay `navigate('artist:' + name)`.
 
@@ -288,7 +289,8 @@ padding: 0;
 - Background: `rgba(22, 20, 19, 0.95)` + blur(40px)
 
 ### Track List
-- Grid: `40px 44px 1fr 1fr 72px 52px 44px 52px 40px 32px`
+- Grid: `40px 44px 1fr 1fr 72px 52px 44px 52px 84px 32px`
+- `.track-actions` is a flex row (`gap: 12px`, same as the track grid) so the source-tag (`tidal` / `local`) does not sit flush against the download icon. The 84px column is label + gap + 40px `.dl-btn`. Do not letter-space the source word.
 - Playing state: `--accent-glow` bg, gold left bar, accent track name
 - Min height: 44px per row
 

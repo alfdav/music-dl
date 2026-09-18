@@ -86,15 +86,15 @@ class TestAppJsFeatureMarkers:
 
     def test_artist_gallery_eager_loads_first_six_covers_and_keeps_fallback(self):
         js = read_gui_js()
-        gallery_source = js.split("async function renderArtistGallery(container, artistName) {")[1].split(
+        gallery_source = js.split("async function renderArtistGallery(")[1].split(
             "// ---- LOCAL ALBUM DETAIL"
         )[0]
 
-        assert "data.albums.forEach((album, index) => {" in gallery_source
+        assert "albums.forEach((album, index) => {" in gallery_source
         assert "loading: index < 6 ? 'eager' : 'lazy'" in gallery_source
         assert "img.onerror = function() {" in gallery_source
         assert "artWrap.style.background = artGradient(album.name);" in gallery_source
-        assert "data.albums.length + ' album' + (data.albums.length !== 1 ? 's' : '')" in gallery_source
+        assert "albums.length + ' album' + (albums.length !== 1 ? 's' : '')" in gallery_source
         assert "data.albums.length + ' albums'" not in gallery_source
         assert "skeleton-row" not in gallery_source
         assert "Loading albums" in gallery_source or "home-loading-hint" in gallery_source
@@ -290,6 +290,8 @@ class TestAppJsFeatureMarkers:
         )[0]
         filtered_condition = "state.searchType === 'albums' && data.unfiltered_total > 0"
         assert source.count("'Tidal Albums'") == 1
+        assert "className: 'search-divider'" in source
+        assert "type !== 'albums' && localItems.length > 0" not in source
         assert "renderSearchResults(tidalWrap, tidalResponse, false)" in source
         assert "unfiltered_total: originalTidalItems.length" in source
         assert "originalTidalItems.length === 0" in source
@@ -300,6 +302,11 @@ class TestAppJsFeatureMarkers:
         assert "No albums match these filters" in filtered_branch
         assert "Use Clear filters above to see every album." in filtered_branch
         assert "return;" in filtered_branch
+
+        css = (STATIC_DIR / "style.css").read_text()
+        header = _css_rule_bodies(css, ".results-header")
+        assert any("align-items: center" in body for body in header)
+        assert all("align-items: baseline" not in body for body in header)
 
     def test_search_cache_matches_query_and_type_and_drops_stale_results(self):
         js = read_gui_js()
@@ -320,6 +327,43 @@ class TestAppJsFeatureMarkers:
         assert "state.searchResults.type === state.searchType" in cached_source
         assert "state.searchResults.query === state.searchQuery.trim()" in view_source
         assert "state.searchResults.type === state.searchType" in view_source
+
+    def test_search_resolves_tidal_urls_and_keeps_recent_chip_dismiss_visible(self):
+        js = read_gui_js()
+        css = (STATIC_DIR / "style.css").read_text()
+        search_source = js.split("async function doSearch(resultsArea) {")[1].split(
+            "function renderTidalSearchAuthPanel("
+        )[0]
+        results_source = js.split("function renderSearchResults(")[1].split(
+            "function _trackKey("
+        )[0]
+        gallery_source = js.split("async function renderArtistGallery(")[1].split(
+            "// ---- LOCAL ALBUM DETAIL"
+        )[0]
+        recent_source = js.split("function _renderRecentSearches(")[1].split(
+            "function _filterTidalAlbums("
+        )[0]
+
+        assert "Promise.all([localP, tidalP])" in search_source
+        assert "timeoutMs: 2500" in search_source
+        assert "_followSearchResolve(resultsArea, tidalData)" in search_source
+        assert "tidalData.resolve" in js
+        assert "downloadTrack" in js
+        assert "buildArtistView(item.name, item.id)" in results_source
+        assert "/artists/" in js
+        assert "/library/artist/" in gallery_source
+        assert "recent-chip-query" in recent_source
+
+        query = _css_rule_bodies(css, ".recent-chip-query")
+        assert query, ".recent-chip-query rule is missing"
+        assert any(
+            "overflow: hidden" in body
+            and "text-overflow: ellipsis" in body
+            and "min-width: 0" in body
+            for body in query
+        )
+        dismiss = _css_rule_bodies(css, ".recent-chip-x")
+        assert any("flex-shrink: 0" in body for body in dismiss)
 
     def test_has_queue_context_actions(self):
         js = read_gui_js()
@@ -480,6 +524,61 @@ class TestAppJsFeatureMarkers:
         assert "status: us.status || us.phase || 'idle'" in js
         assert "available_version: us.available_version || us.version || ''" in js
         assert "error_message: us.error_message || us.error || ''" in js
+
+
+def _css_gap_px(body: str) -> int | None:
+    match = re.search(r"(?<![-\w])gap:\s*(\d+)px", body)
+    return int(match.group(1)) if match else None
+
+
+def _grid_columns(body: str) -> list[str] | None:
+    match = re.search(r"grid-template-columns:\s*([^;]+)", body)
+    if not match:
+        return None
+    return match.group(1).split()
+
+
+class TestTrackRowActionSpacing:
+    """Source label + download icon sit in .track-actions on every track row."""
+
+    def test_actions_cluster_has_horizontal_gap_and_column_room(self):
+        css = (STATIC_DIR / "style.css").read_text()
+        js = read_gui_js()
+
+        assert "className: 'track-actions visible'" in js
+        assert "className: 'source-tag ' + (trackIsPlayable(track) ? 'local-tag' : 'tidal-tag')" in js
+        assert "className: 'dl-btn'" in js
+        assert ".track.unplayable" in css
+
+        actions = _css_rule_bodies(css, ".track-actions")
+        assert actions, ".track-actions rule is missing"
+        assert any(
+            "display: flex" in body
+            and "align-items: center" in body
+            and (_css_gap_px(body) or 0) >= 8
+            for body in actions
+        ), "source-tag and sibling action icons need >= 8px flex gap"
+
+        source = _css_rule_bodies(css, ".source-tag")
+        assert source, ".source-tag rule is missing"
+        assert all("letter-spacing: 0.5px" in body for body in source)
+
+        dl_btn = _css_rule_bodies(css, ".dl-btn")
+        assert any("width: 40px" in body and "height: 40px" in body for body in dl_btn)
+
+        for selector in (".track", ".track-header"):
+            columns = [
+                cols for body in _css_rule_bodies(css, selector)
+                if (cols := _grid_columns(body)) and len(cols) >= 9
+            ]
+            assert columns, f"{selector} grid-template-columns is missing"
+            for cols in columns:
+                actions_col = cols[8]
+                assert actions_col.endswith("px"), f"{selector} actions column must be a fixed px width"
+                assert int(actions_col[:-2]) >= 80, (
+                    f"{selector} actions column {actions_col} is too narrow "
+                    "for source label + gap + download icon"
+                )
 
 
 class TestNavBackControl:

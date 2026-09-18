@@ -73,7 +73,10 @@ SETTINGS_HELP: dict[str, str] = {
     "use_primary_album_artist": "Use only the primary album artist for folder paths instead of track artists.",
     "lyrics_file": "On download, write a sidecar *.lrc when Tidal has lyrics. The lyrics panel Save lyrics control writes that sidecar for the current local file without enabling this for every download.",
     "video_download": "Allow download of videos.",
-    "download_delay": "Activate randomized download delay to mimic human behaviour.",
+    "download_delay": (
+        "Pace Tidal API/auth stream-info calls to avoid rate limits. "
+        "Media byte streams use full available bandwidth with no per-track sleep."
+    ),
     "download_base_path": "Where to store the downloaded media.",
     "quality_audio": (
         'Desired audio download quality: "LOW" (96kbps), "HIGH" (320kbps), '

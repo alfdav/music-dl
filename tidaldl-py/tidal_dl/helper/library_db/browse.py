@@ -1,6 +1,8 @@
 """Album and artist browsing queries."""
 
-from tidal_dl.helper.library_db._common import *  # noqa: F403
+from tidal_dl.helper.library_db._common import *
+from tidal_dl.helper.library_scanner import visible_scanned_path_sql
+
 
 class BrowseMixin:
     def artists_page(
@@ -11,7 +13,10 @@ class BrowseMixin:
         ) -> tuple[list[dict], int]:
         """Return paginated artists with track/album counts."""
         assert self._conn
-        where = "status != 'unreadable' AND artist IS NOT NULL"
+        where = (
+            f"status != 'unreadable' AND missing_since IS NULL "
+            f"AND artist IS NOT NULL AND {visible_scanned_path_sql()}"
+        )
         params: list = []
         if query:
             where += " AND artist LIKE ?"
@@ -27,6 +32,8 @@ class BrowseMixin:
                        MIN(s.path) as cover_path,
                        (SELECT s2.art_available FROM scanned s2
                         WHERE s2.artist = s.artist AND s2.status != 'unreadable'
+                          AND s2.missing_since IS NULL
+                          AND {visible_scanned_path_sql("s2.path")}
                         ORDER BY s2.path ASC LIMIT 1) as cover_art_available
                 FROM scanned s
                 WHERE {where}
@@ -42,11 +49,12 @@ class BrowseMixin:
         assert self._conn
         grouped: dict[str, dict] = {}
         for row in self._conn.execute(
-            """SELECT release_id, album, artist, title, path, art_available, quality
+            f"""SELECT release_id, album, artist, title, path, art_available, quality
                FROM scanned
-               WHERE status != 'unreadable'
+               WHERE status != 'unreadable' AND missing_since IS NULL
                  AND album IS NOT NULL
-                 AND release_id IS NOT NULL"""
+                 AND release_id IS NOT NULL
+                 AND {visible_scanned_path_sql()}"""
         ):
             card = grouped.setdefault(row["release_id"], {
                 "id": row["release_id"],
@@ -72,8 +80,7 @@ class BrowseMixin:
                 card["cover_path"] = path
                 card["cover_art_available"] = art
             quality = str(row["quality"] or "")
-            if quality > card["best_quality"]:
-                card["best_quality"] = quality
+            card["best_quality"] = max(card["best_quality"], quality)
         result = []
         for card in grouped.values():
             artists = card["artists"]
@@ -91,7 +98,10 @@ class BrowseMixin:
     def all_albums(self, query: str = "") -> list[dict]:
         """Return all albums grouped by album name. Multi-artist albums show 'Various Artists'."""
         assert self._conn
-        where = "album IS NOT NULL AND status != 'unreadable'"
+        where = (
+            f"album IS NOT NULL AND status != 'unreadable' "
+            f"AND missing_since IS NULL AND {visible_scanned_path_sql()}"
+        )
         params: list = []
         if query:
             where += " AND (album LIKE ? OR artist LIKE ?)"
@@ -101,6 +111,8 @@ class BrowseMixin:
             f"""SELECT s.album, COUNT(*) as track_count, MIN(s.path) as cover_path,
                        (SELECT s2.art_available FROM scanned s2
                         WHERE s2.album = s.album AND s2.status != 'unreadable'
+                          AND s2.missing_since IS NULL
+                          AND {visible_scanned_path_sql("s2.path")}
                         ORDER BY s2.path ASC LIMIT 1) as cover_art_available,
                        MAX(quality) as best_quality,
                        COUNT(DISTINCT artist) as artist_count,
@@ -132,7 +144,7 @@ class BrowseMixin:
         # (~500ms local / ~3s on the NAS-backed Mac library).
         downloaded: dict[str, dict] = {}
         for row in self._conn.execute(
-            """SELECT dh.album,
+            f"""SELECT dh.album,
                       COUNT(DISTINCT s.path) AS track_count,
                       MAX(dh.finished_at) AS recent_at,
                       COUNT(DISTINCT dh.artist) AS artist_count,
@@ -142,7 +154,8 @@ class BrowseMixin:
                  ON s.album = dh.album
                WHERE dh.status = 'done'
                  AND dh.finished_at IS NOT NULL
-                 AND s.status != 'unreadable'
+                 AND s.status != 'unreadable' AND s.missing_since IS NULL
+                 AND {visible_scanned_path_sql("s.path")}
                  AND dh.album IS NOT NULL
                GROUP BY dh.album"""
         ).fetchall():
@@ -157,14 +170,15 @@ class BrowseMixin:
 
         scanned: dict[str, dict] = {}
         for row in self._conn.execute(
-            """SELECT album,
+            f"""SELECT album,
                       COUNT(*) AS track_count,
                       MAX(scanned_at) AS recent_at,
                       COUNT(DISTINCT artist) AS artist_count,
                       MIN(artist) AS first_artist
                FROM scanned s
                WHERE album IS NOT NULL
-                 AND status != 'unreadable'
+                 AND status != 'unreadable' AND missing_since IS NULL
+                 AND {visible_scanned_path_sql()}
                GROUP BY album"""
         ).fetchall():
             artist = row["first_artist"] if row["artist_count"] == 1 else "Various Artists"
@@ -190,11 +204,72 @@ class BrowseMixin:
     def tracks_for_artist(self, artist: str) -> list[dict]:
         """Return readable rows for one artist without loading the whole library."""
         assert self._conn
+        from tidal_dl.helper.library_db.utils import fold_search_text
+
+        folded = fold_search_text(artist)
+        if not folded:
+            return []
         rows = self._conn.execute(
-            """SELECT * FROM scanned
-               WHERE status != 'unreadable'
-                 AND artist = ? COLLATE NOCASE""",
+            f"""SELECT * FROM scanned
+               WHERE status != 'unreadable' AND missing_since IS NULL
+                 AND {visible_scanned_path_sql()}
+                 AND fold_search(artist) = ?""",
+            (folded,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def tracks_for_album_artist(self, artist: str) -> list[dict]:
+        """Rows tagged with this album artist, including guest-credit track artists."""
+        assert self._conn
+        if not artist:
+            return []
+        from tidal_dl.helper.library_db.utils import fold_search_text
+
+        folded = fold_search_text(artist)
+        if not folded:
+            return []
+        rows = self._conn.execute(
+            f"""SELECT * FROM scanned
+               WHERE status != 'unreadable' AND missing_since IS NULL
+                 AND {visible_scanned_path_sql()}
+                 AND credit_includes(album_artist, ?)""",
             (artist,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def tracks_for_leftover_album_tags(self, artist: str, album: str) -> list[dict]:
+        """Leftover ``Artist - Album`` / codec-bracket album tags for one release."""
+        assert self._conn
+        if not album:
+            return []
+        artist = (artist or "").strip()
+        various = artist.casefold() == "various artists"
+        clauses = ["album = ?"]
+        params: list = [album]
+        if artist:
+            clauses.append("album LIKE ?")
+            params.append(f"{artist} - {album}%")
+            if not various:
+                # Any leftover ``Someone - Album`` prefix; filter_album_rows
+                # still requires host artist / album_artist.
+                clauses.append("album LIKE ?")
+                params.append(f"% - {album}%")
+            # Bare ``Album [FLAC]`` must stay artist-scoped. An unscoped LIKE
+            # lets another artist's leftover title enter a VA compilation.
+            from tidal_dl.helper.library_db.utils import fold_search_text
+
+            folded_artist = fold_search_text(artist)
+            clauses.append(
+                "(album LIKE ? AND (fold_search(artist) = ? "
+                "OR credit_includes(album_artist, ?)))"
+            )
+            params.extend([f"{album} [%", folded_artist, artist])
+        rows = self._conn.execute(
+            f"""SELECT * FROM scanned
+               WHERE status != 'unreadable' AND missing_since IS NULL
+                 AND {visible_scanned_path_sql()}
+                 AND ({' OR '.join(clauses)})""",
+            params,
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -202,8 +277,9 @@ class BrowseMixin:
         """Return readable rows already stamped with a grouped release id."""
         assert self._conn
         rows = self._conn.execute(
-            """SELECT * FROM scanned
-               WHERE status != 'unreadable'
+            f"""SELECT * FROM scanned
+               WHERE status != 'unreadable' AND missing_since IS NULL
+                 AND {visible_scanned_path_sql()}
                  AND release_id = ?""",
             (release_id,),
         ).fetchall()
@@ -218,7 +294,8 @@ class BrowseMixin:
         placeholders = ",".join("?" * len(titles))
         rows = self._conn.execute(
             f"""SELECT * FROM scanned
-                WHERE status != 'unreadable'
+                WHERE status != 'unreadable' AND missing_since IS NULL
+                  AND {visible_scanned_path_sql()}
                   AND album IN ({placeholders})""",
             titles,
         ).fetchall()
@@ -228,10 +305,11 @@ class BrowseMixin:
         """True when every readable album row already has a grouped release id."""
         assert self._conn
         row = self._conn.execute(
-            """SELECT COUNT(*) AS album_rows,
+            f"""SELECT COUNT(*) AS album_rows,
                       SUM(CASE WHEN release_id IS NOT NULL THEN 1 ELSE 0 END) AS stamped
                FROM scanned
-               WHERE status != 'unreadable' AND album IS NOT NULL"""
+               WHERE status != 'unreadable' AND missing_since IS NULL AND album IS NOT NULL
+                 AND {visible_scanned_path_sql()}"""
         ).fetchone()
         album_rows = int(row["album_rows"] or 0)
         stamped = int(row["stamped"] or 0)
@@ -241,15 +319,18 @@ class BrowseMixin:
         """Return albums for an artist with track count and a representative path for art."""
         assert self._conn
         rows = self._conn.execute(
-            """SELECT s.album, COUNT(*) as track_count, MIN(s.path) as cover_path,
+            f"""SELECT s.album, COUNT(*) as track_count, MIN(s.path) as cover_path,
                       (SELECT s2.art_available FROM scanned s2
                        WHERE s2.artist = s.artist AND s2.album = s.album
-                         AND s2.status != 'unreadable'
+                         AND s2.status != 'unreadable' AND s2.missing_since IS NULL
+                         AND {visible_scanned_path_sql("s2.path")}
                        ORDER BY s2.path ASC LIMIT 1) as cover_art_available,
                       GROUP_CONCAT(DISTINCT genre) as genres,
                       MAX(quality) as best_quality
                FROM scanned s
                WHERE artist = ? AND album IS NOT NULL AND status != 'unreadable'
+                 AND missing_since IS NULL
+                 AND {visible_scanned_path_sql()}
                GROUP BY album ORDER BY album COLLATE NOCASE ASC""",
             (artist,),
         ).fetchall()
@@ -264,14 +345,18 @@ class BrowseMixin:
         assert self._conn
         if artist == "Various Artists":
             rows = self._conn.execute(
-                """SELECT * FROM scanned
-                   WHERE album = ? AND status != 'unreadable'""",
+                f"""SELECT * FROM scanned
+                   WHERE album = ? AND status != 'unreadable'
+                     AND missing_since IS NULL
+                     AND {visible_scanned_path_sql()}""",
                 (album,),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                """SELECT * FROM scanned
-                   WHERE artist = ? AND album = ? AND status != 'unreadable'""",
+                f"""SELECT * FROM scanned
+                   WHERE artist = ? AND album = ? AND status != 'unreadable'
+                     AND missing_since IS NULL
+                     AND {visible_scanned_path_sql()}""",
                 (artist, album),
             ).fetchall()
 
@@ -287,3 +372,78 @@ class BrowseMixin:
 
         result.sort(key=lambda t: t.get("path", ""))
         return result
+
+    def tracks_for_identity(
+        self,
+        *,
+        isrc: str = "",
+        title: str = "",
+        artist: str = "",
+        album: str = "",
+    ) -> list[dict]:
+        """Bounded candidate set for catalog→library identity (not a full-library walk)."""
+        seen: set[str] = set()
+        rows: list[dict] = []
+
+        def add(found: list[dict]) -> None:
+            for row in found:
+                path = row.get("path") or ""
+                if not path or path in seen:
+                    continue
+                seen.add(path)
+                rows.append(row)
+
+        if isrc:
+            add(self.tracks_by_isrc(isrc))
+        if artist:
+            from tidal_dl.helper.local_identity import artist_credit_queries
+
+            for credit in artist_credit_queries(artist):
+                add(self.tracks_for_artist(credit))
+        if album:
+            add(self.tracks_for_albums([album]))
+        if title and not rows:
+            assert self._conn
+            from tidal_dl.helper.library_db.utils import fold_search_text
+
+            folded = fold_search_text(title)
+            if folded:
+                add([
+                    dict(row)
+                    for row in self._conn.execute(
+                        f"""SELECT * FROM scanned
+                           WHERE status != 'unreadable' AND missing_since IS NULL
+                             AND {visible_scanned_path_sql()}
+                             AND fold_search(title) LIKE ?""",
+                        (f"%{folded}%",),
+                    ).fetchall()
+                ])
+        return rows
+
+    def tracks_for_album_identity(self, artist: str, album: str) -> list[dict]:
+        """Album rows by identity, not an exact album-tag string."""
+        from tidal_dl.helper.local_identity import filter_album_rows, folder_siblings_for_album, fold_identity
+
+        exact = self.album_tracks(artist, album)
+        pool = list(exact)
+        if artist and artist != "Various Artists":
+            pool.extend(self.tracks_for_artist(artist))
+        # Guest credits are tagged with the host album_artist, often under a
+        # leftover Artist - Album title that misses exact tracks_for_albums.
+        if artist:
+            pool.extend(self.tracks_for_album_artist(artist))
+        pool.extend(self.tracks_for_albums([album]) or [])
+        pool.extend(self.tracks_for_leftover_album_tags(artist, album))
+        matched = filter_album_rows(pool, artist, album)
+        if artist and fold_identity(artist) != "various artists" and matched:
+            seen = {row.get("path") for row in matched}
+            for row in folder_siblings_for_album(matched, pool, artist, album):
+                path = row.get("path")
+                if path and path not in seen:
+                    matched.append(row)
+                    seen.add(path)
+        if matched:
+            return matched
+        if artist == "Various Artists":
+            return filter_album_rows(self.tracks_for_albums([album]) or self.all_tracks(), artist, album)
+        return []

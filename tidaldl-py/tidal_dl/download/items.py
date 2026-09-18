@@ -1,7 +1,13 @@
 """Download items helpers."""
 
-from tidal_dl.download._common import *  # noqa: F403
+from tidal_dl.download._common import *
 from tidal_dl.download.registry import register_downloaded_track
+from tidal_dl.helper.path import resolve_library_relative
+from tidal_dl.helper.recording_identity import (
+    adopt_original_name,
+    collapse_folder_identity,
+    live_identity_paths,
+)
 
 
 class ItemMixin:
@@ -29,7 +35,8 @@ class ItemMixin:
             media_type (MediaType | None, optional): Media type. Defaults to None.
             media (Track | Video | None, optional): Media item. Defaults to None.
             video_download (bool, optional): Whether to allow video downloads. Defaults to True.
-            download_delay (bool, optional): Whether to delay between downloads. Defaults to False.
+            download_delay (bool, optional): Whether to pace Tidal API/auth calls
+                before stream-info. Never applied to media byte transfer. Defaults to False.
             quality_audio (Quality | None, optional): Audio quality. Defaults to None.
             quality_video (QualityVideo | None, optional): Video quality. Defaults to None.
             is_parent_album (bool, optional): Whether this is a parent album. Defaults to False.
@@ -64,6 +71,14 @@ class ItemMixin:
         # Handle copy override: copy source file directly to destination.
         if duplicate_action_override == "copy" and isinstance(media, Track):
             isrc = getattr(media, "isrc", None)
+            folder_identity = live_identity_paths(
+                isrc=isrc,
+                directory=path_media_dst.parent,
+                db=self._library_db_for_current_thread(),
+                dest_path=path_media_dst,
+            )
+            if folder_identity:
+                return DownloadOutcome.SKIPPED, folder_identity[0]
             src_path_str = self._library_db_for_current_thread().primary_path_for_isrc(isrc) if isrc else None
             if src_path_str and pathlib.Path(src_path_str).is_file():
                 src_ext = pathlib.Path(src_path_str).suffix
@@ -95,10 +110,9 @@ class ItemMixin:
 
             return DownloadOutcome.SKIPPED, path_media_dst
 
-        # Step 3: Handle quality settings
-        quality_audio_old, quality_video_old = self._adjust_quality_settings(quality_audio, quality_video)
-
-        # Step 4: Download and process media
+        # Step 3: Download and process media. Quality is applied per-call inside
+        # `_get_stream_info` under the shared session lock so peer workers cannot
+        # clobber each other on the Tidal singleton.
         download_success, path_media_dst = self._download_and_process_media(
             media,
             path_media_dst,
@@ -106,16 +120,19 @@ class ItemMixin:
             is_parent_album,
             file_extension_dummy,
             event_stop,
+            download_delay,
+            quality_audio,
+            quality_video,
         )
 
-        # Step 5: Post-processing
+        # Step 4: Post-processing
         self._perform_post_processing(
             media,
             path_media_dst,
             quality_audio,
             quality_video,
-            quality_audio_old,
-            quality_video_old,
+            None,
+            None,
             download_delay,
             skip_file,
             event_stop,
@@ -126,8 +143,19 @@ class ItemMixin:
         # Record the ISRC after a successful download so future duplicate checks work.
         if outcome == DownloadOutcome.DOWNLOADED and isinstance(media, Track):
             isrc = getattr(media, "isrc", None)
+            library_db = self._library_db_for_current_thread()
             if isrc and self.settings.data.skip_duplicate_isrc:
-                self._library_db_for_current_thread().register_isrc_path(isrc, path_media_dst, commit=True)
+                library_db.register_isrc_path(isrc, path_media_dst, commit=True)
+            if isrc and path_media_dst:
+                removed = collapse_folder_identity(
+                    library_db,
+                    isrc=isrc,
+                    keep_path=path_media_dst,
+                )
+                path_media_dst = adopt_original_name(
+                    path_media_dst, removed, library_db, isrc=isrc
+                )
+                library_db.commit()
             self._on_successful_track()
             register_downloaded_track(path_media_dst)
 
@@ -255,6 +283,7 @@ class ItemMixin:
             delimiter_album_artist=self.settings.data.filename_delimiter_album_artist,
             use_primary_album_artist=self.settings.data.use_primary_album_artist,
         )
+        file_name_relative = resolve_library_relative(self.path_base, file_name_relative)
 
         path_media_dst: pathlib.Path = (
             pathlib.Path(self.path_base).expanduser() / (file_name_relative + file_extension_dummy)
@@ -280,6 +309,7 @@ class ItemMixin:
                     delimiter_album_artist=self.settings.data.filename_delimiter_album_artist,
                     use_primary_album_artist=self.settings.data.use_primary_album_artist,
                 )
+                file_name_track_dir_relative = resolve_library_relative(self.path_base, file_name_track_dir_relative)
                 path_media_track_dir: pathlib.Path = (
                     pathlib.Path(self.path_base).expanduser() / (file_name_track_dir_relative + file_extension_dummy)
                 ).absolute()
@@ -299,10 +329,33 @@ class ItemMixin:
         # ISRC-based cross-context dedup: skip if the same recording was already
         # downloaded to *any* path (independent of skip_existing path check).
         # bypass_isrc=True is set for redownload overrides decided in pre-flight.
+        media_isrc = getattr(media, "isrc", None) if isinstance(media, Track) else None
+        folder_identity = live_identity_paths(
+            isrc=media_isrc,
+            directory=path_media_dst.parent,
+            db=self._library_db_for_current_thread() if isinstance(media, Track) else None,
+            dest_path=path_media_dst,
+        )
         if not bypass_isrc and not skip_file and self.settings.data.skip_duplicate_isrc and isinstance(media, Track):
-            media_isrc = getattr(media, "isrc", None)
             if media_isrc and self._library_db_for_current_thread().has_live_isrc(media_isrc):
                 skip_file = True
+            elif folder_identity:
+                skip_file = True
+
+        if (
+            not bypass_isrc
+            and not skip_file
+            and self.skip_existing
+            and folder_identity
+        ):
+            skip_file = True
+
+        if skip_file and folder_identity:
+            dest_match = next(
+                (path for path in folder_identity if path.resolve() == path_media_dst.resolve()),
+                None,
+            )
+            path_media_dst = dest_match or folder_identity[0]
 
         return path_media_dst, file_extension_dummy, skip_file, skip_download
 
@@ -337,6 +390,9 @@ class ItemMixin:
         is_parent_album: bool,
         file_extension_dummy: str,
         event_stop: Event | None = None,
+        download_delay: bool = False,
+        quality_audio: Quality | None = None,
+        quality_video: QualityVideo | None = None,
     ) -> tuple[bool, pathlib.Path]:
         """Download and process media file.
 
@@ -347,6 +403,9 @@ class ItemMixin:
             is_parent_album (bool): Whether this is a parent album.
             file_extension_dummy (str): Dummy file extension.
             event_stop (Event | None, optional): Event to stop the download. Defaults to None.
+            download_delay (bool, optional): Pace Tidal API/auth calls only. Defaults to False.
+            quality_audio (Quality | None, optional): Per-call audio quality. Defaults to None.
+            quality_video (QualityVideo | None, optional): Per-call video quality. Defaults to None.
 
         Returns:
             tuple[bool, pathlib.Path]: Whether download was successful and the final output path.
@@ -355,7 +414,12 @@ class ItemMixin:
             return True, path_media_dst
 
         # Get stream information and final file extension
-        stream_manifest, file_extension, do_flac_extract, media_stream = self._get_stream_info(media)
+        stream_manifest, file_extension, do_flac_extract, media_stream = self._get_stream_info(
+            media,
+            pace_api=download_delay,
+            quality_audio=quality_audio,
+            quality_video=quality_video,
+        )
 
         if stream_manifest is None and isinstance(media, Track):
             return False, path_media_dst
@@ -584,7 +648,7 @@ class ItemMixin:
             quality_video (QualityVideo | None): Video quality setting.
             quality_audio_old (Quality | None): Previous audio quality.
             quality_video_old (QualityVideo | None): Previous video quality.
-            download_delay (bool): Whether to apply download delay.
+            download_delay (bool): Unused. API pacing happens before stream-info, not after bytes.
             skip_file (bool): Whether file was skipped.
             event_stop (Event | None, optional): Event to stop the download. Defaults to None.
         """
@@ -601,19 +665,7 @@ class ItemMixin:
         if quality_video_old is not None:
             self.adjust_quality_video(quality_video_old)
 
-        # Apply download delay if needed
-        if download_delay and not skip_file:
-            time_sleep: float = round(
-                random.SystemRandom().uniform(self._adaptive_delay_sec_min, self._adaptive_delay_sec_max),
-                1,
-            )
-
-            self.fn_logger.debug(f"Next download will start in {time_sleep} seconds.")
-
-            # Use event_stop or event_abort for interruptible sleep
-            if event_stop:
-                event_stop.wait(time_sleep)
-            elif self.event_abort:
-                self.event_abort.wait(time_sleep)
-            else:
-                time.sleep(time_sleep)
+        # download_delay used to sleep 3–5s here after the file was already on disk.
+        # That sat on the media path and throttled Gbps links. API pacing lives in
+        # `_pace_tidal_api` / `_get_stream_info(pace_api=...)` instead.
+        _ = (download_delay, skip_file, event_stop)
