@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import shutil
 import subprocess
 from typing import Any
-
-logger = logging.getLogger("music-dl.edition-scorer")
 
 _DEFAULT_BIN = "typesafe-music-edition"
 _WELL_KNOWN = (

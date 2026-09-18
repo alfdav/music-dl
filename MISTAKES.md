@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-18 — Assumed nested Artist/Album path is the Clean Up keeper
+
+**What happened:** Edition-advice selective-clean tests labeled `Artist/Album` as keeper and `Artist - Album` as extra. Grouping actually keeps the flatter `Artist - Album` path (`_path_score` prefers fewer slashes). Tests then posted the keeper and asserted the extra vanished.
+
+**Root cause:** Fixture invented keeper/extra instead of reading `_find_duplicate_groups`.
+
+**Prevention:** After seeding layout twins, resolve keeper/extra from grouping. Never assume nested vs flat.
+
 ## 2026-09-11 — Joined album_artist missed identity SQL membership
 
 **What happened:** Bugbot on PR #184: `_tag_join` stores multi-value album-artist as `host; guest`, but `tracks_for_album_artist` and the leftover `Album [FLAC]` clause required `fold_search(album_artist)` whole-string equality. Guest rows never entered the album identity pool when the album tag was not an exact title match, so leftover codec-bracket guests kept Download.
