@@ -20,6 +20,16 @@ def get_tidal_instance():
     return Tidal()
 
 
+def _edition_scorer_status() -> str:
+    try:
+        from tidal_dl.gui.services.edition_scorer import scorer_status
+
+        status = scorer_status()
+        return status if status in {"ready", "missing", "n/a"} else "n/a"
+    except Exception:
+        return "n/a"
+
+
 def get_settings() -> dict:
     s = Settings()
     d = s.data
@@ -43,6 +53,7 @@ def get_settings() -> dict:
         "extract_flac": d.extract_flac,
         "download_delay": d.download_delay,
         "edition_advice_enabled": bool(getattr(d, "edition_advice_enabled", False)),
+        "edition_scorer_status": _edition_scorer_status(),
     }
 
 

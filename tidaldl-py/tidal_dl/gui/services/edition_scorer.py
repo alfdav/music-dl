@@ -51,6 +51,14 @@ def scorer_available() -> bool:
     return _resolve_binary() is not None
 
 
+def scorer_status() -> str:
+    """Binary probe only: ready / missing / n/a. Never mentions the API key."""
+    try:
+        return "ready" if _resolve_binary() else "missing"
+    except Exception:
+        return "n/a"
+
+
 def score_pair(item_a: dict, item_b: dict, *, timeout_s: float = 60) -> dict[str, Any]:
     """Run the sidecar CLI and return a parsed edition-advice payload."""
     binary = _resolve_binary()

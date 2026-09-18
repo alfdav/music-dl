@@ -9,6 +9,7 @@ from tidal_dl.gui.services.edition_scorer import (
     EditionScorerError,
     EditionScorerUnavailable,
     score_pair,
+    scorer_status,
 )
 
 
@@ -96,3 +97,30 @@ def test_nonzero_exit_raises_scorer_error(monkeypatch):
     )
     with pytest.raises(EditionScorerError, match="boom"):
         score_pair(_item("A"), _item("B"))
+
+
+def test_scorer_status_ready_when_binary_found(monkeypatch):
+    monkeypatch.setattr(
+        "tidal_dl.gui.services.edition_scorer._resolve_binary",
+        lambda: "/usr/bin/typesafe-music-edition",
+    )
+    assert scorer_status() == "ready"
+
+
+def test_scorer_status_missing_when_binary_absent(monkeypatch):
+    monkeypatch.setattr(
+        "tidal_dl.gui.services.edition_scorer._resolve_binary",
+        lambda: None,
+    )
+    assert scorer_status() == "missing"
+
+
+def test_scorer_status_na_on_lookup_error(monkeypatch):
+    def boom():
+        raise RuntimeError("cannot probe")
+
+    monkeypatch.setattr(
+        "tidal_dl.gui.services.edition_scorer._resolve_binary",
+        boom,
+    )
+    assert scorer_status() == "n/a"

@@ -2866,7 +2866,7 @@ function renderDjai(container) {
   const header = h('div', { className: 'djai-header' },
     textEl('div', 'DJAI', 'wizard-step-label'),
     textEl('h2', 'DJAI', 'djai-title'),
-    textEl('p', 'Music automation modules live here. Discord Bot is the first deployable module.', 'djai-desc')
+    textEl('p', 'Music automation modules live here. Discord Bot is the first deployable module; Edition advice is the second.', 'djai-desc')
   );
 
   const moduleGrid = h('div', { className: 'djai-module-grid' });
@@ -2927,6 +2927,33 @@ function renderDjai(container) {
   botCard.appendChild(serviceActions);
   botCard.appendChild(details);
   moduleGrid.appendChild(botCard);
+
+  const editionCard = h('section', { className: 'djai-module-card djai-edition-card' });
+  const editionHeader = h('div', { className: 'djai-module-header' },
+    h('div', {},
+      textEl('div', 'Available now', 'wizard-step-label'),
+      textEl('h3', 'Edition advice (Jev)', 'djai-module-title')
+    ),
+    textEl('p', 'Advisory edition chips on Clean Up. Never deletes keep-both or unclear extras.', 'djai-module-desc')
+  );
+  const editionStatus = h('div', { className: 'djai-bot-status' },
+    textEl('span', 'Checking scorer...', 'djai-bot-pill')
+  );
+  const editionEnableRow = h('div', { className: 'djai-edition-enable' });
+  const editionEnableLabel = textEl('span', 'Enable module', 'settings-label');
+  const editionToggle = h('div', {
+    className: 'settings-toggle',
+    tabIndex: '0',
+    role: 'switch',
+    'aria-checked': 'false',
+  });
+  editionEnableRow.appendChild(editionEnableLabel);
+  editionEnableRow.appendChild(editionToggle);
+  editionCard.appendChild(editionHeader);
+  editionCard.appendChild(editionStatus);
+  editionCard.appendChild(editionEnableRow);
+  moduleGrid.appendChild(editionCard);
+
   shell.appendChild(moduleGrid);
   container.appendChild(shell);
 
@@ -3062,6 +3089,61 @@ function renderDjai(container) {
 
   refreshBtn.addEventListener('click', loadStatus);
   loadStatus();
+
+  function _scorerPillLabel(status) {
+    if (status === 'ready') return 'Ready';
+    if (status === 'missing') return 'Missing binary';
+    return 'n/a';
+  }
+
+  function paintEditionModule(data) {
+    const enabled = !!data.edition_advice_enabled;
+    const scorer = data.edition_scorer_status || 'n/a';
+    editionToggle.className = 'settings-toggle' + (enabled ? ' on' : '');
+    editionToggle.setAttribute('aria-checked', enabled ? 'true' : 'false');
+    while (editionStatus.firstChild) editionStatus.removeChild(editionStatus.firstChild);
+    editionStatus.appendChild(textEl(
+      'span',
+      enabled ? 'On' : 'Off',
+      'djai-bot-pill ' + (enabled ? 'ok' : 'warn')
+    ));
+    editionStatus.appendChild(textEl(
+      'span',
+      _scorerPillLabel(scorer),
+      'djai-bot-pill ' + (scorer === 'ready' ? 'ok' : 'warn')
+    ));
+  }
+
+  async function loadEditionModule() {
+    try {
+      const data = state.settings || await api('/settings');
+      state.settings = data;
+      paintEditionModule(data);
+    } catch (err) {
+      toast('Edition advice status failed: ' + err.message, 'error');
+      paintEditionModule({ edition_advice_enabled: false, edition_scorer_status: 'n/a' });
+    }
+  }
+
+  const flipEdition = async () => {
+    if (state.settingsReadOnly) {
+      toast('Settings are read-only until access is restored.', 'error', 5000);
+      return;
+    }
+    const next = editionToggle.getAttribute('aria-checked') !== 'true';
+    editionToggle.className = 'settings-toggle' + (next ? ' on' : '');
+    editionToggle.setAttribute('aria-checked', next ? 'true' : 'false');
+    await saveSetting('edition_advice_enabled', next);
+    if (state.settings) paintEditionModule(state.settings);
+  };
+  editionToggle.addEventListener('click', flipEdition);
+  editionToggle.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();
+      flipEdition();
+    }
+  });
+  loadEditionModule();
 }
 
 // ---- LIBRARY VIEW ----
@@ -5447,7 +5529,6 @@ async function loadSettingsForm(container, accessContainer) {
       { title: 'Library', fields: [
         { key: 'scan_paths', label: 'Scan Paths', type: 'text', helper: 'Additional folders to scan for music' },
         { key: 'skip_duplicate_isrc', label: 'Skip Duplicate ISRC', type: 'toggle', helper: 'Skips tracks with the same recording code' },
-        { key: 'edition_advice_enabled', label: 'Edition advice (Jev)', type: 'toggle', helper: 'Shows edition chips on Clean Up; never deletes keep-both/unclear' },
       ]},
     ];
 

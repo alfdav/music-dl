@@ -1581,6 +1581,33 @@ function duplicatePreviewSource() {
     ?.split('\nfunction _navText(')[0] || '';
 }
 
+function djaiSource() {
+  return viewsSource
+    .split('function renderDjai(container) {')[1]
+    ?.split('\n// ---- LIBRARY VIEW ----')[0] || '';
+}
+
+function settingsSource() {
+  return viewsSource
+    .split('const sections = [')[1]
+    ?.split('sections.forEach(section =>')[0] || '';
+}
+
+describe('DJAI edition advice module', () => {
+  test('Edition advice is a DJAI module card, not a Settings toggle', () => {
+    const djai = djaiSource();
+    const settings = settingsSource();
+    expect(djai).toContain("Edition advice (Jev)");
+    expect(djai).toContain('djai-edition-card');
+    expect(djai).toContain("saveSetting('edition_advice_enabled'");
+    expect(djai).toContain('edition_scorer_status');
+    expect(djai).toContain('Missing binary');
+    expect(djai).not.toMatch(/TYPESAFE_API_KEY|api key/i);
+    expect(settings).toContain("key: 'skip_duplicate_isrc'");
+    expect(settings).not.toContain("key: 'edition_advice_enabled'");
+  });
+});
+
 describe('duplicate preview', () => {
   test('shows a truncated note and does not add a second clean route', () => {
     const source = duplicatePreviewSource();

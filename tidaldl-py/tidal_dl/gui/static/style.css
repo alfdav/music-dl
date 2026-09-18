@@ -1691,6 +1691,17 @@ body {
   border-color: rgba(212, 160, 83, 0.22);
 }
 
+.djai-edition-card {
+  border-color: rgba(212, 160, 83, 0.22);
+}
+
+.djai-edition-enable {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .djai-module-header {
   display: flex;
   flex-direction: column;

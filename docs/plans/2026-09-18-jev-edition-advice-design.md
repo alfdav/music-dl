@@ -54,7 +54,7 @@ Clean Up UI ──read──► edition_advice cache
 - On `scoreGroup(groupId)`: for each extra, call scorer if cache miss/stale; concurrency cap 2.
 - Persist results to `edition_advice` cache.
 - Expose: cached chip for list; full per-pair payload for detail.
-- Feature flag off → no process spawn, UI hidden, Clean Up identical to today.
+- DJAI module off → no process spawn, Clean Up chips hidden, Clean Up identical to today. Enablement lives on the DJAI Edition advice card (persisted as `edition_advice_enabled` in Settings/cfg; not a Settings toggle).
 
 ### 3. Clean Up act hook (narrow)
 
@@ -112,7 +112,7 @@ Invalidate when fingerprint changes. Do not write into `album_grouping_assessmen
 
 - Unit: cautious aggregate; ≥0.95 act allowlist; keep_both/unclear never act; fingerprint invalidate.
 - Integration: mock scorer; detail open does not mutate grouping tables; Clean Up confirm with/without cache.
-- Manual gate: feature flag off ≡ baseline Clean Up counts; Reveal in Finder; one remaster pair never auto-deletes even at 0.99 keep_both.
+- Manual gate: DJAI module off ≡ baseline Clean Up counts; Reveal in Finder; one remaster pair never auto-deletes even at 0.99 keep_both.
 
 ## Success criteria
 
@@ -120,7 +120,7 @@ Invalidate when fingerprint changes. Do not write into `album_grouping_assessmen
 2. User can open the folder for a manual check in one click.
 3. Confirming Clean Up never removes `keep_both` / `unclear` / unscored via Jev.
 4. Confirming Clean Up can remove ≥0.95 `layout_twin_extra` and `true_duplicate_candidate` extras (subject to checkbox honor rule above).
-5. Grouping engine and preview math otherwise unchanged when flag off.
+5. Grouping engine and preview math otherwise unchanged when the DJAI module is off.
 
 ## Out of scope follow-ups
 

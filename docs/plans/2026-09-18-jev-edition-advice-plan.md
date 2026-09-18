@@ -6,7 +6,7 @@
 
 **Architecture:** External scorer CLI (`typesafe-music-edition` compatible) + in-app adapter/cache (`edition_advice` table). Grouping engines and `album_grouping_assessments` stay untouched. Flag off ⇒ UI and `/duplicates/clean` behave exactly as today.
 
-**Tech Stack:** Python FastAPI (tidaldl-py), SQLite `library.db` via `LibraryDB`, vanilla JS GUI (`views.js` / `api.js`), existing `/downloads/reveal`, Settings in `model/cfg.py`.
+**Tech Stack:** Python FastAPI (tidaldl-py), SQLite `library.db` via `LibraryDB`, vanilla JS GUI (`views.js` / `api.js`), existing `/downloads/reveal`, Settings persistence in `model/cfg.py`. Enablement UX is a DJAI module card, not a Settings toggle.
 
 **Spec:** `docs/plans/2026-09-18-jev-edition-advice-design.md` (approved 2026-09-18). Also attached / Inbox copy OK.
 
@@ -17,7 +17,7 @@
 - Never say “safe to delete” in UI copy; use “candidate” for true duplicates.
 - Honor explicit checkbox uncheck on confirm; auto-check ≥0.95 layout/true-dup when scores land.
 - Concurrency cap 2 for scorer calls; do not score all rows on preview open.
-- Feature flag `edition_advice_enabled` default **False**.
+- Persistence flag `edition_advice_enabled` default **False**. Only human toggle: DJAI Edition advice module card.
 - Mac path first; Windows/mini-plex parity out of scope for this PR.
 - Scorer API key never logged.
 - Base branch: `master`. Do not commit unrelated dirty local changes from other branches.
@@ -34,7 +34,7 @@
 | Scorer subprocess | Create `tidaldl-py/tidal_dl/gui/services/edition_scorer.py` |
 | Adapter (score group) | Create `tidaldl-py/tidal_dl/gui/services/edition_advice_adapter.py` |
 | API routes | Modify `tidaldl-py/tidal_dl/gui/api/duplicates.py`; optional thin router include |
-| Settings flag | Modify `tidaldl-py/tidal_dl/model/cfg.py`, `gui/api/settings.py`, settings UI in `views.js` |
+| DJAI module enablement | Persist `edition_advice_enabled` in `cfg.py` / settings API; toggle only on the DJAI Edition advice card in `views.js` |
 | Clean Up UI | Modify `tidaldl-py/tidal_dl/gui/static/views.js` (+ minimal CSS in `style.css`) |
 | Tests | Create `tidaldl-py/tests/test_edition_advice_policy.py`; extend `tests/test_duplicates.py` |
 | Design pointer | Keep design in `docs/plans/`; plan this file |
@@ -137,14 +137,15 @@ Item dict fields from scanned row: `artist, album, title, path, codec, format, q
 
 ---
 
-### Task 5: Settings flag
+### Task 5: DJAI module enablement (not a Settings toggle)
 
 **Files:**
-- Modify: `tidaldl-py/tidal_dl/model/cfg.py` — add `edition_advice_enabled: bool = False` + SETTINGS_META entry
-- Modify: `tidaldl-py/tidal_dl/gui/api/settings.py` — include in `get_settings` / `SettingsUpdate`
-- Modify: `views.js` settings toggles near `skip_duplicate_isrc`: label `Edition advice (Jev)`, helper `Shows edition chips on Clean Up; never deletes keep-both/unclear`
+- Modify: `tidaldl-py/tidal_dl/model/cfg.py` — persist `edition_advice_enabled: bool = False`
+- Modify: `tidaldl-py/tidal_dl/gui/api/settings.py` — include in `get_settings` / `SettingsUpdate` plus `edition_scorer_status` (`ready` / `missing` / `n/a`)
+- Modify: `views.js` `renderDjai` — second `djai-module-card` (Edition advice (Jev)): header, desc, status pills, enable control. Do **not** add a Settings toggle next to `skip_duplicate_isrc`.
 
-- [x] Commit `feat: edition_advice_enabled setting`
+- [x] Commit `feat: edition_advice_enabled setting` (persistence)
+- [x] Follow-up: DJAI module card is the only human toggle
 
 ---
 

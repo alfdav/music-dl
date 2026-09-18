@@ -167,7 +167,8 @@ SETTINGS_HELP: dict[str, str] = {
         "Jobs request Tidal's available tier when it is below this cap."
     ),
     "edition_advice_enabled": (
-        "Show TypeSafe/Jev edition chips on Clean Up. "
+        "DJAI module: TypeSafe/Jev edition chips on Clean Up. "
+        "Toggled on the DJAI Edition advice card, not in Settings. "
         "Never auto-deletes keep-both, unclear, or unscored extras."
     ),
     "edition_scorer_path": (
