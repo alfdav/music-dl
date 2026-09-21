@@ -57,14 +57,26 @@ def delivery_is_cd_lossless(
 ) -> bool:
     if delivery_is_hires(quality, bit_depth, sample_rate, representation_id):
         return False
-    kind, _rate, _depth = parse_representation_params(representation_id)
+    kind, rate, depth = parse_representation_params(representation_id)
     if kind == "FLAC":
         return True
-    return normalize_quality_name(quality) == "LOSSLESS"
+    name = normalize_quality_name(quality)
+    if name == "LOSSLESS":
+        return True
+    resolved_depth = bit_depth if bit_depth is not None else depth
+    resolved_rate = sample_rate if sample_rate is not None else rate
+    labeled_lossless = name in _HIRES_TIERS or kind.startswith("FLAC")
+    return bool(
+        labeled_lossless
+        and resolved_depth is not None
+        and resolved_depth <= 16
+        and resolved_rate is not None
+        and resolved_rate <= 44100
+    )
 
 
 def tidal_offers_hires(catalog_tags: object | None, manifest_formats: list[str] | None) -> bool:
-    if manifest_formats is not None:
+    if manifest_formats:
         return bool({str(item).upper() for item in manifest_formats} & _HIRES_FORMATS)
     tags = {str(tag).upper() for tag in (catalog_tags or [])}
     return bool(tags & _HIRES_TAGS)
@@ -77,7 +89,7 @@ def should_require_hires_delivery(
 ) -> bool:
     if not requested_wants_hires:
         return False
-    if manifest_formats is not None:
+    if manifest_formats:
         return tidal_offers_hires(None, manifest_formats)
     return catalog_lists_hires
 
@@ -89,12 +101,41 @@ def hifi_quality_param(requested: object | None) -> str:
     return HIFI_QUALITY_MAP.get(name, name or "LOSSLESS")
 
 
+def _jsonapi_attributes(body: object) -> dict:
+    if not isinstance(body, dict):
+        return {}
+    data = body.get("data")
+    if isinstance(data, list):
+        data = data[0] if data and isinstance(data[0], dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    attrs = data.get("attributes") or {}
+    return attrs if isinstance(attrs, dict) else {}
+
+
+def coerce_format_list(formats: object | None) -> list[str] | None:
+    if formats is None:
+        return None
+    if isinstance(formats, str):
+        items = [part.strip() for part in formats.split(",") if part.strip()]
+        return items or None
+    if isinstance(formats, (list, tuple)):
+        items = [str(item).strip() for item in formats if str(item).strip()]
+        return items or None
+    return None
+
+
 def fetch_track_manifest_formats(
     access_token: str,
     track_id: int | str,
     timeout: float = 8.0,
 ) -> list[str] | None:
-    """Return OpenAPI trackManifests formats for this user token, or None."""
+    """Return OpenAPI trackManifests formats for this user token, or None.
+
+    ``formats`` is an OpenAPI array. Tidal Web sends repeated keys
+    (``formats=FLAC&formats=FLAC_HIRES``), which ``requests`` does for a list.
+    An empty or missing list is unknown, not “Tidal has no Hi-Res.”
+    """
     import requests
 
     response = requests.get(
@@ -113,18 +154,15 @@ def fetch_track_manifest_formats(
         timeout=timeout,
     )
     response.raise_for_status()
-    body = response.json()
-    attrs = ((body.get("data") or {}) if isinstance(body, dict) else {}).get("attributes") or {}
-    formats = attrs.get("formats")
-    if isinstance(formats, list):
-        return [str(item) for item in formats]
-    return None
+    return coerce_format_list(_jsonapi_attributes(response.json()).get("formats"))
 
 
 def unwrap_playback_payload(payload: dict) -> dict:
     if not isinstance(payload, dict):
         return {}
     data = payload.get("data")
+    if isinstance(data, list):
+        data = data[0] if data and isinstance(data[0], dict) else {}
     if isinstance(data, dict) and (
         "manifest" in data or "audioQuality" in data or "manifestMimeType" in data
     ):
@@ -144,7 +182,14 @@ def _rep_score(rep: Representation) -> tuple[int, int, int, int]:
     return (hires, depth or 0, rate or 0, bandwidth)
 
 
+def _is_flac_representation(rep: Representation) -> bool:
+    codec = str(getattr(rep, "codec", "") or "").lower()
+    kind, _rate, _depth = parse_representation_params(getattr(rep, "id", None))
+    return "flac" in codec or kind.startswith("FLAC")
+
+
 def select_highest_flac_representation(representations: list[Representation]) -> Representation | None:
-    if not representations:
+    pool = [rep for rep in representations if _is_flac_representation(rep)]
+    if not pool:
         return None
-    return max(representations, key=_rep_score)
+    return max(pool, key=_rep_score)

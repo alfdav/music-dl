@@ -211,16 +211,45 @@ class StreamMixin:
         self.tidal.hifi_client = HiFiApiClient(instances=instances or None)
         return self.tidal.hifi_client
 
-    def _track_manifest_formats(self, media: Track) -> list[str] | None:
+    def _track_manifest_formats(self, media: Track, *, pace_api: bool = False) -> list[str] | None:
         session = getattr(self, "session", None)
         token = getattr(session, "access_token", None)
         track_id = getattr(media, "id", None)
         if not token or track_id is None:
             return None
         try:
+            self._pace_stream_api(pace_api)
             return fetch_track_manifest_formats(str(token), track_id)
-        except (TypeError, ValueError, OSError, requests.RequestException):
+        except (TypeError, ValueError, OSError, requests.RequestException, AttributeError, KeyError):
             return None
+
+    def _require_unencrypted_hires_if_offered(
+        self,
+        media: Track,
+        quality: Quality | str | None,
+        bit_depth: int | None,
+        sample_rate: int | None,
+        quality_audio: Quality | None,
+        *,
+        pace_api: bool = False,
+    ) -> None:
+        requested = self._requested_audio_quality(quality_audio)
+        if not _requested_wants_hires(requested):
+            return
+        if not _delivery_is_cd_lossless(quality, bit_depth, sample_rate):
+            return
+        formats = self._track_manifest_formats(media, pace_api=pace_api)
+        if not should_require_hires_delivery(True, _track_lists_hires(media), formats):
+            return
+        requested_name = quality_name(requested).upper()
+        delivered = quality_name(quality).upper() if quality else "LOSSLESS"
+        offered = ""
+        if formats and any(str(item).upper() == "FLAC_HIRES" for item in formats):
+            offered = "; Tidal offers FLAC_HIRES"
+        raise QualityMismatchError(
+            f"Quality mismatch: requested {requested_name} for listed Hi-Res track "
+            f"but received {delivered}{offered} and no unencrypted Hi-Res stream is available."
+        )
 
     def _prefer_listed_hires(
         self,
@@ -240,7 +269,7 @@ class StreamMixin:
             getattr(stream, "sample_rate", None),
         ):
             return None
-        formats = self._track_manifest_formats(media)
+        formats = self._track_manifest_formats(media, pace_api=pace_api)
         if not should_require_hires_delivery(True, _track_lists_hires(media), formats):
             return None
         try:
@@ -304,6 +333,15 @@ class StreamMixin:
                     media, quality_audio=quality_audio, pace_api=pace_api
                 )
                 if track_info.stream_manifest is not None:
+                    manifest = track_info.stream_manifest
+                    self._require_unencrypted_hires_if_offered(
+                        media,
+                        getattr(manifest, "audio_quality", None),
+                        getattr(manifest, "bit_depth", None),
+                        getattr(manifest, "sample_rate", None),
+                        quality_audio,
+                        pace_api=pace_api,
+                    )
                     return (
                         track_info.stream_manifest,
                         track_info.file_extension,
@@ -387,23 +425,23 @@ class StreamMixin:
                 except Exception:
                     self.fn_logger.exception(f"Something went wrong. Skipping '{name_builder_item(media)}'.")
                     return None, "", False, None
-
-                if isinstance(media, Track) and track_info is not None:
-                    upgraded = self._prefer_listed_hires(
-                        media, track_info, quality_audio=quality_audio, pace_api=pace_api
-                    )
-                    if upgraded is not None:
-                        track_info = upgraded
-                    return (
-                        track_info.stream_manifest,
-                        track_info.file_extension,
-                        track_info.requires_flac_extraction,
-                        track_info.media_stream,
-                    )
-
-                return None, "", False, None
             finally:
                 self._restore_call_quality(old_audio, old_video, bound_audio, bound_video)
+
+        if isinstance(media, Track) and track_info is not None:
+            upgraded = self._prefer_listed_hires(
+                media, track_info, quality_audio=quality_audio, pace_api=pace_api
+            )
+            if upgraded is not None:
+                track_info = upgraded
+            return (
+                track_info.stream_manifest,
+                track_info.file_extension,
+                track_info.requires_flac_extraction,
+                track_info.media_stream,
+            )
+
+        return None, "", False, None
 
     def _get_track_stream_info(self, media: Track) -> TrackStreamInfo:
         """Get stream info for a Track, handling Atmos/Normal session switching.
