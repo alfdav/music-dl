@@ -100,21 +100,15 @@ class HiFiApiClient:
         elif manifest_mime_type == "application/dash+xml":
             manifest_xml = decoded.decode("utf-8")
             parsed = parse_manifest(manifest_xml)
-            urls = []
-            codecs = ""
-            chosen = None
-            for period in parsed.periods:
-                for adaptation in period.adaptation_sets:
-                    candidate = select_highest_flac_representation(adaptation.representations)
-                    if candidate is None:
-                        continue
-                    chosen = candidate
-                    codecs = candidate.codec or ""
-                    urls = candidate.segments
-                    if urls:
-                        break
-                if urls:
-                    break
+            representations = [
+                rep
+                for period in parsed.periods
+                for adaptation in period.adaptation_sets
+                for rep in adaptation.representations
+            ]
+            chosen = select_highest_flac_representation(representations)
+            urls = chosen.segments if chosen is not None else []
+            codecs = (chosen.codec or "") if chosen is not None else ""
             if chosen is not None:
                 _kind, rate, depth = parse_representation_params(getattr(chosen, "id", None))
                 if depth is not None:

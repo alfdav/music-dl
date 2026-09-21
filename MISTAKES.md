@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-21 — Empty trackManifests formats and HI_RES+16/44.1 slipped past fail-closed
+
+**What happened:** After the first #188 negotiation pass, a successful OpenAPI probe with `formats=[]` was treated as “Tidal has no Hi-Res,” so listed Hi-Res tracks could write CD. A delivery labeled `HI_RES_LOSSLESS` at 16/44.1 was neither Hi-Res nor CD, so `_prefer_listed_hires` never gated it. Hi-Fi-primary CD returns skipped the gate. DASH picked the first AdaptationSet (AAC before FLAC_HIRES). JSON:API `data` as a list raised `AttributeError`.
+
+**Root cause:** `is not None` on an empty list is “known.” Bit-depth/rate were used only to *deny* Hi-Res, not to *classify* CD. Capability check lived only on the OAuth upgrade path. DASH walked sets in document order.
+
+**Prevention:** Empty/missing formats = unknown → catalog tags. `HI_RES_*` + 16/44.1 = CD. Same fail-closed helper on Hi-Fi-primary. Score FLAC reps across all AdaptationSets. Parse JSON:API data as object or list. Keep `formats` as an OpenAPI array (Tidal Web repeated keys), not a comma-string.
+
 ## 2026-09-21 — Treated OAuth LOSSLESS as “Tidal has no Hi-Res”
 
 **What happened:** #188 (desktop + CLI 1.7.11). Max / `HI_RES_LOSSLESS` on listed Hi-Res tracks failed: requested `HI_RES_LOSSLESS`, received `LOSSLESS`, “Hi-Fi has no Hi-Res stream.” Standard lossless still worked. Account `highestSoundQuality` was `HI_RES`.

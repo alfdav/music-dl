@@ -8,7 +8,7 @@ Desktop and CLI both call `_get_stream_info`.
 1. Settings / CLI quality ceiling: `HI_RES_LOSSLESS`.
 2. Catalog listing: `audioQuality=LOSSLESS` and `mediaMetadata.tags` often include `HIRES_LOSSLESS`.
 3. OAuth `GET /v1/tracks/{id}/playbackinfopostpaywall?audioquality=HI_RES_LOSSLESS&playbackmode=STREAM&assetpresentation=FULL` (Tidal Web client) returns `audioQuality=LOSSLESS`, `bitDepth=16`, `sampleRate=44100`, BTS FLAC. That is not proof the account lacks Hi-Res.
-4. Same user token, `GET https://openapi.tidal.com/v2/trackManifests/{id}` with `Accept: application/vnd.api+json` and `formats=FLAC,FLAC_HIRES` returns `attributes.formats` including `FLAC_HIRES` and a DASH rep id `FLAC_HIRES,{rate},{depth}` when Tidal has Hi-Res. Those DASH bytes are Widevine (`cbcs`); this app does not decrypt them.
+4. Same user token, `GET https://openapi.tidal.com/v2/trackManifests/{id}` with `Accept: application/vnd.api+json` and OpenAPI array `formats=FLAC&formats=FLAC_HIRES` (Tidal Web; not a single comma-string) returns `attributes.formats` including `FLAC_HIRES` and a DASH rep id `FLAC_HIRES,{rate},{depth}` when Tidal has Hi-Res. Empty `formats` is unknown (fall back to catalog tags). Those DASH bytes are Widevine (`cbcs`); this app does not decrypt them.
 5. Unencrypted Hi-Res still comes from a live Hi-Fi `/track/?quality=HI_RES_LOSSLESS` host. The parser must take the `FLAC_HIRES` representation, not `representations[0]`.
 
 ## Mac / CLI repro (Techmarine on Zeratool)
@@ -58,6 +58,8 @@ uv run music-dl --quality HI_RES_LOSSLESS 66024823
 | Listed Hi-Res + OAuth CD + `trackManifests` has **no** `FLAC_HIRES` | Quality mismatch, download fails | CD FLAC is accepted (Tidal truly has no Hi-Res) |
 | Listed Hi-Res + OAuth CD + `trackManifests` has `FLAC_HIRES` + live Hi-Fi | Quality mismatch / Hi-Fi first DASH rep is 16/44.1 | File is FLAC Hi-Res (24-bit or >44.1 kHz) |
 | Listed Hi-Res + `FLAC_HIRES` + Hi-Fi down | Quality mismatch: “Hi-Fi has no Hi-Res stream” | Quality mismatch mentions `FLAC_HIRES` and unencrypted delivery; no 16/44.1 write |
+| Listed Hi-Res + empty `trackManifests.formats` | CD write (treated as “no Hi-Res”) | Unknown capability → catalog tags → fail-closed, no 16/44.1 write |
+| Hi-Fi-primary returns 16/44.1 labeled `HI_RES_LOSSLESS` + `FLAC_HIRES` | File written as Hi-Res | Quality mismatch; no CD write |
 | Standard lossless album (no `HIRES` tags, no `FLAC_HIRES`) | Still downloads | Still downloads 16/44.1 FLAC |
 
 ## Cloud VM note
