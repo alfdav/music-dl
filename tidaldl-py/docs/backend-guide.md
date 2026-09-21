@@ -107,7 +107,7 @@ t.stream_lock          # Lock — serializes stream ops during Atmos switching
 - `_try_login_with_key_rotation()` — keeps authenticated tidalapi login resilient across bundled client credentials
 - Token expiry handles both `float` (timestamp) and `datetime` from tidalapi
 - GUI startup marks the sidecar ready after `LibraryDB.open` + migrate and `recover_download_jobs`. It then restores Tidal in the background with `resolve_source(..., allow_interactive_login=False)` and starts a configured Discord bot after ready. First-run GUI still becomes ready for the user-initiated Connect Tidal flow instead of opening OAuth during lifespan startup. Hi-Fi, gist, and quality-probe calls used by restore are capped at `SOURCE_RESOLVE_TIMEOUT_SEC` (2s) so a dead network cannot eat the 30s Tauri spinner.
-- `_probe_subscription_quality()` reports observed provider capability only. Lower or unknown delivery warns; it never mutates or persists configured/session quality.
+- `_probe_subscription_quality()` reports observed provider capability only. It prefers `users/{id}/subscription.highestSoundQuality` (`HI_RES` means Max / Hi-Res). OAuth `get_stream` is fallback only. It never mutates or persists configured/session quality.
 
 ### HandlingApp()
 
@@ -436,7 +436,7 @@ POST /api/download {track_ids: [123, 456]}
   │    ├─ Get stream manifest through the authenticated Tidal session
   │    ├─ Treat explicit Dolby Atmos as separate opt-in lossy spatial audio using EC-3/EAC3, not an ordinary lossless tier
   │    ├─ Require delivered audio to stay in the selected family: lossless settings accept any FLAC `LOSSLESS`/`HI_RES`/`HI_RES_LOSSLESS` fallback, lossy settings stay exact
-  │    ├─ If the track is listed Hi-Res and the setting is Hi-Res, take Hi-Fi Hi-Res when a live host can supply it; if OAuth only has 16-bit/44.1 and Hi-Fi is empty or down, mismatch — do not write the CD file
+  │    ├─ If the setting is Hi-Res and delivery is CD (including a HI_RES_LOSSLESS label at 16/44.1), OpenAPI trackManifests (or catalog tags if formats are empty/unknown) decide: FLAC_HIRES → take Hi-Fi Hi-Res (highest FLAC DASH rep across adaptation sets) or mismatch; formats=[FLAC] only → accept CD. Same gate on the Hi-Fi-primary path.
   │    ├─ Require AAC/MP4A for lossy tiers or FLAC for lossless tiers
   │    │  └─ Mismatch → error with requested/delivered/codec; URLs never reach segment consumers, and no bytes or output file
   │    ├─ Download segments (parallel, up to N)

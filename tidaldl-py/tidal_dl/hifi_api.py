@@ -76,10 +76,20 @@ class HiFiApiClient:
 
     @staticmethod
     def parse_track_payload(payload: dict[str, Any]) -> HiFiStreamResult:
-        data = payload.get("data", {})
+        from tidal_dl.download.quality import (
+            delivery_is_hires,
+            parse_representation_params,
+            select_highest_flac_representation,
+            unwrap_playback_payload,
+        )
+
+        data = unwrap_playback_payload(payload)
         manifest_mime_type = data.get("manifestMimeType", "")
         manifest_b64 = data.get("manifest", "")
         decoded = base64.b64decode(manifest_b64)
+        audio_quality = str(data.get("audioQuality", ""))
+        bit_depth = data.get("bitDepth")
+        sample_rate = data.get("sampleRate")
 
         if manifest_mime_type == "application/vnd.tidal.bts":
             manifest = json.loads(decoded.decode("utf-8"))
@@ -90,18 +100,23 @@ class HiFiApiClient:
         elif manifest_mime_type == "application/dash+xml":
             manifest_xml = decoded.decode("utf-8")
             parsed = parse_manifest(manifest_xml)
-            urls = []
-            codecs = ""
-            for period in parsed.periods:
-                for adaptation in period.adaptation_sets:
-                    if not adaptation.representations:
-                        continue
-                    rep = adaptation.representations[0]
-                    codecs = rep.codec or ""
-                    urls = rep.segments
-                    break
-                if urls:
-                    break
+            representations = [
+                rep
+                for period in parsed.periods
+                for adaptation in period.adaptation_sets
+                for rep in adaptation.representations
+            ]
+            chosen = select_highest_flac_representation(representations)
+            urls = chosen.segments if chosen is not None else []
+            codecs = (chosen.codec or "") if chosen is not None else ""
+            if chosen is not None:
+                _kind, rate, depth = parse_representation_params(getattr(chosen, "id", None))
+                if depth is not None:
+                    bit_depth = depth
+                if rate is not None:
+                    sample_rate = rate
+                if delivery_is_hires(audio_quality, bit_depth, sample_rate, getattr(chosen, "id", None)):
+                    audio_quality = "HI_RES_LOSSLESS"
             mime_type = "audio/flac" if "flac" in (codecs or "").lower() else "audio/mp4"
             encryption_type = "NONE"
         else:
@@ -112,9 +127,9 @@ class HiFiApiClient:
             file_extension=HiFiApiClient._extension_from_mime(mime_type, codecs),
             codecs=codecs,
             mime_type=mime_type,
-            audio_quality=str(data.get("audioQuality", "")),
-            bit_depth=data.get("bitDepth"),
-            sample_rate=data.get("sampleRate"),
+            audio_quality=audio_quality,
+            bit_depth=bit_depth,
+            sample_rate=sample_rate,
             encryption_type=encryption_type,
         )
 

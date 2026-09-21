@@ -48,6 +48,9 @@ QUALITY_RANK: dict[str, int] = {
     quality_name(Quality.low_320k): 1,
     quality_name(Quality.high_lossless): 2,
     quality_name(Quality.hi_res_lossless): 3,
+    # Tidal subscription.highestSoundQuality still uses the MQA-era name.
+    "HI_RES": 3,
+    "HIRES_LOSSLESS": 3,
 }
 
 # Tier rank for upgrade comparison — maps quality strings to numeric tiers.
@@ -105,7 +108,8 @@ HIFI_UPTIME_TRACKER_URLS: list[str] = [
 # Maps tidalapi.Quality enum → Hi-Fi API quality string parameter.
 HIFI_QUALITY_MAP: dict[str, str] = {
     quality_name(Quality.hi_res_lossless): "HI_RES_LOSSLESS",
-    "HI_RES": "HI_RES",
+    "HI_RES": "HI_RES_LOSSLESS",
+    "HIRES_LOSSLESS": "HI_RES_LOSSLESS",
     quality_name(Quality.high_lossless): "LOSSLESS",
     quality_name(Quality.low_320k): "HIGH",
     quality_name(Quality.low_96k): "LOW",
