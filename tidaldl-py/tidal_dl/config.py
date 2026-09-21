@@ -711,6 +711,19 @@ class Tidal(BaseConfig[ModelToken]):
         """Report the account's observed quality without changing the selection."""
         configured = Quality(self.settings.data.quality_audio)
         configured_rank = QUALITY_RANK.get(quality_name(configured), 0)
+        refresh = getattr(self, "refresh_account_quality", None)
+        if callable(refresh):
+            try:
+                account = str(refresh() or "").upper()
+            except (TypeError, ValueError, OSError, RuntimeError):
+                account = ""
+            account_rank = QUALITY_RANK.get(account, 0)
+            if account and account_rank >= configured_rank:
+                _console.print(
+                    f"[green]Audio quality check passed:[/green] "
+                    f"account supports {account} (requested {quality_name(configured)})."
+                )
+                return
 
         try:
             import concurrent.futures

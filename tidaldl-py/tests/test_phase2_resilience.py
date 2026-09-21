@@ -456,6 +456,31 @@ def test_subscription_quality_probe_never_mutates_configured_or_session_quality(
     assert probe.settings.save_calls == 0
 
 
+def test_subscription_quality_probe_trusts_hi_res_account_without_get_stream(capsys):
+    class SettingsData:
+        quality_audio = Quality.hi_res_lossless
+
+    class ProbeSession:
+        audio_quality = Quality.hi_res_lossless
+
+        def track(self, _track_id):
+            raise AssertionError("OAuth get_stream must not measure Web-client LOSSLESS as the subscription")
+
+    probe = type(
+        "Probe",
+        (),
+        {
+            "settings": type("Settings", (), {"data": SettingsData()})(),
+            "session": ProbeSession(),
+            "refresh_account_quality": lambda self: "HI_RES",
+        },
+    )()
+
+    Tidal._probe_subscription_quality(probe)
+    out = capsys.readouterr().out
+    assert "account supports HI_RES" in out
+
+
 def test_subscription_quality_probe_unknown_warns_without_pass(capsys):
     class SettingsData:
         quality_audio = Quality.low_96k

@@ -24,6 +24,14 @@
 
 **Prevention:** Render platform-specific `kbd.shortcut-keycap` chips (`⌘ ⇧ Q` / `Ctrl Shift Q`) via `_shortcutKeycaps`. Detect OS through Tauri `os.platform` / `plugin:os|platform`, then `navigator.userAgentData.platform` / `navigator.platform`. Never paint `Cmd/Ctrl`. Keep labels sentence-case, nowrap, `min-width: 0`, ellipsis fallback. Shortcut *behavior* stays `metaKey || e.ctrlKey`. Glyphs use `--text` on `--bg-warm` (≥ AA). Symbols get `shortcut-keycap-symbol` at 1.15× letter size. Grid is 3+3 through the default 1440 window and 6 only at ≥1680, when Windows `Ctrl Shift Q` still fits — never `auto-fit` that wraps 6 items as 4+2. Screenshot harness labels stay out of app DOM.
 
+## 2026-09-21 — Treated OAuth LOSSLESS as “Tidal has no Hi-Res”
+
+**What happened:** #188 (desktop + CLI 1.7.11). Max / `HI_RES_LOSSLESS` on listed Hi-Res tracks failed: requested `HI_RES_LOSSLESS`, received `LOSSLESS`, “Hi-Fi has no Hi-Res stream.” Standard lossless still worked. Account `highestSoundQuality` was `HI_RES`.
+
+**Root cause:** Catalog `audioQuality` is often `LOSSLESS` while tags include `HIRES_LOSSLESS`. Tidal Web `playbackinfopostpaywall?audioquality=HI_RES_LOSSLESS` silently returns 16/44.1 BTS. The same user token’s OpenAPI `trackManifests` lists `FLAC_HIRES` (DASH id `FLAC_HIRES,44100,24`, Widevine). `#148` fail-closed then required Hi-Fi. Hi-Fi DASH took `representations[0]` (CD), `LOSSLESS`+24-bit was treated as CD, and `HIFI_QUALITY_MAP.get(..., "LOSSLESS")` could request the wrong tier. Login probe used OAuth `get_stream` on a stale “Dreams” id and warned the subscription was LOSSLESS.
+
+**Prevention:** Negotiate from four signals: request, catalog tags, playbackInfo bit-depth/rate, `trackManifests.formats`. Require unencrypted Hi-Res only when `FLAC_HIRES` is offered (or tags if the probe is missing). Select the `FLAC_HIRES` DASH rep. Accept CD when Tidal has no Hi-Res. Probe `highestSoundQuality` (`HI_RES` = Max). Do not close #188 on fail-closed alone.
+
 ## 2026-09-18 — Module-on delete gate kept only Jev-actable extras
 
 **What happened:** After the group-chip checkbox fix, `resolve_delete_paths` kept only ≥0.95 layout_twin / true_dup. Posted engine-auto extras with no cache, missing scorer, or pair error were dropped. Enabling the module blocked ordinary Clean Up.

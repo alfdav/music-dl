@@ -1,6 +1,13 @@
 """Download streams helpers."""
 
 from tidal_dl.download._common import *
+from tidal_dl.download.quality import (
+    delivery_is_cd_lossless,
+    fetch_track_manifest_formats,
+    hifi_quality_param,
+    should_require_hires_delivery,
+    tidal_offers_hires,
+)
 
 
 class QualityMismatchError(ValueError):
@@ -9,7 +16,6 @@ class QualityMismatchError(ValueError):
 
 _LOSSLESS_TIERS = frozenset({"LOSSLESS", "HI_RES", "HI_RES_LOSSLESS"})
 _HIRES_TIERS = frozenset({"HI_RES", "HI_RES_LOSSLESS"})
-_HIRES_TAGS = frozenset({"HIRES_LOSSLESS", "HIRES", "HI_RES_LOSSLESS", "HI_RES", "MQA"})
 _EXPECTED_CODECS = {
     "LOW": ("aac", "mp4a"),
     "HIGH": ("aac", "mp4a"),
@@ -48,8 +54,7 @@ def plan_flac_output(codecs: str | None, file_extension: str, extract_flac: bool
 
 
 def _track_lists_hires(media: Track) -> bool:
-    tags = {str(tag).upper() for tag in (getattr(media, "media_metadata_tags", None) or [])}
-    return bool(tags & _HIRES_TAGS)
+    return tidal_offers_hires(getattr(media, "media_metadata_tags", None), None)
 
 
 def _requested_wants_hires(requested: Quality | str | None) -> bool:
@@ -60,11 +65,9 @@ def _delivery_is_cd_lossless(
     quality: Quality | str | None,
     bit_depth: int | None = None,
     sample_rate: int | None = None,
+    representation_id: str | None = None,
 ) -> bool:
-    name = quality_name(quality).upper() if quality else ""
-    if name in _HIRES_TIERS:
-        return bit_depth is not None and bit_depth <= 16 and sample_rate is not None and sample_rate <= 44100
-    return name == "LOSSLESS"
+    return delivery_is_cd_lossless(quality, bit_depth, sample_rate, representation_id)
 
 
 def _require_exact_quality(requested: Quality | str, delivered: Quality | str | None, codec: str | None) -> None:
@@ -169,7 +172,7 @@ class StreamMixin:
                        can decide whether to fall back to OAuth.
         """
         requested = self._requested_audio_quality(quality_audio)
-        quality_str = HIFI_QUALITY_MAP.get(quality_name(requested), "LOSSLESS")
+        quality_str = hifi_quality_param(requested)
         hifi_client = self.tidal.hifi_client
         if hifi_client is None:
             raise RuntimeError("Hi-Fi client is not configured")
@@ -208,6 +211,17 @@ class StreamMixin:
         self.tidal.hifi_client = HiFiApiClient(instances=instances or None)
         return self.tidal.hifi_client
 
+    def _track_manifest_formats(self, media: Track) -> list[str] | None:
+        session = getattr(self, "session", None)
+        token = getattr(session, "access_token", None)
+        track_id = getattr(media, "id", None)
+        if not token or track_id is None:
+            return None
+        try:
+            return fetch_track_manifest_formats(str(token), track_id)
+        except (TypeError, ValueError, OSError, requests.RequestException):
+            return None
+
     def _prefer_listed_hires(
         self,
         media: Track,
@@ -215,9 +229,9 @@ class StreamMixin:
         quality_audio: Quality | None = None,
         pace_api: bool = False,
     ) -> TrackStreamInfo | None:
-        """Take Hi-Fi HiRes for a listed-HiRes CD delivery, or fail — do not keep 16/44.1."""
+        """Upgrade a CD OAuth delivery to Hi-Res when Tidal actually offers it."""
         requested = self._requested_audio_quality(quality_audio)
-        if not _requested_wants_hires(requested) or not _track_lists_hires(media):
+        if not _requested_wants_hires(requested):
             return None
         stream = oauth_info.media_stream
         if not _delivery_is_cd_lossless(
@@ -225,6 +239,9 @@ class StreamMixin:
             getattr(stream, "bit_depth", None),
             getattr(stream, "sample_rate", None),
         ):
+            return None
+        formats = self._track_manifest_formats(media)
+        if not should_require_hires_delivery(True, _track_lists_hires(media), formats):
             return None
         try:
             self._ensure_hifi_client()
@@ -242,9 +259,12 @@ class StreamMixin:
             return hifi_info
         requested_name = quality_name(requested).upper()
         delivered = quality_name(getattr(stream, "audio_quality", None)).upper() if getattr(stream, "audio_quality", None) else "LOSSLESS"
+        offered = ""
+        if formats and any(str(item).upper() == "FLAC_HIRES" for item in formats):
+            offered = "; Tidal offers FLAC_HIRES"
         raise QualityMismatchError(
             f"Quality mismatch: requested {requested_name} for listed Hi-Res track "
-            f"but received {delivered} and Hi-Fi has no Hi-Res stream."
+            f"but received {delivered}{offered} and no unencrypted Hi-Res stream is available."
         )
 
     def _get_stream_info(
