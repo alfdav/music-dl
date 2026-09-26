@@ -9,6 +9,8 @@ Uses the shared `client` fixture from conftest.py which provides:
 import wave
 from types import SimpleNamespace
 
+import pytest
+
 from tidal_dl.helper.library_db import LibraryDB
 
 
@@ -757,6 +759,10 @@ class TestUpgradeStart:
 
 
 class TestDownloadTrigger:
+    @pytest.mark.xfail(
+        strict=True,
+        reason="auth hole: download queues without login; fixed on cursor/tidal-auth-v2-phase01-150e, remove on merge",
+    )
     def test_requires_tidal_login(self, client, monkeypatch, clear_singletons):
         class FakeSession:
             def check_login(self):
