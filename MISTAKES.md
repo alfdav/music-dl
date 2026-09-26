@@ -6,7 +6,7 @@
 
 **Root cause:** Calibration left the final `qa` job advisory. Status reporting was treated as the merge gate. Publishing `discord_bot_process` before the pid file made `running=True` visible before `discord-bot.pid` existed. Settings field-count and lyrics `lyricsBody` wheel assertions were not updated when #186 and the viewport scroller landed.
 
-**Prevention:** Final `qa` job always passes `--enforce`. Check steps still continue so evidence is complete. Write the bot pid file before publishing process state. `running=True` means the pid file exists. Settings field-count tests name the new fields, not a magic number alone. Lyrics detach tests lock the viewport listener. Player-bar invariance is the bun lyrics-sync contract: do not hide `#now-heart` / `#now-download` on `.lyrics-open`. Do not skip or delete a failing test to go green.
+**Prevention:** Final `qa` job always passes `--enforce`. Check steps still continue so evidence is complete. Write the bot pid file before publishing process state. `running=True` means the pid file exists. Settings field-count tests name the new fields, not a magic number alone. Lyrics detach tests lock the viewport listener. Player-bar invariance is the bun lyrics-sync contract: do not hide `#now-heart` / `#now-download` on `.lyrics-open`. LibraryDB probe ceilings must match GitHub-hosted 10k-probe cost (`visible_scanned_path_sql` + `fold_search`), not a quiet laptop. Do not skip or delete a failing test to go green.
 
 ## 2026-09-18 — Module-on delete gate kept only Jev-actable extras
 

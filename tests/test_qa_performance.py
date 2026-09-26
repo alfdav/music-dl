@@ -9,6 +9,7 @@ import textwrap
 import pytest
 
 from scripts.qa_performance import (
+    ABSOLUTE_MS,
     build_fixture,
     classify,
     main,
@@ -18,9 +19,17 @@ from scripts.qa_performance import (
 )
 
 
+def test_ci_runner_ceilings_match_enforced_qa_budget():
+    assert ABSOLUTE_MS == {
+        "pagination": 150.0,
+        "search": 250.0,
+        "artists": 280.0,
+    }
+
+
 def test_absolute_ceiling_blocks():
     result = classify(
-        {"pagination": 21.0, "search": 4.0, "artists": 6.0},
+        {"pagination": 151.0, "search": 4.0, "artists": 6.0},
         baseline=None,
     )
 

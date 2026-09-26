@@ -14,8 +14,11 @@ from pathlib import Path
 
 from tidal_dl.helper.library_db import LibraryDB
 
-# Search LIKE folds accents in a deterministic UDF (~40ms p95 on the 10k probe).
-ABSOLUTE_MS = {"pagination": 20.0, "search": 100.0, "artists": 20.0}
+# Search LIKE folds accents in a deterministic UDF. visible_scanned_path_sql
+# plus GitHub-hosted runner noise sit well above the old 20/100/20 laptop
+# ceilings (recent master PRs: pagination 64-120, search 95-188, artists 89-229).
+# Keep a hard fail; budget for CI rather than a quiet local machine.
+ABSOLUTE_MS = {"pagination": 150.0, "search": 250.0, "artists": 280.0}
 
 
 @dataclass(frozen=True)
