@@ -244,7 +244,7 @@ describe('shortcut display source', () => {
   test('settings strip CSS is a 3-or-6 grid with readable keycaps', () => {
     expect(cssSource).toContain('grid-template-columns: repeat(3, minmax(0, 1fr))');
     expect(cssSource).toContain('grid-template-columns: repeat(6, minmax(0, 1fr))');
-    expect(cssSource).toContain('@media (min-width: 1440px)');
+    expect(cssSource).toContain('@media (min-width: 1680px)');
     expect(cssSource).toContain('.settings-shortcut-label');
     expect(cssSource).toContain('white-space: nowrap');
     expect(cssSource).toContain('text-overflow: ellipsis');

@@ -156,7 +156,7 @@ class TestAppJsFeatureMarkers:
         grid = _css_rule_bodies(css, ".settings-shortcuts")
         assert any("repeat(3, minmax(0, 1fr))" in body for body in grid)
         assert "repeat(6, minmax(0, 1fr))" in css
-        assert "@media (min-width: 1440px)" in css
+        assert "@media (min-width: 1680px)" in css
         label = _css_rule_bodies(css, ".settings-shortcut-label")
         assert any(
             "white-space: nowrap" in body

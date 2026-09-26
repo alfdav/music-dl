@@ -14,7 +14,7 @@
 
 **Root cause:** Display copied the event-code / cross-platform chord text instead of rendering one keycap per key. Labels sat after the wide key box with no nowrap/ellipsis contract.
 
-**Prevention:** Render platform-specific `kbd.shortcut-keycap` chips (`⌘ ⇧ Q` / `Ctrl Shift Q`) via `_shortcutKeycaps`. Detect OS through Tauri `os.platform` / `plugin:os|platform`, then `navigator.userAgentData.platform` / `navigator.platform`. Never paint `Cmd/Ctrl`. Keep labels sentence-case, nowrap, `min-width: 0`, ellipsis fallback. Shortcut *behavior* stays `metaKey || e.ctrlKey`. Glyphs use `--text` on `--bg-warm` (≥ AA). Symbols get `shortcut-keycap-symbol` at 1.15× letter size. Grid is 3 columns below 1440 and 6 at the default window — never `auto-fit` that wraps 6 items as 4+2. Screenshot harness labels stay out of app DOM.
+**Prevention:** Render platform-specific `kbd.shortcut-keycap` chips (`⌘ ⇧ Q` / `Ctrl Shift Q`) via `_shortcutKeycaps`. Detect OS through Tauri `os.platform` / `plugin:os|platform`, then `navigator.userAgentData.platform` / `navigator.platform`. Never paint `Cmd/Ctrl`. Keep labels sentence-case, nowrap, `min-width: 0`, ellipsis fallback. Shortcut *behavior* stays `metaKey || e.ctrlKey`. Glyphs use `--text` on `--bg-warm` (≥ AA). Symbols get `shortcut-keycap-symbol` at 1.15× letter size. Grid is 3+3 through the default 1440 window and 6 only at ≥1680, when Windows `Ctrl Shift Q` still fits — never `auto-fit` that wraps 6 items as 4+2. Screenshot harness labels stay out of app DOM.
 
 ## 2026-09-18 — Module-on delete gate kept only Jev-actable extras
 

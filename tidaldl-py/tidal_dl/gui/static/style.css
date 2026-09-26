@@ -3947,7 +3947,7 @@ body {
   padding-top: 10px;
 }
 
-@media (min-width: 1440px) {
+@media (min-width: 1680px) {
   .settings-shortcuts {
     grid-template-columns: repeat(6, minmax(0, 1fr));
   }
