@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tidal_dl.constants import HIFI_QUALITY_MAP, quality_name
+from tidal_dl.constants import HIFI_QUALITY_MAP, QUALITY_RANK, quality_name
 from tidal_dl.dash import Representation
 
 _HIRES_TIERS = frozenset({"HI_RES", "HI_RES_LOSSLESS"})
@@ -193,3 +193,42 @@ def select_highest_flac_representation(representations: list[Representation]) ->
     if not pool:
         return None
     return max(pool, key=_rep_score)
+
+
+# One line, one session. Login-client pointer is part of the same notice.
+# Do not add a login flow, wipe token.json, or auto re-login.
+SESSION_HIRES_FALLBACK_NOTICE = (
+    "This login can't get Hi-Res streams, so downloading Lossless instead. "
+    "A different Tidal login client can unlock Hi-Res; this app will not start a new login or wipe token.json."
+)
+
+
+def session_can_deliver_hires(session_max: object | None) -> bool | None:
+    """Whether this login's measured stream cap includes Hi-Res.
+
+    ``None`` means unprobed / unknown — callers must fail-closed.
+    Account ``highestSoundQuality`` is not a substitute: Tidal Web can
+    report HI_RES on the account while this OAuth client only delivers LOSSLESS.
+    """
+    name = normalize_quality_name(session_max)
+    if not name:
+        return None
+    if name in _HIRES_TIERS or name in {"HIRES_LOSSLESS", "HIRES"}:
+        return True
+    if name in QUALITY_RANK:
+        return False
+    return None
+
+
+def remember_session_hires_fallback(tidal: object | None, logger: object | None = None) -> bool:
+    """Emit the session-capped Hi-Res notice once. Returns True when printed."""
+    if tidal is None:
+        return False
+    if getattr(tidal, "_hires_fallback_notice_emitted", False):
+        return False
+    tidal._hires_fallback_notice_emitted = True
+    if logger is not None and callable(getattr(logger, "warning", None)):
+        logger.warning(SESSION_HIRES_FALLBACK_NOTICE)
+    else:
+        print(SESSION_HIRES_FALLBACK_NOTICE)
+    return True

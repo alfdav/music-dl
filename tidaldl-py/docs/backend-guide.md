@@ -107,7 +107,7 @@ t.stream_lock          # Lock — serializes stream ops during Atmos switching
 - `_try_login_with_key_rotation()` — keeps authenticated tidalapi login resilient across bundled client credentials
 - Token expiry handles both `float` (timestamp) and `datetime` from tidalapi
 - GUI startup marks the sidecar ready after `LibraryDB.open` + migrate and `recover_download_jobs`. It then restores Tidal in the background with `resolve_source(..., allow_interactive_login=False)` and starts a configured Discord bot after ready. First-run GUI still becomes ready for the user-initiated Connect Tidal flow instead of opening OAuth during lifespan startup. Hi-Fi, gist, and quality-probe calls used by restore are capped at `SOURCE_RESOLVE_TIMEOUT_SEC` (2s) so a dead network cannot eat the 30s Tauri spinner.
-- `_probe_subscription_quality()` reports observed provider capability only. It prefers `users/{id}/subscription.highestSoundQuality` (`HI_RES` means Max / Hi-Res). OAuth `get_stream` is fallback only. It never mutates or persists configured/session quality.
+- `_probe_subscription_quality()` reports account `highestSoundQuality` **and** this login's OAuth `get_stream` delivery. Account HI_RES does not skip the OAuth probe: Tidal Web can report Max while this client only delivers LOSSLESS. The login cap is stored in-memory as `session_max_quality` and never persisted. The probe never mutates configured quality, never wipes `token.json`, and never starts a new login. Proposed later: a login-client picker overlapping Tidal auth v2.
 
 ### HandlingApp()
 

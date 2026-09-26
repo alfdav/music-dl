@@ -696,6 +696,9 @@ class DownloadJobService:
             return
 
         finished_at = time.time()
+        delivered = getattr(dl, "last_delivered_quality", None)
+        if delivered:
+            quality = self._quality_value(delivered)
         self._record_history(
             track_id=job.track_id,
             name=name,
@@ -707,7 +710,9 @@ class DownloadJobService:
             cover_url=cover_url,
             quality=quality,
         )
-        self._update_job(job, status=JobStatus.DONE.value, progress=100, finished_at=finished_at)
+        self._update_job(
+            job, status=JobStatus.DONE.value, progress=100, finished_at=finished_at, quality=quality
+        )
         self.events.broadcast(
             {
                 "type": "complete",

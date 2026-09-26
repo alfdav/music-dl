@@ -2,11 +2,13 @@
 
 ## 2026-09-27 — Overlay keycaps reused the settings-card fill
 
-**What happened:** The `?` help overlay switched to `shortcut-keycap` chips. Those chips fill with `--bg-warm`, the same token as `.shortcuts-card`, so chords lost their key surface and kept only a faint border.
+## 2026-09-26 — Treated account HI_RES as “this login can stream Hi-Res”
 
-**Root cause:** The settings strip sits on `--surface` over `--bg`. The overlay card *is* `--bg-warm`. One keycap fill cannot serve both parents.
+**What happened:** #189 negotiated catalog / `trackManifests` / DASH correctly, but a Tidal Web session capped at LOSSLESS still hit `QualityMismatchError` on listed Hi-Res tracks (`FLAC_HIRES` offered, Hi-Fi down). The reporter’s first-install Mac failed; another Mac with a Hi-Res-capable login worked. Account `highestSoundQuality` was HI_RES on both.
 
-**Prevention:** `.shortcuts-card .shortcut-keycap` uses `--surface-active` so overlay keys lift off the `--bg-warm` card. Keep the settings strip on `--bg-warm`. Tests lock that the two fills differ. Do not reuse a surface token as both card and keycap. `--bg` on `--bg-warm` is too close to count.
+**Root cause:** Login probe trusted account HI_RES and skipped OAuth `get_stream`. `#148` fail-closed then required unencrypted Hi-Res whenever `FLAC_HIRES` was offered, with no session-max fallback. Quality is a ceiling; the session is what the current client can actually fetch.
+
+**Prevention:** Always probe OAuth delivery. Store `session_max_quality` in-memory. When the session is LOSSLESS-capped, accept delivered CD, label history as LOSSLESS, and emit one notice. Fail-closed only when the session is Hi-Res capable or unprobed. Do not wipe `token.json` or start a new login. Document a future login-client picker; do not implement it here.
 
 ## 2026-09-26 — Advisory QA hid master failures until enforcement
 
@@ -26,11 +28,11 @@
 
 ## 2026-09-21 — Empty trackManifests formats and HI_RES+16/44.1 slipped past fail-closed
 
-**What happened:** After the first #188 negotiation pass, a successful OpenAPI probe with `formats=[]` was treated as “Tidal has no Hi-Res,” so listed Hi-Res tracks could write CD. A delivery labeled `HI_RES_LOSSLESS` at 16/44.1 was neither Hi-Res nor CD, so `_prefer_listed_hires` never gated it. Hi-Fi-primary CD returns skipped the gate. DASH picked the first AdaptationSet (AAC before FLAC_HIRES). JSON:API `data` as a list raised `AttributeError`.
+**What happened:** The `?` help overlay switched to `shortcut-keycap` chips. Those chips fill with `--bg-warm`, the same token as `.shortcuts-card`, so chords lost their key surface and kept only a faint border.
 
-**Root cause:** `is not None` on an empty list is “known.” Bit-depth/rate were used only to *deny* Hi-Res, not to *classify* CD. Capability check lived only on the OAuth upgrade path. DASH walked sets in document order.
+**Root cause:** The settings strip sits on `--surface` over `--bg`. The overlay card *is* `--bg-warm`. One keycap fill cannot serve both parents.
 
-**Prevention:** Empty/missing formats = unknown → catalog tags. `HI_RES_*` + 16/44.1 = CD. Same fail-closed helper on Hi-Fi-primary. Score FLAC reps across all AdaptationSets. Parse JSON:API data as object or list. Keep `formats` as an OpenAPI array (Tidal Web repeated keys), not a comma-string.
+**Prevention:** `.shortcuts-card .shortcut-keycap` uses `--surface-active` so overlay keys lift off the `--bg-warm` card. Keep the settings strip on `--bg-warm`. Tests lock that the two fills differ. Do not reuse a surface token as both card and keycap. `--bg` on `--bg-warm` is too close to count.
 
 ## 2026-09-21 — Treated OAuth LOSSLESS as “Tidal has no Hi-Res”
 
@@ -360,14 +362,6 @@
 
 **Prevention:** Endpoint tests for in-root NFC/NFD twins must pin `download_base_path` / `scan_paths` to that music root. Do not skip the unrooted purge. Vanished in-root rows stay on `missing_since`.
 
-## 2026-09-01 — Library served leftover QA rows outside the music root
-
-**What happened:** Live 1.7.8 search (`Night Watch`) and Recents showed Sting *The Last Ship (Live at the Rijksmuseum)* at `/Users/hackbook/.cache/tactica/music-dl-pr149-qa/...flac`. The file was gone. Art returned 403 because the path was outside `/Volumes/Music`. Settings scan path was only `/Volumes/Music`.
-
-**Root cause:** `scanned` is a shared ledger. Search/Recents return every row. Sync prune waits for a successful walk, and the fingerprint fast-path only drops `#recycle` rows, so leftover rows from an isolated QA profile stayed forever.
-
-**Prevention:** On library open, Recents, and scan start, drop rows whose path is outside configured `download_base_path` / `scan_paths`. Never DELETE vanished in-root rows (or their play history) — those use `missing_since` + reconcile migrate. Skip an unrooted drop when it would remove more than half of a library larger than 100 rows (empty mount / remount). `OSError` on `is_dir()` treats the root as unmounted; a purge `OSError` must not 500 library/search/Recents. Do not delete files on disk. Do not change `#recycle` policy.
-
 ## 2026-09-03 — Local heal retry looped and replayed a stale track
 
 **What happened:** After 202/409/200 the player always `playTrack`ed the captured track and returned success, so `_consecutiveErrors` never advanced. A user skip during the 30s wait still restarted the old file.
@@ -455,6 +449,14 @@
 **Root cause:** With height-relative end padding, `_lyricsScrollTarget` for a mid-list line is `index * step` and does not change with viewport height. `_lyricsWriteScrollTop` skipped whenever the cached target matched, even after scroll-anchoring drifted `scrollTop` by Δpad ≈ Δviewport/2 (~100px). rAF ticks kept skipping until the active index (and therefore the target number) changed.
 
 **Prevention:** Skip a write only when `scrollTop` is already at the target, or when a programmatic write toward that target is in flight. On resize, invalidate the cached target, recompute spacers, then force an instant recenter after two layout frames while attached. While detached, restore the captured reading anchor — do not recenter.
+
+## 2026-09-01 — Library served leftover QA rows outside the music root
+
+**What happened:** Live 1.7.8 search (`Night Watch`) and Recents showed Sting *The Last Ship (Live at the Rijksmuseum)* at `/Users/hackbook/.cache/tactica/music-dl-pr149-qa/...flac`. The file was gone. Art returned 403 because the path was outside `/Volumes/Music`. Settings scan path was only `/Volumes/Music`.
+
+**Root cause:** `scanned` is a shared ledger. Search/Recents return every row. Sync prune waits for a successful walk, and the fingerprint fast-path only drops `#recycle` rows, so leftover rows from an isolated QA profile stayed forever.
+
+**Prevention:** On library open, Recents, and scan start, drop rows whose path is outside configured `download_base_path` / `scan_paths`. Never DELETE vanished in-root rows (or their play history) — those use `missing_since` + reconcile migrate. Skip an unrooted drop when it would remove more than half of a library larger than 100 rows (empty mount / remount). `OSError` on `is_dir()` treats the root as unmounted; a purge `OSError` must not 500 library/search/Recents. Do not delete files on disk. Do not change `#recycle` policy.
 
 ## 2026-09-01 — NFC/NFD path twins double-counted one inode
 
@@ -663,6 +665,7 @@
 **Root cause:** `.pill` is a 36px box with padding but was not a flex-centered box, so the label did not sit in the capsule. `.filter-pills` had horizontal padding only (`0 2px`). A 36px pill and the focused input’s 4px gold glow met across the 16px `.search-area` gap. PR 132 already named both defects and the CSS fix, but that branch stayed behind master and was never re-applied.
 
 **Prevention:** Flex-center every `.pill` label (`display: flex; align-items: center; justify-content: center`) and `align-items: center` the row. Keep `.filter-pills` top padding (`8px 2px 0`) so an active chip cannot meet a rounded gold control above it. Do not give `.pill.active` a different height or padding. Leave `.album-search-filters .pill` at 28px. `button.pill` (Play/Shuffle, grouping, load-more) shares this chrome.
+
 ## 2026-08-18 — Library remount lost Plays, search, and the way back
 
 **What happened:** Tetrarch opened a song/album cell from Library → Plays, landed on the album, and had no way back to that Plays list. Library and Plays in the sidebar were the only exits, and both felt like starting over.

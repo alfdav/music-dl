@@ -5,6 +5,8 @@ from tidal_dl.download.quality import (
     delivery_is_cd_lossless,
     fetch_track_manifest_formats,
     hifi_quality_param,
+    remember_session_hires_fallback,
+    session_can_deliver_hires,
     should_require_hires_delivery,
     tidal_offers_hires,
 )
@@ -223,6 +225,25 @@ class StreamMixin:
         except (TypeError, ValueError, OSError, requests.RequestException, AttributeError, KeyError):
             return None
 
+    def _session_max_quality(self) -> object | None:
+        return getattr(getattr(self, "tidal", None), "session_max_quality", None)
+
+    def _accept_session_capped_cd(self) -> bool:
+        """Accept CD when this login was measured below Hi-Res.
+
+        Unprobed sessions stay fail-closed. Strict mismatch is only for a
+        Hi-Res-capable (or unknown) session. There is no opt-in strict setting.
+        """
+        if session_can_deliver_hires(self._session_max_quality()) is not False:
+            return False
+        remember_session_hires_fallback(getattr(self, "tidal", None), getattr(self, "fn_logger", None))
+        return True
+
+    def _record_last_delivered_quality(self, quality: Quality | str | None) -> None:
+        if not quality:
+            return
+        self.last_delivered_quality = quality_name(quality)
+
     def _require_unencrypted_hires_if_offered(
         self,
         media: Track,
@@ -240,6 +261,8 @@ class StreamMixin:
             return
         formats = self._track_manifest_formats(media, pace_api=pace_api)
         if not should_require_hires_delivery(True, _track_lists_hires(media), formats):
+            return
+        if self._accept_session_capped_cd():
             return
         requested_name = quality_name(requested).upper()
         delivered = quality_name(quality).upper() if quality else "LOSSLESS"
@@ -286,6 +309,8 @@ class StreamMixin:
             getattr(manifest, "sample_rate", None),
         ):
             return hifi_info
+        if self._accept_session_capped_cd():
+            return None
         requested_name = quality_name(requested).upper()
         delivered = quality_name(getattr(stream, "audio_quality", None)).upper() if getattr(stream, "audio_quality", None) else "LOSSLESS"
         offered = ""
@@ -342,6 +367,7 @@ class StreamMixin:
                         quality_audio,
                         pace_api=pace_api,
                     )
+                    self._record_last_delivered_quality(getattr(manifest, "audio_quality", None))
                     return (
                         track_info.stream_manifest,
                         track_info.file_extension,
@@ -434,6 +460,13 @@ class StreamMixin:
             )
             if upgraded is not None:
                 track_info = upgraded
+            delivered = None
+            upgraded_manifest = getattr(track_info, "stream_manifest", None)
+            if upgraded_manifest is not None:
+                delivered = getattr(upgraded_manifest, "audio_quality", None)
+            if delivered is None and track_info.media_stream is not None:
+                delivered = getattr(track_info.media_stream, "audio_quality", None)
+            self._record_last_delivered_quality(delivered)
             return (
                 track_info.stream_manifest,
                 track_info.file_extension,

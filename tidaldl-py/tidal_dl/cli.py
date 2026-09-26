@@ -31,6 +31,7 @@ from tidal_dl import __version__
 from tidal_dl.config import HandlingApp, Settings, Tidal
 from tidal_dl.constants import CTX_TIDAL, FAVORITES, DownloadSource, MediaType
 from tidal_dl.download import Download
+from tidal_dl.download.streams import QualityMismatchError
 from tidal_dl.helper.cli import parse_timestamp
 from tidal_dl.helper.path import get_format_template, path_config_base, path_file_settings
 from tidal_dl.helper.playlist_import import PlaylistImporter
@@ -377,6 +378,9 @@ def _download(
             for idx, item in enumerate(urls):
                 if _process_url(dl, ctx, handling_app, item, idx, urls_pos_last) is False:
                     return False
+        except QualityMismatchError as exc:
+            print(str(exc))
+            return False
         finally:
             progress.refresh()
             progress.stop()

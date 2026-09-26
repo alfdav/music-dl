@@ -439,3 +439,85 @@ def test_hifi_primary_cd_with_flac_hires_fail_closes():
 
     with pytest.raises(QualityMismatchError, match="FLAC_HIRES"):
         subject._get_stream_info(_listed_hires_track(_oauth_cd_stream()))
+
+
+def _dead_hifi_subject():
+    from tests.test_hires_flac_quality import _download_stream_subject
+
+    subject, _calls = _download_stream_subject()
+    subject.tidal.hifi_client = type(
+        "DeadHiFi",
+        (),
+        {
+            "track_stream": staticmethod(
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    requests.RequestException("No live Hi-Fi API instances available.")
+                )
+            )
+        },
+    )()
+    subject._track_manifest_formats = lambda _media, **_kwargs: list(_MANIFEST_FORMATS)
+    warnings: list[str] = []
+    subject.fn_logger = type(
+        "Logger",
+        (),
+        {
+            "error": lambda *_args: None,
+            "exception": lambda *_args: None,
+            "warning": lambda _self, message: warnings.append(str(message)),
+        },
+    )()
+    return subject, warnings
+
+
+def test_session_can_deliver_hires_treats_blank_as_unknown():
+    from tidal_dl.download.quality import session_can_deliver_hires
+
+    assert session_can_deliver_hires(None) is None
+    assert session_can_deliver_hires("") is None
+    assert session_can_deliver_hires("LOSSLESS") is False
+    assert session_can_deliver_hires("HI_RES") is True
+    assert session_can_deliver_hires("HI_RES_LOSSLESS") is True
+
+
+def test_capped_session_accepts_cd_when_flac_hires_offered_and_hifi_down():
+    from tests.test_hires_flac_quality import _listed_hires_track, _oauth_cd_stream
+    from tidal_dl.download.quality import SESSION_HIRES_FALLBACK_NOTICE
+    from tidal_dl.constants import quality_name
+
+    subject, warnings = _dead_hifi_subject()
+    subject.tidal.session_max_quality = "LOSSLESS"
+
+    manifest, extension, _extract, media_stream = subject._get_stream_info(_listed_hires_track(_oauth_cd_stream()))
+
+    assert extension == ".flac"
+    assert quality_name(media_stream.audio_quality).upper() == "LOSSLESS"
+    assert manifest.get_urls() == ["https://example.invalid/cd.flac"]
+    assert subject.last_delivered_quality == "LOSSLESS"
+    assert warnings == [SESSION_HIRES_FALLBACK_NOTICE]
+
+    subject._get_stream_info(_listed_hires_track(_oauth_cd_stream()))
+    assert warnings == [SESSION_HIRES_FALLBACK_NOTICE]
+
+
+def test_capable_session_still_fail_closes_when_flac_hires_and_hifi_down():
+    from tests.test_hires_flac_quality import _listed_hires_track, _oauth_cd_stream
+    from tidal_dl.download.streams import QualityMismatchError
+
+    subject, warnings = _dead_hifi_subject()
+    subject.tidal.session_max_quality = "HI_RES_LOSSLESS"
+
+    with pytest.raises(QualityMismatchError, match="FLAC_HIRES"):
+        subject._get_stream_info(_listed_hires_track(_oauth_cd_stream()))
+    assert warnings == []
+
+
+def test_unprobed_session_stays_fail_closed_when_flac_hires_and_hifi_down():
+    from tests.test_hires_flac_quality import _listed_hires_track, _oauth_cd_stream
+    from tidal_dl.download.streams import QualityMismatchError
+
+    subject, _warnings = _dead_hifi_subject()
+    assert getattr(subject.tidal, "session_max_quality", None) is None
+
+    with pytest.raises(QualityMismatchError, match="FLAC_HIRES"):
+        subject._get_stream_info(_listed_hires_track(_oauth_cd_stream()))

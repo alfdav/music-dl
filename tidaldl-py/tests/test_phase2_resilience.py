@@ -456,7 +456,10 @@ def test_subscription_quality_probe_never_mutates_configured_or_session_quality(
     assert probe.settings.save_calls == 0
 
 
-def test_subscription_quality_probe_trusts_hi_res_account_without_get_stream(capsys):
+def test_subscription_quality_probe_records_oauth_session_max_when_account_is_hi_res(capsys):
+    """Account HI_RES must not hide a Tidal Web login that only delivers LOSSLESS."""
+    from tidal_dl.download.quality import SESSION_HIRES_FALLBACK_NOTICE
+
     class SettingsData:
         quality_audio = Quality.hi_res_lossless
 
@@ -464,7 +467,8 @@ def test_subscription_quality_probe_trusts_hi_res_account_without_get_stream(cap
         audio_quality = Quality.hi_res_lossless
 
         def track(self, _track_id):
-            raise AssertionError("OAuth get_stream must not measure Web-client LOSSLESS as the subscription")
+            stream = type("Stream", (), {"audio_quality": Quality.high_lossless})()
+            return type("Track", (), {"get_stream": lambda self: stream})()
 
     probe = type(
         "Probe",
@@ -478,7 +482,12 @@ def test_subscription_quality_probe_trusts_hi_res_account_without_get_stream(cap
 
     Tidal._probe_subscription_quality(probe)
     out = capsys.readouterr().out
-    assert "account supports HI_RES" in out
+    assert "HI_RES" in out
+    assert "this login only delivers" in out
+    assert SESSION_HIRES_FALLBACK_NOTICE in out
+    assert probe.session_max_quality == "LOSSLESS"
+    assert probe.settings.data.quality_audio == Quality.hi_res_lossless
+    assert probe.session.audio_quality == Quality.hi_res_lossless
 
 
 def test_subscription_quality_probe_unknown_warns_without_pass(capsys):

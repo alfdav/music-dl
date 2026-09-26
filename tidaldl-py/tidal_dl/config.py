@@ -255,6 +255,11 @@ class Tidal(BaseConfig[ModelToken]):
         self.is_pkce = False  # default; updated by login_token()
         self.active_source = DownloadSource.OAUTH
         self.hifi_client: HiFiApiClient | None = None
+        # In-memory only. OAuth playback cap for this login client, not account tier.
+        # Proposed later: login-client picker overlapping Tidal auth v2.
+        # Do not persist, wipe token.json, or start a new login from this field.
+        self.session_max_quality: str | None = None
+        self._hires_fallback_notice_emitted = False
         self._active_key_index = 0
         self.token_from_storage = self.read(self.file_path)
 
@@ -708,22 +713,44 @@ class Tidal(BaseConfig[ModelToken]):
         return False
 
     def _probe_subscription_quality(self) -> None:
-        """Report the account's observed quality without changing the selection."""
-        configured = Quality(self.settings.data.quality_audio)
+        """Report account vs this-login quality. Never change the setting.
+
+        Account ``highestSoundQuality`` can be HI_RES while this OAuth client
+        (Tidal Web API key [0]) silently returns LOSSLESS 16/44.1. Measure the
+        login with OAuth ``get_stream`` and store ``session_max_quality``
+        in-memory only.
+
+        Proposed later (do not implement here): a login-client picker overlapping
+        Tidal auth v2 so a Hi-Res-capable client can be chosen. Never wipe
+        token.json and never start a new login from this probe.
+        """
+        from tidal_dl.download.quality import (
+            SESSION_HIRES_FALLBACK_NOTICE,
+            session_can_deliver_hires,
+        )
+
+        settings = getattr(self, "settings", None)
+        data = getattr(settings, "data", None)
+        if data is None or not hasattr(data, "quality_audio"):
+            return
+
+        configured = Quality(data.quality_audio)
         configured_rank = QUALITY_RANK.get(quality_name(configured), 0)
+        configured_str = quality_name(configured)
+
+        account = ""
         refresh = getattr(self, "refresh_account_quality", None)
         if callable(refresh):
             try:
                 account = str(refresh() or "").upper()
             except (TypeError, ValueError, OSError, RuntimeError):
                 account = ""
-            account_rank = QUALITY_RANK.get(account, 0)
-            if account and account_rank >= configured_rank:
-                _console.print(
-                    f"[green]Audio quality check passed:[/green] "
-                    f"account supports {account} (requested {quality_name(configured)})."
-                )
-                return
+
+        if account:
+            _console.print(
+                f"[green]Account subscription reports {account}[/green] "
+                f"(requested {configured_str})."
+            )
 
         try:
             import concurrent.futures
@@ -735,24 +762,22 @@ class Tidal(BaseConfig[ModelToken]):
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 stream = pool.submit(_run_probe).result(timeout=SOURCE_RESOLVE_TIMEOUT_SEC)
             delivered = stream.audio_quality
-            delivered_rank = QUALITY_RANK.get(quality_name(delivered), 0)
         except Exception:
-            # Non-fatal: if the probe fails we just keep the configured quality.
+            # Non-fatal: unknown session cap stays fail-closed at download time.
             _console.print(
-                "[dim]Could not probe subscription quality (network or track unavailable). "
+                "[dim]Could not probe this login's stream quality (network or track unavailable). "
                 "Keeping configured quality.[/dim]"
             )
             return
 
-        # Quality may be a StrEnum member or a plain str depending on tidalapi version;
-        # normalise to string for display and enum for comparison.
         delivered_str = quality_name(delivered)
-        configured_str = quality_name(configured)
+        self.session_max_quality = delivered_str
+        delivered_rank = QUALITY_RANK.get(delivered_str, 0)
 
         if delivered_str not in QUALITY_RANK:
             _console.print(
                 f"[yellow]Warning:[/yellow] Requested quality [bold]{configured_str}[/bold] "
-                f"but the provider reported unknown delivery quality [bold]{delivered_str}[/bold]. "
+                f"but this login reported unknown delivery quality [bold]{delivered_str}[/bold]. "
                 "Keeping configured quality."
             )
             return
@@ -760,15 +785,18 @@ class Tidal(BaseConfig[ModelToken]):
         if delivered_rank >= configured_rank:
             _console.print(
                 f"[green]Audio quality check passed:[/green] "
-                f"account supports {delivered_str} (requested {configured_str})."
+                f"this login delivers {delivered_str} (requested {configured_str})."
             )
             return
 
         _console.print(
             f"[yellow]Warning:[/yellow] Requested quality [bold]{configured_str}[/bold] "
-            f"but your subscription only delivers [bold]{delivered_str}[/bold]. "
+            f"but this login only delivers [bold]{delivered_str}[/bold]. "
             "Keeping configured quality."
         )
+        if session_can_deliver_hires(configured_str) is True and session_can_deliver_hires(delivered_str) is False:
+            _console.print(f"[yellow]{SESSION_HIRES_FALLBACK_NOTICE}[/yellow]")
+            self._hires_fallback_notice_emitted = True
 
     def logout(self) -> bool:
         """Remove the stored token and replace the current session.
