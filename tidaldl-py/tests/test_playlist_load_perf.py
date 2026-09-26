@@ -396,10 +396,12 @@ def test_static_js_playlist_first_page_and_skeleton():
     from tests.gui_js_source import read_gui_js
 
     js = read_gui_js()
-    assert "function loadPlaylistTracks(" in js
-    assert "skeleton-track" in js.split("async function loadPlaylistTracks")[1].split(
+    body = js.split("async function loadPlaylistTracks")[1].split(
         "// ---- DOWNLOAD TRIGGER ----"
     )[0]
-    assert "limit=" in js.split("async function loadPlaylistTracks")[1]
-    assert "tracks-virtual" in js
+    assert "function loadPlaylistTracks(" in js
+    assert "renderPlaylistTrackSkeleton" in body
+    assert "playlistTracksUrl" in body
     assert "PLAYLIST_PAGE_SIZE" in js
+    assert "tracks-virtual" in js
+    assert "skeleton-track" in js

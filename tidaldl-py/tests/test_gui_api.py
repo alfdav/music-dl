@@ -371,8 +371,8 @@ def test_static_js_playlist_sync_updates_download_badge_and_sse():
     js = _fetch_gui_js(client)
     assert (
         "toast('Downloading ' + result.missing + ' missing tracks', 'success');\n"
-        "            refreshDlBadge();\n"
-        "            _ensureGlobalSSE();"
+        "          refreshDlBadge();\n"
+        "          _ensureGlobalSSE();"
     ) in js
 
 

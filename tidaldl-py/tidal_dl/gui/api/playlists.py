@@ -7,7 +7,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -454,9 +454,9 @@ def _playlist_full_payload(
                 total = len(ordered)
                 break
             next_off = last_off + _PLAYLIST_PAGE_SIZE
+            if total and next_off >= total:
+                break
             if next_off in pages:
-                if total and next_off >= total:
-                    break
                 continue
             more = _fetch_pages(playlist, [next_off], _PLAYLIST_PAGE_SIZE)
             if not more.get(next_off):
@@ -555,10 +555,10 @@ def list_playlists() -> dict:
 @router.get("/playlists/{playlist_id}/tracks")
 def playlist_tracks(
     playlist_id: str,
-    limit: int | None = Query(default=None, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-    last_updated: str | None = Query(default=None),
-    total: int | None = Query(default=None, ge=0),
+    limit: Annotated[int | None, Query(ge=1, le=200)] = None,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    last_updated: Annotated[str | None, Query()] = None,
+    total: Annotated[int | None, Query(ge=0)] = None,
 ) -> dict:
     """Get tracks for a specific playlist.
 
