@@ -25,7 +25,6 @@ from unittest.mock import patch
 import pytest  # pyright: ignore[reportMissingImports]
 from Crypto.Cipher import AES
 from Crypto.Util import Counter
-
 from typer.testing import CliRunner
 
 from tidal_dl import version_app
@@ -137,24 +136,24 @@ class TestDecryption:
         known_key = b"\x11" * 16
         known_nonce = b"\x22" * 8
         token = _make_security_token(known_key, known_nonce)
-        key, nonce = decrypt_security_token(token)
+        key, _nonce = decrypt_security_token(token)
         assert key == known_key
 
     def test_decrypt_security_token_returns_known_nonce(self):
         known_key = b"\x33" * 16
         known_nonce = b"\x44" * 8
         token = _make_security_token(known_key, known_nonce)
-        key, nonce = decrypt_security_token(token)
+        _key, nonce = decrypt_security_token(token)
         assert nonce == known_nonce
 
     def test_decrypt_security_token_key_length(self):
         token = _make_security_token(b"\xaa" * 16, b"\xbb" * 8)
-        key, nonce = decrypt_security_token(token)
+        key, _nonce = decrypt_security_token(token)
         assert len(key) == 16
 
     def test_decrypt_security_token_nonce_length(self):
         token = _make_security_token(b"\xcc" * 16, b"\xdd" * 8)
-        key, nonce = decrypt_security_token(token)
+        _key, nonce = decrypt_security_token(token)
         assert len(nonce) == 8
 
     def test_decrypt_security_token_different_tokens_differ(self):
@@ -273,7 +272,13 @@ class TestSettings:
         from dataclasses import fields
 
         s = Settings()
-        assert len(fields(s.data)) == 48  # updated: +1 for scan_paths
+        names = {item.name for item in fields(s.data)}
+        # 48 historical fields + scan_paths + edition_advice_enabled +
+        # edition_scorer_path from #186 Jev edition advice.
+        assert len(names) == 50
+        assert "scan_paths" in names
+        assert "edition_advice_enabled" in names
+        assert "edition_scorer_path" in names
 
     def test_settings_default_quality(self, clear_singletons, tmp_path, monkeypatch):
         from tidalapi.media import Quality
@@ -767,8 +772,6 @@ class TestTTLCache:
         assert c.size == 2
 
     def test_cache_overwrite_resets_ttl(self):
-        import time
-
         from tidal_dl.helper.cache import TTLCache
 
         c = TTLCache(ttl_sec=1)
@@ -901,6 +904,7 @@ class TestCLI:
             capture_output=True,
             text=True,
             cwd=pathlib.Path(__file__).resolve().parents[1],
+            check=False,
         )
         assert result.returncode == 0
         assert version_app() in result.stdout
@@ -911,6 +915,7 @@ class TestCLI:
             capture_output=True,
             text=True,
             cwd=pathlib.Path(__file__).resolve().parents[1],
+            check=False,
         )
         assert result.returncode == 0
         assert "dl" in result.stdout.lower()

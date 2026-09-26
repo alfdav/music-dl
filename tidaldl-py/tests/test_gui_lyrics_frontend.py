@@ -1,10 +1,10 @@
 from pathlib import Path
 
+from tests.gui_js_source import read_gui_js
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INDEX_HTML = PROJECT_ROOT / "tidal_dl" / "gui" / "static" / "index.html"
 STYLE_CSS = PROJECT_ROOT / "tidal_dl" / "gui" / "static" / "style.css"
-from tests.gui_js_source import read_gui_js
 
 
 def test_index_contains_direct_body_child_lyrics_overlay_mount():
@@ -82,7 +82,8 @@ def test_app_has_synced_rendering_and_artwork_motion_hooks():
     assert 'function applyLyricsArtworkBackground(track)' in source
     assert 'requestAnimationFrame(syncActiveLyricLine)' in source
     assert "window.matchMedia('(prefers-reduced-motion: reduce)')" in source
-    assert "lyricsBody.addEventListener('wheel'" in source
+    assert "viewport.addEventListener('wheel'" in source
+    assert "lyricsBody.addEventListener('wheel'" not in source
 
 
 def test_app_enables_lyrics_for_tidal_only_now_playing():
