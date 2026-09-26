@@ -5,6 +5,7 @@ const navItems = document.querySelectorAll('.nav-item[data-view]');
 let _lastNavHash = '';
 const _viewState = {};
 const _navStack = [];
+const _playlistMeta = {};
 
 // ---- NAV STACK ----
 function _isTopLevelView(view) {
@@ -17,7 +18,8 @@ function _isTopLevelView(view) {
 function _isDrillInView(view) {
   const name = String(view || '');
   return name.startsWith('artist:') || name.startsWith('localalbum:')
-    || name.startsWith('localrelease:') || name.startsWith('album:');
+    || name.startsWith('localrelease:') || name.startsWith('album:')
+    || name.startsWith('playlist:');
 }
 
 function _shouldShowNavBack(view, stackLen) {
@@ -159,6 +161,9 @@ function navigate(view, opts) {
         renderArtistGallery(container, parsed.name, parsed.tidalId);
       } else if (safeView.startsWith('album:')) {
         renderAlbumDetail(container, safeView.split(':')[1]);
+      } else if (safeView.startsWith('playlist:')) {
+        const playlistId = decodeURIComponent(safeView.substring(9));
+        loadPlaylistTracks(container, _playlistMeta[playlistId] || { id: playlistId });
       } else {
         renderPlaceholder(container, 'Not Found', 'This view does not exist.');
       }
@@ -1563,12 +1568,12 @@ function _followSearchResolve(resultsArea, tidalData) {
     return;
   }
   if (resolved.kind === 'playlist' && resolved.id) {
-    loadPlaylistTracks(resultsArea, {
+    navigate(playlistViewKey(_rememberPlaylist({
       id: resolved.id,
       name: resolved.name,
       cover_url: resolved.cover_url,
       num_tracks: resolved.num_tracks,
-    });
+    })));
   }
 }
 
@@ -1895,7 +1900,7 @@ function renderSearchResults(container, data, showHeader = true) {
       } else if (state.searchType === 'artists') {
         card.addEventListener('click', () => navigate(buildArtistView(item.name, item.id)));
       } else if (state.searchType === 'playlists') {
-        card.addEventListener('click', () => loadPlaylistTracks(container, item));
+        card.addEventListener('click', () => navigate(playlistViewKey(_rememberPlaylist(item))));
       }
       a11yClick(card);
       grid.appendChild(card);
@@ -4463,7 +4468,7 @@ async function loadPlaylists(resultsArea) {
       meta.appendChild(textEl('div', (pl.num_tracks || 0) + ' tracks', 'album-card-sub'));
       card.appendChild(meta);
 
-      card.addEventListener('click', () => loadPlaylistTracks(resultsArea, pl));
+      card.addEventListener('click', () => navigate(playlistViewKey(_rememberPlaylist(pl))));
       a11yClick(card);
       grid.appendChild(card);
     });
@@ -4480,6 +4485,33 @@ async function loadPlaylists(resultsArea) {
 const PLAYLIST_PAGE_SIZE = 50;
 const PLAYLIST_VIRTUAL_ROW_PX = 66;
 const PLAYLIST_VIRTUAL_THRESHOLD = 80;
+let _playlistSelectedIndex = 0;
+let _playlistFocusSelected = false;
+
+function playlistViewKey(pl) {
+  const id = (pl && pl.id != null) ? String(pl.id) : '';
+  return 'playlist:' + encodeURIComponent(id);
+}
+
+function _rememberPlaylist(pl) {
+  if (pl && pl.id != null) _playlistMeta[String(pl.id)] = pl;
+  return pl;
+}
+
+function _playlistMoveIndex(index, delta, total) {
+  if (!total) return 0;
+  const base = index == null ? 0 : index;
+  return Math.max(0, Math.min(total - 1, base + delta));
+}
+
+function _playlistEnsureVisibleScroll(index, scrollTop, viewHeight, rowPx) {
+  const row = rowPx || PLAYLIST_VIRTUAL_ROW_PX;
+  const top = index * row;
+  const bottom = top + row;
+  if (top < (scrollTop || 0)) return top;
+  if (bottom > (scrollTop || 0) + viewHeight) return Math.max(0, bottom - viewHeight);
+  return scrollTop || 0;
+}
 
 function playlistTracksUrl(pl, limit, offset) {
   let url = '/playlists/' + encodeURIComponent(pl.id) + '/tracks?limit=' + limit + '&offset=' + offset;
@@ -4520,12 +4552,28 @@ function _playlistScrollParent(trackList) {
   return trackList && trackList.parentElement;
 }
 
+function _playlistMarkSelected(row, index) {
+  if (index === _playlistSelectedIndex) {
+    row.classList.add('selected');
+    if (_playlistFocusSelected && typeof row.focus === 'function') {
+      row.focus();
+      _playlistFocusSelected = false;
+    }
+  }
+  row.addEventListener('click', () => { _playlistSelectedIndex = index; });
+  row.addEventListener('focus', () => { _playlistSelectedIndex = index; });
+}
+
 function renderPlaylistRows(trackList, tracks, total) {
   const count = total || tracks.length;
   if (count <= PLAYLIST_VIRTUAL_THRESHOLD) {
     trackList.classList.remove('tracks-virtual');
     while (trackList.firstChild) trackList.removeChild(trackList.firstChild);
-    tracks.forEach((track, i) => trackList.appendChild(renderTrackRow(track, i + 1, tracks)));
+    tracks.forEach((track, i) => {
+      const row = renderTrackRow(track, i + 1, tracks);
+      _playlistMarkSelected(row, i);
+      trackList.appendChild(row);
+    });
     return;
   }
   _paintPlaylistVirtual(trackList, tracks, count);
@@ -4556,21 +4604,28 @@ function _paintPlaylistVirtual(trackList, tracks, total) {
       ));
       continue;
     }
-    windowEl.appendChild(renderTrackRow(track, i + 1, tracks));
+    const row = renderTrackRow(track, i + 1, tracks);
+    _playlistMarkSelected(row, i);
+    windowEl.appendChild(row);
   }
   trackList.appendChild(spacer);
   trackList.appendChild(windowEl);
 }
 
 async function loadPlaylistTracks(resultsArea, pl) {
+  _rememberPlaylist(pl);
+  _playlistSelectedIndex = 0;
   while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
   resultsArea.className = 'album-detail-view';
 
-  // Breadcrumb
-  resultsArea.appendChild(breadcrumb([
+  const crumbRow = h('div', { className: 'nav-back-row' });
+  const back = _navBackControl();
+  if (back) crumbRow.appendChild(back);
+  crumbRow.appendChild(breadcrumb([
     { label: 'Playlists', view: 'playlists' },
     { label: pl.name || 'Playlist' },
   ]));
+  resultsArea.appendChild(crumbRow);
 
   // Playlist header — art + meta + action pills
   const plHeader = h('div', { className: 'album-detail-header' });
@@ -4635,8 +4690,17 @@ async function loadPlaylistTracks(resultsArea, pl) {
   const loaded = [];
   let actionsWired = false;
 
+  const restorePlaylistScroll = () => {
+    const saved = _viewState[state.view];
+    const scrollParent = _playlistScrollParent(trackList);
+    if (saved && saved.scrollY && scrollParent) {
+      scrollParent.scrollTop = saved.scrollY;
+    }
+  };
+
   const paintLoaded = (totalHint) => {
     const total = totalHint || loaded.length;
+    restorePlaylistScroll();
     renderPlaylistRows(trackList, loaded, total);
     const countEl = plMeta.querySelector('.album-detail-sub');
     if (countEl) countEl.textContent = total + ' tracks';
@@ -4695,8 +4759,12 @@ async function loadPlaylistTracks(resultsArea, pl) {
     });
   };
 
+  const viewKey = state.view;
+  const stillThisPlaylist = () => state.view === viewKey;
+
   try {
     const first = await api(playlistTracksUrl(pl, PLAYLIST_PAGE_SIZE, 0));
+    if (!stillThisPlaylist()) return;
     loaded.push.apply(loaded, first.tracks || []);
     let total = first.total || pl.num_tracks || loaded.length;
     paintLoaded(total);
@@ -4708,13 +4776,46 @@ async function loadPlaylistTracks(resultsArea, pl) {
         _paintPlaylistVirtual(trackList, loaded, total || loaded.length);
       }
     };
+    const onKey = (e) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      e.preventDefault();
+      e.stopPropagation();
+      const count = total || loaded.length;
+      _playlistSelectedIndex = _playlistMoveIndex(
+        _playlistSelectedIndex, e.key === 'ArrowDown' ? 1 : -1, count,
+      );
+      _playlistFocusSelected = true;
+      if (scrollParent) {
+        const next = _playlistEnsureVisibleScroll(
+          _playlistSelectedIndex,
+          scrollParent.scrollTop || 0,
+          scrollParent.clientHeight || 720,
+          PLAYLIST_VIRTUAL_ROW_PX,
+        );
+        if (next !== scrollParent.scrollTop) scrollParent.scrollTop = next;
+      }
+      renderPlaylistRows(trackList, loaded, count);
+    };
     if (scrollParent && scrollParent.addEventListener) {
       scrollParent.addEventListener('scroll', onScroll, { passive: true });
+    }
+    trackList.setAttribute('tabindex', '0');
+    trackList.addEventListener('keydown', onKey);
+    if (typeof viewEl !== 'undefined' && viewEl) {
+      const prevCleanup = viewEl._viewCleanup;
+      viewEl._viewCleanup = () => {
+        if (typeof prevCleanup === 'function') prevCleanup();
+        if (scrollParent && scrollParent.removeEventListener) {
+          scrollParent.removeEventListener('scroll', onScroll);
+        }
+        trackList.removeEventListener('keydown', onKey);
+      };
     }
 
     let offset = (first.offset || 0) + loaded.length;
     while (offset < total) {
       const page = await api(playlistTracksUrl(pl, PLAYLIST_PAGE_SIZE, offset));
+      if (!stillThisPlaylist()) return;
       const rows = page.tracks || [];
       if (!rows.length) break;
       loaded.push.apply(loaded, rows);

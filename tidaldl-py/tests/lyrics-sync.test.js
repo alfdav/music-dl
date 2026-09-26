@@ -628,3 +628,12 @@ describe('player-bar invariance when lyrics open', () => {
       .not.toMatch(/now-heart|now-download|display/);
   });
 });
+
+describe('playlist virtual list keyboard', () => {
+  test('volume shortcuts back off when a virtualized playlist row is focused', () => {
+    expect(playerSource).toContain('_isPlaylistListTarget');
+    expect(playerSource).toContain('tracks-virtual');
+    const handler = playerSource.split("document.addEventListener('keydown'")[1] || '';
+    expect(handler).toMatch(/_isPlaylistListTarget\(e\.target\)/);
+  });
+});

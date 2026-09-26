@@ -1724,7 +1724,7 @@ describe('navigation stack', () => {
 
   test('drill-in with a non-empty stack shows the back control', () => {
     const nav = loadNavStackHelpers();
-    ['artist:Tetrarch', 'localalbum:Tetrarch:Unstable', 'localrelease:abc123', 'album:99'].forEach(view => {
+    ['artist:Tetrarch', 'localalbum:Tetrarch:Unstable', 'localrelease:abc123', 'album:99', 'playlist:pl-80'].forEach(view => {
       expect(nav._isDrillInView(view)).toBe(true);
       expect(nav._isTopLevelView(view)).toBe(false);
       expect(nav._shouldShowNavBack(view, 1)).toBe(true);
@@ -2253,7 +2253,7 @@ function loadPlaylistPageHelpers() {
   const end = viewsSource.indexOf('async function loadPlaylistTracks(');
   if (start < 0 || end < start) throw new Error('playlist page helpers not found');
   return new Function(
-    `${viewsSource.slice(start, end)}\nreturn { PLAYLIST_PAGE_SIZE, playlistTracksUrl, _playlistVirtualRange };`,
+    `${viewsSource.slice(start, end)}\nreturn { PLAYLIST_PAGE_SIZE, playlistTracksUrl, _playlistVirtualRange, playlistViewKey, _playlistMoveIndex, _playlistEnsureVisibleScroll };`,
   )();
 }
 
@@ -2272,5 +2272,49 @@ describe('playlist first-page load', () => {
     expect(range.end).toBeLessThan(500);
     expect(range.height).toBe(500 * 66);
     expect(range.top).toBe(8 * 66);
+  });
+
+  test('keyboard selection moves within a list over 80 tracks and keeps the row visible', () => {
+    const helpers = loadPlaylistPageHelpers();
+    expect(helpers._playlistMoveIndex(0, 1, 120)).toBe(1);
+    expect(helpers._playlistMoveIndex(0, -1, 120)).toBe(0);
+    expect(helpers._playlistMoveIndex(119, 1, 120)).toBe(119);
+    expect(helpers._playlistMoveIndex(null, 1, 120)).toBe(1);
+
+    const row = 66;
+    const view = 400;
+    expect(helpers._playlistEnsureVisibleScroll(90, 0, view, row)).toBe((90 + 1) * row - view);
+    expect(helpers._playlistEnsureVisibleScroll(2, 2000, view, row)).toBe(2 * row);
+    expect(helpers._playlistEnsureVisibleScroll(10, 10 * row, view, row)).toBe(10 * row);
+  });
+
+  test('virtualized rows keep play-from-here, queue actions, and selection', () => {
+    const paint = viewsSource.split('function _paintPlaylistVirtual')[1] || '';
+    expect(paint).toContain('renderTrackRow(track, i + 1, tracks)');
+    expect(viewsSource).toContain("startPlaybackFromList(track, allTracks)");
+    expect(viewsSource).toContain("label: 'Play Next'");
+    expect(viewsSource).toContain("label: 'Add to Queue'");
+    expect(viewsSource).toMatch(/classList\.add\('selected'\)/);
+    expect(viewsSource).toMatch(/ArrowDown|ArrowUp/);
+    expect(viewsSource).toContain('_playlistMoveIndex');
+    expect(viewsSource).toContain('_playlistEnsureVisibleScroll');
+  });
+
+  test('playlist detail is a drill-in view that restores scroll after navigating back', () => {
+    const nav = loadNavStackHelpers();
+    const helpers = loadPlaylistPageHelpers();
+    expect(helpers.playlistViewKey({ id: 'pl-80' })).toBe('playlist:pl-80');
+    expect(nav._isDrillInView('playlist:pl-80')).toBe(true);
+    expect(nav._isTopLevelView('playlist:pl-80')).toBe(false);
+    expect(nav._shouldShowNavBack('playlist:pl-80', 1)).toBe(true);
+
+    const stack = [];
+    nav._pushNav(stack, nav._snapshotOutgoing('playlist:pl-80', 'artist', '', 5280));
+    const restored = nav._popNav(stack);
+    expect(restored.view).toBe('playlist:pl-80');
+    expect(restored.scrollY).toBe(5280);
+
+    expect(viewsSource).toMatch(/navigate\(playlistViewKey\(/);
+    expect(viewsSource).toContain("safeView.startsWith('playlist:')");
   });
 });

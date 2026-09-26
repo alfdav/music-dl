@@ -4,6 +4,7 @@ const {
   buildArtistView,
   buildLocalAlbumView,
   buildLocalReleaseView,
+  buildPlaylistView,
   normalizeLaunchView,
   normalizeView,
   parseArtistView,
@@ -29,6 +30,8 @@ describe('routes', () => {
     );
     expect(normalizeView(buildAlbumView(12345))).toBe('album:12345');
     expect(normalizeView(buildLocalReleaseView('release:abc123'))).toBe('localrelease:abc123');
+    expect(normalizeView(buildPlaylistView('pl-80'))).toBe('playlist:pl-80');
+    expect(normalizeView(buildPlaylistView('uuid/evil'))).toBe('playlist:uuid%2Fevil');
   });
 
   test('falls back to home for invalid or external-looking values', () => {
@@ -37,6 +40,7 @@ describe('routes', () => {
     expect(normalizeView('localalbum:ok:bad/path')).toBe('home');
     expect(normalizeView('album:not-a-number')).toBe('home');
     expect(normalizeView('localrelease:../../secret')).toBe('home');
+    expect(normalizeView('playlist:../../secret')).toBe('home');
     expect(normalizeView('')).toBe('home');
   });
 

@@ -8,6 +8,14 @@
 
 **Prevention:** Final `qa` job always passes `--enforce`. Check steps still continue so evidence is complete. Write the bot pid file before publishing process state. `running=True` means the pid file exists. Settings field-count tests name the new fields, not a magic number alone. Lyrics detach tests lock the viewport listener. Player-bar invariance is the bun lyrics-sync contract: do not hide `#now-heart` / `#now-download` on `.lyrics-open`. LibraryDB probe ceilings must match GitHub-hosted 10k-probe cost (`visible_scanned_path_sql` + `fold_search`), not a quiet laptop. Do not skip or delete a failing test to go green.
 
+## 2026-09-26 — Playlist pages retried Tidal 429s immediately and lost list state
+
+**What happened:** Concurrent remaining-page fetches had no TooManyRequests handling, so a 429 aborted the load or the other worker kept hammering. The virtual list also lived inside the `playlists` hash, so back from an artist/album remounted the card grid and dropped scroll, focus, and selection.
+
+**Root cause:** `_fetch_pages` called `playlist.tracks()` with no pacer. Playlist detail was not a drill-in view, and virtual paint destroyed focused DOM without a selected index.
+
+**Prevention:** Remaining pages honor `TooManyRequests.retry_after` via `TidalApiPacer.note_429` before retrying. Playlist detail is `playlist:<id>` with saved scroll. Arrow keys move a selected index; volume shortcuts skip `.tracks-virtual` / `.track.selected`.
+
 ## 2026-09-26 — Playlist click waited for every track plus a full-library NAS stamp
 
 **What happened:** Clicking a playlist froze the UI for seconds. A mocked Tidal client (50-item pages, 200 ms/request, 15 ms NAS stats) measured 1.9s for 50 tracks and 3.4s for a 500-track playlist that then rendered only the first 50.

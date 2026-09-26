@@ -713,6 +713,10 @@ body {
   background: transparent;
 }
 
+.track.selected {
+  background: var(--surface-active);
+}
+
 .track.playing {
   background: var(--accent-glow);
 }
