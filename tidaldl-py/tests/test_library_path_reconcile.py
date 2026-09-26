@@ -575,8 +575,6 @@ class TestScanFingerprintRegression:
 
 class TestPlaybackBackstop:
     def _playback_client(self, tmp_path, monkeypatch, root):
-        import re
-
         from fastapi.testclient import TestClient
 
         import tidal_dl.gui.api.library as library_api
