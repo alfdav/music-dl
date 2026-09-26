@@ -561,6 +561,47 @@ def test_resolve_source_non_interactive_uses_quiet_restore_without_login():
     assert tidal.quiet_restore is True
 
 
+def test_resolve_source_silent_restore_probes_session_max():
+    """Desktop restart / Hi-Fi-down restore must measure this login before the gate."""
+    probed: list[str] = []
+
+    class SilentRestoreTidal:
+        def __init__(self):
+            self.settings = type(
+                "Settings",
+                (),
+                {
+                    "data": type(
+                        "Data",
+                        (),
+                        {"download_source": DownloadSource.OAUTH, "download_source_fallback": True},
+                    )()
+                },
+            )()
+            self.session_max_quality = None
+            self.active_source = None
+
+        def _try_login_with_key_rotation(self, quiet: bool = False) -> bool:
+            assert quiet is True
+            return True
+
+        def _probe_subscription_quality(self) -> None:
+            probed.append("probe")
+            self.session_max_quality = "LOSSLESS"
+
+        def ensure_session_max_quality(self):
+            return Tidal.ensure_session_max_quality(self)
+
+        def login(self, fn_print):
+            raise AssertionError("silent restore must not start OAuth")
+
+    tidal = SilentRestoreTidal()
+    assert Tidal.resolve_source(tidal, lambda _message: None, allow_interactive_login=False) is True
+    assert probed == ["probe"]
+    assert tidal.session_max_quality == "LOSSLESS"
+    assert tidal.active_source == DownloadSource.OAUTH
+
+
 def test_source_resolve_timeout_is_capped_so_dead_network_cannot_eat_spinner():
     """Hi-Fi / gist / quality-probe boot calls must be ~1–2s, not the 45s download timeout.
 
@@ -1001,7 +1042,7 @@ def test_hifi_client_decodes_dash_manifest():
         parsed = HiFiApiClient.parse_track_payload(payload)
         # If it parses, verify basic fields are populated
         assert parsed.audio_quality == "HI_RES_LOSSLESS"
-    except Exception:
+    except (ValueError, KeyError, TypeError, OSError, AttributeError, RuntimeError):
         pytest.skip("DASH parse_manifest unavailable or format not supported in test env")
 
 

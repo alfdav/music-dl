@@ -177,3 +177,39 @@ def test_skip_existing_reuses_v17_placeholder_folder(tmp_path: Path):
     assert dest.resolve() == legacy.resolve()
     assert legacy.is_file()
     assert not collapsed.exists()
+
+
+def test_preflight_skips_legacy_placeholder_instead_of_promising_copy(tmp_path: Path):
+    """scanned `_/` files are already at dest — pre-count must say skip, not copy."""
+    legacy = (
+        tmp_path
+        / "Leonard Cohen"
+        / "You Want It Darker"
+        / "_"
+        / "If I Didn't Have Your Love.flac"
+    )
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"existing")
+
+    track = _Track(
+        "If I Didn't Have Your Love",
+        _Album("You Want It Darker", num_volumes=1),
+        tags=["LOSSLESS"],
+    )
+    track.id = 66024828
+    track.isrc = "CAB679603552"
+    dl = _download_for_legacy_placeholder(tmp_path)
+    dl.settings.data.skip_duplicate_isrc = True
+    dl.settings.data.format_album = _DEFAULT_ALBUM
+    dl._library_db.record(str(legacy), status="tagged", isrc=track.isrc)
+    dl._library_db.register_isrc_path(track.isrc, legacy, commit=True)
+
+    with patch.object(dl, "extension_guess", return_value=".flac"):
+        resolved = dl._preflight_isrc_scan([track], ensure_complete=True)
+
+    info_messages = [str(call.args[0]) for call in dl.fn_logger.info.call_args_list]
+    dl._library_db.close()
+
+    assert resolved == {"66024828": "skip"}
+    assert any("will be skipped" in message for message in info_messages)
+    assert not any("will be copied" in message for message in info_messages)

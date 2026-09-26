@@ -1,6 +1,26 @@
 """Download duplicates helpers."""
 
-from tidal_dl.download._common import *  # noqa: F403
+from tidal_dl.download._common import *
+
+
+def dest_already_present(downloader, media, source_path: str) -> bool:
+    """True when skip_existing would keep the live file (same dest, including `_/`)."""
+    if getattr(downloader, "skip_existing", False) is not True:
+        return False
+    prepare = getattr(downloader, "_prepare_file_paths_and_skip_logic", None)
+    if not callable(prepare):
+        return False
+    template = getattr(getattr(downloader.settings, "data", None), "format_album", None) or "{track_title}"
+    result = prepare(media, template, None, 0, 0)
+    if not isinstance(result, tuple) or len(result) < 3:
+        return False
+    dest, _ext, skip_file = result[0], result[1], result[2]
+    if skip_file is True:
+        return True
+    try:
+        return pathlib.Path(dest).resolve() == pathlib.Path(source_path).resolve()
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 class DuplicateMixin:
@@ -16,7 +36,7 @@ class DuplicateMixin:
         Empty dict means no duplicates were found or ISRC dedup is disabled.
 
         When *ensure_complete* is True (collections: albums, playlists, mixes),
-        duplicates are always copied or re-downloaded — never skipped.
+        duplicates are copied or re-downloaded unless dest already exists.
         """
         if not self.settings.data.skip_duplicate_isrc:
             return {}
@@ -46,17 +66,29 @@ class DuplicateMixin:
             return {}
 
         # Collections must always be complete: copy if source exists, re-download if not.
+        # Dest already present (including v1.7 `Artist/Album/_/Track`) is skip, not copy.
         if ensure_complete:
             resolved = {}
-            for track, _ in hits_with_source:
-                resolved[str(track.id)] = "copy"
+            skip_n = 0
+            copy_n = 0
+            for track, path_str in hits_with_source:
+                if dest_already_present(self, track, path_str):
+                    resolved[str(track.id)] = "skip"
+                    skip_n += 1
+                else:
+                    resolved[str(track.id)] = "copy"
+                    copy_n += 1
             for track, _ in hits_missing_source:
                 resolved[str(track.id)] = "redownload"
             if resolved:
-                self.fn_logger.info(
-                    f"{len(hits_with_source)} track(s) will be copied from existing "
-                    f"library, {len(hits_missing_source)} will be re-downloaded."
-                )
+                parts: list[str] = []
+                if skip_n:
+                    parts.append(f"{skip_n} track(s) already in library will be skipped")
+                if copy_n:
+                    parts.append(f"{copy_n} track(s) will be copied from existing library")
+                if hits_missing_source:
+                    parts.append(f"{len(hits_missing_source)} will be re-downloaded")
+                self.fn_logger.info(", ".join(parts) + ".")
             return resolved
 
         saved_action = getattr(self.settings.data, "duplicate_action", "ask")

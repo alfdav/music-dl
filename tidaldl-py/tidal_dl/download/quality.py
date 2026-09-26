@@ -203,6 +203,21 @@ SESSION_HIRES_FALLBACK_NOTICE = (
 )
 
 
+def delivered_quality_label(
+    quality: object | None,
+    bit_depth: int | None = None,
+    sample_rate: int | None = None,
+    representation_id: str | None = None,
+) -> str:
+    """History / job / complete-event label for what was actually delivered.
+
+    Tidal can stamp ``HI_RES_LOSSLESS`` on a 16/44.1 stream. That is CD.
+    """
+    if delivery_is_cd_lossless(quality, bit_depth, sample_rate, representation_id):
+        return "LOSSLESS"
+    return normalize_quality_name(quality)
+
+
 def session_can_deliver_hires(session_max: object | None) -> bool | None:
     """Whether this login's measured stream cap includes Hi-Res.
 

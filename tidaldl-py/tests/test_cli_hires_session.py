@@ -60,8 +60,8 @@ def _settings():
     )()
 
 
-def _tidal(*, session_max: str | None):
-    return type(
+def _tidal(*, session_max: str | None, probe_to: str | None = None):
+    tidal = type(
         "Tidal",
         (),
         {
@@ -87,10 +87,17 @@ def _tidal(*, session_max: str | None):
         },
     )()
 
+    def _probe():
+        if probe_to is not None:
+            tidal.session_max_quality = probe_to
 
-def _install_cli(monkeypatch, *, session_max: str | None, media):
+    tidal._probe_subscription_quality = _probe
+    return tidal
 
-    tidal = _tidal(session_max=session_max)
+
+def _install_cli(monkeypatch, *, session_max: str | None, media, probe_to: str | None = None):
+
+    tidal = _tidal(session_max=session_max, probe_to=probe_to)
     captured: list[str] = []
 
     def fake_resolve(ctx, *args, **kwargs):
@@ -185,3 +192,18 @@ def test_cli_capable_session_prints_clean_mismatch_and_exits(monkeypatch):
     assert "Quality mismatch" in (result.output or "")
     assert "FLAC_HIRES" in (result.output or "")
     assert notices == []
+
+
+def test_cli_start_from_existing_token_probes_capped_login(monkeypatch):
+    """CLI dl with a stored token must probe before the Hi-Res gate."""
+    notices = _install_cli(
+        monkeypatch,
+        session_max=None,
+        media=_dummy_media("track"),
+        probe_to="LOSSLESS",
+    )
+    result = _invoke(_TRACK_URL)
+    assert result.exit_code == 0
+    assert "Traceback" not in (result.output or "")
+    assert "Quality mismatch" not in (result.output or "")
+    assert notices == [SESSION_HIRES_FALLBACK_NOTICE]

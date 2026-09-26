@@ -2,6 +2,7 @@
 
 from tidal_dl.download._common import *
 from tidal_dl.download.quality import (
+    delivered_quality_label,
     delivery_is_cd_lossless,
     fetch_track_manifest_formats,
     hifi_quality_param,
@@ -231,18 +232,34 @@ class StreamMixin:
     def _accept_session_capped_cd(self) -> bool:
         """Accept CD when this login was measured below Hi-Res.
 
-        Unprobed sessions stay fail-closed. Strict mismatch is only for a
-        Hi-Res-capable (or unknown) session. There is no opt-in strict setting.
+        Probe first when this login has not been measured yet (silent restore,
+        CLI token start). Unprobed after that still fail-closes. Strict
+        mismatch is only for a Hi-Res-capable (or still-unknown) session.
         """
+        tidal = getattr(self, "tidal", None)
+        ensure = getattr(tidal, "ensure_session_max_quality", None)
+        if callable(ensure):
+            ensure()
+        elif session_can_deliver_hires(self._session_max_quality()) is None:
+            probe = getattr(tidal, "_probe_subscription_quality", None)
+            if callable(probe):
+                probe()
         if session_can_deliver_hires(self._session_max_quality()) is not False:
             return False
-        remember_session_hires_fallback(getattr(self, "tidal", None), getattr(self, "fn_logger", None))
+        remember_session_hires_fallback(tidal, getattr(self, "fn_logger", None))
         return True
 
-    def _record_last_delivered_quality(self, quality: Quality | str | None) -> None:
-        if not quality:
+    def _record_last_delivered_quality(
+        self,
+        quality: Quality | str | None,
+        bit_depth: int | None = None,
+        sample_rate: int | None = None,
+        representation_id: str | None = None,
+    ) -> None:
+        label = delivered_quality_label(quality, bit_depth, sample_rate, representation_id)
+        if not label:
             return
-        self.last_delivered_quality = quality_name(quality)
+        self.last_delivered_quality = label
 
     def _require_unencrypted_hires_if_offered(
         self,
@@ -367,7 +384,11 @@ class StreamMixin:
                         quality_audio,
                         pace_api=pace_api,
                     )
-                    self._record_last_delivered_quality(getattr(manifest, "audio_quality", None))
+                    self._record_last_delivered_quality(
+                        getattr(manifest, "audio_quality", None),
+                        getattr(manifest, "bit_depth", None),
+                        getattr(manifest, "sample_rate", None),
+                    )
                     return (
                         track_info.stream_manifest,
                         track_info.file_extension,
@@ -460,13 +481,23 @@ class StreamMixin:
             )
             if upgraded is not None:
                 track_info = upgraded
-            delivered = None
+            stream = track_info.media_stream
             upgraded_manifest = getattr(track_info, "stream_manifest", None)
+            delivered = None
+            bit_depth = None
+            sample_rate = None
             if upgraded_manifest is not None:
                 delivered = getattr(upgraded_manifest, "audio_quality", None)
-            if delivered is None and track_info.media_stream is not None:
-                delivered = getattr(track_info.media_stream, "audio_quality", None)
-            self._record_last_delivered_quality(delivered)
+                bit_depth = getattr(upgraded_manifest, "bit_depth", None)
+                sample_rate = getattr(upgraded_manifest, "sample_rate", None)
+            if stream is not None:
+                if delivered is None:
+                    delivered = getattr(stream, "audio_quality", None)
+                if bit_depth is None:
+                    bit_depth = getattr(stream, "bit_depth", None)
+                if sample_rate is None:
+                    sample_rate = getattr(stream, "sample_rate", None)
+            self._record_last_delivered_quality(delivered, bit_depth, sample_rate)
             return (
                 track_info.stream_manifest,
                 track_info.file_extension,

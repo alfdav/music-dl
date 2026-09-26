@@ -23,6 +23,7 @@ from rich.progress import (
 from rich.table import Table
 from tidalapi.album import Album
 from tidalapi.artist import Artist
+from tidalapi.exceptions import ObjectNotFound, TidalAPIError
 from tidalapi.media import Track, Video
 from tidalapi.mix import Mix
 from tidalapi.playlist import Playlist
@@ -33,6 +34,7 @@ from tidal_dl.constants import CTX_TIDAL, FAVORITES, DownloadSource, MediaType
 from tidal_dl.download import Download
 from tidal_dl.download.streams import QualityMismatchError
 from tidal_dl.helper.cli import parse_timestamp
+from tidal_dl.helper.exceptions import MediaUnknown
 from tidal_dl.helper.path import get_format_template, path_config_base, path_file_settings
 from tidal_dl.helper.playlist_import import PlaylistImporter
 from tidal_dl.helper.tidal import (
@@ -115,7 +117,7 @@ class FavoriteMedia(Protocol):
 def _ctx_tidal(ctx: typer.Context) -> Tidal:
     tidal = ctx.obj.get(CTX_TIDAL) if isinstance(ctx.obj, dict) else None
     if not isinstance(tidal, Tidal):
-        raise RuntimeError("TIDAL context is not initialized")
+        raise TypeError("TIDAL context is not initialized")
     return tidal
 
 
@@ -283,7 +285,7 @@ def _process_url(
             prefer_hifi=prefer_hifi,
             oauth_fallback=bool(settings.data.download_source_fallback),
         )
-    except Exception:
+    except (ObjectNotFound, TidalAPIError, MediaUnknown, requests.RequestException, AttributeError, KeyError, TypeError, ValueError, OSError):
         print(f"Media not found (ID: {url_clean_id}). Maybe it is not available anymore.")
         return False
 
@@ -1089,7 +1091,7 @@ def isrc_tag(
             # Read artist + title
             try:
                 audio = _mutagen.File(path_str, easy=True)
-            except Exception:
+            except (OSError, _mutagen.MutagenError, KeyError, TypeError, ValueError):
                 queue_record(path_str, status="error")
                 continue
 
@@ -1183,7 +1185,7 @@ def isrc_tag(
 
             audio.save()
             return True
-        except Exception:
+        except (OSError, mutagen.MutagenError, KeyError, TypeError, ValueError):
             return False
 
     progress = Progress(
@@ -1249,7 +1251,7 @@ def isrc_tag(
                             db.record(path_str, status="error", artist=artist, title=title)
                         errors += 1
 
-            except Exception:
+            except (TidalAPIError, ObjectNotFound, requests.RequestException, AttributeError, KeyError, TypeError, ValueError, OSError):
                 with db.write_transaction():
                     db.record(path_str, status="error", artist=artist, title=title)
                 errors += 1

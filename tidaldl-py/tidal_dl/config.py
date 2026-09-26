@@ -329,7 +329,7 @@ class Tidal(BaseConfig[ModelToken]):
                 is_token = self._try_login_with_key_rotation(quiet=True)
                 if is_token:
                     fn_print("OAuth session restored (available as fallback).")
-                    self._probe_subscription_quality()
+                    self.ensure_session_max_quality()
                 else:
                     fn_print("Not logged in. Run 'music-dl login' for OAuth fallback and favourites.")
                 return True
@@ -348,6 +348,7 @@ class Tidal(BaseConfig[ModelToken]):
         )
         if is_login:
             self.active_source = DownloadSource.OAUTH
+            self.ensure_session_max_quality()
         return is_login
 
     # ------------------------------------------------------------------
@@ -516,10 +517,12 @@ class Tidal(BaseConfig[ModelToken]):
         check = getattr(self.session, "check_login", None)
         if callable(check):
             try:
-                return bool(check())
+                loaded = bool(check())
             except Exception:
                 return False
-        return True
+        if loaded:
+            self.ensure_session_max_quality()
+        return loaded
 
     def login_finalize(self) -> bool:
         """Check and persist a newly-established login session.
@@ -674,7 +677,7 @@ class Tidal(BaseConfig[ModelToken]):
 
         if is_token:
             fn_print("Yep, looks good! You are logged in.")
-            self._probe_subscription_quality()
+            self.ensure_session_max_quality()
             return True
 
         if self.data.refresh_token or getattr(self.session, "refresh_token", None):
@@ -706,11 +709,22 @@ class Tidal(BaseConfig[ModelToken]):
 
         if is_login:
             fn_print("The login was successful. I have stored your credentials (token).")
-            self._probe_subscription_quality()
+            self.ensure_session_max_quality()
             return True
 
         fn_print("Something went wrong. Did you complete the browser login? You may try again.")
         return False
+
+    def ensure_session_max_quality(self) -> str | None:
+        """Probe this login's stream cap if it has not been measured yet.
+
+        Silent restore, token refresh, sidecar start, and CLI start all land
+        here so ``session_max_quality`` is set before the Hi-Res gate. Unprobed
+        stays fail-closed; that is what bit a Lossless-only Tidal Web login.
+        """
+        if getattr(self, "session_max_quality", None) is None:
+            self._probe_subscription_quality()
+        return getattr(self, "session_max_quality", None)
 
     def _probe_subscription_quality(self) -> None:
         """Report account vs this-login quality. Never change the setting.

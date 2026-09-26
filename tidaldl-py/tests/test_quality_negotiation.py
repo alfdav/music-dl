@@ -17,6 +17,7 @@ from tidalapi import Quality
 
 from tidal_dl.constants import HIFI_QUALITY_MAP, quality_name
 from tidal_dl.download.quality import (
+    delivered_quality_label,
     delivery_is_cd_lossless,
     delivery_is_hires,
     hifi_quality_param,
@@ -470,6 +471,12 @@ def _dead_hifi_subject():
     return subject, warnings
 
 
+def test_delivered_quality_label_uses_cd_when_hires_stamp_is_16_44100():
+    assert delivered_quality_label("HI_RES_LOSSLESS", 16, 44100) == "LOSSLESS"
+    assert delivered_quality_label("HI_RES_LOSSLESS", 24, 44100) == "HI_RES_LOSSLESS"
+    assert delivered_quality_label("LOSSLESS", 16, 44100) == "LOSSLESS"
+
+
 def test_session_can_deliver_hires_treats_blank_as_unknown():
     from tidal_dl.download.quality import session_can_deliver_hires
 
@@ -521,3 +528,62 @@ def test_unprobed_session_stays_fail_closed_when_flac_hires_and_hifi_down():
 
     with pytest.raises(QualityMismatchError, match="FLAC_HIRES"):
         subject._get_stream_info(_listed_hires_track(_oauth_cd_stream()))
+
+
+def test_restore_then_download_lazy_probes_capped_login():
+    """Unprobed after silent restore must probe before the strict gate."""
+    from tests.test_hires_flac_quality import _listed_hires_track, _oauth_cd_stream
+    from tidal_dl.constants import quality_name
+    from tidal_dl.download.quality import SESSION_HIRES_FALLBACK_NOTICE
+
+    subject, warnings = _dead_hifi_subject()
+    subject.tidal.session_max_quality = None
+
+    def _probe():
+        subject.tidal.session_max_quality = "LOSSLESS"
+
+    subject.tidal._probe_subscription_quality = _probe
+
+    manifest, extension, _extract, media_stream = subject._get_stream_info(
+        _listed_hires_track(_oauth_cd_stream())
+    )
+
+    assert extension == ".flac"
+    assert quality_name(media_stream.audio_quality).upper() == "LOSSLESS"
+    assert subject.tidal.session_max_quality == "LOSSLESS"
+    assert subject.last_delivered_quality == "LOSSLESS"
+    assert warnings == [SESSION_HIRES_FALLBACK_NOTICE]
+
+
+def test_hires_labeled_cd_delivery_records_lossless_not_hires():
+    """Tidal can stamp HI_RES_LOSSLESS on a 16/44.1 stream. Labels must be LOSSLESS."""
+    from tests.test_hires_flac_quality import _listed_hires_track
+    from tidalapi import Quality
+
+    subject, _warnings = _dead_hifi_subject()
+    subject.tidal.session_max_quality = "LOSSLESS"
+    stream = type(
+        "Stream",
+        (),
+        {
+            "audio_quality": Quality.hi_res_lossless,
+            "bit_depth": 16,
+            "sample_rate": 44100,
+            "get_stream_manifest": lambda self: type(
+                "Manifest",
+                (),
+                {
+                    "file_extension": ".flac",
+                    "codecs": "flac",
+                    "audio_quality": Quality.hi_res_lossless,
+                    "bit_depth": 16,
+                    "sample_rate": 44100,
+                    "get_urls": lambda _self: ["https://example.invalid/cd.flac"],
+                },
+            )(),
+        },
+    )()
+
+    subject._get_stream_info(_listed_hires_track(stream))
+
+    assert subject.last_delivered_quality == "LOSSLESS"

@@ -2,6 +2,22 @@
 
 ## 2026-09-27 — Overlay keycaps reused the settings-card fill
 
+## 2026-09-26 — Silent restore left session_max unset so the Hi-Res gate fail-closed
+
+**What happened:** Desktop restart and Hi-Fi-down used `allow_interactive_login=False`. That path restored the token and never called `_probe_subscription_quality`. `_accept_session_capped_cd` treats unprobed as strict. A Lossless-only Tidal Web login then raised `QualityMismatchError` after a working session.
+
+**Root cause:** Probe lived only on interactive `login()` and Hi-Fi-up restore. Treating unprobed as strict is correct only after a probe has run.
+
+**Prevention:** `ensure_session_max_quality()` on every session-establishing path. Lazy-probe in `_accept_session_capped_cd` before the gate. Tests: silent restore, restore-then-download, CLI start from an existing token.
+
+## 2026-09-26 — Capped CD was labeled Hi-Res because Tidal stamped HI_RES_LOSSLESS
+
+**What happened:** `_record_last_delivered_quality` stored raw `audio_quality`. A 16/44.1 stream labeled `HI_RES_LOSSLESS` is CD (`delivery_is_cd_lossless`) but jobs/history/complete events said Hi-Res.
+
+**Root cause:** Label was the vendor stamp, not the delivered signal.
+
+**Prevention:** `delivered_quality_label` uses bit-depth/rate. Record LOSSLESS for 16/44.1.
+
 ## 2026-09-26 — Collapsing `_` reminted dest and would re-download v1.7 libraries
 
 **What happened:** Empty optional CD segments became `_` from `67c8551` / first release `v1.7.0`. Collapsing that segment changed dest for every single-disc album to `Artist/Album/Track`. `skip_existing` checked only the new dest; `live_identity_paths` only looks in dest parent; `has_live_isrc` helps only if `library.db` already scanned the `_` file and ISRC skip is on.
