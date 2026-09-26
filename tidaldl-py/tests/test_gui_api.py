@@ -375,9 +375,10 @@ def test_static_js_shows_tidal_session_banner_only_for_expired_auth():
         "// Library views: check scan_paths"
     )[0]
 
-    assert "function _authStateNeedsExpiredBanner(authState) {\n  return authState === 'expired';\n}" in js
+    assert "authState === 'expired' || authState === 'needs_attention'" in js
     assert "if (_authStateNeedsExpiredBanner(auth.auth_state))" in banner_source
     assert "Tidal session expired." in banner_source
+    assert "Session needs attention." in banner_source
 
 
 def test_static_js_playlist_sync_updates_download_badge_and_sse():

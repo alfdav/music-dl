@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from tidal_dl import __version__
@@ -330,8 +330,14 @@ def _refresh_unavailable_error(exc: BaseException | None = None) -> HTTPExceptio
 
 
 def _raise_for_refresh_outcome(tidal: Tidal, outcome: str, exc: BaseException | None = None) -> None:
-    if outcome in (REFRESH_OK, REFRESH_SKIPPED):
+    if outcome == REFRESH_OK:
         return
+    if outcome == REFRESH_SKIPPED:
+        if _session_logged_in(getattr(tidal, "session", None)):
+            return
+        if _persisted_refresh_token(tidal):
+            return
+        raise _needs_attention_error(exc)
     if outcome == REFRESH_REJECTED or not _persisted_refresh_token(tidal):
         raise _needs_attention_error(exc)
     raise _refresh_unavailable_error(exc)
@@ -538,12 +544,13 @@ class AuthLoginRequest(BaseModel):
 @router.post("/auth/login")
 def auth_login(  # noqa: B008
     tidal: Tidal = Depends(get_tidal_instance),
-    payload: AuthLoginRequest = Body(default=AuthLoginRequest()),
+    payload: AuthLoginRequest | None = None,
     confirm: bool = False,
 ) -> dict:
     """Reuse a persisted refresh_token. Device-code starts only with confirm=true."""
     global _login_generation
-    confirmed = bool(confirm or (payload and payload.confirm))
+    body_confirm = payload.confirm if isinstance(payload, AuthLoginRequest) else False
+    confirmed = bool(confirm or body_confirm)
     with _login_lock:
         outcome = refresh_session(tidal, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC)
         if outcome == REFRESH_OK:

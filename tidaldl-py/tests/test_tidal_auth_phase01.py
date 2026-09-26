@@ -170,7 +170,6 @@ def test_single_flight_refresh_one_call_for_concurrent_threads(tmp_path):
         tidal.session.expiry_time = time.time() + 3600
         return True
 
-    tidal.session.token_refresh.side_effect = refresh if hasattr(tidal.session.token_refresh, "side_effect") else refresh
     tidal.session.token_refresh = refresh
     tidal.session.token_type = "Bearer"
     tidal.session.access_token = "stale"
@@ -250,7 +249,7 @@ def test_auth_login_confirm_starts_device_code():
                     user_code="ABCD",
                     expires_in=300,
                 ),
-                SimpleNamespace(result=lambda timeout=None: (_ for _ in ()).throw(TimeoutError())),
+                SimpleNamespace(result=lambda timeout=None: threading.Event().wait(60)),
             )
 
     class Tidal:
