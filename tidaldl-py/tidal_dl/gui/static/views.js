@@ -5377,6 +5377,7 @@ async function loadAuthStatus(container) {
     if (data.logged_in && !data.account_quality) {
       try { data = await api('/auth/account'); } catch (_) { /* keep cached status */ }
     }
+    _maybeToastSessionQualityNotice(data);
     while (container.firstChild) container.removeChild(container.firstChild);
     container.appendChild(textEl('div', 'Tidal Account', 'settings-section-header'));
     const row = h('div', { className: 'connection', style: { padding: '0 0 16px', gap: '12px' } });

@@ -84,6 +84,37 @@ QUALITY_STRING_TO_ENUM: dict[str, Quality] = {
 # Fleetwood Mac – "Dreams" is widely available and tagged HI_RES_LOSSLESS.
 QUALITY_PROBE_TRACK_ID: str = "59727857"
 
+# First-install Tidal Web OAuth often cannot fetch HI_RES_LOSSLESS even when the
+# account plan includes it. Tell the user once, then download LOSSLESS instead.
+SESSION_HIRES_FALLBACK_NOTICE: str = (
+    "This login can't get Hi-Res streams, so downloading Lossless instead. "
+    "A different Tidal login client (PKCE / Android-type) can unlock Hi-Res; "
+    "the Tidal Web client used at first install cannot. "
+    "Do not reset your token unless you choose to sign in again."
+)
+_HIRES_SESSION_MAX: frozenset[str] = frozenset({"HI_RES", "HI_RES_LOSSLESS"})
+
+
+def session_can_deliver_hires(session_max: Quality | str | None) -> bool | None:
+    """True/False when the login's observed max is known; None before a probe."""
+    if session_max is None or session_max == "":
+        return None
+    name = quality_name(session_max).upper()
+    if name in _HIRES_SESSION_MAX:
+        return True
+    if name in QUALITY_RANK or name in TIER_RANK:
+        return False
+    return None
+
+
+def remember_session_hires_fallback(tidal: object) -> bool:
+    """Record the per-session Hi-Res fallback notice. True on the first call."""
+    if getattr(tidal, "_hires_fallback_notice_emitted", False):
+        return False
+    tidal.session_quality_notice = SESSION_HIRES_FALLBACK_NOTICE
+    tidal._hires_fallback_notice_emitted = True
+    return True
+
 
 class QualityVideo(StrEnum):
     P360 = "360"

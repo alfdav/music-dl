@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-26 — Hi-Res setting plus Tidal Web login hard-failed every listed Hi-Res track
+
+**What happened:** First-install 1.7.11 (desktop and CLI) with `quality_audio=HI_RES_LOSSLESS` logged in on API key [0] (Tidal Web). Probe warned "subscription only delivers LOSSLESS. Keeping configured quality." Then every listed Hi-Res track raised `QualityMismatchError` (#148 fail-closed). Standard LOSSLESS tracks downloaded. The account plan was Hi-Res; the owner's other Mac session worked.
+
+**Root cause:** Session max is the login client, not `highestSoundQuality`. Tidal Web `playbackinfopostpaywall` returns CD LOSSLESS for Hi-Res catalog tags. The probe was advisory and did not store that cap, so `_prefer_listed_hires` treated it as a real mismatch.
+
+**Prevention:** Store observed `session_max_quality` in memory only. When it is below Hi-Res, download LOSSLESS, label history/tags as LOSSLESS, and show one notice. Keep the strict listed-Hi-Res gate only when the login is Hi-Res capable (or unprobed). Do not wipe `token.json` or auto-relogin. Do not treat account plan as session capability.
+
 ## 2026-09-18 — Module-on delete gate kept only Jev-actable extras
 
 **What happened:** After the group-chip checkbox fix, `resolve_delete_paths` kept only ≥0.95 layout_twin / true_dup. Posted engine-auto extras with no cache, missing scorer, or pair error were dropped. Enabling the module blocked ordinary Clean Up.

@@ -416,13 +416,22 @@ def _auth_status_payload(
     username: str,
     auth_state: str,
     account_quality: str | None = None,
+    tidal: Tidal | None = None,
 ) -> dict:
-    return {
+    payload = {
         "logged_in": logged_in,
         "username": username,
         "auth_state": auth_state,
         "account_quality": account_quality if logged_in else None,
     }
+    if logged_in and tidal is not None:
+        session_max = getattr(tidal, "session_max_quality", None)
+        notice = getattr(tidal, "session_quality_notice", None)
+        if session_max:
+            payload["session_max_quality"] = str(session_max).upper()
+        if notice:
+            payload["session_quality_notice"] = notice
+    return payload
 
 
 def _token_expiry(tidal: Tidal):
@@ -461,7 +470,9 @@ def _local_auth_status(tidal: Tidal) -> dict:
 
     user = getattr(tidal.session, "user", None)
     username = getattr(user, "name", "") or ""
-    return _auth_status_payload(True, username, "credentials_ready", _cached_account_quality(tidal))
+    return _auth_status_payload(
+        True, username, "credentials_ready", _cached_account_quality(tidal), tidal=tidal
+    )
 
 
 _login_lock = threading.Lock()
@@ -501,6 +512,9 @@ def _mark_already_logged_in(tidal: Tidal) -> dict:
     refresh_quality = getattr(tidal, "refresh_account_quality", None)
     if callable(refresh_quality):
         refresh_quality()
+    probe = getattr(tidal, "_probe_subscription_quality", None)
+    if callable(probe):
+        probe()
     _login_state["status"] = "success"
     return {"status": "already_logged_in"}
 

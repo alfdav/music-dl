@@ -511,6 +511,14 @@ function toast(message, type, durationMs) {
   setTimeout(() => { t.remove(); }, durationMs || (type === 'error' ? 5000 : 3000));
 }
 
+let _sessionQualityNoticeShown = '';
+function _maybeToastSessionQualityNotice(data) {
+  const notice = data && data.session_quality_notice;
+  if (!notice || notice === _sessionQualityNoticeShown) return;
+  _sessionQualityNoticeShown = notice;
+  toast(notice, 'info', 8000);
+}
+
 function toastSticky(contentEl) {
   if (!toastContainer) {
     toastContainer = h('div', { className: 'toast-container', role: 'status', 'aria-live': 'polite' });

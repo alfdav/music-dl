@@ -1,5 +1,10 @@
 """Download streams helpers."""
 
+from tidal_dl.constants import (
+    SESSION_HIRES_FALLBACK_NOTICE,
+    remember_session_hires_fallback,
+    session_can_deliver_hires,
+)
 from tidal_dl.download._common import *
 
 
@@ -116,6 +121,36 @@ class StreamMixin:
             return quality_audio
         return getattr(self.session, "audio_quality", None)
 
+    def _remember_delivered_quality(self, quality: Quality | str | None) -> None:
+        if not quality:
+            return
+        self.last_delivered_quality = quality_name(quality).upper()
+
+    def _remember_track_delivery(self, track_info: TrackStreamInfo | None) -> None:
+        if track_info is None:
+            return
+        stream = getattr(track_info, "media_stream", None)
+        manifest = getattr(track_info, "stream_manifest", None)
+        quality = getattr(stream, "audio_quality", None) or getattr(manifest, "audio_quality", None)
+        self._remember_delivered_quality(quality)
+
+    def _ensure_session_max_quality(self) -> None:
+        tidal = getattr(self, "tidal", None)
+        if tidal is None or getattr(tidal, "session_max_quality", None):
+            return
+        probe = getattr(tidal, "_probe_subscription_quality", None)
+        if callable(probe):
+            probe()
+
+    def _emit_session_hires_fallback_notice(self) -> None:
+        tidal = getattr(self, "tidal", None)
+        if tidal is None or not remember_session_hires_fallback(tidal):
+            return
+        logger = getattr(self, "fn_logger", None)
+        warning = getattr(logger, "warning", None)
+        if callable(warning):
+            warning(SESSION_HIRES_FALLBACK_NOTICE)
+
     def _bind_call_quality(
         self, quality_audio: Quality | None, quality_video: QualityVideo | None
     ) -> tuple[Quality | None, QualityVideo | None, bool, bool]:
@@ -176,6 +211,7 @@ class StreamMixin:
         self._pace_stream_api(pace_api)
         result = hifi_client.track_stream(media.id, quality_str)
         _require_exact_quality(requested, result.audio_quality, result.codecs)
+        self._remember_delivered_quality(result.audio_quality)
         file_extension, requires_flac_extraction = plan_flac_output(
             result.codecs, result.file_extension, self.settings.data.extract_flac
         )
@@ -242,6 +278,10 @@ class StreamMixin:
             return hifi_info
         requested_name = quality_name(requested).upper()
         delivered = quality_name(getattr(stream, "audio_quality", None)).upper() if getattr(stream, "audio_quality", None) else "LOSSLESS"
+        self._ensure_session_max_quality()
+        if session_can_deliver_hires(getattr(getattr(self, "tidal", None), "session_max_quality", None)) is False:
+            self._emit_session_hires_fallback_notice()
+            return None
         raise QualityMismatchError(
             f"Quality mismatch: requested {requested_name} for listed Hi-Res track "
             f"but received {delivered} and Hi-Fi has no Hi-Res stream."
@@ -284,6 +324,7 @@ class StreamMixin:
                     media, quality_audio=quality_audio, pace_api=pace_api
                 )
                 if track_info.stream_manifest is not None:
+                    self._remember_track_delivery(track_info)
                     return (
                         track_info.stream_manifest,
                         track_info.file_extension,
@@ -374,6 +415,7 @@ class StreamMixin:
                     )
                     if upgraded is not None:
                         track_info = upgraded
+                    self._remember_track_delivery(track_info)
                     return (
                         track_info.stream_manifest,
                         track_info.file_extension,

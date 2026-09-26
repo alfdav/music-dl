@@ -81,7 +81,7 @@ SETTINGS_HELP: dict[str, str] = {
     "quality_audio": (
         'Desired audio download quality: "LOW" (96kbps), "HIGH" (320kbps), '
         '"LOSSLESS" (16 Bit, 44,1 kHz), "HI_RES_LOSSLESS" (up to 24 Bit, 192 kHz). '
-        "Default: HI_RES_LOSSLESS. TIDAL auto-degrades based on your subscription tier."
+        "Default: HI_RES_LOSSLESS. Delivery is capped by this login's client, not only your plan. "
     ),
     "quality_video": 'Desired video download quality: "360", "480", "720", "1080"',
     "download_source": (

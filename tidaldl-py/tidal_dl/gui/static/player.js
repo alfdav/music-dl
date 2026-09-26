@@ -1825,6 +1825,7 @@ async function refreshStatusLights() {
       if (data.logged_in) {
         tidalEl.style.cursor = '';
         tidalEl.onclick = null;
+        _maybeToastSessionQualityNotice(data);
       } else {
         tidalEl.style.cursor = 'pointer';
         tidalEl.onclick = triggerLogin;

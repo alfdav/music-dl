@@ -623,6 +623,9 @@ class DownloadJobService:
                     quality_audio=settings.data.quality_audio,
                     download_delay=bool(getattr(settings.data, "download_delay", False)),
                 )
+                delivered = getattr(dl, "last_delivered_quality", None)
+                if delivered:
+                    quality = self._quality_value(delivered)
                 last_exc = None
                 break
             except requests.exceptions.HTTPError as http_exc:
@@ -707,7 +710,9 @@ class DownloadJobService:
             cover_url=cover_url,
             quality=quality,
         )
-        self._update_job(job, status=JobStatus.DONE.value, progress=100, finished_at=finished_at)
+        self._update_job(
+            job, status=JobStatus.DONE.value, progress=100, finished_at=finished_at, quality=quality
+        )
         self.events.broadcast(
             {
                 "type": "complete",

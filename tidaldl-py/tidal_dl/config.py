@@ -31,9 +31,12 @@ from tidal_dl.constants import (
     ATMOS_REQUEST_QUALITY,
     QUALITY_PROBE_TRACK_ID,
     QUALITY_RANK,
+    SESSION_HIRES_FALLBACK_NOTICE,
     SOURCE_RESOLVE_TIMEOUT_SEC,
     DownloadSource,
     quality_name,
+    remember_session_hires_fallback,
+    session_can_deliver_hires,
 )
 from tidal_dl.helper.cache import TTLCache
 from tidal_dl.helper.path import path_config_base, path_file_settings, path_file_token
@@ -256,9 +259,18 @@ class Tidal(BaseConfig[ModelToken]):
         self.active_source = DownloadSource.OAUTH
         self.hifi_client: HiFiApiClient | None = None
         self._active_key_index = 0
+        # Observed OAuth delivery cap for this login. Not persisted; never
+        # overwrites quality_audio or token.json. Tidal Web (key 0) is often
+        # LOSSLESS-only even when account_quality is HI_RES.
+        self.session_max_quality: str | None = None
+        self.session_quality_notice: str | None = None
+        self._hires_fallback_notice_emitted = False
         self.token_from_storage = self.read(self.file_path)
 
         # Apply the first valid API key from the managed key list.
+        # Proposed (do not implement here; overlaps Tidal auth v2): prefer a
+        # PKCE / Android-type client when the user wants HI_RES_LOSSLESS, and
+        # keep Tidal Web as the LOSSLESS-safe fallback. Never auto-relogin.
         self._apply_api_key(0)
 
         # Initialise the response cache (TTL applied after settings load).
@@ -527,6 +539,7 @@ class Tidal(BaseConfig[ModelToken]):
         if result:
             self.token_persist()
             self.refresh_account_quality()
+            self._probe_subscription_quality()
 
         return result
 
@@ -708,8 +721,11 @@ class Tidal(BaseConfig[ModelToken]):
         return False
 
     def _probe_subscription_quality(self) -> None:
-        """Report the account's observed quality without changing the selection."""
-        configured = Quality(self.settings.data.quality_audio)
+        """Report the login's observed quality without changing the selection."""
+        data = getattr(getattr(self, "settings", None), "data", None)
+        if data is None or getattr(data, "quality_audio", None) is None:
+            return
+        configured = Quality(data.quality_audio)
         configured_rank = QUALITY_RANK.get(quality_name(configured), 0)
 
         try:
@@ -744,17 +760,26 @@ class Tidal(BaseConfig[ModelToken]):
             )
             return
 
+        self.session_max_quality = delivered_str
+
         if delivered_rank >= configured_rank:
             _console.print(
                 f"[green]Audio quality check passed:[/green] "
-                f"account supports {delivered_str} (requested {configured_str})."
+                f"login delivers {delivered_str} (requested {configured_str})."
             )
+            return
+
+        # Account plan (highestSoundQuality) can still be Hi-Res. This warning
+        # is the login/client delivery cap — Tidal Web OAuth often stops at LOSSLESS.
+        if session_can_deliver_hires(configured) and session_can_deliver_hires(delivered) is False:
+            if remember_session_hires_fallback(self):
+                _console.print(f"[yellow]Warning:[/yellow] {SESSION_HIRES_FALLBACK_NOTICE}")
             return
 
         _console.print(
             f"[yellow]Warning:[/yellow] Requested quality [bold]{configured_str}[/bold] "
-            f"but your subscription only delivers [bold]{delivered_str}[/bold]. "
-            "Keeping configured quality."
+            f"but this login only delivers [bold]{delivered_str}[/bold]. "
+            "Downloading the delivered quality instead of changing your setting."
         )
 
     def logout(self) -> bool:
@@ -784,6 +809,9 @@ class Tidal(BaseConfig[ModelToken]):
             self.token_from_storage = False
             self.is_atmos_session = False
             self._active_key_index = 0
+            self.session_max_quality = None
+            self.session_quality_notice = None
+            self._hires_fallback_notice_emitted = False
             self.api_cache.clear()
             return True
 

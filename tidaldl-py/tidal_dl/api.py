@@ -12,6 +12,10 @@ import requests
 
 from tidal_dl.constants import REQUESTS_TIMEOUT_SEC
 
+# Key 0 (Tidal Web) is applied first at login. It reliably delivers LOSSLESS FLAC
+# (v1.7.4) but typically cannot return HI_RES_LOSSLESS. Hi-Res FLAC needs a PKCE /
+# Android-type client — proposed for Tidal auth v2, not switched here, and never
+# by wiping token.json or auto-relogin.
 __KEYS_JSON__: str = """
 {
     "version": "1.0.2",
