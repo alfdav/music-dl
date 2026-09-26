@@ -2247,3 +2247,30 @@ function loadArtistTileWithClicks(navigate) {
     () => Promise.resolve({ json: async () => ({}) }),
   )({ name: 'Tetrarch', play_count: 40, album_count: 2, track_count: 9 }, true);
 }
+
+function loadPlaylistPageHelpers() {
+  const start = viewsSource.indexOf('const PLAYLIST_PAGE_SIZE = 50;');
+  const end = viewsSource.indexOf('async function loadPlaylistTracks(');
+  if (start < 0 || end < start) throw new Error('playlist page helpers not found');
+  return new Function(
+    `${viewsSource.slice(start, end)}\nreturn { PLAYLIST_PAGE_SIZE, playlistTracksUrl, _playlistVirtualRange };`,
+  )();
+}
+
+describe('playlist first-page load', () => {
+  test('playlist URL requests a page, not the whole list', () => {
+    const helpers = loadPlaylistPageHelpers();
+    expect(helpers.PLAYLIST_PAGE_SIZE).toBe(50);
+    expect(helpers.playlistTracksUrl({ id: 'pl-1', last_updated: '2026-01-15T12:00:00+00:00', num_tracks: 500 }, 50, 0))
+      .toBe('/playlists/pl-1/tracks?limit=50&offset=0&last_updated=2026-01-15T12%3A00%3A00%2B00%3A00&total=500');
+  });
+
+  test('virtual range only paints a window of a long playlist', () => {
+    const helpers = loadPlaylistPageHelpers();
+    const range = helpers._playlistVirtualRange(660, 400, 500, 66, 2);
+    expect(range.start).toBe(8);
+    expect(range.end).toBeLessThan(500);
+    expect(range.height).toBe(500 * 66);
+    expect(range.top).toBe(8 * 66);
+  });
+});

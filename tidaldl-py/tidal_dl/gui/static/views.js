@@ -4477,6 +4477,91 @@ async function loadPlaylists(resultsArea) {
   }
 }
 
+const PLAYLIST_PAGE_SIZE = 50;
+const PLAYLIST_VIRTUAL_ROW_PX = 66;
+const PLAYLIST_VIRTUAL_THRESHOLD = 80;
+
+function playlistTracksUrl(pl, limit, offset) {
+  let url = '/playlists/' + encodeURIComponent(pl.id) + '/tracks?limit=' + limit + '&offset=' + offset;
+  if (pl.last_updated) url += '&last_updated=' + encodeURIComponent(pl.last_updated);
+  if (pl.num_tracks) url += '&total=' + encodeURIComponent(pl.num_tracks);
+  return url;
+}
+
+function renderPlaylistTrackSkeleton(container, count) {
+  const n = count || 8;
+  for (let i = 0; i < n; i++) {
+    container.appendChild(h('div', { className: 'skeleton-track', 'aria-hidden': 'true' },
+      h('div', { className: 'skeleton sk-num' }),
+      h('div', { className: 'skeleton sk-art' }),
+      h('div', { className: 'skeleton sk-meta' }),
+      h('div', { className: 'skeleton sk-album' }),
+      h('div', { className: 'skeleton sk-quality' }),
+      h('div', { className: 'skeleton sk-time' }),
+      h('div')
+    ));
+  }
+}
+
+function _playlistVirtualRange(scrollTop, viewHeight, total, rowPx, overscan) {
+  const row = rowPx || PLAYLIST_VIRTUAL_ROW_PX;
+  const extra = overscan == null ? 8 : overscan;
+  const start = Math.max(0, Math.floor((scrollTop || 0) / row) - extra);
+  const visible = Math.ceil((viewHeight || row * 12) / row) + extra * 2;
+  const end = Math.min(total, start + Math.max(visible, 1));
+  return { start: start, end: end, top: start * row, height: total * row };
+}
+
+function _playlistScrollParent(trackList) {
+  if (typeof document !== 'undefined' && document.querySelector) {
+    const main = document.querySelector('.main');
+    if (main) return main;
+  }
+  return trackList && trackList.parentElement;
+}
+
+function renderPlaylistRows(trackList, tracks, total) {
+  const count = total || tracks.length;
+  if (count <= PLAYLIST_VIRTUAL_THRESHOLD) {
+    trackList.classList.remove('tracks-virtual');
+    while (trackList.firstChild) trackList.removeChild(trackList.firstChild);
+    tracks.forEach((track, i) => trackList.appendChild(renderTrackRow(track, i + 1, tracks)));
+    return;
+  }
+  _paintPlaylistVirtual(trackList, tracks, count);
+}
+
+function _paintPlaylistVirtual(trackList, tracks, total) {
+  trackList.classList.add('tracks-virtual');
+  const parent = _playlistScrollParent(trackList);
+  const scrollTop = parent && parent !== trackList ? (parent.scrollTop || 0) : 0;
+  const viewHeight = parent && parent.clientHeight ? parent.clientHeight : 720;
+  const range = _playlistVirtualRange(scrollTop, viewHeight, total, PLAYLIST_VIRTUAL_ROW_PX, 8);
+  while (trackList.firstChild) trackList.removeChild(trackList.firstChild);
+  const spacer = h('div', { className: 'tracks-virtual-spacer' });
+  spacer.style.height = range.height + 'px';
+  const windowEl = h('div', { className: 'tracks-virtual-window' });
+  windowEl.style.top = range.top + 'px';
+  for (let i = range.start; i < range.end; i++) {
+    const track = tracks[i];
+    if (!track) {
+      windowEl.appendChild(h('div', { className: 'skeleton-track', 'aria-hidden': 'true' },
+        h('div', { className: 'skeleton sk-num' }),
+        h('div', { className: 'skeleton sk-art' }),
+        h('div', { className: 'skeleton sk-meta' }),
+        h('div', { className: 'skeleton sk-album' }),
+        h('div', { className: 'skeleton sk-quality' }),
+        h('div', { className: 'skeleton sk-time' }),
+        h('div')
+      ));
+      continue;
+    }
+    windowEl.appendChild(renderTrackRow(track, i + 1, tracks));
+  }
+  trackList.appendChild(spacer);
+  trackList.appendChild(windowEl);
+}
+
 async function loadPlaylistTracks(resultsArea, pl) {
   while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
   resultsArea.className = 'album-detail-view';
@@ -4545,68 +4630,100 @@ async function loadPlaylistTracks(resultsArea, pl) {
 
   const trackList = h('div', { className: 'tracks' });
   resultsArea.appendChild(trackList);
-  trackList.appendChild(h('div', { className: 'skeleton-row' }));
+  renderPlaylistTrackSkeleton(trackList, 8);
 
-  try {
-    const data = await api('/playlists/' + encodeURIComponent(pl.id) + '/tracks');
-    while (trackList.firstChild) trackList.removeChild(trackList.firstChild);
-    const tracks = data.tracks || [];
+  const loaded = [];
+  let actionsWired = false;
 
-    tracks.forEach((track, i) => {
-      trackList.appendChild(renderTrackRow(track, i + 1, tracks));
-    });
-
-    // Wire action buttons
-    if (tracks.length) {
+  const paintLoaded = (totalHint) => {
+    const total = totalHint || loaded.length;
+    renderPlaylistRows(trackList, loaded, total);
+    const countEl = plMeta.querySelector('.album-detail-sub');
+    if (countEl) countEl.textContent = total + ' tracks';
+    if (loaded.length) {
       playBtn.disabled = false;
       shuffleBtn.disabled = false;
-      playBtn.addEventListener('click', () => {
-        state.shuffle = false;
-        btnShuffle.classList.remove('active');
-        _setQueueOrder(tracks, tracks[0]);
-        playTrack(state.queue[state.queueIndex]);
-      });
-      shuffleBtn.addEventListener('click', () => {
-        state.shuffle = true;
-        btnShuffle.classList.add('active');
-        _setQueueOrder(tracks, tracks[0]);
-        playTrack(state.queue[state.queueIndex]);
-      });
     }
-
-    // Download Missing — hide if all tracks are local
-    const missingCount = tracks.filter(t => !t.is_local).length;
-    if (missingCount === 0) {
+    const missingCount = loaded.filter(t => !t.is_local).length;
+    const knownComplete = loaded.length >= total;
+    if (knownComplete && missingCount === 0) {
       dlBtn.style.display = 'none';
-    } else {
+    } else if (missingCount > 0) {
+      dlBtn.style.display = '';
       dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download ' + missingCount + ' Missing';
-      dlBtn.addEventListener('click', async () => {
-        dlBtn.textContent = 'Syncing...';
-        dlBtn.style.pointerEvents = 'none';
-        try {
-          const result = await api('/playlists/' + encodeURIComponent(pl.id) + '/sync', { method: 'POST' });
-          if (result.status === 'up_to_date') {
-            toast('All tracks are already local', 'success');
-            dlBtn.style.display = 'none';
-          } else {
-            toast('Downloading ' + result.missing + ' missing tracks', 'success');
-            refreshDlBadge();
-            _ensureGlobalSSE();
-            dlBtn.textContent = 'Queued';
-            dlBtn.disabled = true;
-          }
-        } catch (err) {
-          toast('Sync failed: ' + err.message, 'error');
-          dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download ' + missingCount + ' Missing';
-          dlBtn.style.pointerEvents = '';
+    }
+  };
+
+  const wireActions = () => {
+    if (actionsWired) return;
+    actionsWired = true;
+    playBtn.addEventListener('click', () => {
+      if (!loaded.length) return;
+      state.shuffle = false;
+      btnShuffle.classList.remove('active');
+      _setQueueOrder(loaded, loaded[0]);
+      playTrack(state.queue[state.queueIndex]);
+    });
+    shuffleBtn.addEventListener('click', () => {
+      if (!loaded.length) return;
+      state.shuffle = true;
+      btnShuffle.classList.add('active');
+      _setQueueOrder(loaded, loaded[0]);
+      playTrack(state.queue[state.queueIndex]);
+    });
+    dlBtn.addEventListener('click', async () => {
+      const missingCount = loaded.filter(t => !t.is_local).length;
+      dlBtn.textContent = 'Syncing...';
+      dlBtn.style.pointerEvents = 'none';
+      try {
+        const result = await api('/playlists/' + encodeURIComponent(pl.id) + '/sync', { method: 'POST' });
+        if (result.status === 'up_to_date') {
+          toast('All tracks are already local', 'success');
+          dlBtn.style.display = 'none';
+        } else {
+          toast('Downloading ' + result.missing + ' missing tracks', 'success');
+          refreshDlBadge();
+          _ensureGlobalSSE();
+          dlBtn.textContent = 'Queued';
+          dlBtn.disabled = true;
         }
-      });
+      } catch (err) {
+        toast('Sync failed: ' + err.message, 'error');
+        dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download ' + missingCount + ' Missing';
+        dlBtn.style.pointerEvents = '';
+      }
+    });
+  };
+
+  try {
+    const first = await api(playlistTracksUrl(pl, PLAYLIST_PAGE_SIZE, 0));
+    loaded.push.apply(loaded, first.tracks || []);
+    let total = first.total || pl.num_tracks || loaded.length;
+    paintLoaded(total);
+    wireActions();
+
+    const scrollParent = _playlistScrollParent(trackList);
+    const onScroll = () => {
+      if ((total || loaded.length) > PLAYLIST_VIRTUAL_THRESHOLD) {
+        _paintPlaylistVirtual(trackList, loaded, total || loaded.length);
+      }
+    };
+    if (scrollParent && scrollParent.addEventListener) {
+      scrollParent.addEventListener('scroll', onScroll, { passive: true });
     }
 
-    _scanPlaylistUpgrades(tracks, trackList, upgradeBtn, refreshUpgradeBtn);
+    let offset = (first.offset || 0) + loaded.length;
+    while (offset < total) {
+      const page = await api(playlistTracksUrl(pl, PLAYLIST_PAGE_SIZE, offset));
+      const rows = page.tracks || [];
+      if (!rows.length) break;
+      loaded.push.apply(loaded, rows);
+      if (page.total) total = page.total;
+      offset += rows.length;
+      paintLoaded(total);
+    }
 
-    // Update track count
-    plMeta.querySelector('.album-detail-sub').textContent = tracks.length + ' tracks';
+    _scanPlaylistUpgrades(loaded, trackList, upgradeBtn, refreshUpgradeBtn);
   } catch (err) {
     while (trackList.firstChild) trackList.removeChild(trackList.firstChild);
     trackList.appendChild(h('div', { className: 'empty-state' },

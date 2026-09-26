@@ -8,6 +8,14 @@
 
 **Prevention:** Final `qa` job always passes `--enforce`. Check steps still continue so evidence is complete. Write the bot pid file before publishing process state. `running=True` means the pid file exists. Settings field-count tests name the new fields, not a magic number alone. Lyrics detach tests lock the viewport listener. Player-bar invariance is the bun lyrics-sync contract: do not hide `#now-heart` / `#now-download` on `.lyrics-open`. LibraryDB probe ceilings must match GitHub-hosted 10k-probe cost (`visible_scanned_path_sql` + `fold_search`), not a quiet laptop. Do not skip or delete a failing test to go green.
 
+## 2026-09-26 — Playlist click waited for every track plus a full-library NAS stamp
+
+**What happened:** Clicking a playlist froze the UI for seconds. A mocked Tidal client (50-item pages, 200 ms/request, 15 ms NAS stats) measured 1.9s for 50 tracks and 3.4s for a 500-track playlist that then rendered only the first 50.
+
+**Root cause:** `GET /playlists/{id}/tracks` called `playlist.tracks()` with no limit (Tidal caps ~50–100), loaded `db.all_tracks()`, then `_serialize_track` + `_best_local_row` + `present_playable_path` per row (N+1 SQL and two filesystem stats each). The UI awaited that full payload behind an unstyled `skeleton-row`. Cache was TTL-only, no lastUpdated/ETag.
+
+**Prevention:** First page is `limit=50` catalog serialize + SQLite identity only. Remaining pages fetch with concurrency 2. Cache invalidates on last_updated/ETag. Local honesty/NAS stats stay on the unpaginated sync path. Paint `skeleton-track` rows immediately and virtualize lists over 80 tracks.
+
 ## 2026-09-18 — Module-on delete gate kept only Jev-actable extras
 
 **What happened:** After the group-chip checkbox fix, `resolve_delete_paths` kept only ≥0.95 layout_twin / true_dup. Posted engine-auto extras with no cache, missing scorer, or pair error were dropped. Enabling the module blocked ordinary Clean Up.

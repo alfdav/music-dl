@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from tidal_dl.config import Tidal
-from tidal_dl.gui.api.search import _serialize_track
 from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.local_identity import (
     candidate_rows_for_track,
@@ -21,13 +23,20 @@ from tidal_dl.helper.local_identity import (
 from tidal_dl.helper.path import path_config_base
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 _CACHE_TTL = 300  # 5 minutes
 _CACHE_MAX_PLAYLISTS = 50
+_PLAYLIST_PAGE_SIZE = 50
+_PLAYLIST_FETCH_CONCURRENCY = 2
+_PLAYLIST_PAGE_CAP = 50
 
 _playlist_list_cache: dict = {"data": None, "ts": 0.0}
-# playlist_id → {"data": dict, "ts": float}
+# playlist_id → {"ts", "last_updated", "etag", "total", "pages": {offset: [catalog]}, "source"}
 _playlist_tracks_cache: dict[str, dict] = {}
+_playlist_meta_cache: dict[str, dict] = {}
+_cache_lock = threading.Lock()
+_last_playlist_timings: dict[str, Any] = {}
 
 
 def get_tidal():
@@ -52,6 +61,17 @@ def _normalize(value: str | None) -> str:
     return (value or "").strip().casefold()
 
 
+def _normalize_updated(value: Any) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:  # noqa: BLE001
+            return str(value)
+    return str(value)
+
+
 def _title_artist_key(title: str | None, artist: str | None) -> tuple[str, str] | None:
     left = _normalize(title)
     right = _normalize(artist)
@@ -60,20 +80,10 @@ def _title_artist_key(title: str | None, artist: str | None) -> tuple[str, str] 
     return left, right
 
 
-def _build_title_artist_index(all_tracks: list[dict]) -> dict[tuple[str, str], list[dict]]:
-    index: dict[tuple[str, str], list[dict]] = {}
-    for row in all_tracks:
-        key = _title_artist_key(row.get("title"), row.get("artist"))
-        if key is None:
-            continue
-        index.setdefault(key, []).append(row)
-    return index
-
-
 def _best_local_row(
     track_data: dict,
     db: LibraryDB,
-    all_tracks: list[dict],
+    all_tracks: list[dict] | None = None,
     fallback_index: dict[tuple[str, str], list[dict]] | None = None,
 ) -> dict | None:
     candidates = candidate_rows_for_track(db, track_data)
@@ -86,70 +96,412 @@ def _best_local_row(
     return match_local_row(track_data, candidates)
 
 
+def _catalog_quality(track: Any) -> str:
+    tags = getattr(track, "media_metadata_tags", None) or []
+    if "HIRES_LOSSLESS" in tags:
+        return "HI_RES_LOSSLESS"
+    if "HIRES" in tags:
+        return "HI_RES"
+    if "DOLBY_ATMOS" in tags:
+        return "DOLBY_ATMOS"
+    return getattr(track, "audio_quality", "") or ""
 
-def _serialize_playlist_tracks(session, playlist_id: str) -> list[dict]:
+
+def _serialize_catalog_track(track: Any) -> dict:
+    """Catalog fields only — no library DB, no filesystem, no extra Tidal calls."""
+    artists = getattr(track, "artists", None) or []
+    artist_name = ", ".join(a.name for a in artists if getattr(a, "name", None))
+    album = getattr(track, "album", None)
+    album_name = getattr(album, "name", "") if album else ""
+    album_id = getattr(album, "id", None) if album else None
+    cover_url = ""
+    if album is not None:
+        image = getattr(album, "image", None)
+        if callable(image):
+            try:
+                cover_url = image(320) or ""
+            except Exception:  # noqa: BLE001
+                cover_url = ""
+    artist_id = getattr(artists[0], "id", None) if artists else None
+    return {
+        "id": getattr(track, "id", None),
+        "name": getattr(track, "full_name", None) or getattr(track, "name", "") or "",
+        "artist": artist_name,
+        "album": album_name,
+        "album_id": album_id,
+        "artist_id": artist_id,
+        "cover_url": cover_url,
+        "duration": getattr(track, "duration", 0) or 0,
+        "quality": _catalog_quality(track),
+        "isrc": getattr(track, "isrc", "") or "",
+        "is_local": False,
+    }
+
+
+def _call_tracks(playlist: Any, *, limit: int, offset: int) -> list:
+    getter = getattr(playlist, "tracks", None)
+    if not callable(getter):
+        return []
+    try:
+        return list(getter(limit=limit, offset=offset) or [])
+    except TypeError:
+        raw = list(getter() or [])
+        return raw[offset : offset + limit]
+
+
+def _stamp_sql_only(tracks: list[dict], db: Any) -> list[dict]:
+    """Identity match from SQLite only. No NAS/stat. First-page safe."""
+    stamped: list[dict] = []
+    for data in tracks:
+        row = dict(data)
+        local_row = _best_local_row(row, db)
+        row["is_local"] = bool(local_row)
+        row.pop("playable", None)
+        stamped.append(finish_stamp(row))
+    return stamped
+
+
+def _stamp_honest(tracks: list[dict], db: Any) -> list[dict]:
+    """Playability-honest stamp for sync / unpaginated reads."""
+    from tidal_dl.helper.library_reconcile import present_playable_path
+
+    stamped: list[dict] = []
+    for data in tracks:
+        row = dict(data)
+        row["is_local"] = False
+        row.pop("playable", None)
+        row.pop("local_path", None)
+        row.pop("path", None)
+        local_row = _best_local_row(row, db)
+        if local_row:
+            served, ok = present_playable_path(indexed_path_for_row(local_row), db)
+            if ok and served:
+                local_row = {**local_row, "path": served}
+            else:
+                local_row = None
+        stamped.append(finish_stamp(stamp_track(row, local_row)))
+    return stamped
+
+
+def _flatten_pages(pages: dict[int, list[dict]], total: int) -> list[dict]:
+    ordered: list[dict] = []
+    for offset in sorted(pages):
+        ordered.extend(pages[offset])
+    if total and len(ordered) > total:
+        return ordered[:total]
+    return ordered
+
+
+def _cache_valid(entry: dict | None, last_updated: str | None, etag: str | None) -> bool:
+    if not entry:
+        return False
+    if time.time() - float(entry.get("ts") or 0) > _CACHE_TTL:
+        return False
+    wanted = _normalize_updated(last_updated)
+    stored = _normalize_updated(entry.get("last_updated"))
+    if wanted and stored and wanted != stored:
+        return False
+    if etag and entry.get("etag") and etag != entry.get("etag"):
+        return False
+    return True
+
+
+def _evict_cache() -> None:
+    if len(_playlist_tracks_cache) <= _CACHE_MAX_PLAYLISTS:
+        return
+    try:
+        oldest_id = min(_playlist_tracks_cache, key=lambda k: _playlist_tracks_cache[k]["ts"])
+        del _playlist_tracks_cache[oldest_id]
+        _playlist_meta_cache.pop(oldest_id, None)
+    except KeyError:
+        pass
+
+
+def _store_cache(playlist_id: str, entry: dict) -> None:
+    with _cache_lock:
+        _playlist_tracks_cache[playlist_id] = entry
+        _evict_cache()
+
+
+def _mark(name: str, started: float) -> float:
+    ms = (time.perf_counter() - started) * 1000
+    _last_playlist_timings[name] = round(ms, 1)
+    return ms
+
+
+def _load_playlist_object(session, playlist_id: str, entry: dict | None):
+    if entry and entry.get("source") is not None:
+        return entry["source"]
     from tidal_dl.gui.api.settings import _is_tidal_unauthorized
 
+    t0 = time.perf_counter()
     try:
         playlist = session.playlist(playlist_id)
-        tracks = playlist.tracks() or []
     except HTTPException:
         raise
     except Exception as exc:
         if _is_tidal_unauthorized(exc):
             raise
         raise HTTPException(status_code=404, detail=f"Playlist not found: {exc}") from exc
+    _mark("tidal_meta_ms", t0)
+    return playlist
 
 
+def _missing_offsets(entry: dict, total: int, page_size: int) -> list[int]:
+    pages = entry.get("pages") or {}
+    return [offset for offset in range(0, max(total, 0), page_size) if offset not in pages]
+
+
+def _fetch_pages(playlist: Any, offsets: list[int], page_size: int) -> dict[int, list[dict]]:
+    fetched: dict[int, list[dict]] = {}
+    if not offsets:
+        return fetched
+
+    def _one(offset: int) -> tuple[int, list[dict]]:
+        t0 = time.perf_counter()
+        raw = _call_tracks(playlist, limit=page_size, offset=offset)
+        log.info(
+            "playlist_load stage=tidal_page offset=%s count=%s ms=%.1f",
+            offset,
+            len(raw),
+            (time.perf_counter() - t0) * 1000,
+        )
+        return offset, [_serialize_catalog_track(track) for track in raw]
+
+    if len(offsets) == 1:
+        offset, rows = _one(offsets[0])
+        fetched[offset] = rows
+        return fetched
+
+    workers = min(_PLAYLIST_FETCH_CONCURRENCY, len(offsets))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for offset, rows in pool.map(_one, offsets):
+            fetched[offset] = rows
+    return fetched
+
+
+def _ensure_pages(
+    session,
+    playlist_id: str,
+    *,
+    needed: list[int],
+    last_updated: str | None,
+    total_hint: int | None,
+    page_size: int,
+) -> dict:
+    t_all = time.perf_counter()
+    _last_playlist_timings.clear()
+    _last_playlist_timings["playlist_id"] = playlist_id
+
+    with _cache_lock:
+        entry = _playlist_tracks_cache.get(playlist_id)
+
+    if entry and not _cache_valid(entry, last_updated, None):
+        entry = None
+        with _cache_lock:
+            _playlist_tracks_cache.pop(playlist_id, None)
+
+    if entry is None:
+        entry = {
+            "ts": time.time(),
+            "last_updated": _normalize_updated(last_updated),
+            "etag": None,
+            "total": int(total_hint or 0),
+            "pages": {},
+            "source": None,
+        }
+
+    pages = entry.setdefault("pages", {})
+    missing = [offset for offset in needed if offset not in pages]
+    playlist = entry.get("source")
+    if missing or not entry.get("total"):
+        if playlist is None:
+            playlist = _load_playlist_object(session, playlist_id, entry)
+            entry["source"] = playlist
+            meta_updated = _normalize_updated(getattr(playlist, "last_updated", None))
+            if meta_updated:
+                if entry.get("last_updated") and meta_updated != entry["last_updated"]:
+                    pages.clear()
+                    missing = list(needed)
+                entry["last_updated"] = meta_updated
+            entry["etag"] = getattr(playlist, "_etag", None) or entry.get("etag")
+            num = getattr(playlist, "num_tracks", 0) or 0
+            if num:
+                entry["total"] = int(num)
+            elif total_hint:
+                entry["total"] = int(total_hint)
+        if missing:
+            t_fetch = time.perf_counter()
+            fetched = _fetch_pages(playlist, missing, page_size)
+            _mark("tidal_pages_ms", t_fetch)
+            pages.update(fetched)
+            if not entry.get("total"):
+                got = len(fetched.get(missing[0], [])) if missing else 0
+                entry["total"] = missing[0] + got
+                if got >= page_size:
+                    entry["total"] = missing[0] + got + 1
+    if total_hint and int(total_hint) > int(entry.get("total") or 0):
+        entry["total"] = int(total_hint)
+
+    entry["ts"] = time.time()
+    _store_cache(playlist_id, entry)
+    _mark("ensure_pages_ms", t_all)
+    _last_playlist_timings["tidal_page_count"] = len(needed)
+    return entry
+
+
+def _playlist_page_payload(
+    session,
+    playlist_id: str,
+    *,
+    limit: int,
+    offset: int,
+    last_updated: str | None,
+    total_hint: int | None,
+    honest: bool,
+) -> dict:
+    page_size = min(max(limit, 1), _PLAYLIST_PAGE_CAP)
+    aligned = offset - (offset % page_size)
+    t0 = time.perf_counter()
+    entry = _ensure_pages(
+        session,
+        playlist_id,
+        needed=[aligned],
+        last_updated=last_updated,
+        total_hint=total_hint,
+        page_size=page_size,
+    )
+    catalog = list((entry.get("pages") or {}).get(aligned) or [])
+    # Requested offset may sit inside a cached page.
+    slice_start = max(0, offset - aligned)
+    page = catalog[slice_start : slice_start + limit]
+    total = int(entry.get("total") or (offset + len(page)))
+    t_stamp = time.perf_counter()
     db = _get_playlist_db()
     try:
-        from tidal_dl.helper.library_reconcile import present_playable_path
-
-        all_tracks = db.all_tracks()
-        fallback_index = _build_title_artist_index(all_tracks)
-        serialized = []
-        for track in tracks:
-            data = _serialize_track(track)
-            local_row = _best_local_row(data, db, all_tracks, fallback_index=fallback_index)
-            data["is_local"] = False
-            data.pop("playable", None)
-            data.pop("local_path", None)
-            data.pop("path", None)
-            if local_row:
-                served, ok = present_playable_path(indexed_path_for_row(local_row), db)
-                if ok and served:
-                    local_row = {**local_row, "path": served}
-                else:
-                    local_row = None
-            finish_stamp(stamp_track(data, local_row))
-            serialized.append(data)
+        tracks = _stamp_honest(page, db) if honest else _stamp_sql_only(page, db)
     finally:
         db.close()
+    _mark("stamp_ms", t_stamp)
+    _mark("total_ms", t0)
+    log.info(
+        "playlist_load id=%s limit=%s offset=%s returned=%s total=%s timings=%s",
+        playlist_id,
+        limit,
+        offset,
+        len(tracks),
+        total,
+        _last_playlist_timings,
+    )
+    return {
+        "tracks": tracks,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(tracks) < total,
+        "last_updated": entry.get("last_updated") or None,
+        "etag": entry.get("etag"),
+    }
 
-    return serialized
 
+def _playlist_full_payload(
+    session,
+    playlist_id: str,
+    *,
+    last_updated: str | None,
+    total_hint: int | None,
+    honest: bool,
+) -> dict:
+    t0 = time.perf_counter()
+    entry = _ensure_pages(
+        session,
+        playlist_id,
+        needed=[0],
+        last_updated=last_updated,
+        total_hint=total_hint,
+        page_size=_PLAYLIST_PAGE_SIZE,
+    )
+    total = int(entry.get("total") or 0)
+    if total <= 0:
+        first = (entry.get("pages") or {}).get(0) or []
+        total = len(first)
+        if len(first) >= _PLAYLIST_PAGE_SIZE:
+            playlist = _load_playlist_object(session, playlist_id, entry)
+            entry["source"] = playlist
+            num = getattr(playlist, "num_tracks", 0) or 0
+            if num:
+                total = int(num)
+                entry["total"] = total
+    missing = _missing_offsets(entry, total or 0, _PLAYLIST_PAGE_SIZE)
+    if missing:
+        playlist = _load_playlist_object(session, playlist_id, entry)
+        entry["source"] = playlist
+        if not total:
+            total = int(getattr(playlist, "num_tracks", 0) or 0)
+            entry["total"] = total
+            missing = _missing_offsets(entry, total, _PLAYLIST_PAGE_SIZE)
+        t_rest = time.perf_counter()
+        fetched = _fetch_pages(playlist, missing, _PLAYLIST_PAGE_SIZE)
+        _mark("tidal_remaining_ms", t_rest)
+        entry.setdefault("pages", {}).update(fetched)
+        # If Tidal reported a low num_tracks, keep walking while pages stay full.
+        while True:
+            pages = entry["pages"]
+            ordered = _flatten_pages(pages, 0)
+            last_off = max(pages) if pages else 0
+            last_len = len(pages.get(last_off) or [])
+            if last_len < _PLAYLIST_PAGE_SIZE:
+                total = len(ordered)
+                break
+            next_off = last_off + _PLAYLIST_PAGE_SIZE
+            if next_off in pages:
+                if total and next_off >= total:
+                    break
+                continue
+            more = _fetch_pages(playlist, [next_off], _PLAYLIST_PAGE_SIZE)
+            if not more.get(next_off):
+                total = len(ordered)
+                break
+            pages.update(more)
+            if total and next_off + _PLAYLIST_PAGE_SIZE >= total:
+                break
+        entry["total"] = total or len(_flatten_pages(entry["pages"], 0))
+        entry["ts"] = time.time()
+        _store_cache(playlist_id, entry)
+
+    catalog = _flatten_pages(entry.get("pages") or {}, int(entry.get("total") or 0))
+    t_stamp = time.perf_counter()
+    db = _get_playlist_db()
+    try:
+        tracks = _stamp_honest(catalog, db) if honest else _stamp_sql_only(catalog, db)
+    finally:
+        db.close()
+    _mark("stamp_ms", t_stamp)
+    _mark("total_ms", t0)
+    log.info(
+        "playlist_load id=%s full returned=%s timings=%s",
+        playlist_id,
+        len(tracks),
+        _last_playlist_timings,
+    )
+    return {
+        "tracks": tracks,
+        "total": len(tracks),
+        "last_updated": entry.get("last_updated") or None,
+        "etag": entry.get("etag"),
+    }
+
+
+def _serialize_playlist_tracks(session, playlist_id: str) -> list[dict]:
+    return _playlist_full_payload(
+        session, playlist_id, last_updated=None, total_hint=None, honest=True,
+    )["tracks"]
 
 
 def _playlist_tracks_data(session, playlist_id: str) -> dict:
-    now = time.time()
-    cached = _playlist_tracks_cache.get(playlist_id)
-    if cached is not None and (now - cached["ts"]) < _CACHE_TTL:
-        return cached["data"]
-
-    tracks = _serialize_playlist_tracks(session, playlist_id)
-    result = {
-        "tracks": tracks,
-        "total": len(tracks),
-    }
-    _playlist_tracks_cache[playlist_id] = {"data": result, "ts": now}
-    # Evict oldest entries when cache exceeds max size
-    if len(_playlist_tracks_cache) > _CACHE_MAX_PLAYLISTS:
-        try:
-            oldest_id = min(_playlist_tracks_cache, key=lambda k: _playlist_tracks_cache[k]["ts"])
-            del _playlist_tracks_cache[oldest_id]
-        except KeyError:
-            pass
-    return result
+    return _playlist_full_payload(
+        session, playlist_id, last_updated=None, total_hint=None, honest=True,
+    )
 
 
 @router.get("/playlists")
@@ -201,12 +553,45 @@ def list_playlists() -> dict:
 
 
 @router.get("/playlists/{playlist_id}/tracks")
-def playlist_tracks(playlist_id: str) -> dict:
-    """Get tracks for a specific playlist with local-match flags."""
+def playlist_tracks(
+    playlist_id: str,
+    limit: int | None = Query(default=None, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    last_updated: str | None = Query(default=None),
+    total: int | None = Query(default=None, ge=0),
+) -> dict:
+    """Get tracks for a specific playlist.
+
+    Paginated reads (limit set) return the first rows quickly: one Tidal page,
+    SQLite identity only, no NAS stats. Unpaginated reads (sync / compat)
+    fetch remaining pages with a small concurrency limit and honesty-stamp.
+    """
     from tidal_dl.gui.api.settings import call_tidal
 
     tidal = get_tidal()
-    return call_tidal(tidal, lambda: _playlist_tracks_data(tidal.session, playlist_id))
+    if limit is not None:
+        return call_tidal(
+            tidal,
+            lambda: _playlist_page_payload(
+                tidal.session,
+                playlist_id,
+                limit=limit,
+                offset=offset,
+                last_updated=last_updated,
+                total_hint=total,
+                honest=False,
+            ),
+        )
+    return call_tidal(
+        tidal,
+        lambda: _playlist_full_payload(
+            tidal.session,
+            playlist_id,
+            last_updated=last_updated,
+            total_hint=total,
+            honest=True,
+        ),
+    )
 
 
 def _enqueue_playlist_downloads(track_ids: list[int], request: Request | None) -> dict:
@@ -228,7 +613,9 @@ def sync_playlist(playlist_id: str, request: Request = None) -> dict:
     total = len(tracks_data)
 
     # Invalidate tracks cache — after sync, local state changes so next load re-fetches.
-    _playlist_tracks_cache.pop(playlist_id, None)
+    with _cache_lock:
+        _playlist_tracks_cache.pop(playlist_id, None)
+        _playlist_meta_cache.pop(playlist_id, None)
 
     if not missing_ids:
         return {"status": "up_to_date", "missing": 0, "total": total}
