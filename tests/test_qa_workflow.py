@@ -118,7 +118,8 @@ def test_qa_workflow_has_safe_triggers_and_permissions():
     assert "pull_request:" in text
     assert "branches: [master]" in text
     assert "types: [opened, synchronize, reopened, labeled]" in text
-    assert not re.search(r"^\s{2}push:\s*$", text, re.MULTILINE)
+    assert re.search(r"^\s{2}push:\s*$", text, re.MULTILINE)
+    assert "push:\n    branches: [master]" in text
     assert "permissions:\n  contents: read\n  pull-requests: read" in text
 
 
@@ -418,7 +419,7 @@ def test_affected_build_has_explicit_path_rules_and_commands():
     assert "affected_build=not_applicable" in block
 
 
-def test_final_qa_always_aggregates_all_evidence_in_advisory_mode():
+def test_final_qa_always_aggregates_all_evidence_in_enforcing_mode():
     block = job_block(workflow_text(), "qa")
     assert "if: always()" in block
     assert (
@@ -427,7 +428,7 @@ def test_final_qa_always_aggregates_all_evidence_in_advisory_mode():
     )
     assert "scripts/qa_score.py" in block
     assert "GITHUB_STEP_SUMMARY" in block
-    assert "--enforce" not in block
+    assert "--enforce" in block
     for name in (
         "python_smoke",
         "bun_tests",
@@ -468,7 +469,7 @@ def test_final_qa_always_aggregates_all_evidence_in_advisory_mode():
 
 def test_final_scorer_fails_closed_and_live_latency_is_summary_only():
     block = job_block(workflow_text(), "qa")
-    scorer = step_block(block, "Write advisory QA score")
+    scorer = step_block(block, "Write enforcing QA score")
     summary = step_block(block, "Append live latency summary")
     assert "if: always()" in summary
     assert block.index(scorer) < block.index(summary)
@@ -483,5 +484,5 @@ def test_final_scorer_fails_closed_and_live_latency_is_summary_only():
 
 
 def test_final_scorer_does_not_hide_infrastructure_failures():
-    scorer = step_block(job_block(workflow_text(), "qa"), "Write advisory QA score")
+    scorer = step_block(job_block(workflow_text(), "qa"), "Write enforcing QA score")
     assert "continue-on-error" not in scorer

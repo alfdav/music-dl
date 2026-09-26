@@ -4,6 +4,8 @@ on:
   pull_request:
     branches: [master]
     types: [opened, synchronize, reopened, labeled]
+  push:
+    branches: [master]
 
 permissions:
   contents: read
@@ -66,8 +68,13 @@ jobs:
           set -euo pipefail
           uv run --project tidaldl-py ruff check --no-fix --select E9,F63,F7,F82 \
             tidaldl-py/tidal_dl tidaldl-py/tests scripts tests
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            range="origin/${{ github.base_ref }}...HEAD"
+          else
+            range="${{ github.event.before }}...${{ github.sha }}"
+          fi
           git diff --name-only --diff-filter=ACMR -z \
-            "origin/${{ github.base_ref }}...HEAD" -- '*.py' \
+            "$range" -- '*.py' \
             > "$RUNNER_TEMP/changed-python.txt"
           mapfile -d '' -t changed_python < "$RUNNER_TEMP/changed-python.txt"
           if (( ${#changed_python[@]} )); then
@@ -208,7 +215,12 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          git diff --check "origin/${{ github.base_ref }}...HEAD"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            range="origin/${{ github.base_ref }}...HEAD"
+          else
+            range="${{ github.event.before }}...${{ github.sha }}"
+          fi
+          git diff --check "$range"
           if git ls-files | grep -Eq '(^|/)(__pycache__|\.pytest_cache|dist|target|output)(/|$)'; then
             echo "Tracked generated files found"
             exit 1
@@ -327,12 +339,22 @@ jobs:
       - name: Scan explicit PR range with Gitleaks
         id: gitleaks_range
         continue-on-error: true
-        run: >-
-          gitleaks detect --redact --exit-code=2
-          --log-opts="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            gitleaks detect --redact --exit-code=2 \
+              --log-opts="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          else
+            range="${{ github.event.before }}..${{ github.sha }}"
+            if [[ "$range" == 0000000000000000000000000000000000000000* ]]; then
+              exit 0
+            fi
+            gitleaks detect --redact --exit-code=2 --log-opts="$range"
+          fi
 
       - name: Review dependency changes
         id: dependency_review
+        if: github.event_name == 'pull_request'
         uses: actions/dependency-review-action@v4
         continue-on-error: true
         with:
@@ -351,7 +373,11 @@ jobs:
           elif [[ "$GITLEAKS_ACTION_OUTCOME" == success && "$GITLEAKS_RANGE_OUTCOME" == success ]]; then
             echo "gitleaks=success" >> "$GITHUB_OUTPUT"
           fi
-          echo "dependency_review=${{ steps.dependency_review.outcome }}" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "dependency_review=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "dependency_review=${{ steps.dependency_review.outcome }}" >> "$GITHUB_OUTPUT"
+          fi
           echo "duration=$(($(date +%s) - START_EPOCH))" >> "$GITHUB_OUTPUT"
 
   affected_build:
@@ -377,7 +403,12 @@ jobs:
           rust=false
           docker=false
           tauri_package=false
-          git diff --name-only -z "origin/${{ github.base_ref }}...HEAD" \
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            range="origin/${{ github.base_ref }}...HEAD"
+          else
+            range="${{ github.event.before }}...${{ github.sha }}"
+          fi
+          git diff --name-only -z "$range" \
             > "$RUNNER_TEMP/changed-paths.txt"
           mapfile -d '' -t changed_paths < "$RUNNER_TEMP/changed-paths.txt"
           for path in "${changed_paths[@]}"; do
@@ -594,7 +625,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Write advisory QA score
+      - name: Write enforcing QA score
         env:
           PYTHON_SMOKE: ${{ needs.python.outputs.python_smoke }}
           RUFF: ${{ needs.python.outputs.ruff }}
@@ -673,7 +704,8 @@ jobs:
             "${args[@]}" \
             --live-status "$live_status" \
             --summary "$GITHUB_STEP_SUMMARY" \
-            --output "$RUNNER_TEMP/qa-score.json"
+            --output "$RUNNER_TEMP/qa-score.json" \
+            --enforce
 
       - name: Append live latency summary
         if: always()
