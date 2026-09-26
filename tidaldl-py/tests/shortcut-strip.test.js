@@ -158,6 +158,7 @@ describe('shortcut keycaps', () => {
     const queue = helpers._shortcutKeycaps(['Mod', 'Shift', 'Q'], 'mac');
     expect(queue.map(cap => cap.glyph)).toEqual(['\u2318', '\u21E7', 'Q']);
     expect(queue.map(cap => cap.ariaLabel).join(' ')).toBe('Command Shift Q');
+    expect(queue.map(cap => cap.symbol)).toEqual([true, true, false]);
     expect(JSON.stringify(queue)).not.toContain('Cmd/Ctrl');
     expect(JSON.stringify(queue)).not.toContain('Ctrl');
   });
@@ -167,6 +168,7 @@ describe('shortcut keycaps', () => {
       const queue = helpers._shortcutKeycaps(['Mod', 'Shift', 'Q'], platform);
       expect(queue.map(cap => cap.glyph)).toEqual(['Ctrl', 'Shift', 'Q']);
       expect(queue.map(cap => cap.ariaLabel).join(' ')).toBe('Control Shift Q');
+      expect(queue.every(cap => cap.symbol === false)).toBe(true);
       expect(JSON.stringify(queue)).not.toContain('Cmd/Ctrl');
       expect(JSON.stringify(queue)).not.toContain('\u2318');
     }
@@ -175,13 +177,13 @@ describe('shortcut keycaps', () => {
   test('arrows and Space stay compact on every platform', () => {
     for (const platform of ['mac', 'win', 'linux']) {
       expect(helpers._shortcutKeycaps(['Space'], platform)).toEqual([
-        { glyph: 'Space', ariaLabel: 'Space' },
+        { glyph: 'Space', ariaLabel: 'Space', symbol: false },
       ]);
       expect(helpers._shortcutKeycaps(['ArrowLeft'], platform)).toEqual([
-        { glyph: '\u2190', ariaLabel: 'Left arrow' },
+        { glyph: '\u2190', ariaLabel: 'Left arrow', symbol: true },
       ]);
       expect(helpers._shortcutKeycaps(['ArrowRight'], platform)).toEqual([
-        { glyph: '\u2192', ariaLabel: 'Right arrow' },
+        { glyph: '\u2192', ariaLabel: 'Right arrow', symbol: true },
       ]);
     }
   });
@@ -210,6 +212,11 @@ describe('shortcut keycaps', () => {
     const queue = rowByLabel(strip, 'Queue');
     expect(keycapsOf(queue).map(cap => cap.glyph)).toEqual(['\u2318', '\u21E7', 'Q']);
     expect(keycapsOf(queue).map(cap => cap.aria).join(' ')).toBe('Command Shift Q');
+    expect(keycapsOf(queue).map(cap => cap.className)).toEqual([
+      'shortcut-keycap shortcut-keycap-symbol',
+      'shortcut-keycap shortcut-keycap-symbol',
+      'shortcut-keycap',
+    ]);
   });
 
   test('Windows strip renders Control Shift Q without overflowing labels', () => {
@@ -226,18 +233,27 @@ describe('shortcut display source', () => {
   test('GUI JS never shows Cmd/Ctrl and keeps shortcut behavior', () => {
     const js = apiSource + viewsSource + playerSource;
     expect(js).not.toContain('Cmd/Ctrl');
+    expect(js).not.toContain('After ·');
+    expect(js).not.toContain('Before ·');
     expect(playerSource).toContain('metaKey || e.ctrlKey');
     expect(js).toContain('_renderShortcutStrip');
     expect(js).toContain('shortcut-keycap');
     expect(viewsSource).toContain('_renderShortcutStrip(');
   });
 
-  test('settings strip CSS is an equal-width grid with quiet keycaps', () => {
-    expect(cssSource).toContain('grid-template-columns: repeat(auto-fit, minmax(');
+  test('settings strip CSS is a 3-or-6 grid with readable keycaps', () => {
+    expect(cssSource).toContain('grid-template-columns: repeat(3, minmax(0, 1fr))');
+    expect(cssSource).toContain('grid-template-columns: repeat(6, minmax(0, 1fr))');
+    expect(cssSource).toContain('@media (min-width: 1440px)');
     expect(cssSource).toContain('.settings-shortcut-label');
     expect(cssSource).toContain('white-space: nowrap');
     expect(cssSource).toContain('text-overflow: ellipsis');
     expect(cssSource).toContain('.shortcut-keycap');
+    expect(cssSource).toContain('.shortcut-keycap-symbol');
+    expect(cssSource).toMatch(/\.shortcut-keycap[\s\S]*color: var\(--text\)/);
+    expect(cssSource).toMatch(/\.shortcut-keycap[\s\S]*min-width: 28px/);
+    expect(cssSource).toMatch(/\.shortcut-keycap[\s\S]*height: 28px/);
+    expect(cssSource).toMatch(/\.shortcut-keycap-symbol[\s\S]*font-size: 15px/);
     expect(cssSource).toMatch(/\.shortcut-keycap[\s\S]*box-shadow/);
     expect(cssSource).toContain('prefers-reduced-motion');
   });

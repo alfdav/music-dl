@@ -664,37 +664,31 @@ async function _resolveShortcutPlatform(opts) {
 
 function _shortcutKeycaps(keys, platform) {
   const isMac = platform === 'mac';
+  const symbol = (glyph, ariaLabel) => ({ glyph, ariaLabel, symbol: true });
+  const letter = (glyph, ariaLabel) => ({ glyph, ariaLabel, symbol: false });
   return keys.map((key) => {
     switch (key) {
       case 'Mod':
-        return isMac
-          ? { glyph: '\u2318', ariaLabel: 'Command' }
-          : { glyph: 'Ctrl', ariaLabel: 'Control' };
+        return isMac ? symbol('\u2318', 'Command') : letter('Ctrl', 'Control');
       case 'Shift':
-        return isMac
-          ? { glyph: '\u21E7', ariaLabel: 'Shift' }
-          : { glyph: 'Shift', ariaLabel: 'Shift' };
+        return isMac ? symbol('\u21E7', 'Shift') : letter('Shift', 'Shift');
       case 'Alt':
       case 'Option':
-        return isMac
-          ? { glyph: '\u2325', ariaLabel: 'Option' }
-          : { glyph: 'Alt', ariaLabel: 'Alt' };
+        return isMac ? symbol('\u2325', 'Option') : letter('Alt', 'Alt');
       case 'Ctrl':
-        return isMac
-          ? { glyph: '\u2303', ariaLabel: 'Control' }
-          : { glyph: 'Ctrl', ariaLabel: 'Control' };
+        return isMac ? symbol('\u2303', 'Control') : letter('Ctrl', 'Control');
       case 'ArrowLeft':
-        return { glyph: '\u2190', ariaLabel: 'Left arrow' };
+        return symbol('\u2190', 'Left arrow');
       case 'ArrowRight':
-        return { glyph: '\u2192', ariaLabel: 'Right arrow' };
+        return symbol('\u2192', 'Right arrow');
       case 'ArrowUp':
-        return { glyph: '\u2191', ariaLabel: 'Up arrow' };
+        return symbol('\u2191', 'Up arrow');
       case 'ArrowDown':
-        return { glyph: '\u2193', ariaLabel: 'Down arrow' };
+        return symbol('\u2193', 'Down arrow');
       case 'Space':
-        return { glyph: 'Space', ariaLabel: 'Space' };
+        return letter('Space', 'Space');
       default:
-        return { glyph: key, ariaLabel: key };
+        return letter(key, key);
     }
   });
 }
@@ -714,7 +708,7 @@ function _renderShortcutKeycaps(keys, platform) {
   const wrap = h('span', { className: 'shortcut-keys' });
   _shortcutKeycaps(keys, platform).forEach((cap) => {
     wrap.appendChild(h('kbd', {
-      className: 'shortcut-keycap',
+      className: cap.symbol ? 'shortcut-keycap shortcut-keycap-symbol' : 'shortcut-keycap',
       'aria-label': cap.ariaLabel,
     }, cap.glyph));
   });

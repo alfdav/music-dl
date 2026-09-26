@@ -151,8 +151,12 @@ class TestAppJsFeatureMarkers:
         assert "shortcut-keycap" in js
         assert "aria-label" in js
         assert "Command Shift Q" in js or "'Command'" in js
+        assert "After ·" not in js
+        assert "Before ·" not in js
         grid = _css_rule_bodies(css, ".settings-shortcuts")
-        assert any("auto-fit" in body and "minmax" in body for body in grid)
+        assert any("repeat(3, minmax(0, 1fr))" in body for body in grid)
+        assert "repeat(6, minmax(0, 1fr))" in css
+        assert "@media (min-width: 1440px)" in css
         label = _css_rule_bodies(css, ".settings-shortcut-label")
         assert any(
             "white-space: nowrap" in body
@@ -161,7 +165,14 @@ class TestAppJsFeatureMarkers:
             for body in label
         )
         keycap = _css_rule_bodies(css, ".shortcut-keycap")
-        assert any("box-shadow:" in body and "border-radius:" in body for body in keycap)
+        assert any(
+            "box-shadow:" in body
+            and "border-radius:" in body
+            and "color: var(--text)" in body
+            and "min-width: 28px" in body
+            and "height: 28px" in body
+            for body in keycap
+        )
 
     def test_has_recent_filters_and_clear_old(self):
         js = read_gui_js()
