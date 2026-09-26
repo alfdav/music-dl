@@ -131,7 +131,8 @@ Inside the container (set automatically by the Dockerfile):
 
 | Variable | Value | What it does |
 | --- | --- | --- |
-| `MUSIC_DL_BIND_ALL` | `1` | Binds server to `0.0.0.0` inside the container |
+| `MUSIC_DL_BIND_ALL` | `1` | Explicit opt-in to bind `0.0.0.0` inside the container. Outside Docker the server stays on `127.0.0.1`. |
+| `MUSIC_DL_UI_SECRET` | generated at launch if unset | Required with `MUSIC_DL_BIND_ALL`. The web UI receives it as a cookie and sends `X-Music-DL-UI` on mutating and `/api/auth` requests. Set it yourself if another client must call the API. |
 | `MUSIC_DL_CONFIG_DIR` | `/home/musicdl/.config/music-dl` | Config directory override |
 
 ---

@@ -53,9 +53,13 @@ def run(
         print(f"music-dl GUI: {existing.base_url}")
         return
 
-    # Bind 0.0.0.0 inside Docker so the host can reach us;
-    # localhost everywhere else for security.
+    # Bind 0.0.0.0 only when MUSIC_DL_BIND_ALL is set (Docker opt-in).
+    # make_uvicorn_config refuses bind-all without MUSIC_DL_UI_SECRET.
     bind_all = bool(os.environ.get("MUSIC_DL_BIND_ALL"))
+    if bind_all and not (os.environ.get("MUSIC_DL_UI_SECRET") or "").strip():
+        from tidal_dl.gui.security import generate_csrf_token
+
+        os.environ["MUSIC_DL_UI_SECRET"] = generate_csrf_token()
     actual_port = select_port(port)
     meta = DaemonMetadata.for_current_process(port=actual_port, mode="browser")
     if open_browser:

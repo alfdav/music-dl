@@ -6,7 +6,7 @@ output, and screenshots on your machine. AI-assisted reports are welcome, but
 AI-only guesses or static-analysis claims without local reproduction are not
 actionable.
 
-Do not paste Tidal tokens, cookies, `.env` files, OAuth URLs, or credentials.
+Do not paste Tidal tokens, refresh tokens, cookies, `.env` files, OAuth URLs, or credentials. Never attach `token.json`. If a log or bug-report bundle might contain `access_token`, `refresh_token`, or `Bearer …` values, redact them to `[REDACTED]` first — the app does this automatically for its own logs.
 
 ## Before opening a bug
 

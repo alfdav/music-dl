@@ -6,10 +6,8 @@ Provides:
   - HandlingApp: Application-lifecycle events (abort / run).
 """
 
-import contextlib
 import json
 import os
-import shutil
 import time
 from datetime import UTC, datetime
 from json import JSONDecodeError
@@ -36,6 +34,7 @@ from tidal_dl.constants import (
     quality_name,
 )
 from tidal_dl.helper.cache import TTLCache
+from tidal_dl.helper.atomic_io import atomic_write_text, exclusive_file_lock, token_lock_path
 from tidal_dl.helper.path import path_config_base, path_file_settings, path_file_token
 from tidal_dl.hifi_api import HiFiApiClient
 from tidal_dl.model.cfg import DEFAULT_FORMAT_PLAYLIST, LEGACY_DEFAULT_FORMAT_PLAYLIST
@@ -46,9 +45,16 @@ _console = RichConsole()
 
 _singleton_lock = Lock()
 _token_fresh_lock = RLock()
+_refresh_inflight = 0
+_refresh_inflight_lock = Lock()
 _settings_instance: "Settings | None" = None
 _tidal_instance: "Tidal | None" = None
 _handling_app_instance: "HandlingApp | None" = None
+
+
+def token_refresh_in_flight() -> bool:
+    """True while a token refresh holds the cross-process lock."""
+    return _refresh_inflight > 0
 
 
 def reset_singletons() -> None:
@@ -97,13 +103,17 @@ class BaseConfig(Generic[ConfigModelT]):
         """
         data_json = self.data.to_json()
 
-        if config_to_compare == data_json:
-            return
+        if config_to_compare:
+            try:
+                if json.loads(config_to_compare) == json.loads(data_json):
+                    return
+            except (JSONDecodeError, TypeError, ValueError):
+                if config_to_compare == data_json:
+                    return
 
         os.makedirs(self.path_base, exist_ok=True)
-
-        with open(self.file_path, encoding="utf-8", mode="w") as f:
-            json.dump(json.loads(data_json), f, indent=4)
+        pretty = json.dumps(json.loads(data_json), indent=4)
+        atomic_write_text(self.file_path, pretty + "\n", mode=0o600)
 
     def set_option(self, key: str, value: Any) -> None:
         """Set a configuration option, coercing type as needed.
@@ -136,19 +146,42 @@ class BaseConfig(Generic[ConfigModelT]):
         try:
             with open(path, encoding="utf-8") as f:
                 settings_json = f.read()
-
-            self.data = self._load_json(settings_json)
+            if not settings_json.strip():
+                raise JSONDecodeError("Expecting value", settings_json, 0)
+            loaded = self.cls_model.from_json(settings_json)
+            if self._requires_nonempty_payload() and not self._model_has_payload(loaded):
+                recovered = self._recover_from_corrupt(path, settings_json)
+                if recovered is None:
+                    self.data = self.cls_model()
+                    return False
+                self.data = recovered
+                return True
+            self.data = loaded
             result = True
-        except (JSONDecodeError, TypeError, FileNotFoundError) as e:
-            if isinstance(e, FileNotFoundError):
+        except FileNotFoundError:
+            self.data = self.cls_model()
+            if self._persist_empty_on_missing():
+                self.save(settings_json)
+            return False
+        except (JSONDecodeError, TypeError, ValueError):
+            recovered = self._recover_from_corrupt(path, settings_json)
+            if recovered is None:
                 self.data = self.cls_model()
-            else:
-                # Truly corrupt JSON — attempt recovery from backup
-                self.data = self._recover_from_corrupt(path, settings_json)
+                return False
+            self.data = recovered
+            result = True
+            settings_json = Path(path).read_text(encoding="utf-8") if Path(path).is_file() else ""
 
-        self.save(settings_json)
+        if result:
+            self.save(settings_json or None)
 
         return result
+
+    def _persist_empty_on_missing(self) -> bool:
+        return True
+
+    def _requires_nonempty_payload(self) -> bool:
+        return False
 
     def _load_json(self, raw_json: str) -> ConfigModelT:
         """Deserialize JSON into the config model."""
@@ -157,31 +190,62 @@ class BaseConfig(Generic[ConfigModelT]):
         except (ValueError, KeyError, JSONDecodeError, TypeError):
             return self.cls_model()
 
-    def _recover_from_corrupt(self, path: str, _broken_json: str) -> ConfigModelT:
-        """Back up a corrupt config and restore from .bak or defaults."""
-        path_bak = path + ".bak"
-
+    def _json_has_payload(self, raw_json: str) -> bool:
         try:
-            if os.path.exists(path_bak):
-                os.remove(path_bak)
-            shutil.move(path, path_bak)
-        except OSError:
-            pass
+            if not raw_json.strip():
+                return False
+            data = self.cls_model.from_json(raw_json)
+        except (ValueError, KeyError, JSONDecodeError, TypeError):
+            return False
+        if self._requires_nonempty_payload():
+            return self._model_has_payload(data)
+        return True
 
+    def _model_has_payload(self, data: ConfigModelT) -> bool:
+        return True
+
+    def _recover_from_corrupt(self, path: str, _broken_json: str) -> ConfigModelT | None:
+        """Restore from .bak when the primary file is unreadable.
+
+        Never deletes a backup that still parses. Never writes empty defaults
+        over a broken primary — that is ``needs_attention``, not a wipe.
+        """
+        path_bak = path + ".bak"
+        bak_raw = ""
         try:
             with open(path_bak, encoding="utf-8") as f:
-                data = self._load_json(f.read())
+                bak_raw = f.read()
+        except FileNotFoundError:
             _console.print(
-                f"[yellow]Warning:[/yellow] Config was corrupt. Recovered settings from backup '{path_bak}'."
+                f"[yellow]Warning:[/yellow] Config was corrupt and no backup exists: '{path}'."
+            )
+            return None
+        except OSError:
+            return None
+
+        if not bak_raw.strip() or not self._json_has_payload(bak_raw):
+            _console.print(
+                f"[yellow]Warning:[/yellow] Config and backup are both unreadable: '{path}'."
+            )
+            return None
+
+        try:
+            data = self._load_json(bak_raw)
+        except (JSONDecodeError, TypeError, ValueError):
+            return None
+
+        try:
+            atomic_write_text(path, bak_raw if bak_raw.endswith("\n") else bak_raw + "\n", mode=0o600)
+        except OSError:
+            _console.print(
+                f"[yellow]Warning:[/yellow] Could not restore '{path}' from backup."
             )
             return data
-        except (FileNotFoundError, JSONDecodeError, TypeError, ValueError):
-            pass
 
         _console.print(
-            f"[yellow]Warning:[/yellow] Config was corrupt. Using defaults. Backup saved to '{path_bak}'."
+            f"[yellow]Warning:[/yellow] Config was corrupt. Restored from backup '{path_bak}'."
         )
-        return self.cls_model()
+        return data
 
 
 class Settings(BaseConfig[ModelSettings]):
@@ -268,6 +332,42 @@ class Tidal(BaseConfig[ModelToken]):
         if settings:
             self.settings = settings
             self.settings_apply()
+
+    def _persist_empty_on_missing(self) -> bool:
+        return False
+
+    def _requires_nonempty_payload(self) -> bool:
+        return True
+
+    def _model_has_payload(self, data: ModelToken) -> bool:
+        return bool(getattr(data, "refresh_token", None) or getattr(data, "access_token", None))
+
+    def save(self, config_to_compare: str | None = None) -> None:
+        """Persist tokens without truncating a working file or writing empties."""
+        if not self._model_has_payload(self.data) and Path(self.file_path).is_file():
+            return
+        if config_to_compare is None and Path(self.file_path).is_file():
+            try:
+                config_to_compare = Path(self.file_path).read_text(encoding="utf-8")
+            except OSError:
+                config_to_compare = None
+        super().save(config_to_compare)
+
+    def _reread_token_from_disk(self) -> None:
+        path = Path(self.file_path)
+        if not path.is_file():
+            return
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            return
+        if not self._json_has_payload(raw):
+            return
+        try:
+            self.data = self.cls_model.from_json(raw)
+            self.token_from_storage = True
+        except (JSONDecodeError, TypeError, ValueError):
+            return
 
     def settings_apply(self, settings: Settings | None = None) -> bool:
         """Apply quality settings from the Settings singleton to the session.
@@ -472,13 +572,10 @@ class Tidal(BaseConfig[ModelToken]):
                 if self._ensure_token_fresh(refresh_window_sec=30 * 24 * 3600):
                     result = self._reload_oauth_session()
 
-            if (
-                not result
-                and delete_on_failure
-                and not self.data.refresh_token
-                and os.path.exists(self.file_path)
-            ):
-                os.remove(self.file_path)
+            if not result and delete_on_failure and not self.data.refresh_token:
+                # Never unlink token.json. An empty or rejected restore is
+                # needs_attention, not a wipe of a file that may still recover.
+                pass
 
         return result
 
@@ -542,9 +639,6 @@ class Tidal(BaseConfig[ModelToken]):
             self.set_option("expiry_time", _exp.timestamp() if hasattr(_exp, "timestamp") else _exp)
             self.save()
 
-            with contextlib.suppress(OSError, NotImplementedError):
-                os.chmod(self.file_path, 0o600)
-
     def refresh_account_quality(self) -> str | None:
         """Read the account's highest Tidal quality and cache it on the token."""
         cached = getattr(self.data, "account_quality", None) or None
@@ -567,36 +661,48 @@ class Tidal(BaseConfig[ModelToken]):
             return cached
 
     def _ensure_token_fresh(self, refresh_window_sec: int = 300) -> bool:
-        with _token_fresh_lock:
-            self._last_refresh_error = None
-            self._last_refresh_outcome = None
-            refresh_token = self.data.refresh_token
-            if not refresh_token:
-                self._last_refresh_outcome = "skipped"
-                return False
+        global _refresh_inflight
+        lock_path = token_lock_path(self.file_path)
+        with exclusive_file_lock(lock_path):
+            with _token_fresh_lock:
+                with _refresh_inflight_lock:
+                    _refresh_inflight += 1
+                try:
+                    self._reread_token_from_disk()
+                    self._last_refresh_error = None
+                    self._last_refresh_outcome = None
+                    refresh_token = self.data.refresh_token
+                    if not refresh_token:
+                        self._last_refresh_outcome = "skipped"
+                        return False
 
-            try:
-                _raw_exp = getattr(self.data, "expiry_time", 0) or 0
-                expiry_time = _raw_exp.timestamp() if hasattr(_raw_exp, "timestamp") else float(_raw_exp)
-            except (TypeError, ValueError):
-                expiry_time = 0
-            if expiry_time > 0 and expiry_time - time.time() > refresh_window_sec:
-                self._last_refresh_outcome = "skipped"
-                return False
+                    try:
+                        _raw_exp = getattr(self.data, "expiry_time", 0) or 0
+                        expiry_time = _raw_exp.timestamp() if hasattr(_raw_exp, "timestamp") else float(_raw_exp)
+                    except (TypeError, ValueError):
+                        expiry_time = 0
+                    if expiry_time > 0 and expiry_time - time.time() > refresh_window_sec:
+                        self._last_refresh_outcome = "skipped"
+                        return False
 
-            try:
-                refreshed = self.session.token_refresh(refresh_token)
-                if refreshed is False:
-                    self._last_refresh_outcome = "rejected"
-                    return False
-                self.token_persist()
-                self._last_refresh_outcome = "ok"
-                return True
-            except Exception as exc:
-                self._last_refresh_error = exc
-                self._last_refresh_outcome = "failed"
-                _console.print("[yellow]Warning:[/yellow] Token refresh failed; proceeding with current token.")
-                return False
+                    try:
+                        refreshed = self.session.token_refresh(refresh_token)
+                        if refreshed is False:
+                            self._last_refresh_outcome = "rejected"
+                            return False
+                        self.token_persist()
+                        self._last_refresh_outcome = "ok"
+                        return True
+                    except Exception as exc:
+                        self._last_refresh_error = exc
+                        self._last_refresh_outcome = "failed"
+                        _console.print(
+                            "[yellow]Warning:[/yellow] Token refresh failed; proceeding with current token."
+                        )
+                        return False
+                finally:
+                    with _refresh_inflight_lock:
+                        _refresh_inflight = max(0, _refresh_inflight - 1)
 
     def switch_to_atmos_session(self) -> bool:
         """Re-authenticate the session with Dolby Atmos credentials.

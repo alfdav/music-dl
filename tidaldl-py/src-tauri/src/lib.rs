@@ -56,6 +56,31 @@ pub(crate) struct SidecarState {
 // Wrapper so we can manage CommandChild in Tauri state (needs Send + Sync)
 pub(crate) struct Sidecar(pub(crate) Mutex<SidecarState>);
 
+pub(crate) struct UiSecret(pub(crate) String);
+
+fn generate_ui_secret() -> String {
+    let mut buf = [0u8; 32];
+    if fill_random_bytes(&mut buf) {
+        return buf.iter().map(|byte| format!("{byte:02x}")).collect();
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("{:08x}{nanos:032x}", std::process::id())
+}
+
+fn fill_random_bytes(buf: &mut [u8]) -> bool {
+    #[cfg(unix)]
+    {
+        if let Ok(mut file) = fs::File::open("/dev/urandom") {
+            return file.read_exact(buf).is_ok();
+        }
+    }
+    let _ = buf;
+    false
+}
+
 pub(crate) struct LaunchTarget(pub(crate) Mutex<Option<String>>);
 
 fn parse_health_url(url: &str) -> Result<HealthEndpoint, String> {
@@ -407,15 +432,25 @@ where
 }
 
 fn spawn_sidecar(app: &tauri::AppHandle) -> Result<CommandChild, String> {
+    let secret = app
+        .try_state::<UiSecret>()
+        .map(|state| state.0.clone())
+        .unwrap_or_else(generate_ui_secret);
     let sidecar_cmd = app
         .shell()
         .sidecar("music-dl-server")
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .env("MUSIC_DL_UI_SECRET", secret);
     let (_rx, child) = sidecar_cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn sidecar: {e}"))?;
 
     Ok(child)
+}
+
+#[tauri::command]
+fn get_ui_secret(secret: tauri::State<'_, UiSecret>) -> String {
+    secret.0.clone()
 }
 
 #[cfg(windows)]
@@ -770,6 +805,7 @@ pub fn run() {
             stop_sidecar,
             start_sidecar,
             restart_sidecar,
+            get_ui_secret,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -788,6 +824,7 @@ pub fn run() {
 
             app.manage(Sidecar(Mutex::new(SidecarState::default())));
             app.manage(LaunchTarget(Mutex::new(None)));
+            app.manage(UiSecret(generate_ui_secret()));
 
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             app.deep_link().register_all()?;

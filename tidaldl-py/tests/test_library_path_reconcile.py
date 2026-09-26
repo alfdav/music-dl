@@ -623,12 +623,13 @@ class TestPlaybackBackstop:
         library_api._reconcile_last_at = 0.0
         library_api._playback_migration_cache.clear()
 
-        client = TestClient(create_app(port=8765, job_db_path=tmp_path / "jobs.db"))
-        index = client.get("/", headers={"host": "localhost:8765"})
-        match = re.search(r'name="csrf-token" content="([^"]+)"', index.text)
-        headers = {"host": "localhost:8765"}
-        if match:
-            headers["X-CSRF-Token"] = match.group(1)
+        app = create_app(port=8765, job_db_path=tmp_path / "jobs.db")
+        client = TestClient(app)
+        headers = {
+            "host": "localhost:8765",
+            "X-CSRF-Token": app.state.ui_secret,
+            "X-Music-DL-UI": app.state.ui_secret,
+        }
         return client, headers, library_api
 
     def test_playback_serves_cached_migration_after_reconcile(self, tmp_path, monkeypatch):

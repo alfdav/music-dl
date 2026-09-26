@@ -222,7 +222,13 @@ def test_sidecar_start_after_binary_update_revives_refresh_token_without_oauth(t
         deadline = time.monotonic() + 2.0
         body = None
         while time.monotonic() < deadline:
-            response = client.get("/api/auth/status", headers={"host": "localhost:8765"})
+            response = client.get(
+                "/api/auth/status",
+                headers={
+                    "host": "localhost:8765",
+                    "X-Music-DL-UI": app.state.ui_secret,
+                },
+            )
             assert response.status_code == 200
             body = response.json()
             if body.get("auth_state") == "credentials_ready":
@@ -235,6 +241,7 @@ def test_sidecar_start_after_binary_update_revives_refresh_token_without_oauth(t
         "username": "",
         "auth_state": "credentials_ready",
         "account_quality": "HI_RES",
+        "refresh_in_flight": False,
     }
 
 

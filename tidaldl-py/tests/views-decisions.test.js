@@ -655,7 +655,7 @@ describe('Tidal connection reset decisions', () => {
 
     expect(resetCalls).toBe(0);
     expect(confirmation.message).toBe(
-      'Reset the saved Tidal connection? You will need to log in again.',
+      'This signs this device out of Tidal. The next Connect adds a new device session to the Tidal account.',
     );
     confirmation.onYes();
     expect(resetCalls).toBe(1);

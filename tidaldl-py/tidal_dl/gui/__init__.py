@@ -1,4 +1,5 @@
 """music-dl GUI — FastAPI application factory."""
+import os
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,7 +11,13 @@ from fastapi.staticfiles import StaticFiles
 
 from tidal_dl.gui.api import api_router
 from tidal_dl.gui.daemon import DaemonMetadata, write_metadata
-from tidal_dl.gui.security import CSRFMiddleware, HostValidationMiddleware, generate_csrf_token
+from tidal_dl.gui.security import (
+    CSRFMiddleware,
+    HostValidationMiddleware,
+    UISecretMiddleware,
+    generate_csrf_token,
+)
+from tidal_dl.helper.redact import install_redacting_logging
 
 try:
     from tidal_dl import __version__ as _APP_VERSION
@@ -165,17 +172,22 @@ def create_app(
         status="starting",
     )
     app.state.write_daemon_metadata = write_daemon_metadata
-    csrf_token = generate_csrf_token()
+    install_redacting_logging()
+    ui_secret = (os.environ.get("MUSIC_DL_UI_SECRET") or "").strip() or generate_csrf_token()
+    csrf_token = ui_secret
+    app.state.ui_secret = ui_secret
     app.state.csrf_token = csrf_token
 
     allowed_hosts = [f"localhost:{port}", f"127.0.0.1:{port}"]
     app.add_middleware(HostValidationMiddleware, allowed_hosts=allowed_hosts)
+    app.add_middleware(UISecretMiddleware, ui_secret=ui_secret)
     app.add_middleware(CSRFMiddleware, csrf_token=csrf_token)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[f"http://localhost:{port}", f"http://127.0.0.1:{port}"],
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
-        allow_headers=["X-CSRF-Token", "Content-Type"],
+        allow_headers=["X-CSRF-Token", "X-Music-DL-UI", "Content-Type"],
+        allow_origin_regex=None,
     )
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.requests import Request
@@ -216,7 +228,15 @@ def create_app(
         for asset in ('routes.js', 'api.js', 'views.js', 'player.js'):
             html = html.replace(f'/{asset}', f'/{asset}?v={v}')
         html = html.replace("__APP_VERSION__", _APP_VERSION)
-        return HTMLResponse(html.replace("__CSRF_TOKEN__", csrf_token))
+        response = HTMLResponse(html.replace("__CSRF_TOKEN__", ""))
+        response.set_cookie(
+            "music_dl_ui",
+            ui_secret,
+            httponly=False,
+            samesite="strict",
+            path="/",
+        )
+        return response
 
     app.mount("/", StaticFiles(directory=str(_STATIC_DIR)), name="static")
     return app

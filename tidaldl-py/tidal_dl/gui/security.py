@@ -89,9 +89,7 @@ class HostValidationMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         host = request.headers.get("host", "")
-        host_no_port = host.split(":")[0] if ":" in host else host
-
-        if host not in self.allowed_hosts and host_no_port not in {"localhost", "127.0.0.1"}:
+        if host not in self.allowed_hosts:
             return JSONResponse({"detail": "Forbidden: invalid Host header"}, status_code=403)
         return await call_next(request)
 
@@ -120,9 +118,37 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         if request.url.path.startswith("/api/bot/"):
             return await call_next(request)
 
-        token = request.headers.get("X-CSRF-Token", "")
-        if not secrets.compare_digest(token, self.csrf_token):
+        token = request.headers.get("X-Music-DL-UI", "") or request.headers.get("X-CSRF-Token", "")
+        if not token or not secrets.compare_digest(token, self.csrf_token):
             return JSONResponse({"detail": "Forbidden: invalid or missing CSRF token"}, status_code=403)
+        return await call_next(request)
+
+
+UI_SECRET_HEADER = "X-Music-DL-UI"
+UI_SECRET_COOKIE = "music_dl_ui"
+
+
+class UISecretMiddleware(BaseHTTPMiddleware):
+    """Require the per-launch UI secret on mutating and auth endpoints."""
+
+    SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+    SKIP_PREFIXES = ("/api/bot/",)
+    SKIP_PATHS = frozenset({"/api/server/health"})
+
+    def __init__(self, app, ui_secret: str) -> None:
+        super().__init__(app)
+        self.ui_secret = ui_secret
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if path in self.SKIP_PATHS or any(path.startswith(prefix) for prefix in self.SKIP_PREFIXES):
+            return await call_next(request)
+        needs_secret = request.method not in self.SAFE_METHODS or path.startswith("/api/auth")
+        if not needs_secret:
+            return await call_next(request)
+        token = request.headers.get(UI_SECRET_HEADER, "") or request.headers.get("X-CSRF-Token", "")
+        if not token or not secrets.compare_digest(token, self.ui_secret):
+            return JSONResponse({"detail": "Forbidden: invalid or missing UI secret"}, status_code=403)
         return await call_next(request)
 
 

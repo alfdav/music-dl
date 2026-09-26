@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-26 — Auto-login after 401 and in-place token writes
+
+**What happened:** A 401 in `apiTidal()` called `triggerLogin()`, which started device-code OAuth while a refresh token still existed. `token.json` was also written in place, so a crash could truncate a working session. Recovery deleted a valid `.bak`.
+
+**Root cause:** Login was treated as the 401 recovery path. File writes used truncate-in-place plus destructive bak fallback.
+
+**Prevention:** Refresh once, then show Session needs attention. Device-code starts only from Connect with `confirm: true`. Token writes are temp+fsync+rename+dir fsync at mode 0600. Restore a valid `.bak`; never write an empty token. CLI `dl` prints `music-dl login` and exits.
+
 ## 2026-09-26 — Advisory QA hid master failures until enforcement
 
 **What happened:** `.github/workflows/qa.yml` collected check outcomes with `continue-on-error` and scored them without `--enforce`. Master stayed "green" while `python_smoke` (download 401 hole), `security_tests` (bot pid race), stale lyrics/settings contracts, and ruff deductions were already would_block.

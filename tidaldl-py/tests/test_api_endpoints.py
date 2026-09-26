@@ -781,8 +781,11 @@ class TestDownloadTrigger:
         )
 
         assert resp.status_code == 401
-        assert resp.json()["detail"] == "Not logged in to Tidal"
-        assert "terminal" not in resp.json()["detail"].lower()
+        assert resp.json()["detail"] == {
+            "message": "Session needs attention. Use Connect to sign in.",
+            "auth_state": "needs_attention",
+        }
+        assert "terminal" not in str(resp.json()["detail"]).lower()
 
 
 class TestSearchAuth:
@@ -803,8 +806,11 @@ class TestSearchAuth:
         )
 
         assert resp.status_code == 401
-        assert resp.json()["detail"] == "Not logged in to Tidal"
-        assert "terminal" not in resp.json()["detail"].lower()
+        assert resp.json()["detail"] == {
+            "message": "Session needs attention. Use Connect to sign in.",
+            "auth_state": "needs_attention",
+        }
+        assert "terminal" not in str(resp.json()["detail"]).lower()
 
 
 class TestDuplicatesPreview:
@@ -914,12 +920,12 @@ class TestStaticFileServing:
         assert "text/html" in resp.headers.get("content-type", "")
 
     def test_csrf_token_embedded_in_index(self, client):
-        """CSRF token must be present in the index page meta tag."""
+        """Index keeps the meta tag but does not expose the per-launch secret."""
         resp = client.get("/", headers=client._host_header)
         assert 'name="csrf-token"' in resp.text
-        assert 'content="' in resp.text
-        # The token should not be the placeholder
+        assert 'content=""' in resp.text
         assert "__CSRF_TOKEN__" not in resp.text
+        assert client.app.state.ui_secret not in resp.text
 
     def test_app_js_served(self, client):
         for name in ("api.js", "views.js", "player.js"):

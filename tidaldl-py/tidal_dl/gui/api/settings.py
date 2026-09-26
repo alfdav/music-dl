@@ -7,11 +7,11 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 
 from tidal_dl import __version__
-from tidal_dl.config import Settings, Tidal
+from tidal_dl.config import Settings, Tidal, token_refresh_in_flight
 
 router = APIRouter()
 
@@ -306,7 +306,17 @@ def _is_tidal_unauthorized(exc: BaseException) -> bool:
 
 
 def _login_required_error(exc: BaseException | None = None) -> HTTPException:
-    error = HTTPException(status_code=401, detail="Not logged in to Tidal")
+    return _needs_attention_error(exc)
+
+
+def _needs_attention_error(exc: BaseException | None = None) -> HTTPException:
+    error = HTTPException(
+        status_code=401,
+        detail={
+            "message": "Session needs attention. Use Connect to sign in.",
+            "auth_state": "needs_attention",
+        },
+    )
     if exc is not None:
         error.__cause__ = exc
     return error
@@ -323,7 +333,7 @@ def _raise_for_refresh_outcome(tidal: Tidal, outcome: str, exc: BaseException | 
     if outcome in (REFRESH_OK, REFRESH_SKIPPED):
         return
     if outcome == REFRESH_REJECTED or not _persisted_refresh_token(tidal):
-        raise _login_required_error(exc)
+        raise _needs_attention_error(exc)
     raise _refresh_unavailable_error(exc)
 
 
@@ -366,18 +376,21 @@ def call_tidal(tidal: Tidal, fn):
             _restore_session_after_refresh(tidal)
     try:
         return fn()
-    except HTTPException:
-        raise
+    except HTTPException as exc:
+        if exc.status_code != 401:
+            raise
+        unauthorized = exc
     except Exception as exc:
         if not _is_tidal_unauthorized(exc):
             raise
-        outcome = refresh_session(
-            tidal, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC, honor_backoff=False
-        )
-        if outcome in (REFRESH_OK, REFRESH_SKIPPED):
-            _restore_session_after_refresh(tidal)
-            return fn()
-        _raise_for_refresh_outcome(tidal, outcome, exc)
+        unauthorized = exc
+    outcome = refresh_session(
+        tidal, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC, honor_backoff=False
+    )
+    if outcome in (REFRESH_OK, REFRESH_SKIPPED):
+        _restore_session_after_refresh(tidal)
+        return fn()
+    _raise_for_refresh_outcome(tidal, outcome, unauthorized)
 
 
 def require_tidal(tidal: Tidal | None = None) -> Tidal:
@@ -422,6 +435,7 @@ def _auth_status_payload(
         "username": username,
         "auth_state": auth_state,
         "account_quality": account_quality if logged_in else None,
+        "refresh_in_flight": token_refresh_in_flight(),
     }
 
 
@@ -438,6 +452,11 @@ def _local_auth_status(tidal: Tidal) -> dict:
     access_token = getattr(tidal.data, "access_token", None)
     refresh_token = _persisted_refresh_token(tidal)
     if not access_token and not refresh_token:
+        from tidal_dl.helper.path import path_file_token
+
+        token_path = Path(getattr(tidal, "file_path", "") or path_file_token())
+        if token_path.is_file():
+            return _auth_status_payload(False, username, "needs_attention")
         return _auth_status_payload(False, username, "not_configured")
 
     expiry_time = _token_expiry(tidal)
@@ -446,8 +465,11 @@ def _local_auth_status(tidal: Tidal) -> dict:
 
     expired = expiry_time is not None and expiry_time > 0 and expiry_time <= time.time()
     needs_revive = bool(refresh_token) and (not access_token or expired or expiry_time == 0)
+    revive_outcome = None
     if needs_revive:
-        _revive_from_refresh_token(tidal)
+        revive_outcome = refresh_session(tidal, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC)
+        if revive_outcome == REFRESH_REJECTED:
+            return _auth_status_payload(False, username, "needs_attention")
         access_token = getattr(tidal.data, "access_token", None)
         expiry_time = _token_expiry(tidal)
         expired = expiry_time is not None and expiry_time > 0 and expiry_time <= time.time()
@@ -455,8 +477,12 @@ def _local_auth_status(tidal: Tidal) -> dict:
     if expiry_time is None:
         return _auth_status_payload(False, username, "unavailable")
     if not access_token:
+        if refresh_token and revive_outcome == REFRESH_REJECTED:
+            return _auth_status_payload(False, username, "needs_attention")
         return _auth_status_payload(False, username, "expired" if refresh_token else "not_configured")
     if expired:
+        if refresh_token and revive_outcome == REFRESH_REJECTED:
+            return _auth_status_payload(False, username, "needs_attention")
         return _auth_status_payload(False, username, "expired")
 
     user = getattr(tidal.session, "user", None)
@@ -505,10 +531,19 @@ def _mark_already_logged_in(tidal: Tidal) -> dict:
     return {"status": "already_logged_in"}
 
 
+class AuthLoginRequest(BaseModel):
+    confirm: bool = False
+
+
 @router.post("/auth/login")
-def auth_login(tidal: Tidal = Depends(get_tidal_instance)) -> dict:  # noqa: B008
-    """Reuse a persisted refresh_token before starting a new device-code OAuth flow."""
+def auth_login(  # noqa: B008
+    tidal: Tidal = Depends(get_tidal_instance),
+    payload: AuthLoginRequest = Body(default=AuthLoginRequest()),
+    confirm: bool = False,
+) -> dict:
+    """Reuse a persisted refresh_token. Device-code starts only with confirm=true."""
     global _login_generation
+    confirmed = bool(confirm or (payload and payload.confirm))
     with _login_lock:
         outcome = refresh_session(tidal, refresh_window_sec=_LOGIN_REFRESH_WINDOW_SEC)
         if outcome == REFRESH_OK:
@@ -534,6 +569,12 @@ def auth_login(tidal: Tidal = Depends(get_tidal_instance)) -> dict:  # noqa: B00
 
         if _login_state["status"] == "pending":
             return _login_state.copy()
+
+        if not confirmed:
+            return {
+                "status": "needs_attention",
+                "auth_state": "needs_attention",
+            }
 
         try:
             tidal.refresh_api_keys()
@@ -596,6 +637,11 @@ def auth_account(tidal: Tidal = Depends(get_tidal_instance)) -> dict:
 def auth_reset(tidal: Tidal = Depends(get_tidal_instance)) -> dict:
     """Remove local OAuth credentials without starting a provider request."""
     global _login_generation
+    if token_refresh_in_flight():
+        raise HTTPException(
+            status_code=409,
+            detail="Reset is disabled while a token refresh is in progress",
+        )
     with _login_lock:
         try:
             if not tidal.logout():
