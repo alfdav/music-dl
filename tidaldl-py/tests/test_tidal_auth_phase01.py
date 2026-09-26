@@ -362,6 +362,16 @@ def test_api_rejects_missing_secret_and_bad_host(tmp_path):
         assert app.state.ui_secret not in index.text
 
 
+def test_redact_filter_preserves_numeric_log_formatting():
+    import logging
+
+    from tidal_dl.helper.redact import RedactingFilter
+
+    logger = logging.getLogger("music-dl.redact-test")
+    logger.addFilter(RedactingFilter())
+    logger.warning("Cleared stale cleanup lock (age %.0fs) token=%s", 12.4, "super-secret")
+
+
 def test_redact_tokens_from_text():
     from tidal_dl.helper.redact import redact_secrets
 

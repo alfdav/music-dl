@@ -29,12 +29,9 @@ class RedactingFilter:
 
     def filter(self, record) -> bool:
         try:
-            record.msg = redact_secrets(str(record.msg))
-            if record.args:
-                if isinstance(record.args, dict):
-                    record.args = {key: redact_secrets(str(value)) for key, value in record.args.items()}
-                else:
-                    record.args = tuple(redact_secrets(str(arg)) for arg in record.args)
+            formatted = record.getMessage()
+            record.msg = redact_secrets(formatted)
+            record.args = None
         except Exception:
             return True
         return True
