@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import secrets
 import shutil
 import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
+import requests
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, SecretStr
-import requests
 
 from tidal_dl.gui.bot_onboarding import TokenSource, bot_token_source, shared_token_path
 from tidal_dl.helper.path import path_config_base
@@ -202,9 +202,9 @@ def _start_bot_for_app(app) -> dict:
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Could not start Discord bot: {exc}") from exc
 
+    _write_private_file_atomic(bot_pid_path(), f"{proc.pid}\n")
     app.state.discord_bot_process = proc
     app.state.discord_bot_pid = proc.pid
-    _write_private_file_atomic(bot_pid_path(), f"{proc.pid}\n")
     return _status_for_app(app)
 
 
