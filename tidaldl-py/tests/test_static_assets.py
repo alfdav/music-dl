@@ -142,11 +142,26 @@ class TestAppJsFeatureMarkers:
 
     def test_has_requested_keyboard_shortcuts(self):
         js = read_gui_js()
+        css = (STATIC_DIR / "style.css").read_text()
         assert "_isTypingTarget" in js
         assert "metaKey || e.ctrlKey" in js
-        assert "Cmd/Ctrl+K" in js
-        assert "Cmd/Ctrl+L" in js
-        assert "Cmd/Ctrl+Shift+Q" in js
+        assert "Cmd/Ctrl" not in js
+        assert "_resolveShortcutPlatform" in js
+        assert "_renderShortcutStrip" in js
+        assert "shortcut-keycap" in js
+        assert "aria-label" in js
+        assert "Command Shift Q" in js or "'Command'" in js
+        grid = _css_rule_bodies(css, ".settings-shortcuts")
+        assert any("auto-fit" in body and "minmax" in body for body in grid)
+        label = _css_rule_bodies(css, ".settings-shortcut-label")
+        assert any(
+            "white-space: nowrap" in body
+            and "min-width: 0" in body
+            and "text-overflow: ellipsis" in body
+            for body in label
+        )
+        keycap = _css_rule_bodies(css, ".shortcut-keycap")
+        assert any("box-shadow:" in body and "border-radius:" in body for body in keycap)
 
     def test_has_recent_filters_and_clear_old(self):
         js = read_gui_js()

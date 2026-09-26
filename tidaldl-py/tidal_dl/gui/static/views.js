@@ -5438,22 +5438,12 @@ function renderPlaybackPrefsSection(container) {
   smartRow.appendChild(smartToggle);
   section.appendChild(smartRow);
 
-  const shortcuts = h('div', { className: 'settings-shortcuts' });
-  [
-    ['Space', 'Play / Pause'],
-    ['ArrowLeft', 'Back 10s'],
-    ['ArrowRight', 'Forward 10s'],
-    ['Cmd/Ctrl+K', 'Search'],
-    ['Cmd/Ctrl+L', 'Lyrics'],
-    ['Cmd/Ctrl+Shift+Q', 'Queue'],
-  ].forEach(([key, label]) => {
-    shortcuts.appendChild(h('div', { className: 'settings-shortcut-row' },
-      textEl('span', key, 'shortcut-key'),
-      textEl('span', label, 'shortcut-action')
-    ));
-  });
-  section.appendChild(shortcuts);
+  const shortcutsHost = h('div');
+  section.appendChild(shortcutsHost);
   container.appendChild(section);
+  void Promise.resolve(_resolveShortcutPlatform()).then((platform) => {
+    shortcutsHost.appendChild(_renderShortcutStrip(platform));
+  });
 }
 
 function _setVersionChip(version) {

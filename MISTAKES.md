@@ -8,6 +8,14 @@
 
 **Prevention:** Final `qa` job always passes `--enforce`. Check steps still continue so evidence is complete. Write the bot pid file before publishing process state. `running=True` means the pid file exists. Settings field-count tests name the new fields, not a magic number alone. Lyrics detach tests lock the viewport listener. Player-bar invariance is the bun lyrics-sync contract: do not hide `#now-heart` / `#now-download` on `.lyrics-open`. LibraryDB probe ceilings must match GitHub-hosted 10k-probe cost (`visible_scanned_path_sql` + `fold_search`), not a quiet laptop. Do not skip or delete a failing test to go green.
 
+## 2026-09-26 — Shortcut strip showed Cmd/Ctrl as one wide string
+
+**What happened:** Settings Playback shortcut cards used a single amber monospace box per combo (`ArrowLeft`, `Cmd/Ctrl+Shift+Q`). Queue overflowed its card, Forward 10s wrapped, and card widths were uneven.
+
+**Root cause:** Display copied the event-code / cross-platform chord text instead of rendering one keycap per key. Labels sat after the wide key box with no nowrap/ellipsis contract.
+
+**Prevention:** Render platform-specific `kbd.shortcut-keycap` chips (`⌘ ⇧ Q` / `Ctrl Shift Q`) via `_shortcutKeycaps`. Detect OS through Tauri `os.platform` / `plugin:os|platform`, then `navigator.userAgentData.platform` / `navigator.platform`. Never paint `Cmd/Ctrl`. Keep labels sentence-case, nowrap, `min-width: 0`, ellipsis fallback. Shortcut *behavior* stays `metaKey || e.ctrlKey`.
+
 ## 2026-09-18 — Module-on delete gate kept only Jev-actable extras
 
 **What happened:** After the group-chip checkbox fix, `resolve_delete_paths` kept only ≥0.95 layout_twin / true_dup. Posted engine-auto extras with no cache, missing scorer, or pair error were dropped. Enabling the module blocked ordinary Clean Up.
