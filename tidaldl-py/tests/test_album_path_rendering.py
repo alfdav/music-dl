@@ -9,12 +9,17 @@ to turn that into ``_``, so You Want It Darker landed in
 
 from __future__ import annotations
 
+from pathlib import Path
+from threading import Event
+from unittest.mock import MagicMock, patch
+
 from tidalapi.album import Album
 from tidalapi.artist import Role
 from tidalapi.media import Track
 
-from tidal_dl.model.cfg import Settings as ModelSettings
+from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.helper.path import format_path_media
+from tidal_dl.model.cfg import Settings as ModelSettings
 
 _DEFAULT_ALBUM = ModelSettings().format_album
 _QUALITY_ALBUM = "{album_artist}/{album_title}/{track_quality}/{track_title}"
@@ -101,3 +106,74 @@ def test_empty_quality_label_collapses_instead_of_underscore():
 
     assert path == "Leonard Cohen/You Want It Darker/If I Didn't Have Your Love"
     assert "/_/" not in f"/{path}/"
+
+
+def _download_for_legacy_placeholder(tmp_path: Path):
+    from tidal_dl.download import Download
+
+    tidal = MagicMock()
+    tidal.session = MagicMock()
+    tidal.active_source = MagicMock()
+    tidal.hifi_client = None
+    tidal.stream_lock = MagicMock()
+    tidal.stream_lock.__enter__ = MagicMock(return_value=None)
+    tidal.stream_lock.__exit__ = MagicMock(return_value=False)
+    tidal.api_cache = None
+
+    abort = Event()
+    run = Event()
+    run.set()
+
+    with patch("tidal_dl.download.path_config_base", return_value=str(tmp_path)):
+        dl = Download(
+            tidal_obj=tidal,
+            path_base=str(tmp_path),
+            fn_logger=MagicMock(),
+            skip_existing=True,
+            event_abort=abort,
+            event_run=run,
+        )
+    dl._library_db = LibraryDB(tmp_path / "library.db")
+    dl._library_db.open()
+    # Path check only: a v1.7 `_` library must skip even when ISRC is off / unindexed.
+    dl.settings.data.skip_duplicate_isrc = False
+    dl.settings.data.symlink_to_track = False
+    return dl
+
+
+def test_skip_existing_reuses_v17_placeholder_folder(tmp_path: Path):
+    """v1.7 wrote Artist/Album/_/Track.flac. Collapse must skip, not remint."""
+    legacy = (
+        tmp_path
+        / "Leonard Cohen"
+        / "You Want It Darker"
+        / "_"
+        / "If I Didn't Have Your Love.flac"
+    )
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"existing")
+
+    track = _Track(
+        "If I Didn't Have Your Love",
+        _Album("You Want It Darker", num_volumes=1),
+        tags=["LOSSLESS"],
+    )
+    dl = _download_for_legacy_placeholder(tmp_path)
+
+    with patch.object(dl, "extension_guess", return_value=".flac"):
+        dest, ext, skip_file, skip_download = dl._prepare_file_paths_and_skip_logic(
+            track,
+            _DEFAULT_ALBUM,
+            None,
+            0,
+            0,
+        )
+    dl._library_db.close()
+
+    collapsed = tmp_path / "Leonard Cohen" / "You Want It Darker" / "If I Didn't Have Your Love.flac"
+    assert skip_file is True
+    assert skip_download is False
+    assert ext == ".flac"
+    assert dest.resolve() == legacy.resolve()
+    assert legacy.is_file()
+    assert not collapsed.exists()

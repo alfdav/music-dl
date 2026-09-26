@@ -2,6 +2,14 @@
 
 ## 2026-09-27 — Overlay keycaps reused the settings-card fill
 
+## 2026-09-26 — Collapsing `_` reminted dest and would re-download v1.7 libraries
+
+**What happened:** Empty optional CD segments became `_` from `67c8551` / first release `v1.7.0`. Collapsing that segment changed dest for every single-disc album to `Artist/Album/Track`. `skip_existing` checked only the new dest; `live_identity_paths` only looks in dest parent; `has_live_isrc` helps only if `library.db` already scanned the `_` file and ISRC skip is on.
+
+**Root cause:** Dest identity was the computed path. A released layout is also identity.
+
+**Prevention:** If `Artist/Album/_/Track.ext` exists, dest and skip reuse it. Do not move files. New tracks still mint `Artist/Album/Track`. Cover an existing `_` file in skip-existing tests.
+
 ## 2026-09-26 — Empty optional CD token minted a `_` album folder
 
 **What happened:** Live #188 album download of You Want It Darker landed in `Leonard Cohen/You Want It Darker/_/`. Track and album both succeeded; only the folder was wrong.
