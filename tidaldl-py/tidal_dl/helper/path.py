@@ -172,12 +172,30 @@ def format_path_media(
         )
 
         if result_fmt != match.group(1):
+            if result_fmt == "":
+                result = _collapse_empty_template_segment(result, template_str)
+                continue
             value = (
                 _sanitize_name(result_fmt) if result_fmt != FORMAT_TEMPLATE_EXPLICIT else FORMAT_TEMPLATE_EXPLICIT
             )
             result = result.replace(template_str, value)
 
     return result
+
+
+def _collapse_empty_template_segment(path: str, token: str) -> str:
+    """Drop a path segment that is only an empty optional token.
+
+    ``{track_volume_num_optional_CD}`` is empty on a single-disc album. Sanitizing
+    that to ``_`` minted ``Artist/Album/_/track``. Collapse the segment instead.
+    """
+    if f"/{token}/" in path:
+        return path.replace(f"/{token}/", "/")
+    if path.endswith(f"/{token}"):
+        return path[: -len(token) - 1]
+    if path.startswith(f"{token}/"):
+        return path[len(token) + 1 :]
+    return path.replace(token, "")
 
 
 def format_str_media(

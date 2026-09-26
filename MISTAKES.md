@@ -2,6 +2,14 @@
 
 ## 2026-09-27 — Overlay keycaps reused the settings-card fill
 
+## 2026-09-26 — Empty optional CD token minted a `_` album folder
+
+**What happened:** Live #188 album download of You Want It Darker landed in `Leonard Cohen/You Want It Darker/_/`. Track and album both succeeded; only the folder was wrong.
+
+**Root cause:** Default `format_album` is `{album_artist}/{album_title}/{track_volume_num_optional_CD}/{track_title}`. On a single-disc album the optional token is `""`. `format_path_media` ran `_sanitize_name("")`, which returns `_`. Pre-existing on master; #189 did not touch path templates.
+
+**Prevention:** Empty optional tokens collapse the path segment (`a/{token}/b` → `a/b`). Cover single-disc default album templates and an empty `{track_quality}` segment. Multi-disc still gets `CD2`.
+
 ## 2026-09-26 — Treated account HI_RES as “this login can stream Hi-Res”
 
 **What happened:** #189 negotiated catalog / `trackManifests` / DASH correctly, but a Tidal Web session capped at LOSSLESS still hit `QualityMismatchError` on listed Hi-Res tracks (`FLAC_HIRES` offered, Hi-Fi down). The reporter’s first-install Mac failed; another Mac with a Hi-Res-capable login worked. Account `highestSoundQuality` was HI_RES on both.
