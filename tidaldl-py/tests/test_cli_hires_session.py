@@ -42,6 +42,8 @@ def _settings():
                 {
                     "quality_audio": Quality.hi_res_lossless,
                     "quality_video": QualityVideo.P720,
+                    "download_base_path": "/tmp/music-dl-cli-hires-test",
+                    "skip_existing": False,
                     "download_delay": False,
                     "video_download": False,
                     "extract_flac": True,
@@ -87,14 +89,18 @@ def _tidal(*, session_max: str | None):
 
 
 def _install_cli(monkeypatch, *, session_max: str | None, media):
-    from tidal_dl.cli import Download
 
     tidal = _tidal(session_max=session_max)
     captured: list[str] = []
 
     def fake_resolve(ctx, *args, **kwargs):
+        if not isinstance(getattr(ctx, "obj", None), dict):
+            ctx.obj = {}
         ctx.obj[CTX_TIDAL] = tidal
         return True
+
+    monkeypatch.setattr("tidal_dl.cli._ctx_tidal", lambda _ctx: tidal)
+    monkeypatch.setattr("tidal_dl.cli._ctx_settings", lambda _ctx: tidal.settings)
 
     class CliDownload(StreamMixin):
         def __init__(self, tidal_obj, fn_logger, **_kwargs):

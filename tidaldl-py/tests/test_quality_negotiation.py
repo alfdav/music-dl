@@ -482,8 +482,8 @@ def test_session_can_deliver_hires_treats_blank_as_unknown():
 
 def test_capped_session_accepts_cd_when_flac_hires_offered_and_hifi_down():
     from tests.test_hires_flac_quality import _listed_hires_track, _oauth_cd_stream
-    from tidal_dl.download.quality import SESSION_HIRES_FALLBACK_NOTICE
     from tidal_dl.constants import quality_name
+    from tidal_dl.download.quality import SESSION_HIRES_FALLBACK_NOTICE
 
     subject, warnings = _dead_hifi_subject()
     subject.tidal.session_max_quality = "LOSSLESS"

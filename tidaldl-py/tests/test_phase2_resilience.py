@@ -458,7 +458,6 @@ def test_subscription_quality_probe_never_mutates_configured_or_session_quality(
 
 def test_subscription_quality_probe_records_oauth_session_max_when_account_is_hi_res(capsys):
     """Account HI_RES must not hide a Tidal Web login that only delivers LOSSLESS."""
-    from tidal_dl.download.quality import SESSION_HIRES_FALLBACK_NOTICE
 
     class SettingsData:
         quality_audio = Quality.hi_res_lossless
@@ -484,7 +483,8 @@ def test_subscription_quality_probe_records_oauth_session_max_when_account_is_hi
     out = capsys.readouterr().out
     assert "HI_RES" in out
     assert "this login only delivers" in out
-    assert SESSION_HIRES_FALLBACK_NOTICE in out
+    assert "This login can't get Hi-Res streams" in out
+    assert "downloading Lossless instead" in out
     assert probe.session_max_quality == "LOSSLESS"
     assert probe.settings.data.quality_audio == Quality.hi_res_lossless
     assert probe.session.audio_quality == Quality.hi_res_lossless
