@@ -764,13 +764,31 @@ class TestDownloadTrigger:
         reason="auth hole: download queues without login; fixed on cursor/tidal-auth-v2-phase01-150e, remove on merge",
     )
     def test_requires_tidal_login(self, client, monkeypatch, clear_singletons):
+        """POST /api/download with no session is 401, not a queued job.
+
+        On master, ``require_tidal`` treated a missing refresh token as
+        REFRESH_SKIPPED and then enqueued. That is a real auth-gate hole,
+        not a stale assertion: the request must not start device-code
+        login and must not accept the download.
+        """
+        oauth = []
+
         class FakeSession:
             def check_login(self):
                 return False
 
+            def login_oauth(self):
+                oauth.append("login_oauth")
+                raise AssertionError("download trigger started login_oauth")
+
         class FakeTidal:
             def __init__(self):
                 self.session = FakeSession()
+                self.data = SimpleNamespace(
+                    access_token=None,
+                    refresh_token=None,
+                    expiry_time=0,
+                )
 
         monkeypatch.setattr("tidal_dl.config.Tidal", FakeTidal)
 
@@ -786,6 +804,8 @@ class TestDownloadTrigger:
             "auth_state": "needs_attention",
         }
         assert "terminal" not in str(resp.json()["detail"]).lower()
+        assert oauth == []
+        assert client.app.state.download_jobs.snapshot()["queued_count"] == 0
 
 
 class TestSearchAuth:
