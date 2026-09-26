@@ -138,6 +138,27 @@ def _serialize_catalog_track(track: Any) -> dict:
     }
 
 
+def _too_many_requests(exc: BaseException) -> bool:
+    if type(exc).__name__ == "TooManyRequests":
+        return True
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None) == 429
+
+
+def _retry_after_sec(exc: BaseException) -> float | None:
+    retry = getattr(exc, "retry_after", None)
+    if retry is None:
+        headers = getattr(getattr(exc, "response", None), "headers", None) or {}
+        retry = headers.get("Retry-After") if hasattr(headers, "get") else None
+    try:
+        value = float(retry)
+    except (TypeError, ValueError):
+        return None
+    if value < 0:
+        return None
+    return value
+
+
 def _call_tracks(playlist: Any, *, limit: int, offset: int) -> list:
     getter = getattr(playlist, "tracks", None)
     if not callable(getter):
@@ -257,16 +278,33 @@ def _fetch_pages(playlist: Any, offsets: list[int], page_size: int) -> dict[int,
     if not offsets:
         return fetched
 
+    from tidal_dl.download.api_pacing import shared_pacer
+
+    pacer = shared_pacer()
+
     def _one(offset: int) -> tuple[int, list[dict]]:
-        t0 = time.perf_counter()
-        raw = _call_tracks(playlist, limit=page_size, offset=offset)
-        log.info(
-            "playlist_load stage=tidal_page offset=%s count=%s ms=%.1f",
-            offset,
-            len(raw),
-            (time.perf_counter() - t0) * 1000,
-        )
-        return offset, [_serialize_catalog_track(track) for track in raw]
+        while True:
+            pacer.wait_before_api(enabled=pacer.rate_limit_hits > 0)
+            try:
+                t0 = time.perf_counter()
+                raw = _call_tracks(playlist, limit=page_size, offset=offset)
+                log.info(
+                    "playlist_load stage=tidal_page offset=%s count=%s ms=%.1f",
+                    offset,
+                    len(raw),
+                    (time.perf_counter() - t0) * 1000,
+                )
+                return offset, [_serialize_catalog_track(track) for track in raw]
+            except Exception as exc:
+                if not _too_many_requests(exc):
+                    raise
+                wait = pacer.note_429(_retry_after_sec(exc))
+                log.warning(
+                    "playlist_load stage=tidal_429 offset=%s wait=%.1f",
+                    offset,
+                    wait,
+                )
+                time.sleep(wait)
 
     if len(offsets) == 1:
         offset, rows = _one(offsets[0])

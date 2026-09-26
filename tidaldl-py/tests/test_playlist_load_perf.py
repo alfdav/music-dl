@@ -405,3 +405,66 @@ def test_static_js_playlist_first_page_and_skeleton():
     assert "PLAYLIST_PAGE_SIZE" in js
     assert "tracks-virtual" in js
     assert "skeleton-track" in js
+
+
+class RateLimitedPlaylist(SlowTidalPlaylist):
+    """Raise TooManyRequests once on a remaining page, then succeed."""
+
+    def __init__(self, tracks: list, *, fail_offset: int = PAGE_SIZE, retry_after: int = 2, **kwargs):
+        super().__init__(tracks, **kwargs)
+        self.fail_offset = fail_offset
+        self.retry_after = retry_after
+        self.rate_limit_raises = 0
+        self.attempts_by_offset: dict[int, int] = {}
+
+    def tracks(self, limit=None, offset=0, **_kwargs):
+        from tidalapi.exceptions import TooManyRequests
+
+        off = int(offset or 0)
+        with self._lock:
+            self.attempts_by_offset[off] = self.attempts_by_offset.get(off, 0) + 1
+            attempt = self.attempts_by_offset[off]
+            self._in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self._in_flight)
+            self.calls.append(("tracks", limit, off, time.perf_counter()))
+        try:
+            if off == self.fail_offset and attempt == 1:
+                self.rate_limit_raises += 1
+                raise TooManyRequests("Too many requests", retry_after=self.retry_after)
+            self._sleep()
+            cap = self.page_cap
+            size = cap if limit is None else max(1, min(int(limit), cap))
+            start = max(off, 0)
+            return self._all[start : start + size]
+        finally:
+            with self._lock:
+                self._in_flight -= 1
+
+
+def test_remaining_pages_back_off_on_tidal_429(monkeypatch, clear_singletons, tmp_path):
+    """Concurrency-2 remaining pages must honor Tidal 429 instead of retrying hard."""
+    from tidal_dl.download.api_pacing import reset_shared_pacer_for_tests, shared_pacer
+    from tidal_dl.gui.api import playlists as playlists_api
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(float(seconds)))
+    reset_shared_pacer_for_tests()
+
+    playlist = RateLimitedPlaylist(_make_tracks(150), latency=0.0, retry_after=2)
+    session = SlowTidalSession(playlist, latency=0.0)
+    _bind(monkeypatch, playlists_api, session, CountingDB({}))
+
+    first = playlists_api.playlist_tracks("pl-429", limit=PAGE_SIZE, offset=0)
+    assert first["has_more"] is True
+    assert playlist.rate_limit_raises == 0
+
+    full = playlists_api.playlist_tracks("pl-429")
+    pacer = shared_pacer()
+
+    assert len(full["tracks"]) == 150
+    assert playlist.rate_limit_raises == 1
+    assert playlist.attempts_by_offset[PAGE_SIZE] >= 2
+    assert sleeps
+    assert any(wait >= 2 for wait in sleeps)
+    assert pacer.rate_limit_hits >= 1
+    assert playlist.max_in_flight <= 2
