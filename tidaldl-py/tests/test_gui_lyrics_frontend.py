@@ -36,12 +36,14 @@ def test_style_contains_lyrics_panel_shells_and_player_height_variable():
     assert '.lyrics-save' in css
 
 
-def test_style_contains_reduced_motion_and_open_state_action_hiding_rules():
+def test_style_contains_reduced_motion_without_hiding_player_actions():
     css = STYLE_CSS.read_text()
 
     assert '@media (prefers-reduced-motion: reduce)' in css
-    assert '.lyrics-open #now-heart' in css
-    assert '.lyrics-open #now-download' in css
+    # Player-bar invariance: lyrics-open must not hide heart/download.
+    # Locked by tidaldl-py/tests/lyrics-sync.test.js.
+    assert '.lyrics-open #now-heart' not in css
+    assert '.lyrics-open #now-download' not in css
 
 
 def test_app_has_lyrics_state_contract():

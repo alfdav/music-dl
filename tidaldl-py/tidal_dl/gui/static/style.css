@@ -2967,11 +2967,6 @@ body {
   animation: drop-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
 }
 
-.lyrics-open #now-heart,
-.lyrics-open #now-download {
-  display: none;
-}
-
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
