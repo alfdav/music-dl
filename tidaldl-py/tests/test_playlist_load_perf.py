@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from tests.test_gui_playlist_local_preference import (
     _fake_track,
     _FakePlaylistDB,
@@ -509,3 +511,131 @@ def test_remaining_pages_back_off_on_tidal_429(monkeypatch, clear_singletons, tm
     assert any(wait >= 2 for wait in sleeps)
     assert pacer.rate_limit_hits >= 1
     assert playlist.max_in_flight <= 2
+
+
+class AlwaysLimitedPlaylist(SlowTidalPlaylist):
+    def tracks(self, limit=None, offset=0, **_kwargs):
+        from tidalapi.exceptions import TooManyRequests
+
+        off = int(offset or 0)
+        with self._lock:
+            self.attempts_by_offset[off] = self.attempts_by_offset.get(off, 0) + 1
+            self.rate_limit_raises += 1
+        raise TooManyRequests("Too many requests", retry_after=1)
+
+
+def test_playlist_429_retries_are_capped(monkeypatch, clear_singletons):
+    from fastapi import HTTPException
+
+    from tidal_dl.download.api_pacing import reset_shared_pacer_for_tests
+    from tidal_dl.gui.api import playlists as playlists_api
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleeps.append(float(seconds)))
+    reset_shared_pacer_for_tests()
+    playlist = AlwaysLimitedPlaylist(_make_tracks(3), latency=0.0)
+    playlist.rate_limit_raises = 0
+    playlist.attempts_by_offset = {}
+    session = SlowTidalSession(playlist, latency=0.0)
+    _bind(monkeypatch, playlists_api, session, CountingDB({}))
+
+    with pytest.raises(HTTPException) as caught:
+        playlists_api.playlist_tracks("pl-429-cap", limit=PAGE_SIZE, offset=0)
+
+    assert caught.value.status_code == 429
+    assert caught.value.detail == "Tidal rate limit; playlist tracks paused"
+    attempts = playlist.attempts_by_offset[0]
+    assert attempts == playlists_api._PLAYLIST_429_RETRIES + 1
+    assert sum(1 for wait in sleeps if wait == 1.0) == playlists_api._PLAYLIST_429_RETRIES
+
+
+def test_first_page_stamp_does_not_touch_the_filesystem(monkeypatch, clear_singletons, tmp_path):
+    """Owned display match is ISRC → indexed path. Any stat fails the test."""
+    import os
+    from pathlib import Path
+
+    from tidal_dl.gui.api import playlists as playlists_api
+
+    rows = _library_rows(tmp_path, 3, files=0)
+    playlist = SlowTidalPlaylist(_make_tracks(3), latency=0.0)
+    session = SlowTidalSession(playlist, latency=0.0)
+    db = CountingDB({row["isrc"]: [row] for row in rows}, all_rows=rows)
+    _bind(monkeypatch, playlists_api, session, db)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("filesystem check on playlist first-page stamp")
+
+    monkeypatch.setattr(os, "stat", _boom)
+    monkeypatch.setattr(Path, "exists", _boom)
+    monkeypatch.setattr(Path, "is_file", _boom)
+    try:
+        data = playlists_api.playlist_tracks("pl-nostat", limit=PAGE_SIZE, offset=0)
+    finally:
+        monkeypatch.undo()
+
+    assert data["tracks"][0]["is_local"] is True
+    assert data["tracks"][0]["path"] == rows[0]["path"]
+    assert data["tracks"][0]["local_path"] == rows[0]["path"]
+    assert db.identity_calls == 0
+
+
+def test_first_page_stamp_stays_fast_on_a_large_library(monkeypatch, clear_singletons, tmp_path):
+    """A few thousand indexed rows must not turn a 50-track page into seconds."""
+    from tidal_dl.gui.api import playlists as playlists_api
+    from tidal_dl.helper.library_db import LibraryDB
+
+    db_path = tmp_path / "library.db"
+    db = LibraryDB(db_path)
+    db.open()
+    now = int(time.time())
+    extra = []
+    for i in range(15_000):
+        extra.append((
+            f"/Volumes/Music/Artist/Album/extra-{i}.flac",
+            f"LIB{i:05d}",
+            "scanned",
+            "Artist",
+            f"Library Song {i}",
+            "Album",
+            "LOSSLESS",
+            "FLAC",
+            "flac",
+            now,
+        ))
+    owned = []
+    for i in range(50):
+        owned.append((
+            f"/Volumes/Music/Artist/Album/owned-{i}.flac",
+            f"ISRC{i:05d}",
+            "scanned",
+            "Artist",
+            f"Song {i + 1}",
+            f"Album {(i // 12) + 1}",
+            "LOSSLESS",
+            "FLAC",
+            "flac",
+            now,
+        ))
+    db._conn.executemany(
+        """INSERT INTO scanned
+           (path, isrc, status, artist, title, album, quality, format, codec, scanned_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        extra + owned,
+    )
+    db._conn.commit()
+
+    playlist = SlowTidalPlaylist(_make_tracks(50), latency=0.0)
+    session = SlowTidalSession(playlist, latency=0.0)
+    monkeypatch.setattr(playlists_api, "get_tidal", lambda: _tidal_wrapper(session))
+    monkeypatch.setattr(playlists_api, "_get_playlist_db", lambda: db)
+    playlists_api._playlist_tracks_cache.clear()
+
+    t0 = time.perf_counter()
+    data = playlists_api.playlist_tracks("pl-big", limit=PAGE_SIZE, offset=0)
+    elapsed = time.perf_counter() - t0
+    db.close()
+
+    assert elapsed < 0.5
+    assert len(data["tracks"]) == 50
+    assert data["tracks"][0]["local_path"] == "/Volumes/Music/Artist/Album/owned-0.flac"
+    assert data["tracks"][0]["is_local"] is True

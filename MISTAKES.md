@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-27 — Live playlist load statted the SMB share and scrolled the wrong box
+
+**What happened:** PR #194 at 15574bec passed mocked CI, then failed on a Mac whose library is an SMB share (`/Volumes/Music`). The 'Us' playlist (555 entries, 440 unique) took 12 s for the first page and about 2 minutes for the list. Scrolling during load blanked the virtual window. Play started at 50 tracks and finished at 441. Home-back restored scroll 20,000 as 44; browser-back restored 0. A stuck Tidal 429 retried forever.
+
+**Root cause:** Display matching still called `match_local_row` → `resolve_live_library_path`, which `stat`s every candidate on the request path. CI's fake DB never touched the filesystem, and a missing local file stats quickly. `.main` is `overflow: hidden`; `#view` is the scroller. Virtual paint, scroll restore, and listeners read `.main.scrollTop`. Page append dropped rows by track id, so playlist repeats never joined the queue. `_fetch_pages` slept on 429 with no retry cap.
+
+**Prevention:** Paginated display stamps are `tracks_by_isrc` plus the indexed `path` only. A test patches `os.stat` / `Path.exists` / `Path.is_file` to raise during first-page stamping, and a second test stamps a 15k-row `library.db` with paths that are not on disk. Scroll save, restore, virtual paint, and the scroll listener all use `_appScrollEl` (`#view` in the real `index.html` / `style.css`). Queue append is by playlist index, keeps duplicates, and splices shuffle pages into the unplayed tail. Leaving after Play keeps filling; opening another playlist toasts `Playlist queue incomplete`. 429s stop after 3 backoff sleeps and return HTTP 429 `Tidal rate limit; playlist tracks paused`.
+
 ## 2026-09-27 — Playlist first-page stamp and virtual list dropped playability and queue
 
 **What happened:** Bugbot on #194 at 7707ffb: paginated `_stamp_sql_only` set `is_local` without `path`/`local_path`, so owned tracks looked unplayable. Virtual paint used raw `.main.scrollTop` while chrome sat above `.tracks`. `paintLoaded` reapplied saved scroll on every remaining page. Play/Shuffle snapshotted the first 50 tracks.

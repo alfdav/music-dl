@@ -31,6 +31,7 @@ _PLAYLIST_PAGE_SIZE = 50
 _PLAYLIST_FETCH_CONCURRENCY = 2
 _PLAYLIST_PAGE_CAP = 50
 _PLAYLIST_TOTAL_CAP = 10_000
+_PLAYLIST_429_RETRIES = 3
 
 _playlist_list_cache: dict = {"data": None, "ts": 0.0}
 # playlist_id → {"ts", "last_updated", "etag", "total", "pages": {offset: [catalog]}, "source"}
@@ -171,12 +172,37 @@ def _call_tracks(playlist: Any, *, limit: int, offset: int) -> list:
         return raw[offset : offset + limit]
 
 
+def _indexed_display_row(track_data: dict, db: Any) -> dict | None:
+    """ISRC → indexed library path. No artist walk and no filesystem stat."""
+    from tidal_dl.helper.library_scanner import path_has_skipped_scan_dir
+
+    isrc = str(track_data.get("isrc") or "").strip()
+    if not isrc or not hasattr(db, "tracks_by_isrc"):
+        return None
+    rows = [dict(row) for row in (db.tracks_by_isrc(isrc) or []) if row]
+    usable = [
+        row for row in rows
+        if row.get("path") and not path_has_skipped_scan_dir(str(row.get("path") or ""))
+    ]
+    if not usable:
+        return None
+    wanted = _normalize(str(track_data.get("name") or track_data.get("title") or ""))
+
+    def _rank(row: dict) -> tuple:
+        title = _normalize(str(row.get("title") or row.get("name") or ""))
+        path = str(row.get("path") or "")
+        return (0 if wanted and title == wanted else 1, len(path), path)
+
+    usable.sort(key=_rank)
+    return usable[0]
+
+
 def _stamp_sql_only(tracks: list[dict], db: Any) -> list[dict]:
     """Identity match from SQLite only. No NAS/stat. First-page safe."""
     stamped: list[dict] = []
     for data in tracks:
         row = dict(data)
-        local_row = _best_local_row(row, db)
+        local_row = _indexed_display_row(row, db)
         stamped.append(finish_stamp(stamp_track(row, local_row)))
     return stamped
 
@@ -301,6 +327,7 @@ def _fetch_pages(playlist: Any, offsets: list[int], page_size: int) -> dict[int,
     pacer = shared_pacer()
 
     def _one(offset: int) -> tuple[int, list[dict]]:
+        retries = 0
         while True:
             pacer.wait_before_api(enabled=pacer.rate_limit_hits > 0)
             try:
@@ -316,12 +343,19 @@ def _fetch_pages(playlist: Any, offsets: list[int], page_size: int) -> dict[int,
             except Exception as exc:
                 if not _too_many_requests(exc):
                     raise
+                retries += 1
                 wait = pacer.note_429(_retry_after_sec(exc))
                 log.warning(
-                    "playlist_load stage=tidal_429 offset=%s wait=%.1f",
+                    "playlist_load stage=tidal_429 offset=%s wait=%.1f retry=%s",
                     offset,
                     wait,
+                    retries,
                 )
+                if retries > _PLAYLIST_429_RETRIES:
+                    raise HTTPException(
+                        status_code=429,
+                        detail="Tidal rate limit; playlist tracks paused",
+                    ) from exc
                 time.sleep(wait)
 
     if len(offsets) == 1:

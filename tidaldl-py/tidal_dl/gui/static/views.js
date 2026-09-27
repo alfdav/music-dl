@@ -64,6 +64,14 @@ function _hashchangeNavOpts(hash, lastNavHash, stackTopView) {
   if (stackTopView && hash === stackTopView) return { back: true };
   return { jump: true };
 }
+
+function _appScrollEl(doc) {
+  const root = doc || (typeof document !== 'undefined' ? document : null);
+  if (!root) return null;
+  const view = root.getElementById ? root.getElementById('view') : null;
+  if (view) return view;
+  return root.querySelector ? root.querySelector('.main') : null;
+}
 // ---- /NAV STACK ----
 
 function _navBackControl() {
@@ -88,7 +96,7 @@ function navigate(view, opts) {
 
   // Save outgoing view state
   if (state.view && viewEl.firstChild) {
-    const scrollEl = document.querySelector('.main');
+    const scrollEl = _appScrollEl(document);
     _viewState[state.view] = {
       scrollY: scrollEl ? scrollEl.scrollTop : 0,
     };
@@ -172,7 +180,7 @@ function navigate(view, opts) {
   viewEl.appendChild(container);
 
   // Restore saved scroll position or reset to top
-  const scrollEl = document.querySelector('.main');
+  const scrollEl = _appScrollEl(document);
   if (scrollEl) {
     const saved = _viewState[safeView];
     if (saved && saved.scrollY) {
@@ -4488,6 +4496,11 @@ const PLAYLIST_VIRTUAL_THRESHOLD = 80;
 let _playlistSelectedIndex = 0;
 let _playlistFocusSelected = false;
 let _playlistQueueLive = false;
+let _playlistFillGen = 0;
+let _playlistFillPlaylistId = null;
+let _playlistQueuedUntil = 0;
+let _playlistFillTotal = 0;
+let _playlistNoteQueueStarted = null;
 
 function playlistViewKey(pl) {
   const id = (pl && pl.id != null) ? String(pl.id) : '';
@@ -4525,34 +4538,66 @@ function _applyPlaylistScrollRestore(viewState, view, alreadyApplied) {
   return { applied: true, scrollY: scrollY };
 }
 
-function _playlistUnqueuedTracks(loaded, queuedKeys, keyFn) {
-  const extra = [];
-  (loaded || []).forEach(track => {
-    const key = keyFn(track);
-    if (!key || queuedKeys.has(key)) return;
-    extra.push(track);
-  });
-  return extra;
+function _playlistUnqueuedByPosition(loaded, queuedUntil) {
+  const start = Math.max(0, queuedUntil || 0);
+  return (loaded || []).slice(start);
 }
 
-function _syncPlaylistLiveQueue(loaded) {
-  if (!_playlistQueueLive) return 0;
-  const queued = new Set(
-    (state.queueOriginal || []).map(t => String(_trackKey(t))).filter(Boolean),
-  );
-  const extra = _playlistUnqueuedTracks(loaded, queued, t => String(_trackKey(t)));
-  extra.forEach(track => {
-    const entry = _cloneQueueTrack(track, ++_queueEntrySeq);
-    state.queueOriginal.push(entry);
-    state.queue.push(entry);
+function _appendPlaylistQueueEntries(queue, queueOriginal, queueIndex, entries, shuffle, random) {
+  const nextQueue = (queue || []).slice();
+  const nextOriginal = (queueOriginal || []).slice();
+  const rng = random || Math.random;
+  (entries || []).forEach(entry => {
+    nextOriginal.push(entry);
+    if (!shuffle) {
+      nextQueue.push(entry);
+      return;
+    }
+    const tail = Math.max(0, (queueIndex || 0) + 1);
+    const span = Math.max(1, nextQueue.length - tail + 1);
+    const at = Math.min(nextQueue.length, tail + Math.floor(rng() * span));
+    nextQueue.splice(at, 0, entry);
   });
-  if (extra.length) {
+  return { queue: nextQueue, queueOriginal: nextOriginal };
+}
+
+function _playlistFetchContinues(onView, queueLive) {
+  return !!(onView || queueLive);
+}
+
+function _playlistLeaveDecision(onView, filling, stillThisFill, samePlaylist) {
+  if (!stillThisFill) {
+    if (filling && samePlaylist) return 'handoff';
+    if (filling) return 'stop-incomplete';
+    return 'stop';
+  }
+  if (onView || filling) return 'continue';
+  return 'stop';
+}
+
+function _playlistQueueIncomplete(filling, loadedCount, total) {
+  return !!(filling && (total || 0) > (loadedCount || 0));
+}
+
+function _syncPlaylistLiveQueue(loaded, queuedUntil, shuffle, live) {
+  const active = live == null ? !!_playlistQueueLive : !!live;
+  if (!active) return queuedUntil || 0;
+  const extraTracks = _playlistUnqueuedByPosition(loaded, queuedUntil);
+  const entries = extraTracks.map(track => _cloneQueueTrack(track, ++_queueEntrySeq));
+  const merged = _appendPlaylistQueueEntries(
+    state.queue, state.queueOriginal, state.queueIndex, entries, !!shuffle,
+  );
+  state.queue = merged.queue;
+  state.queueOriginal = merged.queueOriginal;
+  if (entries.length) {
     _saveQueue();
     if (typeof queuePanel !== 'undefined' && queuePanel && queuePanel.classList.contains('open')) {
       renderQueue();
     }
   }
-  return extra.length;
+  const nextUntil = (queuedUntil || 0) + extraTracks.length;
+  _playlistQueuedUntil = nextUntil;
+  return nextUntil;
 }
 
 function playlistTracksUrl(pl, limit, offset) {
@@ -4586,10 +4631,23 @@ function _playlistVirtualRange(scrollTop, viewHeight, total, rowPx, overscan) {
   return { start: start, end: end, top: start * row, height: total * row };
 }
 
+function _playlistListOffset(trackList, scroller) {
+  if (!trackList || !scroller || trackList === scroller) return 0;
+  if (typeof trackList.getBoundingClientRect === 'function'
+      && typeof scroller.getBoundingClientRect === 'function') {
+    const list = trackList.getBoundingClientRect();
+    const box = scroller.getBoundingClientRect();
+    if (list && box && (list.top || box.top || scroller.scrollTop)) {
+      return (list.top - box.top) + (scroller.scrollTop || 0);
+    }
+  }
+  return Math.max(0, (trackList.offsetTop || 0) - (scroller.offsetTop || 0));
+}
+
 function _playlistScrollParent(trackList) {
-  if (typeof document !== 'undefined' && document.querySelector) {
-    const main = document.querySelector('.main');
-    if (main) return main;
+  if (typeof document !== 'undefined') {
+    const scroller = _appScrollEl(document);
+    if (scroller) return scroller;
   }
   return trackList && trackList.parentElement;
 }
@@ -4604,7 +4662,7 @@ function _playlistMarkSelected(row, index) {
   }
   row.addEventListener('click', () => {
     _playlistSelectedIndex = index;
-    _playlistQueueLive = true;
+    if (typeof _playlistNoteQueueStarted === 'function') _playlistNoteQueueStarted();
   });
   row.addEventListener('focus', () => { _playlistSelectedIndex = index; });
 }
@@ -4628,7 +4686,7 @@ function _paintPlaylistVirtual(trackList, tracks, total) {
   trackList.classList.add('tracks-virtual');
   const parent = _playlistScrollParent(trackList);
   const rawTop = parent && parent !== trackList ? (parent.scrollTop || 0) : 0;
-  const listOffsetTop = parent && parent !== trackList ? (trackList.offsetTop || 0) : 0;
+  const listOffsetTop = _playlistListOffset(trackList, parent);
   const scrollTop = _playlistListScrollTop(rawTop, listOffsetTop);
   const viewHeight = parent && parent.clientHeight ? parent.clientHeight : 720;
   const range = _playlistVirtualRange(scrollTop, viewHeight, total, PLAYLIST_VIRTUAL_ROW_PX, 8);
@@ -4662,7 +4720,18 @@ function _paintPlaylistVirtual(trackList, tracks, total) {
 async function loadPlaylistTracks(resultsArea, pl) {
   _rememberPlaylist(pl);
   _playlistSelectedIndex = 0;
-  _playlistQueueLive = false;
+  const playlistId = String(pl && pl.id != null ? pl.id : '');
+  const continuing = !!(_playlistQueueLive && _playlistFillPlaylistId === playlistId);
+  const myGen = ++_playlistFillGen;
+  _playlistFillPlaylistId = playlistId;
+  let filling = continuing;
+  let queuedUntil = continuing ? _playlistQueuedUntil : 0;
+  if (!continuing) {
+    _playlistQueueLive = false;
+    _playlistQueuedUntil = 0;
+  }
+  let total = pl.num_tracks || 0;
+  _playlistFillTotal = total;
   while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
   resultsArea.className = 'album-detail-view';
 
@@ -4738,6 +4807,18 @@ async function loadPlaylistTracks(resultsArea, pl) {
   const loaded = [];
   let actionsWired = false;
   let scrollRestoreApplied = false;
+  const viewKey = state.view;
+  const stillThisFill = () => _playlistFillGen === myGen;
+  const onThisView = () => state.view === viewKey && stillThisFill();
+  const noteQueueStarted = () => {
+    if (!stillThisFill()) return;
+    filling = true;
+    _playlistQueueLive = true;
+    queuedUntil = loaded.length;
+    _playlistQueuedUntil = queuedUntil;
+    _playlistFillTotal = total;
+  };
+  _playlistNoteQueueStarted = noteQueueStarted;
 
   const paintLoaded = (totalHint) => {
     const total = totalHint || loaded.length;
@@ -4748,7 +4829,10 @@ async function loadPlaylistTracks(resultsArea, pl) {
       scrollParent.scrollTop = restore.scrollY;
     }
     renderPlaylistRows(trackList, loaded, total);
-    _syncPlaylistLiveQueue(loaded);
+    if (filling) {
+      queuedUntil = _syncPlaylistLiveQueue(loaded, queuedUntil, state.shuffle, stillThisFill());
+      _playlistFillTotal = totalHint || total;
+    }
     const countEl = plMeta.querySelector('.album-detail-sub');
     if (countEl) countEl.textContent = total + ' tracks';
     if (loaded.length) {
@@ -4772,16 +4856,16 @@ async function loadPlaylistTracks(resultsArea, pl) {
       if (!loaded.length) return;
       state.shuffle = false;
       btnShuffle.classList.remove('active');
-      _playlistQueueLive = true;
       _setQueueOrder(loaded, loaded[0]);
+      noteQueueStarted();
       playTrack(state.queue[state.queueIndex]);
     });
     shuffleBtn.addEventListener('click', () => {
       if (!loaded.length) return;
       state.shuffle = true;
       btnShuffle.classList.add('active');
-      _playlistQueueLive = true;
       _setQueueOrder(loaded, loaded[0]);
+      noteQueueStarted();
       playTrack(state.queue[state.queueIndex]);
     });
     dlBtn.addEventListener('click', async () => {
@@ -4808,15 +4892,37 @@ async function loadPlaylistTracks(resultsArea, pl) {
     });
   };
 
-  const viewKey = state.view;
-  const stillThisPlaylist = () => state.view === viewKey;
+  const afterAwait = () => {
+    const decision = _playlistLeaveDecision(
+      state.view === viewKey,
+      filling,
+      stillThisFill(),
+      _playlistFillPlaylistId === playlistId,
+    );
+    if (decision === 'stop-incomplete') {
+      toast(
+        'Playlist queue incomplete (' + queuedUntil + ' of ' + (_playlistFillTotal || total) + ')',
+        'error',
+      );
+    }
+    return decision;
+  };
+
+  const paintOrFill = (totalHint) => {
+    if (onThisView()) paintLoaded(totalHint);
+    else if (filling && stillThisFill()) {
+      queuedUntil = _syncPlaylistLiveQueue(loaded, queuedUntil, state.shuffle, true);
+      _playlistFillTotal = totalHint || total;
+    }
+  };
 
   try {
     const first = await api(playlistTracksUrl(pl, PLAYLIST_PAGE_SIZE, 0));
-    if (!stillThisPlaylist()) return;
+    if (afterAwait() !== 'continue') return;
     loaded.push.apply(loaded, first.tracks || []);
-    let total = first.total || pl.num_tracks || loaded.length;
-    paintLoaded(total);
+    total = first.total || pl.num_tracks || loaded.length;
+    _playlistFillTotal = total;
+    paintOrFill(total);
     wireActions();
 
     const scrollParent = _playlistScrollParent(trackList);
@@ -4835,7 +4941,7 @@ async function loadPlaylistTracks(resultsArea, pl) {
       );
       _playlistFocusSelected = true;
       if (scrollParent) {
-        const listOffsetTop = trackList.offsetTop || 0;
+        const listOffsetTop = _playlistListOffset(trackList, scrollParent);
         const listScroll = _playlistListScrollTop(scrollParent.scrollTop || 0, listOffsetTop);
         const next = _playlistEnsureVisibleScroll(
           _playlistSelectedIndex,
@@ -4867,21 +4973,27 @@ async function loadPlaylistTracks(resultsArea, pl) {
     let offset = (first.offset || 0) + loaded.length;
     while (offset < total) {
       const page = await api(playlistTracksUrl(pl, PLAYLIST_PAGE_SIZE, offset));
-      if (!stillThisPlaylist()) return;
+      const decision = afterAwait();
+      if (decision !== 'continue') return;
       const rows = page.tracks || [];
       if (!rows.length) break;
       loaded.push.apply(loaded, rows);
       if (page.total) total = page.total;
+      _playlistFillTotal = total;
       offset += rows.length;
-      paintLoaded(total);
+      paintOrFill(total);
     }
 
-    _scanPlaylistUpgrades(loaded, trackList, upgradeBtn, refreshUpgradeBtn);
+    if (onThisView()) _scanPlaylistUpgrades(loaded, trackList, upgradeBtn, refreshUpgradeBtn);
   } catch (err) {
+    const message = (err && err.message) || 'Failed to load tracks';
+    const rateLimited = !!(err && err.status === 429);
+    if (filling || rateLimited) toast(message, 'error');
+    if (!onThisView()) return;
     while (trackList.firstChild) trackList.removeChild(trackList.firstChild);
     trackList.appendChild(h('div', { className: 'empty-state' },
-      textEl('div', 'Failed to load tracks', 'empty-state-title'),
-      textEl('div', err.message, 'empty-state-sub')
+      textEl('div', rateLimited ? 'Tidal rate limit' : 'Failed to load tracks', 'empty-state-title'),
+      textEl('div', message, 'empty-state-sub')
     ));
   }
 }
