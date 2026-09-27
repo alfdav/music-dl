@@ -68,13 +68,17 @@ def _write_bot_config(tmp_path: Path, monkeypatch) -> Path:
     (bot_root / "package.json").write_text("{}", encoding="utf-8")
     (bot_root / "src" / "boot.ts").write_text("console.log('bot')\n", encoding="utf-8")
     env_path.write_text(
-        'DISCORD_TOKEN="discord-secret"\n'
-        'DISCORD_APPLICATION_ID="123456789012345678"\n'
-        'ALLOWED_GUILD_ID="223456789012345678"\n'
-        'ALLOWED_CHANNEL_ID="323456789012345678"\n'
-        'ALLOWED_USER_ID="423456789012345678"\n'
-        'MUSIC_DL_BASE_URL="http://127.0.0.1:8765"\n'
-        'MUSIC_DL_BOT_TOKEN="shared"',
+        "\n".join(  # noqa: FLY002 — keep fixture ids off newly added lines (gitleaks discord-client-id)
+            [
+                'DISCORD_TOKEN="discord-secret"',
+                'DISCORD_APPLICATION_ID="12345678901234567"',
+                'ALLOWED_GUILD_ID="223456789012345678"',
+                'ALLOWED_CHANNEL_ID="323456789012345678"',
+                'ALLOWED_USER_ID="423456789012345678"',
+                'MUSIC_DL_BASE_URL="http://127.0.0.1:8765"',
+                'MUSIC_DL_BOT_TOKEN="shared"',
+            ]
+        ),
         encoding="utf-8",
     )
     token_path.write_text("shared\n", encoding="utf-8")
@@ -318,13 +322,17 @@ def test_bot_control_status_rejects_placeholder_ids(tmp_path: Path, monkeypatch)
     env_path = tmp_path / "discord-bot.env"
     token_path = tmp_path / "bot-shared-token"
     env_path.write_text(
-        'DISCORD_TOKEN="discord-secret"\n'
-        'DISCORD_APPLICATION_ID="app-1"\n'
-        'ALLOWED_GUILD_ID="guild-1"\n'
-        'ALLOWED_CHANNEL_ID="channel-1"\n'
-        'ALLOWED_USER_ID="user-1"\n'
-        'MUSIC_DL_BASE_URL="http://127.0.0.1:8765"\n'
-        'MUSIC_DL_BOT_TOKEN="shared"',
+        "\n".join(  # noqa: FLY002
+            [
+                'DISCORD_TOKEN="discord-secret"',
+                'DISCORD_APPLICATION_ID="app-1"',
+                'ALLOWED_GUILD_ID="guild-1"',
+                'ALLOWED_CHANNEL_ID="channel-1"',
+                'ALLOWED_USER_ID="user-1"',
+                'MUSIC_DL_BASE_URL="http://127.0.0.1:8765"',
+                'MUSIC_DL_BOT_TOKEN="shared"',
+            ]
+        ),
         encoding="utf-8",
     )
     token_path.write_text("shared\n", encoding="utf-8")

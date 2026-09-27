@@ -6,7 +6,7 @@
 
 **Root cause:** #198 writes `discord-bot.pid` and only then assigns `discord_bot_process`. Status that lands in between takes the "no process object" path, reads the pid, and `_pid_alive` uses `os.kill`. The lifespan test's FakeProcess pid is not an OS process, so that path calls `_forget_recorded_pid`. If start has assigned the process by then, forget clears it and `running` stays false. If forget runs first, it deletes the pid file and the later assignment still reports running.
 
-**Prevention:** Hold `_bot_lifecycle_lock` across the pid-file write and both state assignments, and across the status read that may forget a dead pid. `running=True` still means the pid file exists. Do not widen the poll timeout. Tests stub `api.github.com` so lifespan key refresh never dials the network.
+**Prevention:** Hold `_bot_lifecycle_lock` across the pid-file write and both state assignments, and across the status read that may forget a dead pid. `running=True` still means the pid file exists. Do not widen the poll timeout. Tests stub `api.github.com` so lifespan key refresh never dials the network. Do not reformat an existing `"\n".join` of Discord fixture ids to silence FLY002: gitleaks scans added lines (`git log -p -U0`) and flags `discord-client-id` on the snowflake. Leave those lines and mark the join `# noqa: FLY002`.
 
 ## 2026-09-27 — Overlay keycaps reused the settings-card fill
 
