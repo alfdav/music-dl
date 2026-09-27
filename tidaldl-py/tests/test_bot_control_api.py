@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -30,7 +31,8 @@ def _stub_api_github_com(monkeypatch: pytest.MonkeyPatch) -> None:
     real_connect = socket.socket.connect
 
     def _request(self, method, url, *args, **kwargs):
-        if isinstance(url, str) and "://api.github.com" in url:
+        parsed = urlsplit(url) if isinstance(url, str) else None
+        if parsed is not None and parsed.hostname == "api.github.com" and parsed.scheme in {"http", "https"}:
             return _GithubStubResponse()
         return real_request(self, method, url, *args, **kwargs)
 
