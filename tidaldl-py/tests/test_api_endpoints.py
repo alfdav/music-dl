@@ -759,10 +759,6 @@ class TestUpgradeStart:
 
 
 class TestDownloadTrigger:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="auth hole: download queues without login; fixed on cursor/tidal-auth-v2-phase01-150e, remove on merge",
-    )
     def test_requires_tidal_login(self, client, monkeypatch, clear_singletons):
         """POST /api/download with no session is 401, not a queued job.
 
