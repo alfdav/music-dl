@@ -6,7 +6,7 @@
 
 **Root cause:** First-page identity skipped `stamp_track`. Virtual range treated parent scroll as list scroll. Restore ran on every paint. Queue used `loaded.slice()` at click and never appended later pages.
 
-**Prevention:** First-page SQL stamp goes through `stamp_track` (no NAS). Paint uses `_playlistListScrollTop(parent.scrollTop, list.offsetTop)` and 66px border-box rows. Restore is one-shot via `_applyPlaylistScrollRestore`. After Play/Shuffle/play-from-here, `_playlistUnqueuedTracks` appends later pages into `queue`/`queueOriginal`.
+**Prevention:** First-page SQL stamp goes through `stamp_track` (no NAS). Paint uses `_playlistListScrollTop(parent.scrollTop, list.offsetTop)` and 66px border-box rows. Restore is one-shot via `_applyPlaylistScrollRestore`. After Play/Shuffle/play-from-here, `_playlistUnqueuedTracks` appends later pages into `queue`/`queueOriginal`. Client `total` never raises cache size above Tidal `num_tracks` or 10_000.
 
 ## 2026-09-26 — Advisory QA hid master failures until enforcement
 

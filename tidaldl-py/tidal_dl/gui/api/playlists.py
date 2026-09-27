@@ -30,6 +30,7 @@ _CACHE_MAX_PLAYLISTS = 50
 _PLAYLIST_PAGE_SIZE = 50
 _PLAYLIST_FETCH_CONCURRENCY = 2
 _PLAYLIST_PAGE_CAP = 50
+_PLAYLIST_TOTAL_CAP = 10_000
 
 _playlist_list_cache: dict = {"data": None, "ts": 0.0}
 # playlist_id → {"ts", "last_updated", "etag", "total", "pages": {offset: [catalog]}, "source"}
@@ -265,9 +266,29 @@ def _load_playlist_object(session, playlist_id: str, entry: dict | None):
     return playlist
 
 
+def _bounded_playlist_total(value: int | None) -> int:
+    return max(0, min(int(value or 0), _PLAYLIST_TOTAL_CAP))
+
+
+def _resolve_playlist_total(
+    entry: dict,
+    total_hint: int | None,
+    playlist: Any | None,
+) -> int:
+    """Tidal num_tracks wins. Client total may fill a gap, never inflate it."""
+    tidal_num = int(getattr(playlist, "num_tracks", 0) or 0) if playlist is not None else 0
+    if tidal_num:
+        return _bounded_playlist_total(tidal_num)
+    current = _bounded_playlist_total(entry.get("total"))
+    if current:
+        return current
+    return _bounded_playlist_total(total_hint)
+
+
 def _missing_offsets(entry: dict, total: int, page_size: int) -> list[int]:
     pages = entry.get("pages") or {}
-    return [offset for offset in range(0, max(total, 0), page_size) if offset not in pages]
+    bounded = _bounded_playlist_total(total)
+    return [offset for offset in range(0, bounded, page_size) if offset not in pages]
 
 
 def _fetch_pages(playlist: Any, offsets: list[int], page_size: int) -> dict[int, list[dict]]:
@@ -341,7 +362,7 @@ def _ensure_pages(
             "ts": time.time(),
             "last_updated": _normalize_updated(last_updated),
             "etag": None,
-            "total": int(total_hint or 0),
+            "total": _bounded_playlist_total(total_hint),
             "pages": {},
             "source": None,
         }
@@ -362,9 +383,9 @@ def _ensure_pages(
             entry["etag"] = getattr(playlist, "_etag", None) or entry.get("etag")
             num = getattr(playlist, "num_tracks", 0) or 0
             if num:
-                entry["total"] = int(num)
+                entry["total"] = _bounded_playlist_total(num)
             elif total_hint:
-                entry["total"] = int(total_hint)
+                entry["total"] = _bounded_playlist_total(total_hint)
         if missing:
             t_fetch = time.perf_counter()
             fetched = _fetch_pages(playlist, missing, page_size)
@@ -375,8 +396,7 @@ def _ensure_pages(
                 entry["total"] = missing[0] + got
                 if got >= page_size:
                     entry["total"] = missing[0] + got + 1
-    if total_hint and int(total_hint) > int(entry.get("total") or 0):
-        entry["total"] = int(total_hint)
+    entry["total"] = _resolve_playlist_total(entry, total_hint, playlist)
 
     entry["ts"] = time.time()
     _store_cache(playlist_id, entry)
@@ -593,7 +613,7 @@ def playlist_tracks(
     limit: Annotated[int | None, Query(ge=1, le=200)] = None,
     offset: Annotated[int, Query(ge=0)] = 0,
     last_updated: Annotated[str | None, Query()] = None,
-    total: Annotated[int | None, Query(ge=0)] = None,
+    total: Annotated[int | None, Query(ge=0, le=10_000)] = None,
 ) -> dict:
     """Get tracks for a specific playlist.
 

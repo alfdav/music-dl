@@ -390,6 +390,28 @@ def test_paginated_first_page_stamps_local_path_without_nas(
     assert db.all_tracks_calls == 0
 
 
+def test_client_total_hint_cannot_inflate_tidal_page_fetches(
+    monkeypatch, clear_singletons,
+):
+    from tidal_dl.gui.api import playlists as playlists_api
+
+    playlist = SlowTidalPlaylist(_make_tracks(3), latency=0.0)
+    session = SlowTidalSession(playlist, latency=0.0)
+    _bind(monkeypatch, playlists_api, session, CountingDB({}))
+
+    first = playlists_api.playlist_tracks(
+        "pl-inflate", limit=PAGE_SIZE, offset=0, total=1_000_000,
+    )
+    assert first["total"] == 3
+    assert first["has_more"] is False
+    first_calls = len(playlist.calls)
+
+    full = playlists_api.playlist_tracks("pl-inflate", total=1_000_000)
+    assert len(full["tracks"]) == 3
+    assert full["total"] == 3
+    assert len(playlist.calls) - first_calls <= 2
+
+
 def test_paginated_tracks_keep_catalog_fields_without_catalog_stash(
     monkeypatch, clear_singletons,
 ):
