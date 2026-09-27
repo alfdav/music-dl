@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-27 — Pid file published before the bot process object
+
+**What happened:** `test_bot_control_lifespan_starts_and_stops_configured_bot` failed under QA with `running` still false after polling `/api/bot-control/status` for 2s. A second ordering failed the pid-file read after status had already reported running. A gist 403 from `api.github.com` showed up in that stdout and was not the cause.
+
+**Root cause:** #198 writes `discord-bot.pid` and only then assigns `discord_bot_process`. Status that lands in between takes the "no process object" path, reads the pid, and `_pid_alive` uses `os.kill`. The lifespan test's FakeProcess pid is not an OS process, so that path calls `_forget_recorded_pid`. If start has assigned the process by then, forget clears it and `running` stays false. If forget runs first, it deletes the pid file and the later assignment still reports running.
+
+**Prevention:** Hold `_bot_lifecycle_lock` across the pid-file write and both state assignments, and across the status read that may forget a dead pid. `running=True` still means the pid file exists. Do not widen the poll timeout. Tests stub `api.github.com` so lifespan key refresh never dials the network.
+
 ## 2026-09-27 — Overlay keycaps reused the settings-card fill
 
 **What happened:** The `?` help overlay switched to `shortcut-keycap` chips. Those chips fill with `--bg-warm`, the same token as `.shortcuts-card`, so chords lost their key surface and kept only a faint border.
@@ -14,7 +22,7 @@
 
 **Root cause:** Calibration left the final `qa` job advisory. Status reporting was treated as the merge gate. Publishing `discord_bot_process` before the pid file made `running=True` visible before `discord-bot.pid` existed. Settings field-count and lyrics `lyricsBody` wheel assertions were not updated when #186 and the viewport scroller landed.
 
-**Prevention:** Final `qa` job always passes `--enforce`. Check steps still continue so evidence is complete. Write the bot pid file before publishing process state. `running=True` means the pid file exists. Settings field-count tests name the new fields, not a magic number alone. Lyrics detach tests lock the viewport listener. Player-bar invariance is the bun lyrics-sync contract: do not hide `#now-heart` / `#now-download` on `.lyrics-open`. LibraryDB probe ceilings must match GitHub-hosted 10k-probe cost (`visible_scanned_path_sql` + `fold_search`), not a quiet laptop. Do not skip or delete a failing test to go green.
+**Prevention:** Final `qa` job always passes `--enforce`. Check steps still continue so evidence is complete. Publish the bot pid file and `discord_bot_process` under `_bot_lifecycle_lock` (see 2026-09-27). Writing the pid file first without that lock lets status forget a start whose pid is not alive yet. `running=True` means the pid file exists. Settings field-count tests name the new fields, not a magic number alone. Lyrics detach tests lock the viewport listener. Player-bar invariance is the bun lyrics-sync contract: do not hide `#now-heart` / `#now-download` on `.lyrics-open`. LibraryDB probe ceilings must match GitHub-hosted 10k-probe cost (`visible_scanned_path_sql` + `fold_search`), not a quiet laptop. Do not skip or delete a failing test to go green.
 
 ## 2026-09-26 — Shortcut strip showed Cmd/Ctrl as one wide string
 
