@@ -145,6 +145,9 @@ def callback_app(
         ctx (typer.Context): Typer context object.
         version (bool | None, optional): Version flag. Defaults to None.
     """
+    from tidal_dl.helper.redact import install_redacting_logging
+
+    install_redacting_logging()
     ctx.obj = {"tidal": None}
 
 
@@ -473,8 +476,10 @@ def _resolve_session(ctx: typer.Context) -> bool:
     def _print_message(message: str) -> None:
         print(message)
 
-    result = tidal.resolve_source(fn_print=_print_message)
+    result = tidal.resolve_source(fn_print=_print_message, allow_interactive_login=False)
     ctx.obj[CTX_TIDAL] = tidal
+    if not result:
+        print("Not logged in. Run 'music-dl login' to connect this device.")
 
     return result
 

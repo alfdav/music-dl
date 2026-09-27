@@ -53,6 +53,12 @@ class TestHostValidation:
         resp = client.get("/api/test", headers={"Host": "attacker.localhost:8765", "X-CSRF-Token": token})
         assert resp.status_code == 403
 
+    def test_rejects_localhost_with_wrong_port(self):
+        app, token = _create_secured_app()
+        client = TestClient(app)
+        resp = client.get("/api/test", headers={"Host": "localhost:9", "X-CSRF-Token": token})
+        assert resp.status_code == 403
+
 
 class TestCSRF:
     def test_get_requests_pass_without_token(self):

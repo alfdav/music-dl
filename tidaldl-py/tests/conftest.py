@@ -1,11 +1,9 @@
 """Shared pytest fixtures."""
 
 import os
-import re
 import tempfile
 
 import pytest
-
 
 _session_config_dir = tempfile.TemporaryDirectory(prefix="music-dl-pytest-")
 os.environ["MUSIC_DL_CONFIG_DIR"] = _session_config_dir.name
@@ -36,13 +34,18 @@ def clear_singletons():
 
 @pytest.fixture
 def client(tmp_path):
-    """FastAPI TestClient with CSRF support."""
-    from tidal_dl.gui import create_app
+    """FastAPI TestClient with the per-launch UI secret."""
     from fastapi.testclient import TestClient
-    with TestClient(create_app(port=8765, job_db_path=tmp_path / "jobs.db")) as c:
+
+    from tidal_dl.gui import create_app
+    app = create_app(port=8765, job_db_path=tmp_path / "jobs.db")
+    with TestClient(app) as c:
         c._host_header = {"host": "localhost:8765"}
-        index = c.get("/", headers=c._host_header)
-        match = re.search(r'name="csrf-token" content="([^"]+)"', index.text)
-        c._csrf = match.group(1) if match else ""
-        c._headers = {**c._host_header, "X-CSRF-Token": c._csrf}
+        secret = getattr(app.state, "ui_secret", "") or getattr(app.state, "csrf_token", "")
+        c._csrf = secret
+        c._headers = {
+            **c._host_header,
+            "X-CSRF-Token": secret,
+            "X-Music-DL-UI": secret,
+        }
         yield c

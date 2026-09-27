@@ -24,6 +24,7 @@ DESKTOP_COMMANDS = {
     "stop-sidecar",
     "start-sidecar",
     "restart-sidecar",
+    "get-ui-secret",
 }
 
 

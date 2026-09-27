@@ -9,6 +9,8 @@ services:
       # Localhost only by default — safe on shared networks.
       # Keep localhost: application Host/CORS validation does not support direct LAN use.
       - "${MUSIC_DL_HOST:-127.0.0.1}:${MUSIC_DL_PORT:-8765}:8765"
+    environment:
+      MUSIC_DL_UI_SECRET: ${MUSIC_DL_UI_SECRET:?set MUSIC_DL_UI_SECRET; bind-all will not mint one}
     volumes:
       - ${MUSIC_DL_CONFIG:-~/.config/music-dl}:/home/musicdl/.config/music-dl
       - ${MUSIC_DL_DOWNLOADS:-~/Music}:/home/musicdl/download

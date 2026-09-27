@@ -163,7 +163,7 @@ app.add_middleware(TokenRefreshMiddleware)             # 4th registered → runs
 |-------|-----------|-------------|
 | 1 | `TokenRefreshMiddleware` | Calls `Tidal()._ensure_token_fresh()` on Tidal-facing paths (`/api/search`, `/api/download`, `/api/playlists`) via `asyncio.to_thread`. Skips `/api/playback` so a download worker holding `_token_fresh_lock` cannot freeze local file serving. Fails silently; the route retries once on a Tidal 401. |
 | 2 | `CORSMiddleware` | Allows `http://localhost:{port}` and `http://127.0.0.1:{port}` only |
-| 3 | `CSRFMiddleware` | Validates `X-CSRF-Token` header on POST/PATCH/DELETE. Uses `secrets.compare_digest()`. Exempts GET/HEAD/OPTIONS. |
+| 3 | `CSRFMiddleware` / `UISecretMiddleware` | Validates `X-Music-DL-UI` (or `X-CSRF-Token`) on POST/PATCH/DELETE and every `/api/auth` route. Host must be the exact `localhost:port` or `127.0.0.1:port`. |
 | 4 | `HostValidationMiddleware` | Rejects requests with Host header not in `{localhost, 127.0.0.1}:{port}`. DNS rebinding defense. |
 
 ---
@@ -175,8 +175,8 @@ All security logic in `gui/security.py`.
 ### CSRF
 
 - Token: 32-byte URL-safe random, generated at server startup
-- Injected into `index.html` via `<meta name="csrf-token" content="__CSRF_TOKEN__">` replacement
-- Frontend sends as `X-CSRF-Token` header on all mutations
+- Per-launch secret is **not** injected into `index.html`. On loopback, GET `/` sets a `music_dl_ui` cookie; the webview or Tauri `get_ui_secret` command supplies `X-Music-DL-UI`. Bind-all does not set that cookie.
+- Frontend sends `X-Music-DL-UI` (and `X-CSRF-Token` as an alias) on API calls. Tokens are never returned from any endpoint.
 - Timing-safe comparison via `secrets.compare_digest()`
 - `/api/bot/*` is exempt from browser CSRF and instead requires bearer auth.
 
@@ -746,8 +746,9 @@ except (json.JSONDecodeError, KeyError):
 3. **Downloads never fail silently.** Every error broadcasts via SSE and logs. DB persistence failure must not prevent the broadcast.
 4. **Token refresh is opportunistic.** Middleware checks local expiry before explicit Tidal-facing requests. The browser does not run a background keepalive, and failure is not fatal — the request will surface the real error.
 5. **Localhost request boundary.** Browser mode binds `127.0.0.1`. Docker binds
-   the container listener to `0.0.0.0`, but Host and CORS validation still
-   accept localhost origins only; direct LAN use is unsupported.
+   the container listener to `0.0.0.0` only when `MUSIC_DL_BIND_ALL=1` and
+   `MUSIC_DL_UI_SECRET` is set. Host must match the exact `host:port`. CORS
+   stays localhost-only and is not permissive. Direct LAN use is unsupported.
 6. **Migrations are additive.** `ALTER TABLE ADD COLUMN`. Never drop, rename, or restructure. Schema grows forward.
 7. **Config corruption is recoverable.** `.bak` fallback, tolerant deserialization, defaults for missing fields.
 8. **NAS mounts are unreliable.** Reconnect on staleness, run I/O off the event loop, use WAL + short write transactions. Do not hold the SQLite writer lock across grouping, scans, or downloads; `busy_timeout` is only a last-resort wait.

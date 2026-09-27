@@ -24,14 +24,18 @@ Manual source checkout still works:
 ```shell
 git clone git@github.com:alfdav/music-dl.git
 cd music-dl
-docker compose -f docker/docker-compose.yml up gui -d
+MUSIC_DL_UI_SECRET="$(openssl rand -hex 32)" \
+  docker compose -f docker/docker-compose.yml up gui -d
 ```
+
+`MUSIC_DL_UI_SECRET` is required. Bind-all will not mint one, and `GET /` does not set a cookie. Keep the value and send it as `X-Music-DL-UI` on mutating and `/api/auth` requests.
 
 The setup wizard walks you through Tidal login and library configuration on first launch.
 
 ### Customizing paths
 
 ```shell
+MUSIC_DL_UI_SECRET="$(openssl rand -hex 32)" \
 MUSIC_DL_CONFIG=~/.my-config \
 MUSIC_DL_DOWNLOADS=/mnt/nas/music \
   docker compose -f docker/docker-compose.yml up gui -d
@@ -63,7 +67,8 @@ docker compose -f docker/docker-compose.yml down
 cd music-dl
 git pull
 docker compose -f docker/docker-compose.yml build gui
-docker compose -f docker/docker-compose.yml up gui -d
+MUSIC_DL_UI_SECRET="$MUSIC_DL_UI_SECRET" \
+  docker compose -f docker/docker-compose.yml up gui -d
 ```
 
 ---
@@ -131,7 +136,8 @@ Inside the container (set automatically by the Dockerfile):
 
 | Variable | Value | What it does |
 | --- | --- | --- |
-| `MUSIC_DL_BIND_ALL` | `1` | Binds server to `0.0.0.0` inside the container |
+| `MUSIC_DL_BIND_ALL` | `1` | Explicit opt-in to bind `0.0.0.0` inside the container. Outside Docker the server stays on `127.0.0.1`. |
+| `MUSIC_DL_UI_SECRET` | _(required)_ | Operator-held secret. Bind-all refuses to start without it. GET `/` does not set a cookie; send `X-Music-DL-UI` on mutating and `/api/auth` requests. |
 | `MUSIC_DL_CONFIG_DIR` | `/home/musicdl/.config/music-dl` | Config directory override |
 
 ---

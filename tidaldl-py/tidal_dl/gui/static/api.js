@@ -4,30 +4,43 @@
    static SVG icons and structural layout scaffolding — never with user data. */
 'use strict';
 
-// ---- CSRF ----
-let CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.content || '';
-let _csrfRefreshPromise = null;
+// ---- UI secret (per-launch; never taken from HTML) ----
+let CSRF_TOKEN = '';
+let _uiSecretPromise = null;
 
-async function refreshCsrfToken() {
-  if (_csrfRefreshPromise) return _csrfRefreshPromise;
+function _cookieUiSecret() {
+  const match = document.cookie.match(/(?:^|; )music_dl_ui=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
 
-  _csrfRefreshPromise = (async () => {
-    const resp = await fetch('/', { method: 'GET', cache: 'no-store' });
-    const html = await resp.text();
-    const match = html.match(/name="csrf-token" content="([^"]+)"/);
-    if (!match) throw new Error('Could not refresh CSRF token');
-
-    CSRF_TOKEN = match[1];
-    const meta = document.querySelector('meta[name="csrf-token"]');
-    if (meta) meta.content = CSRF_TOKEN;
+async function ensureUiSecret() {
+  if (CSRF_TOKEN) return CSRF_TOKEN;
+  const fromCookie = _cookieUiSecret();
+  if (fromCookie) {
+    CSRF_TOKEN = fromCookie;
+    return CSRF_TOKEN;
+  }
+  if (_uiSecretPromise) return _uiSecretPromise;
+  _uiSecretPromise = (async () => {
+    if (typeof _isTauri === 'function' && _isTauri() && window.__TAURI__?.core?.invoke) {
+      try {
+        const secret = await window.__TAURI__.core.invoke('get_ui_secret');
+        if (secret) CSRF_TOKEN = secret;
+      } catch (_) { /* browser / missing command */ }
+    }
+    if (!CSRF_TOKEN) CSRF_TOKEN = _cookieUiSecret();
     return CSRF_TOKEN;
   })();
-
   try {
-    return await _csrfRefreshPromise;
+    return await _uiSecretPromise;
   } finally {
-    _csrfRefreshPromise = null;
+    _uiSecretPromise = null;
   }
+}
+
+async function refreshCsrfToken() {
+  CSRF_TOKEN = '';
+  return ensureUiSecret();
 }
 
 // ---- HELPERS ----
@@ -436,9 +449,13 @@ async function api(path, options) {
   const opts = options || {};
   const method = opts.method || 'GET';
   const headers = {};
+  const secret = await ensureUiSecret();
+  if (secret) {
+    headers['X-Music-DL-UI'] = secret;
+    headers['X-CSRF-Token'] = secret;
+  }
 
   if (method !== 'GET') {
-    headers['X-CSRF-Token'] = CSRF_TOKEN;
     headers['Content-Type'] = 'application/json';
   }
 
@@ -458,19 +475,22 @@ async function api(path, options) {
 
   if (!resp.ok) {
     const detail = await resp.json().catch(() => ({}));
+    const payload = detail.detail;
     if (
       resp.status === 403 &&
-      detail.detail === 'Forbidden: invalid or missing CSRF token' &&
-      method !== 'GET' &&
+      (payload === 'Forbidden: invalid or missing CSRF token' ||
+        payload === 'Forbidden: invalid or missing UI secret') &&
       !opts._csrfRetried
     ) {
       await refreshCsrfToken();
       return api(path, { ...opts, _csrfRetried: true });
     }
-    const message = detail.detail || 'API error ' + resp.status;
+    const message = typeof payload === 'string'
+      ? payload
+      : (payload && payload.message) || 'API error ' + resp.status;
     const error = new Error(message);
     error.status = resp.status;
-    error.detail = message;
+    error.detail = payload || message;
     throw error;
   }
 
@@ -490,9 +510,19 @@ async function apiTidal(path, options) {
   try {
     return await api(path, options);
   } catch (error) {
-    if (_isTidalAuthError(error) && !_loginPoll) {
-      toast('Tidal login required — opening sign-in…', 'error');
-      triggerLogin();
+    const detail = error && error.detail;
+    const needsAttention = !!(
+      error &&
+      error.status === 401 &&
+      (
+        (detail && typeof detail === 'object' && detail.auth_state === 'needs_attention') ||
+        (typeof detail === 'string' && detail.toLowerCase().includes('needs attention')) ||
+        (error.message && String(error.message).toLowerCase().includes('needs attention'))
+      )
+    );
+    if (needsAttention) {
+      toast('Session needs attention. Use Connect to sign in.', 'error');
+      if (typeof _refreshTidalStatus === 'function') _refreshTidalStatus();
     }
     throw error;
   }

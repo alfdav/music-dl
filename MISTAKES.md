@@ -1,5 +1,21 @@
 # Mistakes
 
+## 2026-09-27 — Refresh persist wrote an empty refresh_token
+
+**What happened:** A live run against a copied config dir left `token.json` with a new access token and `refresh_token` null. The real file was not touched. The copy could no longer refresh, so the next Connect would be a new Tidal seat.
+
+**Root cause:** `tidalapi.Session.token_refresh` stores `access_token` and does not set `refresh_token` (the response often omits it). `Tidal.token_persist` then saved `session.refresh_token`. On a session that had not loaded the refresh token, that value is `None`. `Token.save` still wrote the file because the access token counted as payload.
+
+**Prevention:** A save keeps a non-empty refresh token already on disk when the session value is empty, logs that refusal with secrets redacted, and puts the kept value back on the session. A refresh response that does include a new refresh token still wins. Cover the omit-refresh response and concurrent persists.
+
+## 2026-09-27 — Bind-all minted the UI secret to any Host-spoofed GET /
+
+**What happened:** `server.py` auto-filled `MUSIC_DL_UI_SECRET` before `make_uvicorn_config` fail-closed. `GET /` then `Set-Cookie`d `music_dl_ui`. A client that could reach a `MUSIC_DL_BIND_ALL` listener sent `Host: localhost:<port>` and replayed the cookie as `X-Music-DL-UI`.
+
+**Root cause:** Bind-all treated a missing operator secret as "generate one" and used GET `/` as the delivery path. Host checks do not prove the peer is local.
+
+**Prevention:** Bind-all starts only with an already-set `MUSIC_DL_UI_SECRET`. GET `/` sets the cookie only on loopback. Cover run-does-not-autofill and bind-all GET `/` leaking no cookie.
+
 ## 2026-09-27 — Overlay keycaps reused the settings-card fill
 
 **What happened:** The `?` help overlay switched to `shortcut-keycap` chips. Those chips fill with `--bg-warm`, the same token as `.shortcuts-card`, so chords lost their key surface and kept only a faint border.
@@ -7,6 +23,14 @@
 **Root cause:** The settings strip sits on `--surface` over `--bg`. The overlay card *is* `--bg-warm`. One keycap fill cannot serve both parents.
 
 **Prevention:** `.shortcuts-card .shortcut-keycap` uses `--surface-active` so overlay keys lift off the `--bg-warm` card. Keep the settings strip on `--bg-warm`. Tests lock that the two fills differ. Do not reuse a surface token as both card and keycap. `--bg` on `--bg-warm` is too close to count.
+
+## 2026-09-26 — Auto-login after 401 and in-place token writes
+
+**What happened:** A 401 in `apiTidal()` called `triggerLogin()`, which started device-code OAuth while a refresh token still existed. `token.json` was also written in place, so a crash could truncate a working session. Recovery deleted a valid `.bak`.
+
+**Root cause:** Login was treated as the 401 recovery path. File writes used truncate-in-place plus destructive bak fallback.
+
+**Prevention:** Refresh once, then show Session needs attention. Device-code starts only from Connect with `confirm: true`. Token writes are temp+fsync+rename+dir fsync at mode 0600. Restore a valid `.bak`; never write an empty token. CLI `dl` prints `music-dl login` and exits.
 
 ## 2026-09-26 — Advisory QA hid master failures until enforcement
 

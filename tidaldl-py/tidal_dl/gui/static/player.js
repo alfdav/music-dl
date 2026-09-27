@@ -40,6 +40,7 @@ function _setRemotePlaybackUnavailable(unavailable) {
 }
 
 function _tidalStatusPresentation(data) {
+  if (data.auth_state === 'needs_attention') return { label: 'Session needs attention', dot: 'disconnected' };
   if (data.auth_state === 'expired') return { label: 'connection expired', dot: 'disconnected' };
   if (data.auth_state === 'unavailable') return { label: 'connection unavailable', dot: 'disconnected' };
   if (data.auth_state === 'not_configured') return { label: 'log in', dot: 'disconnected' };
@@ -1107,7 +1108,11 @@ function _logPlayEvent(track) {
   _playCountLogged = true;
   fetch('/api/home/play', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': CSRF_TOKEN,
+      'X-Music-DL-UI': CSRF_TOKEN,
+    },
     body: JSON.stringify({
       path: (track.is_local && track.local_path) ? track.local_path : (track.path || null),
       artist: track.artist || null,
@@ -1971,9 +1976,14 @@ function _dismissDeviceCodeModal() {
 async function triggerLogin() {
   const tidalEl = document.getElementById('connection-tidal');
   try {
-    const data = await api('/auth/login', { method: 'POST' });
+    const data = await api('/auth/login', { method: 'POST', body: { confirm: true } });
     if (data.status === 'already_logged_in') {
       await _handleLoginSuccess();
+      return;
+    }
+    if (data.auth_state === 'needs_attention' || data.status === 'needs_attention') {
+      toast('Session needs attention. Use Connect to sign in.', 'error');
+      refreshStatusLights();
       return;
     }
     if (data.status === 'expired') {
@@ -2372,7 +2382,7 @@ function _setupMustBlock(setupData) {
 }
 
 function _authStateNeedsExpiredBanner(authState) {
-  return authState === 'expired';
+  return authState === 'expired' || authState === 'needs_attention';
 }
 
 async function _checkSetup() {
@@ -2557,8 +2567,9 @@ async function _checkErrorBanners() {
     const auth = await api('/auth/status');
     if (_authStateNeedsExpiredBanner(auth.auth_state)) {
       const banner = h('div', { className: 'error-banner' });
-      banner.appendChild(textEl('span', 'Tidal session expired.'));
-      const reloginBtn = textEl('button', 'Re-connect', 'banner-action');
+      const needsAttention = auth.auth_state === 'needs_attention';
+      banner.appendChild(textEl('span', needsAttention ? 'Session needs attention.' : 'Tidal session expired.'));
+      const reloginBtn = textEl('button', 'Connect', 'banner-action');
       reloginBtn.addEventListener('click', () => triggerLogin());
       banner.appendChild(reloginBtn);
       const mainEl = document.querySelector('.main');

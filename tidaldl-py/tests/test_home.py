@@ -222,17 +222,12 @@ def test_api_home_does_not_recompute_album_grouping(api_home_client, tmp_path, m
 def test_api_home_play_returns_204(api_home_client):
     """POST /api/home/play returns 204."""
     host = {"host": "localhost:8765"}
-
-    # Get CSRF token
-    index = api_home_client.get("/", headers=host)
-    import re
-    csrf = re.search(r'name="csrf-token" content="([^"]+)"', index.text)
-    token = csrf.group(1) if csrf else ""
+    token = api_home_client.app.state.ui_secret
 
     resp = api_home_client.post(
         "/api/home/play",
         json={"artist": "Daft Punk", "genre": "Electronic", "duration": 320},
-        headers={**host, "X-CSRF-Token": token},
+        headers={**host, "X-CSRF-Token": token, "X-Music-DL-UI": token},
     )
     assert resp.status_code == 204
 
@@ -240,13 +235,8 @@ def test_api_home_play_returns_204(api_home_client):
 def test_api_home_play_dedup_within_60s(api_home_client, tmp_path):
     """POST /api/home/play silently deduplicates the same path within 60 seconds."""
     host = {"host": "localhost:8765"}
-
-    # Get CSRF token
-    index = api_home_client.get("/", headers=host)
-    import re
-    csrf = re.search(r'name="csrf-token" content="([^"]+)"', index.text)
-    token = csrf.group(1) if csrf else ""
-    headers = {**host, "X-CSRF-Token": token}
+    token = api_home_client.app.state.ui_secret
+    headers = {**host, "X-CSRF-Token": token, "X-Music-DL-UI": token}
 
     payload = {"path": "/tmp/test_dedup.flac", "artist": "Test", "genre": "Rock", "duration": 180}
 

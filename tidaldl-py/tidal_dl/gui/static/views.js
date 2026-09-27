@@ -5349,7 +5349,7 @@ function renderSettings(container) {
 }
 
 function _authStateCanReset(authState) {
-  return ['connected', 'credentials_ready', 'expired', 'unavailable'].includes(authState);
+  return ['connected', 'credentials_ready', 'expired', 'unavailable', 'needs_attention'].includes(authState);
 }
 
 async function _resetTidalConnection(container) {
@@ -5395,14 +5395,18 @@ async function loadAuthStatus(container) {
       const dot = h('span', { className: 'connection-dot' + (presentation.dot ? ' ' + presentation.dot : '') });
       row.appendChild(dot);
       row.appendChild(document.createTextNode(presentation.label));
-      const loginBtn = textEl('button', 'Log in to Tidal', 'banner-action');
+      const loginBtn = textEl('button', 'Connect', 'banner-action');
       loginBtn.addEventListener('click', () => { triggerLogin(); });
       row.appendChild(loginBtn);
     }
     if (_authStateCanReset(data.auth_state)) {
       const resetBtn = textEl('button', 'Reset Tidal connection', 'banner-action');
+      if (data.refresh_in_flight) {
+        resetBtn.disabled = true;
+        resetBtn.title = 'Reset is disabled while a token refresh is in progress';
+      }
       resetBtn.addEventListener('click', () => {
-        inlineConfirm('Reset the saved Tidal connection? You will need to log in again.', () => { _resetTidalConnection(container); });
+        inlineConfirm('This signs this device out of Tidal. The next Connect adds a new device session to the Tidal account.', () => { _resetTidalConnection(container); });
       });
       row.appendChild(resetBtn);
     }

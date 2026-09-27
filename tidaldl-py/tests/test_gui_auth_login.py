@@ -51,7 +51,7 @@ def test_gui_auth_login_refreshes_api_keys_before_oauth():
 
     settings_api._login_state.clear()
     settings_api._login_state.update({"status": "idle"})
-    result = settings_api.auth_login(Tidal())
+    result = settings_api.auth_login(Tidal(), confirm=True)
 
     assert result["status"] == "pending"
     assert calls == ["refresh_api_keys", "login_oauth"]
@@ -122,7 +122,7 @@ def test_gui_auth_login_uses_oauth_when_refresh_cannot_repair():
     settings_api._login_state.clear()
     settings_api._login_state.update({"status": "idle"})
 
-    result = settings_api.auth_login(Tidal())
+    result = settings_api.auth_login(Tidal(), confirm=True)
 
     assert result["status"] == "pending"
     assert calls == [("token_refresh", "expired-refresh"), "refresh_api_keys", "login_oauth"]
@@ -255,6 +255,7 @@ def test_auth_status_revives_expired_access_from_refresh_token_without_oauth():
         "username": "Ada",
         "auth_state": "credentials_ready",
         "account_quality": "HI_RES",
+        "refresh_in_flight": False,
     }
     assert tidal.ensure_calls
 
@@ -275,6 +276,7 @@ def test_auth_status_missing_tokens_is_not_configured():
         "username": "",
         "auth_state": "not_configured",
         "account_quality": None,
+        "refresh_in_flight": False,
     }
 
 
@@ -297,7 +299,7 @@ def test_auth_status_refresh_failure_requires_login_not_not_configured():
     status = settings_api._local_auth_status(DeadRefreshTidal())
 
     assert status["logged_in"] is False
-    assert status["auth_state"] == "expired"
+    assert status["auth_state"] == "needs_attention"
     assert status["auth_state"] != "not_configured"
 
 
@@ -433,7 +435,7 @@ def test_gui_auth_login_starts_oauth_only_after_refresh_failure():
 
     settings_api._login_state.clear()
     settings_api._login_state.update({"status": "idle"})
-    result = settings_api.auth_login(Tidal())
+    result = settings_api.auth_login(Tidal(), confirm=True)
 
     assert result["status"] == "pending"
     assert "login_oauth" in calls
@@ -658,7 +660,10 @@ def test_search_invalid_refresh_token_returns_401_and_keeps_tokens(monkeypatch, 
     resp = client.get("/api/search?q=test", headers={"host": "localhost:8765"})
 
     assert resp.status_code == 401
-    assert resp.json()["detail"] == "Not logged in to Tidal"
+    assert resp.json()["detail"] == {
+        "message": "Session needs attention. Use Connect to sign in.",
+        "auth_state": "needs_attention",
+    }
     assert "login_oauth" not in calls
     assert "logout" not in calls
     assert token_path.exists()
