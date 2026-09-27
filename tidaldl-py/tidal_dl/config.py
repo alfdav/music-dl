@@ -644,18 +644,7 @@ class Tidal(BaseConfig[ModelToken]):
                 self.token_persist()
                 self._last_refresh_outcome = "ok"
                 return True
-            except (
-                OSError,
-                TypeError,
-                ValueError,
-                RuntimeError,
-                KeyError,
-                AttributeError,
-                JSONDecodeError,
-                requests.RequestException,
-                TidalAPIError,
-                AuthenticationError,
-            ) as exc:
+            except Exception as exc:
                 self._last_refresh_error = exc
                 self._last_refresh_outcome = "failed"
                 _console.print("[yellow]Warning:[/yellow] Token refresh failed; proceeding with current token.")
