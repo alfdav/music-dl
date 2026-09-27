@@ -2303,7 +2303,7 @@ function loadPlaylistPageHelpers() {
     throw new Error('playlist page helpers not found');
   }
   return new Function(
-    `${viewsSource.slice(scrollStart, scrollEnd)}\n${viewsSource.slice(start, end)}\nreturn { PLAYLIST_PAGE_SIZE, playlistTracksUrl, _playlistVirtualRange, playlistViewKey, _playlistMoveIndex, _playlistEnsureVisibleScroll, _playlistListScrollTop, _playlistLaterPageFailure, _playlistUnqueuedByPosition, _appendPlaylistQueueEntries, _playlistFetchContinues, _playlistLeaveDecision, _playlistQueueIncomplete, _playlistListOffset, _playlistScrollParent, _appScrollEl };`,
+    `${viewsSource.slice(scrollStart, scrollEnd)}\n${viewsSource.slice(start, end)}\nreturn { PLAYLIST_PAGE_SIZE, playlistTracksUrl, _playlistVirtualRange, playlistViewKey, _playlistMoveIndex, _playlistEnsureVisibleScroll, _playlistListScrollTop, _playlistLaterPageFailure, _playlistKnownTrackCount, _playlistPlaceholderHeight, _playlistPageRetryPlan, _playlistShouldScanUpgrades, _armPlaylistScrollRestore, _tryPlaylistScrollRestore, _playlistUnqueuedByPosition, _appendPlaylistQueueEntries, _playlistFetchContinues, _playlistLeaveDecision, _playlistQueueIncomplete, _playlistListOffset, _playlistScrollParent, _appScrollEl };`,
   )();
 }
 
@@ -2543,20 +2543,58 @@ describe('playlist first-page load', () => {
     helpers._tryPlaylistScrollRestore(view, pending);
     expect(view.scrollTop).toBe(1200);
 
-    const ours = helpers._armPlaylistScrollRestore(
+    const clamp = helpers._armPlaylistScrollRestore(
       { 'playlist:us': { scrollY: saved } },
       'playlist:us',
       true,
     );
-    helpers._playlistUserScrollCancelsRestore(ours, 'scroll', true);
-    expect(ours.cancelled).toBe(false);
-    helpers._tryPlaylistScrollRestore(view, ours);
+    helpers._playlistUserScrollCancelsRestore(clamp, 'scroll');
+    expect(clamp.cancelled).toBe(false);
+    view.scrollTop = 0;
+    helpers._tryPlaylistScrollRestore(view, clamp);
     expect(Math.abs(view.scrollTop - saved)).toBeLessThanOrEqual(2);
 
     const load = viewsSource.split('async function loadPlaylistTracks')[1].split('// ---- DOWNLOAD TRIGGER')[0];
     expect(load).toContain('_playlistUserScrollCancelsRestore');
     expect(load).toContain("'wheel'");
     expect(load).toContain("'touchmove'");
+    expect(load).toContain("'touchstart'");
+    expect(load).toContain("'mousedown'");
+    expect(load).toContain("'pointerdown'");
+    expect(load).toContain('PageDown');
+    expect(load).toContain('ArrowUp');
+    expect(load).not.toContain("cancelRestore('scroll')");
+    expect(load).toContain("addEventListener('scroll'");
+  });
+
+  test('a known playlist length sizes the spacer before the first page', () => {
+    const start = viewsSource.indexOf('function _playlistKnownTrackCount(');
+    if (start < 0) throw new Error('_playlistKnownTrackCount missing');
+    const helpers = loadPlaylistPageHelpers();
+    expect(helpers._playlistKnownTrackCount({ num_tracks: 555 }, {}, 'playlist:us')).toBe(555);
+    expect(helpers._playlistKnownTrackCount({ numberOfTracks: 440 }, {}, 'playlist:us')).toBe(440);
+    expect(helpers._playlistKnownTrackCount(
+      {},
+      { 'playlist:us': { scrollY: 19100, playlistTracks: 555 } },
+      'playlist:us',
+    )).toBe(555);
+    expect(helpers._playlistPlaceholderHeight(555)).toBe(555 * 66);
+
+    const view = clampingViewScroller({ scrollHeight: 863, clientHeight: 800, scrollTop: 0 });
+    const pending = helpers._armPlaylistScrollRestore(
+      { 'playlist:us': { scrollY: 19100, playlistTracks: 555 } },
+      'playlist:us',
+      true,
+    );
+    view.scrollHeight = helpers._playlistPlaceholderHeight(555);
+    helpers._tryPlaylistScrollRestore(view, pending);
+    expect(Math.abs(view.scrollTop - 19100)).toBeLessThanOrEqual(2);
+
+    const load = viewsSource.split('async function loadPlaylistTracks')[1].split('await api(')[0];
+    expect(load).toContain('_playlistKnownTrackCount(');
+    expect(load).toContain('_paintPlaylistVirtual(');
+    const navigateSrc = viewsSource.split('function navigate(view, opts)')[1].split("window.addEventListener('focus'")[0];
+    expect(navigateSrc).toContain('playlistTracks');
   });
 
   test('later pages append by playlist position and keep duplicate tracks', () => {
@@ -2655,6 +2693,36 @@ describe('playlist first-page load', () => {
     expect(load).toContain('_playlistLaterPageFailure(');
     expect(load).toContain('failure.keepRows');
     expect(load).toContain('continuePages');
+  });
+
+  test('later playlist pages back off and still scan upgrades once the list finishes', () => {
+    const start = viewsSource.indexOf('function _playlistPageRetryPlan(');
+    if (start < 0) throw new Error('_playlistPageRetryPlan missing');
+    const helpers = loadPlaylistPageHelpers();
+    expect(helpers._playlistPageRetryPlan(1)).toEqual({
+      delayMs: 1500, auto: true, toast: true, hasMore: true,
+    });
+    expect(helpers._playlistPageRetryPlan(2).toast).toBe(false);
+    expect(helpers._playlistPageRetryPlan(2).delayMs).toBe(3000);
+    expect(helpers._playlistPageRetryPlan(3).delayMs).toBe(6000);
+    expect(helpers._playlistPageRetryPlan(4).delayMs).toBe(12000);
+    expect(helpers._playlistPageRetryPlan(5).delayMs).toBe(24000);
+    expect(helpers._playlistPageRetryPlan(5).delayMs).toBeLessThanOrEqual(30000);
+    const stopped = helpers._playlistPageRetryPlan(6);
+    expect(stopped.auto).toBe(false);
+    expect(stopped.toast).toBe(false);
+    expect(stopped.hasMore).toBe(true);
+    expect(stopped.delayMs).toBe(null);
+
+    expect(helpers._playlistShouldScanUpgrades(false, true, 555, 555)).toBe(true);
+    expect(helpers._playlistShouldScanUpgrades(true, true, 555, 555)).toBe(false);
+    expect(helpers._playlistShouldScanUpgrades(false, true, 50, 555)).toBe(false);
+    expect(helpers._playlistShouldScanUpgrades(false, false, 555, 555)).toBe(false);
+
+    const load = viewsSource.split('async function loadPlaylistTracks')[1].split('// ---- DOWNLOAD TRIGGER')[0];
+    expect(load).toContain('_playlistPageRetryPlan(');
+    expect(load).toContain('_playlistShouldScanUpgrades(');
+    expect(load).not.toContain('!pageRetryTimer');
   });
 
   test('playlist detail is a drill-in view that restores scroll after navigating back', () => {

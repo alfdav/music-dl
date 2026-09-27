@@ -97,9 +97,13 @@ function navigate(view, opts) {
   // Save outgoing view state
   if (state.view && viewEl.firstChild) {
     const scrollEl = _appScrollEl(document);
-    _viewState[state.view] = {
+    const outgoing = {
       scrollY: scrollEl ? scrollEl.scrollTop : 0,
     };
+    if (String(state.view).indexOf('playlist:') === 0) {
+      outgoing.playlistTracks = _playlistFillTotal || 0;
+    }
+    _viewState[state.view] = outgoing;
   }
 
   if (mode === 'jump') {
@@ -118,7 +122,11 @@ function navigate(view, opts) {
     const next = _restoreLibrary(restore, { librarySort, libraryQuery });
     librarySort = next.librarySort;
     libraryQuery = next.libraryQuery;
-    _viewState[restore.view] = { scrollY: restore.scrollY || 0 };
+    const prior = _viewState[restore.view];
+    _viewState[restore.view] = {
+      scrollY: restore.scrollY || 0,
+      playlistTracks: (prior && prior.playlistTracks) || 0,
+    };
   }
 
   if (state.view && state.view !== safeView) {
@@ -4581,8 +4589,9 @@ function _playlistUserScrollCancelsRestore(pending, eventType, ours) {
   if (ours) return pending;
   const kind = String(eventType || '');
   if (
-    kind === 'wheel' || kind === 'touch' || kind === 'touchmove'
-    || kind === 'keyboard' || kind === 'scroll' || kind === 'navigate'
+    kind === 'wheel' || kind === 'touch' || kind === 'touchmove' || kind === 'touchstart'
+    || kind === 'mousedown' || kind === 'pointerdown'
+    || kind === 'keyboard' || kind === 'navigate'
   ) {
     return _cancelPlaylistScrollRestore(pending);
   }
@@ -4629,6 +4638,31 @@ function _tryPlaylistScrollRestore(scroller, pending) {
     return { applied: true, scrollY: null, pending: false };
   }
   return { applied: false, scrollY: target, pending: true };
+}
+
+function _playlistKnownTrackCount(pl, viewState, view) {
+  const saved = viewState && view ? viewState[view] : null;
+  const fromState = saved ? Number(saved.playlistTracks) || 0 : 0;
+  const fromPl = pl ? (Number(pl.num_tracks) || Number(pl.numberOfTracks) || 0) : 0;
+  return Math.max(fromState, fromPl);
+}
+
+function _playlistPlaceholderHeight(total, rowPx) {
+  return (total || 0) * (rowPx || PLAYLIST_VIRTUAL_ROW_PX);
+}
+
+function _playlistPageRetryPlan(streak) {
+  const attempt = streak || 0;
+  if (attempt > 5) {
+    return { delayMs: null, auto: false, toast: false, hasMore: true };
+  }
+  const delayMs = Math.min(30000, 1500 * Math.pow(2, attempt - 1));
+  return { delayMs: delayMs, auto: true, toast: attempt === 1, hasMore: true };
+}
+
+function _playlistShouldScanUpgrades(already, onView, offset, total) {
+  if (already || !onView) return false;
+  return (total || 0) > 0 && (offset || 0) >= total;
 }
 
 function _playlistLaterPageFailure(loadedCount, total, status) {
@@ -4917,14 +4951,30 @@ async function loadPlaylistTracks(resultsArea, pl) {
 
   const trackList = h('div', { className: 'tracks' });
   resultsArea.appendChild(trackList);
-  renderPlaylistTrackSkeleton(trackList, 8);
-
-  const loaded = [];
-  let actionsWired = false;
   const viewKey = state.view;
   if (!_playlistScrollRestoreFor(viewKey)) {
     _armPlaylistScrollRestore(_viewState, viewKey, false);
   }
+  const knownTotal = _playlistKnownTrackCount(pl, _viewState, viewKey);
+  if (knownTotal > total) {
+    total = knownTotal;
+    _playlistFillTotal = knownTotal;
+  }
+  if (knownTotal > PLAYLIST_VIRTUAL_THRESHOLD) {
+    _paintPlaylistVirtual(trackList, [], knownTotal);
+  } else {
+    renderPlaylistTrackSkeleton(trackList, 8);
+  }
+
+  const loaded = [];
+  if (knownTotal > PLAYLIST_VIRTUAL_THRESHOLD) {
+    requestAnimationFrame(() => {
+      const parent = _playlistScrollParent(trackList);
+      _tryPlaylistScrollRestore(parent, _playlistScrollRestoreFor(viewKey));
+      _paintPlaylistVirtual(trackList, loaded, knownTotal);
+    });
+  }
+  let actionsWired = false;
   const stillThisFill = () => _playlistFillGen === myGen;
   const onThisView = () => state.view === viewKey && stillThisFill();
   const noteQueueStarted = () => {
@@ -4970,7 +5020,7 @@ async function loadPlaylistTracks(resultsArea, pl) {
       state.shuffle = false;
       btnShuffle.classList.remove('active');
       noteQueueStarted();
-      if (loaded.length < total) continuePages(true);
+      if (loaded.length < total) continuePages(false);
       _setQueueOrder(loaded, loaded[0]);
       playTrack(state.queue[state.queueIndex]);
     });
@@ -4979,7 +5029,7 @@ async function loadPlaylistTracks(resultsArea, pl) {
       state.shuffle = true;
       btnShuffle.classList.add('active');
       noteQueueStarted();
-      if (loaded.length < total) continuePages(true);
+      if (loaded.length < total) continuePages(false);
       _setQueueOrder(loaded, loaded[0]);
       playTrack(state.queue[state.queueIndex]);
     });
@@ -5037,13 +5087,22 @@ async function loadPlaylistTracks(resultsArea, pl) {
   };
   const onWheel = () => cancelRestore('wheel');
   const onTouch = () => cancelRestore('touchmove');
+  const onTouchStart = () => cancelRestore('touchstart');
+  const onMouseDown = () => cancelRestore('mousedown');
+  const onPointerDown = () => cancelRestore('pointerdown');
   const onScroll = () => {
     if (_playlistScrollAssignIsOurs(scrollParent)) return;
-    cancelRestore('scroll');
     if (loaded.length && loaded.length < total) continuePages(false);
     if ((total || loaded.length) > PLAYLIST_VIRTUAL_THRESHOLD) {
       _paintPlaylistVirtual(trackList, loaded, total || loaded.length);
     }
+  };
+  const onScrollKey = (e) => {
+    const key = e && e.key;
+    if (key !== 'PageUp' && key !== 'PageDown' && key !== 'Home' && key !== 'End'
+        && key !== ' ' && key !== 'ArrowUp' && key !== 'ArrowDown') return;
+    cancelRestore('keyboard');
+    if (loaded.length && loaded.length < (total || loaded.length)) continuePages(false);
   };
   const onKey = (e) => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
@@ -5074,6 +5133,13 @@ async function loadPlaylistTracks(resultsArea, pl) {
     scrollParent.addEventListener('scroll', onScroll, { passive: true });
     scrollParent.addEventListener('wheel', onWheel, { passive: true });
     scrollParent.addEventListener('touchmove', onTouch, { passive: true });
+    scrollParent.addEventListener('touchstart', onTouchStart, { passive: true });
+    scrollParent.addEventListener('mousedown', onMouseDown);
+    scrollParent.addEventListener('pointerdown', onPointerDown);
+  }
+  const keyTarget = typeof document !== 'undefined' ? document : null;
+  if (keyTarget && keyTarget.addEventListener) {
+    keyTarget.addEventListener('keydown', onScrollKey);
   }
   trackList.setAttribute('tabindex', '0');
   trackList.addEventListener('keydown', onKey);
@@ -5087,6 +5153,12 @@ async function loadPlaylistTracks(resultsArea, pl) {
         scrollParent.removeEventListener('scroll', onScroll);
         scrollParent.removeEventListener('wheel', onWheel);
         scrollParent.removeEventListener('touchmove', onTouch);
+        scrollParent.removeEventListener('touchstart', onTouchStart);
+        scrollParent.removeEventListener('mousedown', onMouseDown);
+        scrollParent.removeEventListener('pointerdown', onPointerDown);
+      }
+      if (keyTarget && keyTarget.removeEventListener) {
+        keyTarget.removeEventListener('keydown', onScrollKey);
       }
       trackList.removeEventListener('keydown', onKey);
     };
@@ -5094,12 +5166,14 @@ async function loadPlaylistTracks(resultsArea, pl) {
 
   let pageRetryTimer = null;
   let pageRetryNotBefore = 0;
+  let pageRetryStreak = 0;
   let pagesBusy = false;
   let offset = 0;
+  let upgradesScanned = false;
 
   async function continuePages(force) {
     if (pagesBusy) return;
-    if (!force && Date.now() < pageRetryNotBefore) return;
+    if (!force && pageRetryNotBefore && Date.now() < pageRetryNotBefore) return;
     if (pageRetryTimer) {
       clearTimeout(pageRetryTimer);
       pageRetryTimer = null;
@@ -5113,16 +5187,21 @@ async function loadPlaylistTracks(resultsArea, pl) {
         } catch (err) {
           const failure = _playlistLaterPageFailure(loaded.length, total, err && err.status);
           if (!failure.keepRows) throw err;
-          if (onThisView() || filling) toast(failure.toast, 'error');
-          if (failure.retry && (onThisView() || (filling && stillThisFill()))) {
-            pageRetryNotBefore = Date.now() + 1500;
+          pageRetryStreak += 1;
+          const plan = _playlistPageRetryPlan(pageRetryStreak);
+          if (plan.toast && (onThisView() || filling)) toast(failure.toast, 'error');
+          if (plan.auto && failure.retry && (onThisView() || (filling && stillThisFill()))) {
+            pageRetryNotBefore = Date.now() + plan.delayMs;
             pageRetryTimer = setTimeout(() => {
               pageRetryTimer = null;
               continuePages(true);
-            }, 1500);
+            }, plan.delayMs);
+          } else {
+            pageRetryNotBefore = 0;
           }
           return;
         }
+        pageRetryStreak = 0;
         const decision = afterAwait();
         if (decision !== 'continue') return;
         const rows = page.tracks || [];
@@ -5135,6 +5214,10 @@ async function loadPlaylistTracks(resultsArea, pl) {
       }
     } finally {
       pagesBusy = false;
+    }
+    if (_playlistShouldScanUpgrades(upgradesScanned, onThisView(), offset, total)) {
+      upgradesScanned = true;
+      _scanPlaylistUpgrades(loaded, trackList, upgradeBtn, refreshUpgradeBtn);
     }
   }
 
@@ -5149,8 +5232,6 @@ async function loadPlaylistTracks(resultsArea, pl) {
 
     offset = (first.offset || 0) + loaded.length;
     await continuePages(true);
-
-    if (onThisView() && !pageRetryTimer) _scanPlaylistUpgrades(loaded, trackList, upgradeBtn, refreshUpgradeBtn);
   } catch (err) {
     const failure = _playlistLaterPageFailure(loaded.length, total, err && err.status);
     if (failure.keepRows) {

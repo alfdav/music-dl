@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-27 — A layout scroll cancelled playlist restore, and a later-page retry hammered
+
+**What happened:** Coming back from an album, the browser clamped `#view` onto the short playlist placeholder and fired `scroll`. That was treated as the user scrolling, so the saved offset was dropped. A later-page 429 also retried every 1.5s and toasted every time, and a retry that finished the list never ran the upgrade scan.
+
+**Root cause:** `cancelRestore('scroll')` ran for every scroll, including the clamp. Retry delay was fixed, and `_scanPlaylistUpgrades` was skipped whenever a retry timer was still pending at the end of the first pass.
+
+**Prevention:** Cancel restore only for wheel, touch, pointer/mouse down, scroll keys, and leaving the view. If the track count is already known, size the spacer to `total * 66` before the first page. Later pages use 1.5s, 3s, 6s, 12s, then 24s, capped at 30s, at most 5 automatic retries, one toast per streak. Scan upgrades once when the loaded offset reaches the total. Playlist perf artifacts go to `PLAYLIST_PERF_ARTIFACTS` or the test `tmp_path`.
+
 ## 2026-09-27 — A later playlist page 429 replaced rows already on screen
 
 **What happened:** `loadPlaylistTracks` treated every 429 like a first-page failure. After page 1 had painted, a 429 on a later page cleared the list and showed the "Tidal rate limit" empty state.
