@@ -93,7 +93,15 @@ function createH() {
     if (!node.classList || typeof node.classList.add !== 'function') {
       node.classList = classListFor(node);
     }
-    children.forEach(child => node.appendChild(child));
+    children.forEach(child => {
+      if (typeof child === 'string' || typeof child === 'number') {
+        const text = createNode('#text');
+        text.textContent = String(child);
+        node.appendChild(text);
+      } else if (child) {
+        node.appendChild(child);
+      }
+    });
     return node;
   };
   const textEl = (tag, value, className) => h(tag, { textContent: value, className });
@@ -2255,6 +2263,37 @@ function cssBlock(css, selector) {
   return match[1];
 }
 
+function clampingViewScroller(initial) {
+  let scrollHeight = initial.scrollHeight;
+  let scrollTop = initial.scrollTop || 0;
+  const clientHeight = initial.clientHeight;
+  return {
+    id: 'view',
+    clientHeight,
+    _playlistRestoreAssign: false,
+    get scrollHeight() { return scrollHeight; },
+    set scrollHeight(value) { scrollHeight = value; },
+    get scrollTop() { return scrollTop; },
+    set scrollTop(value) {
+      const max = Math.max(0, scrollHeight - clientHeight);
+      const next = Number(value) || 0;
+      scrollTop = Math.max(0, Math.min(max, next));
+    },
+  };
+}
+
+function loadPlaylistScrollRestore() {
+  const start = viewsSource.indexOf('let _playlistScrollRestores =');
+  const end = viewsSource.indexOf('function _playlistUnqueuedByPosition(');
+  if (start < 0 || end < start) {
+    throw new Error('playlist scroll restore helpers missing');
+  }
+  const extra = new Function(
+    `${viewsSource.slice(start, end)}\nreturn { _armPlaylistScrollRestore, _tryPlaylistScrollRestore, _playlistUserScrollCancelsRestore };`,
+  )();
+  return Object.assign(loadPlaylistPageHelpers(), extra);
+}
+
 function loadPlaylistPageHelpers() {
   const start = viewsSource.indexOf('const PLAYLIST_PAGE_SIZE = 50;');
   const end = viewsSource.indexOf('async function loadPlaylistTracks(');
@@ -2264,7 +2303,7 @@ function loadPlaylistPageHelpers() {
     throw new Error('playlist page helpers not found');
   }
   return new Function(
-    `${viewsSource.slice(scrollStart, scrollEnd)}\n${viewsSource.slice(start, end)}\nreturn { PLAYLIST_PAGE_SIZE, playlistTracksUrl, _playlistVirtualRange, playlistViewKey, _playlistMoveIndex, _playlistEnsureVisibleScroll, _playlistListScrollTop, _applyPlaylistScrollRestore, _playlistUnqueuedByPosition, _appendPlaylistQueueEntries, _playlistFetchContinues, _playlistLeaveDecision, _playlistQueueIncomplete, _playlistListOffset, _playlistScrollParent, _appScrollEl };`,
+    `${viewsSource.slice(scrollStart, scrollEnd)}\n${viewsSource.slice(start, end)}\nreturn { PLAYLIST_PAGE_SIZE, playlistTracksUrl, _playlistVirtualRange, playlistViewKey, _playlistMoveIndex, _playlistEnsureVisibleScroll, _playlistListScrollTop, _playlistUnqueuedByPosition, _appendPlaylistQueueEntries, _playlistFetchContinues, _playlistLeaveDecision, _playlistQueueIncomplete, _playlistListOffset, _playlistScrollParent, _appScrollEl };`,
   )();
 }
 
@@ -2398,7 +2437,8 @@ describe('playlist first-page load', () => {
     const navigateSrc = viewsSource.split('function navigate(view, opts)')[1].split("window.addEventListener('focus'")[0];
     expect(navigateSrc.match(/_appScrollEl\(document\)/g)).toHaveLength(2);
     expect(navigateSrc).toContain('scrollY: scrollEl ? scrollEl.scrollTop : 0');
-    expect(navigateSrc).toContain('scrollEl.scrollTop = saved.scrollY');
+    expect(navigateSrc).toContain('_tryPlaylistScrollRestore(');
+    expect(navigateSrc).not.toContain('scrollEl.scrollTop = saved.scrollY');
     expect(viewsSource).toContain("navigate(null, { back: true })");
     expect(viewsSource).toContain('navigate(hash, hashOpts)');
 
@@ -2410,16 +2450,113 @@ describe('playlist first-page load', () => {
     expect(load).not.toContain("querySelector('.main')");
   });
 
-  test('playlist scroll restore applies the saved offset only once', () => {
-    const helpers = loadPlaylistPageHelpers();
-    const viewState = { 'playlist:pl-80': { scrollY: 5280 } };
-    const first = helpers._applyPlaylistScrollRestore(viewState, 'playlist:pl-80', false);
-    const second = helpers._applyPlaylistScrollRestore(viewState, 'playlist:pl-80', first.applied);
-    expect(first).toEqual({ applied: true, scrollY: 5280 });
-    expect(second).toEqual({ applied: true, scrollY: null });
+  test('playlist scroll restore applies the saved offset only once the scroller can hold it', () => {
+    const helpers = loadPlaylistScrollRestore();
+    const scroller = clampingViewScroller({ scrollHeight: 40000, clientHeight: 800 });
+    const pending = helpers._armPlaylistScrollRestore(
+      { 'playlist:pl-80': { scrollY: 5280 } },
+      'playlist:pl-80',
+      true,
+    );
+    const first = helpers._tryPlaylistScrollRestore(scroller, pending);
+    const second = helpers._tryPlaylistScrollRestore(scroller, pending);
+    expect(first).toEqual({ applied: true, scrollY: null, pending: false });
+    expect(second).toEqual({ applied: true, scrollY: null, pending: false });
+    expect(scroller.scrollTop).toBe(5280);
     const load = viewsSource.split('async function loadPlaylistTracks')[1] || '';
-    expect(load).toContain('_applyPlaylistScrollRestore(');
+    expect(load).toContain('_tryPlaylistScrollRestore(');
     expect(load).not.toMatch(/restorePlaylistScroll\(\)/);
+    expect(load).not.toContain('scrollParent.scrollTop = restore.scrollY');
+  });
+
+  test('playlist scroll restore waits until #view can hold the saved offset', () => {
+    const css = readFileSync(
+      join(import.meta.dir, '../tidal_dl/gui/static/style.css'),
+      'utf8',
+    );
+    const html = readFileSync(
+      join(import.meta.dir, '../tidal_dl/gui/static/index.html'),
+      'utf8',
+    );
+    const mainBody = cssBlock(css, '.main');
+    const viewBody = cssBlock(css, '#view');
+    expect(mainBody).toMatch(/overflow:\s*hidden/);
+    expect(viewBody).toMatch(/overflow-y:\s*auto/);
+    const mainAt = html.indexOf('<main class="main">');
+    const viewAt = html.indexOf('<div id="view">');
+    const mainEnd = html.indexOf('</main>', mainAt);
+    expect(viewAt).toBeGreaterThan(mainAt);
+    expect(viewAt).toBeLessThan(mainEnd);
+
+    const helpers = loadPlaylistScrollRestore();
+    const saved = 19100;
+    const view = clampingViewScroller({ scrollHeight: 863, clientHeight: 800, scrollTop: 0 });
+    const doc = {
+      getElementById(id) { return id === 'view' ? view : null; },
+      querySelector(sel) { return sel === '.main' ? { className: 'main', scrollTop: 44 } : null; },
+    };
+    expect(helpers._appScrollEl(doc)).toBe(view);
+
+    const pending = helpers._armPlaylistScrollRestore(
+      { 'playlist:us': { scrollY: saved } },
+      'playlist:us',
+      true,
+    );
+    helpers._tryPlaylistScrollRestore(view, pending);
+    expect(view.scrollTop).toBe(0);
+
+    view.scrollHeight = (50 * 66) + 400;
+    helpers._tryPlaylistScrollRestore(view, pending);
+    expect(view.scrollTop).toBe(0);
+
+    view.scrollHeight = 36935;
+    helpers._tryPlaylistScrollRestore(view, pending);
+    expect(Math.abs(view.scrollTop - saved)).toBeLessThanOrEqual(2);
+
+    const paint = viewsSource.split('function _paintPlaylistVirtual')[1].split('async function loadPlaylistTracks')[0];
+    const heightAt = paint.indexOf('spacer.style.height');
+    const restoreAt = paint.indexOf('_tryPlaylistScrollRestore(');
+    expect(heightAt).toBeGreaterThan(-1);
+    expect(restoreAt).toBeGreaterThan(heightAt);
+
+    const navigateSrc = viewsSource.split('function navigate(view, opts)')[1].split("window.addEventListener('focus'")[0];
+    expect(navigateSrc).toContain('_tryPlaylistScrollRestore(');
+    expect(navigateSrc).not.toContain('scrollEl.scrollTop = saved.scrollY');
+    expect(navigateSrc).toContain('scrollEl.scrollTop = 0');
+  });
+
+  test('a user scroll during a pending playlist restore cancels it', () => {
+    const helpers = loadPlaylistScrollRestore();
+    const saved = 19100;
+    const view = clampingViewScroller({ scrollHeight: 863, clientHeight: 800, scrollTop: 0 });
+    const pending = helpers._armPlaylistScrollRestore(
+      { 'playlist:us': { scrollY: saved } },
+      'playlist:us',
+      true,
+    );
+    helpers._tryPlaylistScrollRestore(view, pending);
+    expect(pending.cancelled).toBe(false);
+
+    helpers._playlistUserScrollCancelsRestore(pending, 'wheel');
+    view.scrollHeight = 36935;
+    view.scrollTop = 1200;
+    helpers._tryPlaylistScrollRestore(view, pending);
+    expect(view.scrollTop).toBe(1200);
+
+    const ours = helpers._armPlaylistScrollRestore(
+      { 'playlist:us': { scrollY: saved } },
+      'playlist:us',
+      true,
+    );
+    helpers._playlistUserScrollCancelsRestore(ours, 'scroll', true);
+    expect(ours.cancelled).toBe(false);
+    helpers._tryPlaylistScrollRestore(view, ours);
+    expect(Math.abs(view.scrollTop - saved)).toBeLessThanOrEqual(2);
+
+    const load = viewsSource.split('async function loadPlaylistTracks')[1].split('// ---- DOWNLOAD TRIGGER')[0];
+    expect(load).toContain('_playlistUserScrollCancelsRestore');
+    expect(load).toContain("'wheel'");
+    expect(load).toContain("'touchmove'");
   });
 
   test('later pages append by playlist position and keep duplicate tracks', () => {

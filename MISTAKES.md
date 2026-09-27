@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-27 — Playlist scroll restore fired while the list was still the placeholder
+
+**What happened:** On the Us playlist the user scrolled `#view` to 20000 and the app saved scrollY 19100. Album then browser-back, album then in-app back, and Home then browser-back all left `#view.scrollTop` around 99–107.
+
+**Root cause:** `_applyPlaylistScrollRestore` and the navigate rAF wrote `scrollTop` while only the loading placeholder was painted (~863 px, clientHeight ~800). The browser clamped the write. The real list reached ~36935 px about 250 ms later and nothing applied the saved offset again.
+
+**Prevention:** Keep a pending restore per view. Size the virtual spacer to `total * PLAYLIST_VIRTUAL_ROW_PX` before assigning `scrollTop`. Re-apply after the first real paint and each page append until the target is within 2 px. A wheel, touch, keyboard, or non-restore scroll cancels it, and leaving the view cancels it. Do not set `scrollTop` to 0 when a saved offset is waiting.
+
 ## 2026-09-27 — Pid file published before the bot process object
 
 **What happened:** `test_bot_control_lifespan_starts_and_stops_configured_bot` failed under QA with `running` still false after polling `/api/bot-control/status` for 2s. A second ordering failed the pid-file read after status had already reported running. A gist 403 from `api.github.com` showed up in that stdout and was not the cause.

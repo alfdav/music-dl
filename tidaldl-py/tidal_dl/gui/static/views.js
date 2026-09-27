@@ -121,6 +121,11 @@ function navigate(view, opts) {
     _viewState[restore.view] = { scrollY: restore.scrollY || 0 };
   }
 
+  if (state.view && state.view !== safeView) {
+    _playlistUserScrollCancelsRestore(_playlistScrollRestoreFor(state.view), 'navigate');
+    delete _playlistScrollRestores[state.view];
+  }
+
   state.view = safeView;
   _lastNavHash = safeView;
   location.hash = safeView;
@@ -179,13 +184,20 @@ function navigate(view, opts) {
 
   viewEl.appendChild(container);
 
-  // Restore saved scroll position or reset to top
+  // Restore saved scroll once #view can hold it. Assigning now, while a playlist
+  // is still the short loading placeholder, clamps scrollTop and never retries.
   const scrollEl = _appScrollEl(document);
   if (scrollEl) {
     const saved = _viewState[safeView];
     if (saved && saved.scrollY) {
-      requestAnimationFrame(() => { scrollEl.scrollTop = saved.scrollY; });
+      const pending = _armPlaylistScrollRestore(_viewState, safeView, true);
+      requestAnimationFrame(() => { _tryPlaylistScrollRestore(scrollEl, pending); });
     } else {
+      const stale = _playlistScrollRestoreFor(safeView);
+      if (stale) {
+        _playlistUserScrollCancelsRestore(stale, 'navigate');
+        delete _playlistScrollRestores[safeView];
+      }
       scrollEl.scrollTop = 0;
     }
   }
@@ -4531,11 +4543,92 @@ function _playlistListScrollTop(parentScrollTop, listOffsetTop) {
   return Math.max(0, (parentScrollTop || 0) - (listOffsetTop || 0));
 }
 
-function _applyPlaylistScrollRestore(viewState, view, alreadyApplied) {
-  if (alreadyApplied) return { applied: true, scrollY: null };
+let _playlistScrollRestores = {};
+let _playlistRestoreAssignDepth = 0;
+
+function _playlistScrollMax(scrollHeight, clientHeight) {
+  return Math.max(0, (scrollHeight || 0) - (clientHeight || 0));
+}
+
+function _playlistScrollRestoreFor(view) {
+  return view ? _playlistScrollRestores[view] : null;
+}
+
+function _armPlaylistScrollRestore(viewState, view, force) {
+  if (!view) return null;
   const saved = viewState && viewState[view];
-  const scrollY = saved && saved.scrollY ? saved.scrollY : null;
-  return { applied: true, scrollY: scrollY };
+  const scrollY = saved && saved.scrollY ? saved.scrollY : 0;
+  const existing = _playlistScrollRestores[view];
+  if (!force && existing) return existing;
+  if (!scrollY) {
+    if (existing) existing.cancelled = true;
+    delete _playlistScrollRestores[view];
+    return null;
+  }
+  const pending = { view: view, scrollY: scrollY, cancelled: false, done: false };
+  _playlistScrollRestores[view] = pending;
+  return pending;
+}
+
+function _cancelPlaylistScrollRestore(pending) {
+  if (!pending || pending.done) return pending || null;
+  pending.cancelled = true;
+  return pending;
+}
+
+function _playlistUserScrollCancelsRestore(pending, eventType, ours) {
+  if (!pending || pending.done || pending.cancelled) return pending || null;
+  if (ours) return pending;
+  const kind = String(eventType || '');
+  if (
+    kind === 'wheel' || kind === 'touch' || kind === 'touchmove'
+    || kind === 'keyboard' || kind === 'scroll' || kind === 'navigate'
+  ) {
+    return _cancelPlaylistScrollRestore(pending);
+  }
+  return pending;
+}
+
+function _playlistScrollAssignIsOurs(scroller) {
+  return _playlistRestoreAssignDepth > 0 || !!(scroller && scroller._playlistRestoreAssign);
+}
+
+function _assignRestoredScrollTop(scroller, target) {
+  _playlistRestoreAssignDepth += 1;
+  if (scroller) scroller._playlistRestoreAssign = true;
+  try {
+    scroller.scrollTop = target;
+  } finally {
+    const release = () => {
+      _playlistRestoreAssignDepth = Math.max(0, _playlistRestoreAssignDepth - 1);
+      if (!_playlistRestoreAssignDepth && scroller) scroller._playlistRestoreAssign = false;
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(release);
+    else release();
+  }
+}
+
+function _tryPlaylistScrollRestore(scroller, pending) {
+  if (!pending || pending.cancelled) {
+    return { applied: false, scrollY: null, pending: false };
+  }
+  if (pending.done) {
+    return { applied: true, scrollY: null, pending: false };
+  }
+  if (!scroller) {
+    return { applied: false, scrollY: pending.scrollY, pending: true };
+  }
+  const target = pending.scrollY;
+  const max = _playlistScrollMax(scroller.scrollHeight, scroller.clientHeight);
+  if (max + 2 < target) {
+    return { applied: false, scrollY: target, pending: true };
+  }
+  _assignRestoredScrollTop(scroller, target);
+  if (Math.abs((scroller.scrollTop || 0) - target) <= 2) {
+    pending.done = true;
+    return { applied: true, scrollY: null, pending: false };
+  }
+  return { applied: false, scrollY: target, pending: true };
 }
 
 function _playlistUnqueuedByPosition(loaded, queuedUntil) {
@@ -4685,14 +4778,18 @@ function renderPlaylistRows(trackList, tracks, total) {
 function _paintPlaylistVirtual(trackList, tracks, total) {
   trackList.classList.add('tracks-virtual');
   const parent = _playlistScrollParent(trackList);
+  const spacerHeight = (total || 0) * PLAYLIST_VIRTUAL_ROW_PX;
+  while (trackList.firstChild) trackList.removeChild(trackList.firstChild);
+  const spacer = h('div', { className: 'tracks-virtual-spacer' });
+  spacer.style.height = spacerHeight + 'px';
+  trackList.appendChild(spacer);
+  const pending = _playlistScrollRestoreFor(typeof state !== 'undefined' ? state.view : '');
+  if (parent) _tryPlaylistScrollRestore(parent, pending);
   const rawTop = parent && parent !== trackList ? (parent.scrollTop || 0) : 0;
   const listOffsetTop = _playlistListOffset(trackList, parent);
   const scrollTop = _playlistListScrollTop(rawTop, listOffsetTop);
   const viewHeight = parent && parent.clientHeight ? parent.clientHeight : 720;
   const range = _playlistVirtualRange(scrollTop, viewHeight, total, PLAYLIST_VIRTUAL_ROW_PX, 8);
-  while (trackList.firstChild) trackList.removeChild(trackList.firstChild);
-  const spacer = h('div', { className: 'tracks-virtual-spacer' });
-  spacer.style.height = range.height + 'px';
   const windowEl = h('div', { className: 'tracks-virtual-window' });
   windowEl.style.top = range.top + 'px';
   for (let i = range.start; i < range.end; i++) {
@@ -4713,7 +4810,6 @@ function _paintPlaylistVirtual(trackList, tracks, total) {
     _playlistMarkSelected(row, i);
     windowEl.appendChild(row);
   }
-  trackList.appendChild(spacer);
   trackList.appendChild(windowEl);
 }
 
@@ -4806,8 +4902,10 @@ async function loadPlaylistTracks(resultsArea, pl) {
 
   const loaded = [];
   let actionsWired = false;
-  let scrollRestoreApplied = false;
   const viewKey = state.view;
+  if (!_playlistScrollRestoreFor(viewKey)) {
+    _armPlaylistScrollRestore(_viewState, viewKey, false);
+  }
   const stillThisFill = () => _playlistFillGen === myGen;
   const onThisView = () => state.view === viewKey && stillThisFill();
   const noteQueueStarted = () => {
@@ -4822,13 +4920,9 @@ async function loadPlaylistTracks(resultsArea, pl) {
 
   const paintLoaded = (totalHint) => {
     const total = totalHint || loaded.length;
-    const restore = _applyPlaylistScrollRestore(_viewState, state.view, scrollRestoreApplied);
-    scrollRestoreApplied = restore.applied;
-    const scrollParent = _playlistScrollParent(trackList);
-    if (restore.scrollY != null && scrollParent) {
-      scrollParent.scrollTop = restore.scrollY;
-    }
     renderPlaylistRows(trackList, loaded, total);
+    const scrollParent = _playlistScrollParent(trackList);
+    _tryPlaylistScrollRestore(scrollParent, _playlistScrollRestoreFor(state.view));
     if (filling) {
       queuedUntil = _syncPlaylistLiveQueue(loaded, queuedUntil, state.shuffle, stillThisFill());
       _playlistFillTotal = totalHint || total;
@@ -4916,6 +5010,64 @@ async function loadPlaylistTracks(resultsArea, pl) {
     }
   };
 
+  const scrollParent = _playlistScrollParent(trackList);
+  const cancelRestore = (eventType, ours) => {
+    _playlistUserScrollCancelsRestore(_playlistScrollRestoreFor(viewKey), eventType, ours);
+  };
+  const onWheel = () => cancelRestore('wheel');
+  const onTouch = () => cancelRestore('touchmove');
+  const onScroll = () => {
+    if (_playlistScrollAssignIsOurs(scrollParent)) return;
+    cancelRestore('scroll');
+    if ((total || loaded.length) > PLAYLIST_VIRTUAL_THRESHOLD) {
+      _paintPlaylistVirtual(trackList, loaded, total || loaded.length);
+    }
+  };
+  const onKey = (e) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    cancelRestore('keyboard');
+    e.preventDefault();
+    e.stopPropagation();
+    const count = total || loaded.length;
+    _playlistSelectedIndex = _playlistMoveIndex(
+      _playlistSelectedIndex, e.key === 'ArrowDown' ? 1 : -1, count,
+    );
+    _playlistFocusSelected = true;
+    if (scrollParent) {
+      const listOffsetTop = _playlistListOffset(trackList, scrollParent);
+      const listScroll = _playlistListScrollTop(scrollParent.scrollTop || 0, listOffsetTop);
+      const next = _playlistEnsureVisibleScroll(
+        _playlistSelectedIndex,
+        listScroll,
+        scrollParent.clientHeight || 720,
+        PLAYLIST_VIRTUAL_ROW_PX,
+      );
+      const parentNext = next + listOffsetTop;
+      if (parentNext !== scrollParent.scrollTop) scrollParent.scrollTop = parentNext;
+    }
+    renderPlaylistRows(trackList, loaded, count);
+  };
+  if (scrollParent && scrollParent.addEventListener) {
+    scrollParent.addEventListener('scroll', onScroll, { passive: true });
+    scrollParent.addEventListener('wheel', onWheel, { passive: true });
+    scrollParent.addEventListener('touchmove', onTouch, { passive: true });
+  }
+  trackList.setAttribute('tabindex', '0');
+  trackList.addEventListener('keydown', onKey);
+  if (typeof viewEl !== 'undefined' && viewEl) {
+    const prevCleanup = viewEl._viewCleanup;
+    viewEl._viewCleanup = () => {
+      if (typeof prevCleanup === 'function') prevCleanup();
+      cancelRestore('navigate');
+      if (scrollParent && scrollParent.removeEventListener) {
+        scrollParent.removeEventListener('scroll', onScroll);
+        scrollParent.removeEventListener('wheel', onWheel);
+        scrollParent.removeEventListener('touchmove', onTouch);
+      }
+      trackList.removeEventListener('keydown', onKey);
+    };
+  }
+
   try {
     const first = await api(playlistTracksUrl(pl, PLAYLIST_PAGE_SIZE, 0));
     if (afterAwait() !== 'continue') return;
@@ -4924,51 +5076,6 @@ async function loadPlaylistTracks(resultsArea, pl) {
     _playlistFillTotal = total;
     paintOrFill(total);
     wireActions();
-
-    const scrollParent = _playlistScrollParent(trackList);
-    const onScroll = () => {
-      if ((total || loaded.length) > PLAYLIST_VIRTUAL_THRESHOLD) {
-        _paintPlaylistVirtual(trackList, loaded, total || loaded.length);
-      }
-    };
-    const onKey = (e) => {
-      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-      e.preventDefault();
-      e.stopPropagation();
-      const count = total || loaded.length;
-      _playlistSelectedIndex = _playlistMoveIndex(
-        _playlistSelectedIndex, e.key === 'ArrowDown' ? 1 : -1, count,
-      );
-      _playlistFocusSelected = true;
-      if (scrollParent) {
-        const listOffsetTop = _playlistListOffset(trackList, scrollParent);
-        const listScroll = _playlistListScrollTop(scrollParent.scrollTop || 0, listOffsetTop);
-        const next = _playlistEnsureVisibleScroll(
-          _playlistSelectedIndex,
-          listScroll,
-          scrollParent.clientHeight || 720,
-          PLAYLIST_VIRTUAL_ROW_PX,
-        );
-        const parentNext = next + listOffsetTop;
-        if (parentNext !== scrollParent.scrollTop) scrollParent.scrollTop = parentNext;
-      }
-      renderPlaylistRows(trackList, loaded, count);
-    };
-    if (scrollParent && scrollParent.addEventListener) {
-      scrollParent.addEventListener('scroll', onScroll, { passive: true });
-    }
-    trackList.setAttribute('tabindex', '0');
-    trackList.addEventListener('keydown', onKey);
-    if (typeof viewEl !== 'undefined' && viewEl) {
-      const prevCleanup = viewEl._viewCleanup;
-      viewEl._viewCleanup = () => {
-        if (typeof prevCleanup === 'function') prevCleanup();
-        if (scrollParent && scrollParent.removeEventListener) {
-          scrollParent.removeEventListener('scroll', onScroll);
-        }
-        trackList.removeEventListener('keydown', onKey);
-      };
-    }
 
     let offset = (first.offset || 0) + loaded.length;
     while (offset < total) {
