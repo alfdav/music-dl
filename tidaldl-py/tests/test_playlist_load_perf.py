@@ -8,18 +8,15 @@ latency per HTTP-equivalent call, matching live playlist endpoints.
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from tests.test_gui_playlist_local_preference import (
-    _FakePlaylistDB,
     _fake_track,
+    _FakePlaylistDB,
     _patch_playlist_library_db,
 )
 
@@ -30,7 +27,7 @@ NAS_STAT_SEC = 0.015
 
 
 def _iso(ts: datetime | None = None) -> str:
-    value = ts or datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+    value = ts or datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
     return value.isoformat()
 
 
@@ -54,7 +51,7 @@ class SlowTidalPlaylist:
         self.id = "pl-slow"
         self.name = "Slow Playlist"
         self.num_tracks = len(tracks)
-        self.last_updated = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+        self.last_updated = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
         self._etag = '"etag-v1"'
         self._all = tracks
         self.latency = latency
@@ -357,7 +354,7 @@ def test_cache_uses_last_updated_and_etag_invalidation(
     assert session.playlist_calls == meta_calls
     assert len(playlist.calls) == track_calls
 
-    playlist.last_updated = datetime(2026, 2, 1, 12, 0, tzinfo=timezone.utc)
+    playlist.last_updated = datetime(2026, 2, 1, 12, 0, tzinfo=UTC)
     playlist._etag = '"etag-v2"'
     playlist._all[0] = _fake_track(track_id=99, isrc="ISRC00000", name="Replaced")
 

@@ -222,9 +222,8 @@ def _cache_valid(entry: dict | None, last_updated: str | None, etag: str | None)
     stored = _normalize_updated(entry.get("last_updated"))
     if wanted and stored and wanted != stored:
         return False
-    if etag and entry.get("etag") and etag != entry.get("etag"):
-        return False
-    return True
+    stored_etag = entry.get("etag")
+    return not (etag and stored_etag and etag != stored_etag)
 
 
 def _evict_cache() -> None:
