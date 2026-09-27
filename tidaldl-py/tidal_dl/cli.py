@@ -46,6 +46,7 @@ from tidal_dl.helper.tidal import (
 )
 from tidal_dl.hifi_api import HiFiApiClient
 from tidal_dl.model.cfg import SETTINGS_HELP
+from tidal_dl.model.downloader import DownloadOutcome
 
 
 def _progress_logger(print_fn: Callable[..., Any], *, debug: bool = False):
@@ -158,7 +159,7 @@ def _handle_track_or_video(
     file_template: str,
     idx: int,
     urls_pos_last: int,
-) -> None:
+) -> bool:
     """Handle downloading a track or video item.
 
     Args:
@@ -168,17 +169,21 @@ def _handle_track_or_video(
         file_template (str): The file template for saving the media.
         idx (int): The index of the item in the list.
         urls_pos_last (int): The last index in the URLs list.
+
+    Returns:
+        bool: False when the track failed.
     """
     settings = _ctx_settings(ctx)
     download_delay: bool = bool(settings.data.download_delay and idx < urls_pos_last)
 
-    _ = dl.item(
+    outcome, _path = dl.item(
         media=media,
         file_template=file_template,
         download_delay=download_delay,
         quality_audio=settings.data.quality_audio,
         quality_video=settings.data.quality_video,
     )
+    return outcome != DownloadOutcome.FAILED
 
 
 def _handle_album_playlist_mix_artist(
@@ -214,21 +219,26 @@ def _handle_album_playlist_mix_artist(
     else:
         item_ids.append(item_id)
 
+    any_failed = False
     for _item_id in item_ids:
         if handling_app.event_abort.is_set():
             return False
 
-        dl.items(
-            media_id=_item_id,
-            media_type=media_type,
-            file_template=file_template,
-            video_download=settings.data.video_download,
-            download_delay=settings.data.download_delay,
-            quality_audio=settings.data.quality_audio,
-            quality_video=settings.data.quality_video,
-        )
+        if (
+            dl.items(
+                media_id=_item_id,
+                media_type=media_type,
+                file_template=file_template,
+                video_download=settings.data.video_download,
+                download_delay=settings.data.download_delay,
+                quality_audio=settings.data.quality_audio,
+                quality_video=settings.data.quality_video,
+            )
+            is False
+        ):
+            any_failed = True
 
-    return True
+    return not any_failed
 
 
 def _process_url(
@@ -290,7 +300,7 @@ def _process_url(
         return False
 
     if media_type in [MediaType.TRACK, MediaType.VIDEO]:
-        _handle_track_or_video(dl, ctx, cast(TrackOrVideo, media), file_template, idx, urls_pos_last)
+        return _handle_track_or_video(dl, ctx, cast(TrackOrVideo, media), file_template, idx, urls_pos_last)
     elif media_type in [MediaType.ALBUM, MediaType.PLAYLIST, MediaType.MIX, MediaType.ARTIST]:
         return _handle_album_playlist_mix_artist(
             ctx,

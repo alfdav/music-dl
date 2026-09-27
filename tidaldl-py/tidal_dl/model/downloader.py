@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pathlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from requests import HTTPError
@@ -25,12 +25,13 @@ class DownloadSummary:
     skipped: int = 0
     failed: int = 0
     copied: int = 0
+    failures: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def total(self) -> int:
         return self.downloaded + self.skipped + self.failed + self.copied
 
-    def record(self, outcome: DownloadOutcome) -> None:
+    def record(self, outcome: DownloadOutcome, *, label: str = "", reason: str = "") -> None:
         if outcome == DownloadOutcome.DOWNLOADED:
             self.downloaded += 1
         elif outcome == DownloadOutcome.SKIPPED:
@@ -39,6 +40,8 @@ class DownloadSummary:
             self.copied += 1
         else:
             self.failed += 1
+            if label or reason:
+                self.failures.append((label, reason))
 
 
 @dataclass

@@ -95,7 +95,9 @@ def _tidal(*, session_max: str | None, probe_to: str | None = None):
     return tidal
 
 
-def _install_cli(monkeypatch, *, session_max: str | None, media, probe_to: str | None = None):
+def _install_cli(
+    monkeypatch, *, session_max: str | None, media, probe_to: str | None = None, accept: bool = True
+):
 
     tidal = _tidal(session_max=session_max, probe_to=probe_to)
     captured: list[str] = []
@@ -129,10 +131,16 @@ def _install_cli(monkeypatch, *, session_max: str | None, media, probe_to: str |
 
         def item(self, media=None, **_kwargs):
             self._get_stream_info(media or _listed_hires_track())
+            if not accept:
+                return DownloadOutcome.FAILED, ""
+            self._note_accepted_lossless_fallback()
             return DownloadOutcome.DOWNLOADED, Path("/tmp/cohen.flac")
 
         def items(self, **_kwargs):
             self._get_stream_info(_listed_hires_track())
+            if not accept:
+                return False
+            self._note_accepted_lossless_fallback()
 
     monkeypatch.setattr("tidal_dl.cli._resolve_session", fake_resolve)
     monkeypatch.setattr("tidal_dl.cli.instantiate_media", lambda **_kwargs: media)
@@ -158,6 +166,20 @@ def test_cli_track_capped_session_downloads_lossless(monkeypatch):
     assert result.exit_code == 0
     assert "Traceback" not in (result.output or "")
     assert notices == [SESSION_HIRES_FALLBACK_NOTICE]
+
+
+def test_cli_refused_track_does_not_announce_lossless_and_exits(monkeypatch):
+    notices = _install_cli(monkeypatch, session_max="LOSSLESS", media=_dummy_media("track"), accept=False)
+    result = _invoke(_TRACK_URL)
+    assert result.exit_code == 1
+    assert notices == []
+
+
+def test_cli_album_with_a_failed_track_exits_nonzero(monkeypatch):
+    notices = _install_cli(monkeypatch, session_max="LOSSLESS", media=_dummy_media("album"), accept=False)
+    result = _invoke(_ALBUM_URL)
+    assert result.exit_code == 1
+    assert notices == []
 
 
 def test_cli_album_capped_session_downloads_lossless(monkeypatch):

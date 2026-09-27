@@ -400,6 +400,8 @@ def test_hifi_preview_falls_back_to_the_delivered_oauth_quality():
     assert manifest.get_urls() == ["https://example.invalid/cd.flac"]
     assert subject.last_delivered_quality == "LOSSLESS"
     assert any("PREVIEW" in item for item in messages)
+    assert SESSION_HIRES_FALLBACK_NOTICE not in messages
+    subject._note_accepted_lossless_fallback()
     assert SESSION_HIRES_FALLBACK_NOTICE in messages
     assert calls
 
@@ -1431,3 +1433,22 @@ def test_library_db_batch_commit_persists_isrc_registrations(tmp_path):
         assert reopened.has_live_isrc("ISRC0024")
     finally:
         reopened.close()
+
+
+def test_parse_release_date_keeps_a_real_calendar_date():
+    """Hi-Fi album releaseDate must survive parsing. datetime.UTC on the class does not."""
+    from datetime import datetime
+
+    from tidal_dl.helper.tidal import _parse_release_date
+
+    parsed = _parse_release_date("2016-10-21")
+    assert isinstance(parsed, datetime)
+    assert (parsed.year, parsed.month, parsed.day) == (2016, 10, 21)
+    assert parsed.tzinfo is not None
+
+    prefixed = _parse_release_date("2016-10-21T00:00:00.000+0000")
+    assert isinstance(prefixed, datetime)
+    assert (prefixed.year, prefixed.month, prefixed.day) == (2016, 10, 21)
+
+    assert _parse_release_date("") is None
+    assert _parse_release_date("not-a-date") is None

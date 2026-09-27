@@ -271,8 +271,15 @@ class StreamMixin:
                 probe()
         if session_can_deliver_hires(self._session_max_quality()) is not False:
             return False
-        remember_session_hires_fallback(tidal, getattr(self, "fn_logger", None))
+        self._pending_session_capped_cd = True
         return True
+
+    def _note_accepted_lossless_fallback(self) -> None:
+        """Print the Lossless notice only after a file is actually kept."""
+        if not getattr(self, "_pending_session_capped_cd", False):
+            return
+        self._pending_session_capped_cd = False
+        remember_session_hires_fallback(getattr(self, "tidal", None), getattr(self, "fn_logger", None))
 
     def _record_last_delivered_quality(
         self,

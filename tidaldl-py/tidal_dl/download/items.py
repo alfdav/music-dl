@@ -9,6 +9,8 @@ from tidal_dl.helper.recording_identity import (
     live_identity_paths,
 )
 
+_FAILURE_INIT_LOCK = Lock()
+
 
 class ItemMixin:
     def item(
@@ -97,10 +99,11 @@ class ItemMixin:
                 dest_copy = win_long_path(path_copy_dst)
                 try:
                     shutil.copyfile(src_path_str, dest_copy)
-                except OSError:
+                except OSError as exc:
                     self.fn_logger.exception(
                         f"Could not copy '{name_builder_item(media)}' from '{src_path_str}'."
                     )
+                    self._note_item_failure(media, f"OSError: {exc}")
                     return DownloadOutcome.FAILED, ""
                 try:
                     shutil.copystat(src_path_str, dest_copy)
@@ -157,6 +160,13 @@ class ItemMixin:
         )
 
         outcome = DownloadOutcome.DOWNLOADED if download_success else DownloadOutcome.FAILED
+
+        if outcome == DownloadOutcome.DOWNLOADED:
+            note = getattr(self, "_note_accepted_lossless_fallback", None)
+            if callable(note):
+                note()
+        else:
+            self._note_item_failure(media, "download failed", overwrite=False)
 
         # Record the ISRC after a successful download so future duplicate checks work.
         if outcome == DownloadOutcome.DOWNLOADED and isinstance(media, Track):
@@ -576,42 +586,51 @@ class ItemMixin:
         presentation = getattr(stream_manifest, "asset_presentation", None)
         label = str(getattr(media, "id", "track"))
         if is_preview_presentation(presentation):
-            self.fn_logger.error(
-                f"Stream for track {label} is assetPresentation PREVIEW. Refusing to save it."
-            )
+            reason = f"Stream for track {label} is assetPresentation PREVIEW. Refusing to save it."
+            self.fn_logger.error(reason)
+            self._note_item_failure(media, reason)
             return True
         decoded = self._decoded_audio_seconds(path_media_src)
         catalog = getattr(media, "duration", None)
         if duration_is_far_short(decoded, catalog):
-            self.fn_logger.error(
+            reason = (
                 f"Decoded audio for track {label} is {decoded:.2f}s but the track is {catalog}s. "
                 "Refusing to save a preview."
             )
+            self.fn_logger.error(reason)
+            self._note_item_failure(media, reason)
             return True
         return False
 
     def _decoded_audio_seconds(self, path_media_src: pathlib.Path) -> float | None:
-        """Seconds of audio ffmpeg actually decodes. Container duration can lie."""
-        import subprocess
+        """Seconds of the audio stream. Cover art must not replace this."""
+        from tidal_dl.download_ffmpeg import audio_stream_duration_seconds
 
-        from tidal_dl.download_ffmpeg import ffmpeg_executable
+        return audio_stream_duration_seconds(
+            path_media_src,
+            getattr(self.settings.data, "path_binary_ffmpeg", None),
+        )
 
-        exe = ffmpeg_executable(getattr(self.settings.data, "path_binary_ffmpeg", None))
-        try:
-            proc = subprocess.run(
-                [exe, "-nostdin", "-hide_banner", "-i", str(path_media_src), "-f", "null", "-"],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            return None
-        matches = re.findall(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)", proc.stderr or "")
-        if not matches:
-            return None
-        hours, minutes, seconds = matches[-1]
-        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    def _ensure_failure_store(self) -> None:
+        if getattr(self, "_item_failure_lock", None) is not None:
+            return
+        with _FAILURE_INIT_LOCK:
+            if getattr(self, "_item_failure_lock", None) is None:
+                self._item_failure_reasons = {}
+                self._item_failure_lock = Lock()
+
+    def _note_item_failure(self, media: object, reason: str, *, overwrite: bool = True) -> None:
+        self._ensure_failure_store()
+        key = str(getattr(media, "id", "") or id(media))
+        with self._item_failure_lock:
+            if overwrite or key not in self._item_failure_reasons:
+                self._item_failure_reasons[key] = reason
+
+    def _take_item_failure(self, media: object) -> str:
+        self._ensure_failure_store()
+        key = str(getattr(media, "id", "") or id(media))
+        with self._item_failure_lock:
+            return self._item_failure_reasons.pop(key, "")
 
     def _flac_stream_in_mp4_container(
         self, path_media_src: pathlib.Path, codecs: str, current_extension: str

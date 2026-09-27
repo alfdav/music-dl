@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from tidalapi.album import Album
@@ -176,7 +176,7 @@ def _parse_release_date(raw_date: str | None):
         return None
     try:
         # API may return ISO datetime; keep only YYYY-MM-DD.
-        return datetime.strptime(str(raw_date)[:10], "%Y-%m-%d").replace(tzinfo=datetime.UTC)
+        return datetime.strptime(str(raw_date)[:10], "%Y-%m-%d").replace(tzinfo=UTC)
     except ValueError:
         return None
 

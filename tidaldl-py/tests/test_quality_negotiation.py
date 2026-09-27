@@ -573,9 +573,12 @@ def test_capped_session_accepts_cd_when_flac_hires_offered_and_hifi_down():
     assert quality_name(media_stream.audio_quality).upper() == "LOSSLESS"
     assert manifest.get_urls() == ["https://example.invalid/cd.flac"]
     assert subject.last_delivered_quality == "LOSSLESS"
+    assert warnings == []
+    subject._note_accepted_lossless_fallback()
     assert warnings == [SESSION_HIRES_FALLBACK_NOTICE]
 
     subject._get_stream_info(_listed_hires_track(_oauth_cd_stream()))
+    subject._note_accepted_lossless_fallback()
     assert warnings == [SESSION_HIRES_FALLBACK_NOTICE]
 
 
@@ -624,6 +627,8 @@ def test_restore_then_download_lazy_probes_capped_login():
     assert quality_name(media_stream.audio_quality).upper() == "LOSSLESS"
     assert subject.tidal.session_max_quality == "LOSSLESS"
     assert subject.last_delivered_quality == "LOSSLESS"
+    assert warnings == []
+    subject._note_accepted_lossless_fallback()
     assert warnings == [SESSION_HIRES_FALLBACK_NOTICE]
 
 

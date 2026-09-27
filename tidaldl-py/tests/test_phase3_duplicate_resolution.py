@@ -281,19 +281,36 @@ class TestPreflightIsrcScan:
         # Must be 'copy', NOT 'skip'
         assert result == {"12": "copy"}
 
-    def test_skips_checkpoint_downloaded_tracks(self, tmp_path):
+    def test_skips_checkpoint_downloaded_tracks_only_when_the_dest_file_exists(self, tmp_path):
         source = tmp_path / "track.flac"
         source.touch()
+        dest = tmp_path / "out" / "track.flac"
+        dest.parent.mkdir()
+        dest.write_bytes(b"flac")
         dl = _make_download_obj(tmp_path, {"US-ABC-00-00007": str(source)}, duplicate_action="skip")
+        dl.skip_existing = False
+        dl.path_base = str(tmp_path / "out")
 
+        def prepare(media, template, quality, pos, total, bypass_isrc=False):
+            return dest, ".flac", dest.is_file(), False
+
+        dl._prepare_file_paths_and_skip_logic = prepare
         track = _make_track(7, "US-ABC-00-00007")
         checkpoint = MagicMock()
         from tidal_dl.helper.checkpoint import STATUS_DOWNLOADED
 
         checkpoint.status_of.return_value = STATUS_DOWNLOADED
 
-        result = dl._preflight_isrc_scan([track], checkpoint=checkpoint)
-        assert result == {}
+        present = dl._preflight_isrc_scan(
+            [track], checkpoint=checkpoint, file_template="{track_title}"
+        )
+        assert present == {}
+
+        dest.unlink()
+        missing = dl._preflight_isrc_scan(
+            [track], checkpoint=checkpoint, file_template="{track_title}"
+        )
+        assert missing == {"7": "skip"}
 
 
 # ---------------------------------------------------------------------------
@@ -623,3 +640,153 @@ class TestCheckpointOutcomeMapping:
         marked = {call.args for call in checkpoint.mark.call_args_list}
         assert ("1", STATUS_DOWNLOADED) in marked
         assert ("2", STATUS_FAILED) in marked
+
+
+def test_quality_mismatch_is_listed_and_the_collection_still_finishes(tmp_path):
+    """A per-track QualityMismatchError must not vanish into exit 0."""
+    from types import SimpleNamespace
+
+    from rich.progress import Progress
+    from tidalapi.album import Album
+
+    from tidal_dl.download import Download
+    from tidal_dl.download.streams import QualityMismatchError
+
+    album = object.__new__(Album)
+    album.id = 77
+    good = _make_track(1, "US-TST-00-00011")
+    bad = _make_track(2, "US-TST-00-00012")
+    tracks = [good, bad]
+    downloaded: list[int] = []
+
+    dl = Download.__new__(Download)
+    dl.fn_logger = MagicMock()
+    dl.path_base = str(tmp_path / "library")
+    dl.event_abort = Event()
+    dl.progress = Progress(disable=True)
+    dl.progress_overall = None
+    dl.settings = SimpleNamespace(
+        data=SimpleNamespace(
+            downloads_concurrent_max=2,
+            playlist_create=False,
+            skip_duplicate_isrc=False,
+        )
+    )
+    dl._validate_and_prepare_media = lambda *args, **kwargs: album
+    dl._setup_collection_download_context = lambda *args, **kwargs: (
+        "{track_title}",
+        "The Album",
+        "The Album",
+        tracks,
+        False,
+    )
+    dl._preflight_isrc_scan = lambda *args, **kwargs: {}
+
+    def item(media=None, **kwargs):
+        if getattr(media, "id", None) == 2:
+            raise QualityMismatchError("requested HI_RES_LOSSLESS but received LOSSLESS")
+        downloaded.append(media.id)
+        return DownloadOutcome.DOWNLOADED, pathlib.Path("/tmp/ok.flac")
+
+    dl.item = item
+    panels: list[object] = []
+
+    with (
+        patch("tidal_dl.download.collections.path_config_base", return_value=str(tmp_path)),
+        patch(
+            "tidal_dl.download.collections.Console",
+            lambda *args, **kwargs: SimpleNamespace(print=panels.append),
+        ),
+    ):
+        ok = dl.items(file_template="{track_title}", media=album)
+
+    assert ok is False
+    assert downloaded == [1]
+    text = "\n".join(str(getattr(panel, "renderable", panel)) for panel in panels)
+    assert "QualityMismatchError" in text
+    assert "requested HI_RES_LOSSLESS but received LOSSLESS" in text
+    assert "Failed:" in text
+
+
+def test_checkpoint_path_includes_the_resolved_output_dir(tmp_path):
+    from tidal_dl.helper.checkpoint import checkpoint_path_for
+
+    first = checkpoint_path_for(tmp_path, "playlist_9", str(tmp_path / "fresh"))
+    second = checkpoint_path_for(tmp_path, "playlist_9", str(tmp_path / "other"))
+    stale = tmp_path / "checkpoints" / "playlist_9.json"
+
+    assert first != second
+    assert first != stale
+    assert first.parent == tmp_path / "checkpoints"
+    assert "playlist_9" in first.name
+    assert first.name != second.name
+
+
+def test_checkpoint_skip_requires_the_file_in_this_output_dir(tmp_path):
+    """A downloaded checkpoint for another folder must not skip a fresh --output."""
+    from rich.progress import Progress
+
+    from tidal_dl.download import Download
+    from tidal_dl.helper.checkpoint import STATUS_DOWNLOADED, DownloadCheckpoint
+
+    out = tmp_path / "fresh"
+    dest = out / "song.flac"
+    dl = Download.__new__(Download)
+    dl.settings = type("S", (), {"data": type("D", (), {"downloads_concurrent_max": 1})()})()
+    dl.event_abort = Event()
+    dl.fn_logger = MagicMock()
+    dl.path_base = str(out)
+    dl.skip_existing = False
+    calls: list[int] = []
+
+    def item(media=None, **kwargs):
+        calls.append(media.id)
+        return DownloadOutcome.DOWNLOADED, dest
+
+    def prepare(media, template, quality, pos, total, bypass_isrc=False):
+        return dest, ".flac", dest.is_file(), False
+
+    dl.item = item
+    dl._prepare_file_paths_and_skip_logic = prepare
+    track = _make_track(7, "US-TST-00-00007")
+    checkpoint = DownloadCheckpoint(
+        path=tmp_path / "cp.json",
+        collection_id="playlist_9",
+        collection_type="playlist",
+        output_dir=str(out.resolve()),
+    )
+    checkpoint.initialize_tracks(["7"])
+    checkpoint.mark("7", STATUS_DOWNLOADED)
+
+    def run_once() -> DownloadSummary:
+        summary = DownloadSummary()
+        with Progress(disable=True) as progress:
+            task = progress.add_task("collection", total=1)
+            dl._execute_collection_downloads(
+                [track],
+                "{track_title}",
+                None,
+                None,
+                False,
+                False,
+                1,
+                progress,
+                task,
+                False,
+                summary=summary,
+                checkpoint=checkpoint,
+            )
+        return summary
+
+    missing = run_once()
+    assert calls == [7]
+    assert missing.skipped == 0
+    assert missing.downloaded == 1
+
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"full-flac")
+    calls.clear()
+    present = run_once()
+    assert calls == []
+    assert present.skipped == 1
+    assert present.downloaded == 0

@@ -3,6 +3,44 @@
 from tidal_dl.download._common import *
 
 
+def track_file_is_in_output(
+    downloader,
+    media,
+    file_template: str | None,
+    list_position: int = 0,
+    list_total: int = 0,
+) -> bool:
+    """True when this job's dest already has the track, even if skip_existing is off."""
+    prepare = getattr(downloader, "_prepare_file_paths_and_skip_logic", None)
+    if not callable(prepare):
+        return False
+    saved = getattr(downloader, "skip_existing", False)
+    try:
+        downloader.skip_existing = True
+        result = prepare(
+            media,
+            file_template or "{track_title}",
+            None,
+            list_position,
+            list_total,
+            bypass_isrc=True,
+        )
+    except (TypeError, ValueError, OSError, AttributeError):
+        return False
+    finally:
+        downloader.skip_existing = saved
+    if not isinstance(result, tuple) or not result:
+        return False
+    dest = result[0]
+    skip_file = result[2] if len(result) > 2 else False
+    if skip_file is True:
+        return True
+    try:
+        return check_file_exists(pathlib.Path(dest), extension_ignore=False)
+    except (TypeError, ValueError, OSError):
+        return False
+
+
 def dest_already_present(
     downloader,
     media,
@@ -72,8 +110,18 @@ class DuplicateMixin:
         for item_media in items:
             if not isinstance(item_media, Track):
                 continue
-            # Skip tracks already completed in checkpoint
-            if checkpoint is not None and checkpoint.status_of(str(item_media.id)) == STATUS_DOWNLOADED:
+            # Skip tracks already completed in this output dir.
+            if (
+                checkpoint is not None
+                and checkpoint.status_of(str(item_media.id)) == STATUS_DOWNLOADED
+                and track_file_is_in_output(
+                    self,
+                    item_media,
+                    file_template,
+                    list_position=positions.get(str(item_media.id), 0),
+                    list_total=list_total,
+                )
+            ):
                 continue
             isrc = getattr(item_media, "isrc", None)
             if not isrc:

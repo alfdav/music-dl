@@ -2,13 +2,53 @@
 
 ## 2026-09-27 — Overlay keycaps reused the settings-card fill
 
+## 2026-09-27 — Cover art made every download look like a 0.00s preview
+
+**What happened:** After a JPEG cover was embedded, ffmpeg's last `time=` was the cover image (`frame=1 … time=00:00:00.00`). A full 16/44.1 FLAC of 216s was refused as a preview.
+
+**Root cause:** `_decoded_audio_seconds` parsed ffmpeg progress after metadata write and did not select the audio stream.
+
+**Prevention:** Read duration with ffprobe JSON on stream `a:0`. Regression test builds a real FLAC, embeds a generated JPEG, and still rejects a real 30s clip of a 216s track.
+
+## 2026-09-27 — "downloading Lossless instead" printed for a refused file
+
+**What happened:** The session-cap notice was shown when the track was refused, so the log claimed a Lossless download that was not kept.
+
+**Root cause:** `_accept_session_capped_cd` called `remember_session_hires_fallback` at stream-info time, before the file was accepted.
+
+**Prevention:** Set `_pending_session_capped_cd` at stream time. `_note_accepted_lossless_fallback` runs only when `item()` outcome is DOWNLOADED.
+
+## 2026-09-27 — Valid Hi-Fi release dates raised AttributeError
+
+**What happened:** Every album `releaseDate` broke Hi-Fi album details and silently fell back to OAuth.
+
+**Root cause:** `_parse_release_date` used `datetime.UTC` while `datetime` was the class. Only `ValueError` was caught, so `AttributeError` escaped.
+
+**Prevention:** Use `timezone.utc`. Test `_parse_release_date("2016-10-21")`. Do not catch `AttributeError`.
+
+## 2026-09-27 — Album and playlist runs exited 0 after track failures
+
+**What happened:** A `QualityMismatchError` in one track was logged and the command still exited 0. The summary showed a failed count and no reason.
+
+**Root cause:** `_process_download_futures` caught every exception, `items()` returned None, and the CLI ignored that result.
+
+**Prevention:** Keep going, record `ExceptionType: message` on `DownloadSummary.failures`, print each one, and return False from `items()` so the command exits non-zero.
+
+## 2026-09-27 — Resume checkpoint ignored --output
+
+**What happened:** A checkpoint keyed only by playlist id made a fresh `--output` folder skip tracks that were not in that folder.
+
+**Root cause:** The checkpoint filename was `{type}_{id}.json`, and a `downloaded` status skipped without checking the dest file.
+
+**Prevention:** Key the checkpoint by collection id plus the resolved output dir. Skip only when that status is downloaded and the file exists in this dir.
+
 ## 2026-09-27 — Hi-Fi PREVIEW was saved as a 24-bit download
 
 **What happened:** Track 66024828 from monochrome-api.samidy.com had `assetPresentation: PREVIEW` at HI_RES_LOSSLESS. The FLAC header said 216s; ffmpeg decoded 29.91s. tidal_dl moved the file and `library.db` recorded it as 24-bit. The login probe also printed "downloading Lossless instead" even though that 24-bit clip was what got saved. Hi-Fi LOSSLESS then returned 403.
 
 **Root cause:** `parse_track_payload` dropped `assetPresentation`, so a preview looked like a successful Hi-Res manifest. The session notice was printed when the probe measured LOSSLESS, not when a LOSSLESS file was actually kept.
 
-**Prevention:** Reject `PREVIEW` before save and fall through to the next source (or fail the track if fallback is off). Before `shutil.move`, refuse audio whose decoded duration is far short of the catalog duration. Print the Lossless notice only from `_accept_session_capped_cd`, when that is the quality delivered.
+**Prevention:** Reject `PREVIEW` before save and fall through to the next source (or fail the track if fallback is off). Before `shutil.move`, refuse audio whose audio-stream duration is far short of the catalog duration. Print the Lossless notice only after a file is accepted.
 
 ## 2026-09-27 — Playlist copy died on SMB `copystat`
 
