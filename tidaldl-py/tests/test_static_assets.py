@@ -142,11 +142,46 @@ class TestAppJsFeatureMarkers:
 
     def test_has_requested_keyboard_shortcuts(self):
         js = read_gui_js()
+        css = (STATIC_DIR / "style.css").read_text()
         assert "_isTypingTarget" in js
         assert "metaKey || e.ctrlKey" in js
-        assert "Cmd/Ctrl+K" in js
-        assert "Cmd/Ctrl+L" in js
-        assert "Cmd/Ctrl+Shift+Q" in js
+        assert "Cmd/Ctrl" not in js
+        assert "_resolveShortcutPlatform" in js
+        assert "_renderShortcutStrip" in js
+        assert "shortcut-keycap" in js
+        assert "aria-label" in js
+        assert "Command Shift Q" in js or "'Command'" in js
+        assert "After ·" not in js
+        assert "Before ·" not in js
+        grid = _css_rule_bodies(css, ".settings-shortcuts")
+        assert any("repeat(3, minmax(0, 1fr))" in body for body in grid)
+        assert "repeat(6, minmax(0, 1fr))" in css
+        assert "@media (min-width: 1680px)" in css
+        label = _css_rule_bodies(css, ".settings-shortcut-label")
+        assert any(
+            "white-space: nowrap" in body
+            and "min-width: 0" in body
+            and "text-overflow: ellipsis" in body
+            for body in label
+        )
+        keycap = _css_rule_bodies(css, ".shortcut-keycap")
+        assert any(
+            "box-shadow:" in body
+            and "border-radius:" in body
+            and "color: var(--text)" in body
+            and "min-width: 28px" in body
+            and "height: 28px" in body
+            for body in keycap
+        )
+        card = _css_rule_bodies(css, ".shortcuts-card")
+        assert any("background: var(--bg-warm)" in body for body in card)
+        overlay_keycap = _css_rule_bodies(css, ".shortcuts-card .shortcut-keycap")
+        assert overlay_keycap, "overlay keycaps need a fill distinct from .shortcuts-card"
+        assert any(
+            "background: var(--surface-active)" in body and "--bg-warm" not in body
+            for body in overlay_keycap
+        )
+        assert "_renderShortcutKeycaps(row.keys, platform)" in js
 
     def test_has_recent_filters_and_clear_old(self):
         js = read_gui_js()
