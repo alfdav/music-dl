@@ -257,4 +257,14 @@ describe('shortcut display source', () => {
     expect(cssSource).toMatch(/\.shortcut-keycap[\s\S]*box-shadow/);
     expect(cssSource).toContain('prefers-reduced-motion');
   });
+
+  test('overlay keycaps do not share the shortcuts-card fill', () => {
+    expect(cssSource).toMatch(/\.shortcuts-card\s*\{[^}]*background:\s*var\(--bg-warm\)/);
+    expect(cssSource).toMatch(/\.shortcut-keycap\s*\{[^}]*background:\s*var\(--bg-warm\)/);
+    const overlay = cssSource.match(/\.shortcuts-card\s+\.shortcut-keycap\s*\{([^}]+)\}/);
+    expect(overlay).toBeTruthy();
+    expect(overlay[1]).toMatch(/background:\s*var\(--surface-active\)/);
+    expect(overlay[1]).not.toMatch(/--bg-warm/);
+    expect(apiSource).toContain('_renderShortcutKeycaps(row.keys, platform)');
+  });
 });

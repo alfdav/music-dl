@@ -4011,6 +4011,10 @@ body {
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
 }
 
+.shortcuts-card .shortcut-keycap {
+  background: var(--surface-active);
+}
+
 .shortcut-keycap-symbol {
   font-size: 15px;
 }

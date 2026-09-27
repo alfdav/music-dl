@@ -173,6 +173,15 @@ class TestAppJsFeatureMarkers:
             and "height: 28px" in body
             for body in keycap
         )
+        card = _css_rule_bodies(css, ".shortcuts-card")
+        assert any("background: var(--bg-warm)" in body for body in card)
+        overlay_keycap = _css_rule_bodies(css, ".shortcuts-card .shortcut-keycap")
+        assert overlay_keycap, "overlay keycaps need a fill distinct from .shortcuts-card"
+        assert any(
+            "background: var(--surface-active)" in body and "--bg-warm" not in body
+            for body in overlay_keycap
+        )
+        assert "_renderShortcutKeycaps(row.keys, platform)" in js
 
     def test_has_recent_filters_and_clear_old(self):
         js = read_gui_js()

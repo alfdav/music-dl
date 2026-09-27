@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-27 — Overlay keycaps reused the settings-card fill
+
+**What happened:** The `?` help overlay switched to `shortcut-keycap` chips. Those chips fill with `--bg-warm`, the same token as `.shortcuts-card`, so chords lost their key surface and kept only a faint border.
+
+**Root cause:** The settings strip sits on `--surface` over `--bg`. The overlay card *is* `--bg-warm`. One keycap fill cannot serve both parents.
+
+**Prevention:** `.shortcuts-card .shortcut-keycap` uses `--surface-active` so overlay keys lift off the `--bg-warm` card. Keep the settings strip on `--bg-warm`. Tests lock that the two fills differ. Do not reuse a surface token as both card and keycap. `--bg` on `--bg-warm` is too close to count.
+
 ## 2026-09-26 — Advisory QA hid master failures until enforcement
 
 **What happened:** `.github/workflows/qa.yml` collected check outcomes with `continue-on-error` and scored them without `--enforce`. Master stayed "green" while `python_smoke` (download 401 hole), `security_tests` (bot pid race), stale lyrics/settings contracts, and ruff deductions were already would_block.
