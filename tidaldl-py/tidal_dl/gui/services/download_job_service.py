@@ -745,6 +745,7 @@ class DownloadJobService:
             row = db.get(old_path)
             if row is None:
                 raise ValueError(f"Not in library: {old_path}")
+            db.release_transaction()
 
             tidal = tidal_cls()
             track = tidal.session.track(job.track_id)
@@ -865,8 +866,8 @@ class DownloadJobService:
 
             isrc = row.get("isrc")
             if isrc:
-                db.delete_probe(isrc)
-                db.commit()
+                with db.write_transaction(immediate=True):
+                    db.delete_probe(isrc)
 
             finished_at = time.time()
             self._record_history(

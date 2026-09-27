@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-27 — Upgrade probe held the library write lock across Tidal lookups
+
+**What happened:** Opening a playlist started `/api/upgrade/probe`. From then on the download worker logged "deferred claim; library db locked", and Play on a stale `Artist/Artist - Album` path returned HTTP 500. The player skipped ahead. Time-to-play went from about 0.2 s to several seconds. Blocking `/api/upgrade/*` made the lock go away.
+
+**Root cause:** `probe_isrcs` called `set_probe()` inside the ISRC loop. That INSERT opened a write transaction, and `commit()` ran only after every network probe (sleep plus a Tidal search, up to 50 ISRCs). The same pattern was in `probe_by_meta`. The playback heal's `migrate_path` UPDATE then waited out `busy_timeout=5000` and raised `sqlite3.OperationalError: database is locked`.
+
+**Prevention:** Read the cache and local rows, end any open transaction, do all network and filesystem work with no transaction, then store probe rows in one `write_transaction()`. The layout heal uses a short `BEGIN IMMEDIATE` and closes its connection. If that write cannot lock, the file request still returns the on-disk file and remembers the path in memory.
+
 ## 2026-09-27 — A layout scroll cancelled playlist restore, and a later-page retry hammered
 
 **What happened:** Coming back from an album, the browser clamped `#view` onto the short playlist placeholder and fired `scroll`. That was treated as the user scrolling, so the saved offset was dropped. A later-page 429 also retried every 1.5s and toasted every time, and a retry that finished the list never ran the upgrade scan.

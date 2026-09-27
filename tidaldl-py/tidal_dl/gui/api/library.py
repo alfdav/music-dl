@@ -10,6 +10,7 @@ The library lives on a NAS (/Volumes/Music), so scanning is slow. Strategy:
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sqlite3
@@ -26,7 +27,7 @@ from mutagen import File as MutagenFile
 from pydantic import BaseModel
 
 from tidal_dl.config import Settings
-from tidal_dl.helper.library_db import LibraryDB
+from tidal_dl.helper.library_db import LibraryDB, is_sqlite_lock_error
 from tidal_dl.helper.library_db.utils import (
     _album_track_key,
     _album_track_preference,
@@ -43,6 +44,8 @@ from tidal_dl.helper.library_scanner import (
     visible_scanned_path_sql,
 )
 from tidal_dl.helper.path import path_config_base
+
+logger = logging.getLogger("music-dl.library")
 
 router = APIRouter()
 
@@ -346,15 +349,31 @@ def apply_playback_layout_heal(path: str) -> str | None:
             return False
         return validate_audio_path(candidate, allowed) is not None
 
+    db = LibraryDB(Path(path_config_base()) / "library.db")
     try:
-        db = _get_db()
-    except Exception:  # noqa: BLE001
+        db.open()
+        healed = heal_artist_album_layout_path(db, stored, exists=exists)
+    except sqlite3.OperationalError as exc:
+        if not is_sqlite_lock_error(exc):
+            raise
+        logger.warning("playback layout heal skipped; library db locked for %s", stored)
+        _remember_locked_layout_migration(path, stored, exists)
         return None
-    healed = heal_artist_album_layout_path(db, stored, exists=exists)
+    finally:
+        db.close()
     if not healed:
         return None
     _remember_playback_migrations([(path, healed)])
     return healed
+
+
+def _remember_locked_layout_migration(path: str, stored: str, exists) -> None:
+    """Cache the on-disk layout target when the best-effort DB write cannot lock."""
+    from tidal_dl.helper.library_reconcile import artist_album_layout_candidate
+
+    candidate = artist_album_layout_candidate(stored)
+    if candidate and exists(candidate):
+        _remember_playback_migrations([(path, candidate)])
 
 
 def request_playback_path_heal(path: str) -> dict:

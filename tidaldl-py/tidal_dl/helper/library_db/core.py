@@ -445,6 +445,11 @@ class LibraryDBCore:
             "CREATE INDEX IF NOT EXISTS idx_edition_advice_group ON edition_advice(group_id)"
         )
 
+    def release_transaction(self) -> None:
+        """End a leftover read or implicit transaction before slow work."""
+        if self._conn is not None and self._conn.in_transaction:
+            self._conn.rollback()
+
     def begin_immediate(self) -> None:
         """Take a reserved lock with a short acquire wait; caller retries."""
         assert self._conn

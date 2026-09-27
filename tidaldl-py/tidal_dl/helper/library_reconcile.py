@@ -1121,6 +1121,17 @@ def present_playable_path(path: str | None, db=None) -> tuple[str | None, bool]:
     return allowlisted, False
 
 
+def _release_db_transaction(db) -> None:
+    """Drop a read snapshot so filesystem checks and later writes stay short."""
+    release = getattr(db, "release_transaction", None)
+    if release is not None:
+        release()
+        return
+    conn = getattr(db, "_conn", None)
+    if conn is not None and getattr(conn, "in_transaction", False):
+        conn.rollback()
+
+
 def heal_artist_album_layout_path(db, old_path: str, *, exists=None) -> str | None:
     """Cheap one-path heal. No directory walk. Updates scanned/play_events/favorites."""
     exists = exists or readable_audio_file
@@ -1132,6 +1143,8 @@ def heal_artist_album_layout_path(db, old_path: str, *, exists=None) -> str | No
             row = db.get(stored)
         except Exception:  # noqa: BLE001
             row = None
+        else:
+            _release_db_transaction(db)
         if row is not None and row.get("path"):
             stored = str(row["path"]).strip() or stored
     if exists(stored):
@@ -1143,17 +1156,27 @@ def heal_artist_album_layout_path(db, old_path: str, *, exists=None) -> str | No
         return None
     identity = FileIdentity(path=candidate)
     if db is not None and hasattr(db, "get") and db.get(stored) is not None:
-        if not db.migrate_path(
-            stored,
-            candidate,
-            merge=True,
-            file_size=identity.size,
-            file_mtime=identity.mtime,
-            file_inode=identity.inode,
-            file_device=identity.device,
-        ):
-            return None
-        db.commit()
+        _release_db_transaction(db)
+
+        def _migrate() -> bool:
+            return bool(db.migrate_path(
+                stored,
+                candidate,
+                merge=True,
+                file_size=identity.size,
+                file_mtime=identity.mtime,
+                file_inode=identity.inode,
+                file_device=identity.device,
+            ))
+
+        if hasattr(db, "write_transaction"):
+            with db.write_transaction(immediate=True):
+                if not _migrate():
+                    return None
+        else:
+            if not _migrate():
+                return None
+            db.commit()
     return candidate
 
 

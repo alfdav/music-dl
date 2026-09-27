@@ -372,9 +372,14 @@ def probe_isrcs(req: ProbeRequest) -> dict:
             for r in rows:
                 isrc_meta[r["isrc"]] = (r["title"] or "", r["artist"] or "")
 
+        # Reads are done. Network probes must not run inside a SQLite transaction:
+        # an implicit write from set_probe() would hold the library lock until commit.
+        db.release_transaction()
+
         # Probe Tidal for cache misses (0.5 req/sec)
         # NOTE: This blocks the worker thread for up to 2s × len(misses).
         # Acceptable because sync handlers run in uvicorn's threadpool, not event loop.
+        pending: list[tuple[str, int, str]] = []
         for i, isrc in enumerate(misses):
             if isrc.strip().upper() in colliding:
                 continue
@@ -383,7 +388,7 @@ def probe_isrcs(req: ProbeRequest) -> dict:
             title, artist = isrc_meta.get(isrc, ("", ""))
             result = _probe_tidal_isrc(session, isrc, title=title, artist=artist)
             if result:
-                db.set_probe(isrc, result["tidal_track_id"], result["max_quality"])
+                pending.append((isrc, result["tidal_track_id"], result["max_quality"]))
                 cached[isrc] = {
                     "isrc": isrc,
                     "tidal_track_id": result["tidal_track_id"],
@@ -391,14 +396,17 @@ def probe_isrcs(req: ProbeRequest) -> dict:
                 }
             else:
                 # Cache a "not found" sentinel so we don't re-probe
-                db.set_probe(isrc, 0, "")
+                pending.append((isrc, 0, ""))
                 cached[isrc] = {
                     "isrc": isrc,
                     "tidal_track_id": 0,
                     "max_quality": "",
                 }
 
-        db.commit()
+        if pending:
+            with db.write_transaction(immediate=True):
+                for isrc, tidal_track_id, max_quality in pending:
+                    db.set_probe(isrc, tidal_track_id, max_quality)
 
         # Build results
         results = []
@@ -448,20 +456,23 @@ def probe_by_meta(req: ProbeByMetaRequest) -> dict:
 
     db = _get_db()
     try:
+        durations: list[int] = []
+        for item in req.tracks:
+            row = db.get(item.path)
+            durations.append(row.get("duration", 0) if row else 0)
+        db.release_transaction()
+
+        pending: list[tuple[str, int, str]] = []
         results = []
         for i, item in enumerate(req.tracks):
             if i > 0:
                 time.sleep(2)  # 0.5 req/sec
 
-            # Look up duration from DB
-            row = db.get(item.path)
-            duration = row.get("duration", 0) if row else 0
-
-            probe = _probe_tidal_meta(session, item.title, item.artist, duration)
+            probe = _probe_tidal_meta(session, item.title, item.artist, durations[i])
             if probe and probe.get("tidal_track_id") and probe.get("max_quality"):
                 # Cache for future use (now we have the ISRC from Tidal)
                 if probe.get("isrc"):
-                    db.set_probe(probe["isrc"], probe["tidal_track_id"], probe["max_quality"])
+                    pending.append((probe["isrc"], probe["tidal_track_id"], probe["max_quality"]))
                 probed_rank = TIER_RANK.get(probe["max_quality"], 0)
                 results.append({
                     "path": item.path,
@@ -479,7 +490,10 @@ def probe_by_meta(req: ProbeByMetaRequest) -> dict:
                     "upgradeable": False,
                 })
 
-        db.commit()
+        if pending:
+            with db.write_transaction(immediate=True):
+                for isrc, tidal_track_id, max_quality in pending:
+                    db.set_probe(isrc, tidal_track_id, max_quality)
     finally:
         db.close()
 
@@ -695,8 +709,9 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
             return
         session = tidal.session
 
-        # Get all tracks with ISRCs
+        # Get all tracks with ISRCs. Drop any read snapshot before stat() calls.
         all_tracks = db.upgradeable_tracks()
+        db.release_transaction()
         all_count = len(all_tracks)
 
         _scan_state.update(status="running", total=all_count)
@@ -739,9 +754,9 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
         if stale_paths:
             stale_pct = len(stale_paths) / max(all_count, 1)
             if stale_pct < 0.05:
-                for sp in stale_paths:
-                    db.remove(sp)
-                db.commit()
+                with db.write_transaction(immediate=True):
+                    for sp in stale_paths:
+                        db.remove(sp)
                 logger.info("Cleaned %d stale scanned entries", len(stale_paths))
             else:
                 logger.warning("Skipped stale cleanup: %d/%d (%.0f%%) entries missing — possible volume offline",
@@ -751,10 +766,11 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
         checked = 0
         upgradeable_results: list[dict] = []
 
-        # Batch check probe cache
+        # Batch check probe cache, then leave the connection idle across network probes.
         all_isrcs = [t["isrc"] for t in candidates]
         cached_probes = db.get_probes_batch(all_isrcs)
         colliding = _colliding_isrcs(candidates)
+        db.release_transaction()
 
         for t in candidates:
             if cancel_event.is_set():
@@ -767,7 +783,9 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
             probe = None if isrc_collides else cached_probes.get(isrc)
 
             # Probe Tidal for cache misses. Colliding ISRCs are per-title only.
+            # Store after the network call so the write lock is not held during it.
             if probe is None:
+                db.release_transaction()
                 probe_result = _probe_tidal_isrc(
                     session,
                     isrc,
@@ -776,19 +794,18 @@ def _start_bulk_scan(cancel_event: threading.Event) -> None:
                     duration=t.get("duration", 0) or 0,
                 )
                 if probe_result:
-                    if not isrc_collides:
-                        db.set_probe(isrc, probe_result["tidal_track_id"], probe_result["max_quality"])
                     probe = {
                         "isrc": isrc,
                         "tidal_track_id": probe_result["tidal_track_id"],
                         "max_quality": probe_result["max_quality"],
                     }
                 else:
-                    if not isrc_collides:
-                        db.set_probe(isrc, 0, "")
                     probe = {"isrc": isrc, "tidal_track_id": 0, "max_quality": ""}
                 if not isrc_collides:
-                    db.commit()
+                    tidal_track_id = probe["tidal_track_id"]
+                    max_quality = probe["max_quality"]
+                    with db.write_transaction(immediate=True):
+                        db.set_probe(isrc, tidal_track_id, max_quality)
                 time.sleep(2)  # 0.5 req/sec rate limit
 
             # Check if upgradeable
@@ -864,12 +881,6 @@ def _rebuild_results_from_db() -> list[dict]:
     Called when _scan_state is idle (e.g. after server restart) to avoid
     forcing the user to re-scan. Returns the same structure as a live scan.
     """
-    from tidal_dl.config import Settings
-
-    settings = Settings()
-    target_quality = getattr(settings.data, "upgrade_target_quality", "HI_RES_LOSSLESS")
-    target_rank = TIER_RANK.get(target_quality, 4)
-
     db = _get_db()
     try:
         all_tracks = db.upgradeable_tracks()
