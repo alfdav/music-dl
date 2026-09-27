@@ -661,6 +661,10 @@ class DownloadJobService:
             self._mark_job_error(current, error)
             self._broadcast_error(current, error)
             return
+        if download_outcome == DownloadOutcome.UNAVAILABLE:
+            finished_at = time.time()
+            self._update_job(job, status=JobStatus.DONE.value, progress=100, finished_at=finished_at)
+            return
 
         if not self._update_job(job, status=JobStatus.INDEXING.value, progress=100):
             self._mark_cancelled(job)

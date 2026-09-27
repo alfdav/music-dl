@@ -10,13 +10,15 @@ def track_file_is_in_output(
     list_position: int = 0,
     list_total: int = 0,
 ) -> bool:
-    """True when this job's dest already has the track, even if skip_existing is off."""
+    """True when this job's dest already has the track, even if skip_existing is off.
+
+    The path is checked directly. Do not flip the shared skip_existing flag:
+    other tracks are downloading on this same downloader.
+    """
     prepare = getattr(downloader, "_prepare_file_paths_and_skip_logic", None)
     if not callable(prepare):
         return False
-    saved = getattr(downloader, "skip_existing", False)
     try:
-        downloader.skip_existing = True
         result = prepare(
             media,
             file_template or "{track_title}",
@@ -27,16 +29,10 @@ def track_file_is_in_output(
         )
     except (TypeError, ValueError, OSError, AttributeError):
         return False
-    finally:
-        downloader.skip_existing = saved
     if not isinstance(result, tuple) or not result:
         return False
-    dest = result[0]
-    skip_file = result[2] if len(result) > 2 else False
-    if skip_file is True:
-        return True
     try:
-        return check_file_exists(pathlib.Path(dest), extension_ignore=False)
+        return check_file_exists(pathlib.Path(result[0]), extension_ignore=False)
     except (TypeError, ValueError, OSError):
         return False
 

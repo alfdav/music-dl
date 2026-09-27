@@ -2,6 +2,7 @@
 
 from tidal_dl.download._common import *
 from tidal_dl.download.duplicates import track_file_is_in_output
+from tidal_dl.download.items import UNAVAILABLE_ON_TIDAL_REASON
 from tidal_dl.helper.checkpoint import checkpoint_path_for, resolved_output_dir
 
 
@@ -148,6 +149,11 @@ class CollectionMixin:
         ]
         if summary.copied > 0:
             summary_lines.append(f"[cyan]⎘ Copied:[/cyan]      {summary.copied}")
+        if summary.unavailable:
+            summary_lines.append(f"[yellow]Unavailable on TIDAL:[/yellow]  {summary.unavailable}")
+            for label, reason in summary.unavailable_items:
+                who = label or "track"
+                summary_lines.append(f"[yellow]{who}: {reason}[/yellow]")
         for label, reason in summary.failures:
             who = label or "track"
             summary_lines.append(f"[red]{who}: {reason}[/red]")
@@ -360,6 +366,10 @@ class CollectionMixin:
                     noted = self._take_item_failure(item_media) if item_media is not None else ""
                     label = _failure_label(item_media)
                     reason = noted or "download failed"
+                elif outcome == DownloadOutcome.UNAVAILABLE:
+                    noted = self._take_item_unavailable(item_media) if item_media is not None else ""
+                    label = _failure_label(item_media)
+                    reason = noted or UNAVAILABLE_ON_TIDAL_REASON
 
             if summary is not None:
                 summary.record(outcome, label=label, reason=reason)

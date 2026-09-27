@@ -11,6 +11,8 @@ from tidal_dl.helper.recording_identity import (
 
 _FAILURE_INIT_LOCK = Lock()
 
+UNAVAILABLE_ON_TIDAL_REASON = "This item is not available for listening anymore on TIDAL."
+
 
 class ItemMixin:
     def item(
@@ -56,6 +58,8 @@ class ItemMixin:
         # Step 1: Validate and prepare media
         validated_media = self._validate_and_prepare_media(media, media_id, media_type, video_download)
         if validated_media is None or not isinstance(validated_media, Track | Video):
+            if self._peek_item_unavailable(media):
+                return DownloadOutcome.UNAVAILABLE, ""
             return DownloadOutcome.FAILED, ""
 
         media = validated_media
@@ -225,8 +229,9 @@ class ItemMixin:
             elif isinstance(media, Track | Video):
                 # Check if media is available not deactivated / removed from TIDAL.
                 if not media.allow_streaming:
+                    self._note_item_unavailable(media, UNAVAILABLE_ON_TIDAL_REASON)
                     self.fn_logger.info(
-                        f"This item is not available for listening anymore on TIDAL. Skipping: {name_builder_item(media)}"
+                        f"{UNAVAILABLE_ON_TIDAL_REASON} Skipping: {name_builder_item(media)}"
                     )
                     return None
                 elif isinstance(media, Track):
@@ -613,10 +618,13 @@ class ItemMixin:
 
     def _ensure_failure_store(self) -> None:
         if getattr(self, "_item_failure_lock", None) is not None:
+            if not hasattr(self, "_item_unavailable_reasons"):
+                self._item_unavailable_reasons = {}
             return
         with _FAILURE_INIT_LOCK:
             if getattr(self, "_item_failure_lock", None) is None:
                 self._item_failure_reasons = {}
+                self._item_unavailable_reasons = {}
                 self._item_failure_lock = Lock()
 
     def _note_item_failure(self, media: object, reason: str, *, overwrite: bool = True) -> None:
@@ -631,6 +639,26 @@ class ItemMixin:
         key = str(getattr(media, "id", "") or id(media))
         with self._item_failure_lock:
             return self._item_failure_reasons.pop(key, "")
+
+    def _note_item_unavailable(self, media: object, reason: str) -> None:
+        self._ensure_failure_store()
+        key = str(getattr(media, "id", "") or id(media))
+        with self._item_failure_lock:
+            self._item_unavailable_reasons[key] = reason
+
+    def _peek_item_unavailable(self, media: object | None) -> str:
+        if media is None:
+            return ""
+        self._ensure_failure_store()
+        key = str(getattr(media, "id", "") or id(media))
+        with self._item_failure_lock:
+            return self._item_unavailable_reasons.get(key, "")
+
+    def _take_item_unavailable(self, media: object) -> str:
+        self._ensure_failure_store()
+        key = str(getattr(media, "id", "") or id(media))
+        with self._item_failure_lock:
+            return self._item_unavailable_reasons.pop(key, "")
 
     def _flac_stream_in_mp4_container(
         self, path_media_src: pathlib.Path, codecs: str, current_extension: str

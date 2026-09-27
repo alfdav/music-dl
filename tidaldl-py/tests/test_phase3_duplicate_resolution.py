@@ -642,6 +642,169 @@ class TestCheckpointOutcomeMapping:
         assert ("2", STATUS_FAILED) in marked
 
 
+UNAVAILABLE_REASON = "This item is not available for listening anymore on TIDAL."
+
+
+def _unavailable_track(track_id: int, name: str):
+    track = _make_track(track_id, f"US-UNAV-{track_id:05d}")
+    track.name = name
+    track.allow_streaming = False
+    track.album = None
+    track.artists = []
+    return track
+
+
+def _run_collection(tmp_path, tracks, bind_item):
+    from types import SimpleNamespace
+
+    from rich.progress import Progress
+    from tidalapi.album import Album
+
+    from tidal_dl.download import Download
+
+    album = object.__new__(Album)
+    album.id = 88
+    dl = Download.__new__(Download)
+    dl.fn_logger = MagicMock()
+    dl.path_base = str(tmp_path / "library")
+    dl.event_abort = Event()
+    dl.progress = Progress(disable=True)
+    dl.progress_overall = None
+    dl.settings = SimpleNamespace(
+        data=SimpleNamespace(
+            downloads_concurrent_max=2,
+            playlist_create=False,
+            skip_duplicate_isrc=False,
+        )
+    )
+    dl._validate_and_prepare_media = lambda *args, **kwargs: album
+    dl._setup_collection_download_context = lambda *args, **kwargs: (
+        "{track_title}",
+        "La Adictiva",
+        "La Adictiva",
+        tracks,
+        False,
+    )
+    dl._preflight_isrc_scan = lambda *args, **kwargs: {}
+    dl.item = bind_item(dl)
+    panels: list[object] = []
+    with (
+        patch("tidal_dl.download.collections.path_config_base", return_value=str(tmp_path)),
+        patch(
+            "tidal_dl.download.collections.Console",
+            lambda *args, **kwargs: SimpleNamespace(print=panels.append),
+        ),
+    ):
+        ok = dl.items(file_template="{track_title}", media=album)
+    text = "\n".join(str(getattr(panel, "renderable", panel)) for panel in panels)
+    return ok, text
+
+
+def _download_real_item(dl, media):
+    """Run item() with the real media validator, not the collection stub."""
+    from tidal_dl.download import Download
+
+    saved = dl._validate_and_prepare_media
+    dl._validate_and_prepare_media = lambda *args, **kwargs: Download._validate_and_prepare_media(dl, *args, **kwargs)
+    try:
+        return Download.item(dl, "{track_title}", media=media)
+    finally:
+        dl._validate_and_prepare_media = saved
+
+
+def test_unavailable_plus_success_exits_zero_and_lists_unavailable(tmp_path):
+    """Unavailable tracks are listed on their own and do not fail the command."""
+    from tidal_dl.model.downloader import DownloadOutcome
+
+    kept = _make_track(1, "US-TST-00-00021")
+    kept.name = "Kept Song"
+    kept.allow_streaming = True
+    gone = _unavailable_track(2, "Te Quiero")
+    downloaded: list[int] = []
+
+    def bind_item(dl):
+        def item(media=None, **kwargs):
+            if getattr(media, "allow_streaming", True) is False:
+                return _download_real_item(dl, media)
+            downloaded.append(media.id)
+            return DownloadOutcome.DOWNLOADED, tmp_path / "ok.flac"
+
+        return item
+
+    ok, text = _run_collection(tmp_path, [kept, gone], bind_item)
+
+    assert ok is True
+    assert downloaded == [1]
+    assert "Unavailable on TIDAL" in text
+    assert "Te Quiero" in text
+    assert UNAVAILABLE_REASON in text
+    assert "download failed" not in text
+
+
+def test_real_failure_stays_separate_from_unavailable(tmp_path):
+    """A real failure still exits non-zero. Unavailable tracks stay on their own list."""
+    from tidal_dl.download.streams import QualityMismatchError
+    from tidal_dl.model.downloader import DownloadOutcome
+
+    kept = _make_track(1, "US-TST-00-00031")
+    kept.name = "Kept Song"
+    kept.allow_streaming = True
+    gone = _unavailable_track(2, "Te Quiero")
+    broken = _make_track(3, "US-TST-00-00033")
+    broken.name = "Broken Song"
+    broken.allow_streaming = True
+
+    def bind_item(dl):
+        def item(media=None, **kwargs):
+            if getattr(media, "allow_streaming", True) is False:
+                return _download_real_item(dl, media)
+            if media.id == 3:
+                raise QualityMismatchError("requested HI_RES_LOSSLESS but received LOSSLESS")
+            return DownloadOutcome.DOWNLOADED, tmp_path / "ok.flac"
+
+        return item
+
+    ok, text = _run_collection(tmp_path, [kept, gone, broken], bind_item)
+
+    assert ok is False
+    assert "QualityMismatchError" in text
+    assert "requested HI_RES_LOSSLESS but received LOSSLESS" in text
+    assert "Unavailable on TIDAL" in text
+    assert "Te Quiero" in text
+    assert UNAVAILABLE_REASON in text
+    assert "Broken Song: download failed" not in text
+    failure_line = next(line for line in text.splitlines() if "QualityMismatchError" in line)
+    unavailable_line = next(line for line in text.splitlines() if "Te Quiero" in line)
+    assert "Unavailable on TIDAL" not in failure_line
+    assert "QualityMismatchError" not in unavailable_line
+
+
+def test_output_file_check_does_not_change_skip_existing(tmp_path):
+    from tidal_dl.download.duplicates import track_file_is_in_output
+
+    dest = tmp_path / "song.flac"
+    dest.write_bytes(b"flac")
+    observed: list[bool] = []
+
+    class Downloader:
+        def __init__(self):
+            self.skip_existing = False
+
+        def _prepare_file_paths_and_skip_logic(self, *args, **kwargs):
+            observed.append(self.skip_existing)
+            return dest, ".flac", False, False
+
+    dl = Downloader()
+    track = _make_track(7, "US-TST-00-00007")
+    assert track_file_is_in_output(dl, track, "{track_title}", 1, 1) is True
+    assert observed == [False]
+    assert dl.skip_existing is False
+
+    dest.unlink()
+    assert track_file_is_in_output(dl, track, "{track_title}", 1, 1) is False
+    assert dl.skip_existing is False
+
+
 def test_quality_mismatch_is_listed_and_the_collection_still_finishes(tmp_path):
     """A per-track QualityMismatchError must not vanish into exit 0."""
     from types import SimpleNamespace

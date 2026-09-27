@@ -1,5 +1,21 @@
 # Mistakes
 
+## 2026-09-27 — Unavailable TIDAL tracks were counted as download failures
+
+**What happened:** Playlist `177cb91d` logged "not available for listening anymore on TIDAL. Skipping" for three La Adictiva tracks, then the summary listed them as FAILED with reason "download failed". The command exited non-zero even though every other track was kept.
+
+**Root cause:** `allow_streaming` is false returns None from `_validate_and_prepare_media`, and `item()` turned every None into `DownloadOutcome.FAILED` with no reason (`items.py` around the validate result).
+
+**Prevention:** Unavailable is `DownloadOutcome.UNAVAILABLE`. The summary lists "Unavailable on TIDAL" with the track names and that reason, separate from failures. Unavailable tracks do not make the exit code non-zero. A real failure still does.
+
+## 2026-09-27 — Resume file check flipped skip_existing during downloads
+
+**What happened:** The "already in this output folder" check set the shared `skip_existing` flag true while other tracks in the same collection were still downloading.
+
+**Root cause:** `track_file_is_in_output` mutated `downloader.skip_existing` so `_prepare_file_paths_and_skip_logic` would set `skip_file`. That flag is process-wide for the downloader, not per call.
+
+**Prevention:** Compute the dest path and call `check_file_exists` on it. Do not write `skip_existing`.
+
 ## 2026-09-27 — Overlay keycaps reused the settings-card fill
 
 ## 2026-09-27 — Cover art made every download look like a 0.00s preview
