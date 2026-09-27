@@ -8,6 +8,7 @@ latency per HTTP-equivalent call, matching live playlist endpoints.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from datetime import UTC, datetime
@@ -22,7 +23,11 @@ from tests.test_gui_playlist_local_preference import (
     _patch_playlist_library_db,
 )
 
-ARTIFACTS = Path("/opt/cursor/artifacts")
+
+def _playlist_perf_artifacts(tmp_path: Path) -> Path:
+    return Path(os.environ.get("PLAYLIST_PERF_ARTIFACTS") or tmp_path)
+
+
 PAGE_SIZE = 50
 LATENCY_SEC = 0.20
 NAS_STAT_SEC = 0.015
@@ -227,8 +232,9 @@ def test_record_baseline_full_load_timings(monkeypatch, clear_singletons, tmp_pa
             "truncated": len(data.get("tracks") or []) < count,
         }
 
-    ARTIFACTS.mkdir(parents=True, exist_ok=True)
-    path = ARTIFACTS / "playlist_load_before.json"
+    artifacts = _playlist_perf_artifacts(tmp_path)
+    artifacts.mkdir(parents=True, exist_ok=True)
+    path = artifacts / "playlist_load_before.json"
     path.write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
     print("\n=== PLAYLIST LOAD BEFORE ===")
     print(json.dumps(results, indent=2, default=str))
@@ -279,8 +285,9 @@ def test_first_page_returns_under_one_second(monkeypatch, clear_singletons, tmp_
         "reported_total": data["total"],
         "timings": dict(getattr(playlists_api, "_last_playlist_timings", {}) or {}),
     }
-    ARTIFACTS.mkdir(parents=True, exist_ok=True)
-    (ARTIFACTS / "playlist_load_after.json").write_text(
+    artifacts = _playlist_perf_artifacts(tmp_path)
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "playlist_load_after.json").write_text(
         json.dumps(after, indent=2, default=str), encoding="utf-8",
     )
     print("\n=== PLAYLIST LOAD AFTER FIRST PAGE ===")
