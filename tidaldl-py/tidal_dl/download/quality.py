@@ -213,6 +213,30 @@ SESSION_HIRES_FALLBACK_NOTICE = (
 )
 
 
+def is_preview_presentation(value: object | None) -> bool:
+    """True when playback info says this asset is a clip, not the full track."""
+    return str(value or "").strip().upper() == "PREVIEW"
+
+
+def duration_is_far_short(decoded_seconds: float | None, catalog_seconds: float | None) -> bool:
+    """True when decoded audio is a clip of a much longer catalog track.
+
+    A 30s preview of a 216s track matches. A file a few seconds under the
+    catalog length does not. Both the gap and the ratio have to hold so a
+    short song is not rejected for a small trim.
+    """
+    if decoded_seconds is None or catalog_seconds is None:
+        return False
+    try:
+        decoded = float(decoded_seconds)
+        catalog = float(catalog_seconds)
+    except (TypeError, ValueError):
+        return False
+    if catalog <= 0 or decoded < 0:
+        return False
+    return (decoded + 15) < catalog and decoded < (catalog * 0.75)
+
+
 def delivered_quality_label(
     quality: object | None,
     bit_depth: int | None = None,

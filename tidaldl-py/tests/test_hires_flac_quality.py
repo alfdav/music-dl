@@ -262,3 +262,119 @@ def test_listed_lossless_still_writes_cd_flac(tmp_path):
     assert (written_bits, written_rate) == (16, 44100)
     assert hifi_calls == []
     assert manifest.get_urls() == ["https://example.invalid/cd.flac"]
+
+
+def test_short_decoded_audio_is_not_saved_or_registered(tmp_path, monkeypatch):
+    """Container duration can claim the full track while ffmpeg only decodes the preview."""
+    from tidal_dl.download.items import ItemMixin
+
+    registered: list[Path] = []
+    monkeypatch.setattr(
+        "tidal_dl.download.items.register_downloaded_track",
+        lambda path: registered.append(Path(path)),
+    )
+    short = tmp_path / "preview.flac"
+    _write_flac(short, 44100, 24)
+    dest = tmp_path / "library" / "track.flac"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    class Subject(ItemMixin):
+        def __init__(self):
+            self.settings = type(
+                "Settings",
+                (),
+                {
+                    "data": type(
+                        "Data",
+                        (),
+                        {"video_convert_mp4": False, "extract_flac": False, "path_binary_ffmpeg": "ffmpeg"},
+                    )()
+                },
+            )()
+            self.fn_logger = type(
+                "Logger",
+                (),
+                {
+                    "info": staticmethod(lambda *_a, **_k: None),
+                    "error": staticmethod(lambda *_a, **_k: None),
+                    "exception": staticmethod(lambda *_a, **_k: None),
+                    "warning": staticmethod(lambda *_a, **_k: None),
+                },
+            )()
+
+        def _download(self, media, stream_manifest, path_file, event_stop=None):
+            path_file.write_bytes(short.read_bytes())
+            return True, path_file
+
+        def _handle_metadata_and_extras(self, *args, **kwargs):
+            return None
+
+    media = object.__new__(Track)
+    media.duration = 216
+    media.id = 66024828
+    manifest = HiFiStreamManifest(
+        urls=["https://example.invalid/preview.flac"],
+        file_extension=".flac",
+        codecs="flac",
+        audio_quality="HI_RES_LOSSLESS",
+        bit_depth=24,
+        sample_rate=44100,
+    )
+
+    ok, path = Subject()._perform_actual_download(media, dest, manifest, False, False, None)
+
+    assert ok is False
+    assert path == dest
+    assert not dest.exists()
+    assert registered == []
+
+
+def test_full_decoded_audio_is_still_saved(tmp_path):
+    from tidal_dl.download.items import ItemMixin
+
+    short = tmp_path / "full.flac"
+    _write_flac(short, 44100, 16)
+    dest = tmp_path / "library" / "track.flac"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    class Subject(ItemMixin):
+        def __init__(self):
+            self.settings = type(
+                "Settings",
+                (),
+                {
+                    "data": type(
+                        "Data",
+                        (),
+                        {"video_convert_mp4": False, "extract_flac": False, "path_binary_ffmpeg": "ffmpeg"},
+                    )()
+                },
+            )()
+            self.fn_logger = type(
+                "Logger",
+                (),
+                {
+                    "info": staticmethod(lambda *_a, **_k: None),
+                    "error": staticmethod(lambda *_a, **_k: None),
+                    "exception": staticmethod(lambda *_a, **_k: None),
+                    "warning": staticmethod(lambda *_a, **_k: None),
+                },
+            )()
+
+        def _download(self, media, stream_manifest, path_file, event_stop=None):
+            path_file.write_bytes(short.read_bytes())
+            return True, path_file
+
+        def _handle_metadata_and_extras(self, *args, **kwargs):
+            return None
+
+    media = object.__new__(Track)
+    media.duration = 0.05
+    media.id = 1
+    manifest = type("Manifest", (), {"codecs": "flac", "file_extension": ".flac"})()
+
+    ok, path = Subject()._perform_actual_download(media, dest, manifest, False, False, None)
+
+    assert ok is True
+    assert path.is_file()
+    assert path.read_bytes() == short.read_bytes()

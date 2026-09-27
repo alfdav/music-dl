@@ -91,8 +91,26 @@ class ItemMixin:
                 if win_long_path(path_canonical).is_file() or win_long_path(path_copy_dst).is_file():
                     return DownloadOutcome.SKIPPED, path_canonical
                 win_long_path(path_copy_dst).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_path_str, win_long_path(path_copy_dst))
-                self.fn_logger.info(f"Copied '{name_builder_item(media)}' from '{src_path_str}'.")
+                # Copy is intentional when this playlist/mix dest does not already
+                # have the file. SMB shares reject macOS `arch` flags in copystat;
+                # the audio bytes still have to land, and one track must not abort the run.
+                dest_copy = win_long_path(path_copy_dst)
+                try:
+                    shutil.copyfile(src_path_str, dest_copy)
+                except OSError:
+                    self.fn_logger.exception(
+                        f"Could not copy '{name_builder_item(media)}' from '{src_path_str}'."
+                    )
+                    return DownloadOutcome.FAILED, ""
+                try:
+                    shutil.copystat(src_path_str, dest_copy)
+                except OSError as exc:
+                    self.fn_logger.warning(
+                        f"Copied '{name_builder_item(media)}' from '{src_path_str}' "
+                        f"but could not copy file flags ({exc})."
+                    )
+                else:
+                    self.fn_logger.info(f"Copied '{name_builder_item(media)}' from '{src_path_str}'.")
                 register_downloaded_track(path_copy_dst)
                 return DownloadOutcome.COPIED, path_copy_dst
             else:
@@ -223,7 +241,7 @@ class ItemMixin:
                     return None
             elif not media:
                 self._raise_media_missing()
-        except (MediaMissing, Exception):
+        except Exception:  # noqa: BLE001 — unavailable media skips this item; it must not abort the run
             return None
 
         # If video download is not allowed and this is a video, return None
@@ -337,9 +355,10 @@ class ItemMixin:
             dest_path=path_media_dst,
         )
         if not bypass_isrc and not skip_file and self.settings.data.skip_duplicate_isrc and isinstance(media, Track):
-            if media_isrc and self._library_db_for_current_thread().has_live_isrc(media_isrc):
-                skip_file = True
-            elif folder_identity:
+            isrc_already_live = bool(
+                media_isrc and self._library_db_for_current_thread().has_live_isrc(media_isrc)
+            )
+            if isrc_already_live or folder_identity:
                 skip_file = True
 
         if (
@@ -529,12 +548,70 @@ class ItemMixin:
             # Handle metadata, lyrics, and cover
             self._handle_metadata_and_extras(media, tmp_path_file, path_media_dst, is_parent_album, media_stream)
 
+            if self._downloaded_audio_is_preview(media, tmp_path_file, stream_manifest):
+                return False, path_media_dst
+
             self.fn_logger.info(f"Downloaded item '{name_builder_item(media)}'.")
 
             # Move final file to the configured destination directory.
             shutil.move(tmp_path_file, win_long_path(path_media_dst))
 
             return True, path_media_dst
+
+    def _downloaded_audio_is_preview(
+        self,
+        media: Track | Video,
+        path_media_src: pathlib.Path,
+        stream_manifest: StreamManifest | HiFiStreamManifest | None,
+    ) -> bool:
+        """Refuse a preview clip before it is moved or recorded.
+
+        The manifest flag is authoritative. Decoded duration is the backstop
+        for a container whose STREAMINFO claims the full track.
+        """
+        from tidal_dl.download.quality import duration_is_far_short, is_preview_presentation
+
+        if not isinstance(media, Track):
+            return False
+        presentation = getattr(stream_manifest, "asset_presentation", None)
+        label = str(getattr(media, "id", "track"))
+        if is_preview_presentation(presentation):
+            self.fn_logger.error(
+                f"Stream for track {label} is assetPresentation PREVIEW. Refusing to save it."
+            )
+            return True
+        decoded = self._decoded_audio_seconds(path_media_src)
+        catalog = getattr(media, "duration", None)
+        if duration_is_far_short(decoded, catalog):
+            self.fn_logger.error(
+                f"Decoded audio for track {label} is {decoded:.2f}s but the track is {catalog}s. "
+                "Refusing to save a preview."
+            )
+            return True
+        return False
+
+    def _decoded_audio_seconds(self, path_media_src: pathlib.Path) -> float | None:
+        """Seconds of audio ffmpeg actually decodes. Container duration can lie."""
+        import subprocess
+
+        from tidal_dl.download_ffmpeg import ffmpeg_executable
+
+        exe = ffmpeg_executable(getattr(self.settings.data, "path_binary_ffmpeg", None))
+        try:
+            proc = subprocess.run(
+                [exe, "-nostdin", "-hide_banner", "-i", str(path_media_src), "-f", "null", "-"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        matches = re.findall(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)", proc.stderr or "")
+        if not matches:
+            return None
+        hours, minutes, seconds = matches[-1]
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
     def _flac_stream_in_mp4_container(
         self, path_media_src: pathlib.Path, codecs: str, current_extension: str
@@ -615,7 +692,7 @@ class ItemMixin:
 
         # Write metadata to file.  media_stream may be None for Hi-Fi API
         # downloads; metadata_write handles this gracefully.
-        result_metadata, tmp_path_lyrics, tmp_path_cover = self.metadata_write(
+        _result_metadata, tmp_path_lyrics, tmp_path_cover = self.metadata_write(
             media, tmp_path_file, is_parent_album, media_stream
         )
 

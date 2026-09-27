@@ -793,11 +793,7 @@ class Tidal(BaseConfig[ModelToken]):
         Tidal auth v2 so a Hi-Res-capable client can be chosen. Never wipe
         token.json and never start a new login from this probe.
         """
-        from tidal_dl.download.quality import (
-            SESSION_HIRES_FALLBACK_NOTICE,
-            delivered_quality_label,
-            session_can_deliver_hires,
-        )
+        from tidal_dl.download.quality import delivered_quality_label
 
         settings = getattr(self, "settings", None)
         data = getattr(settings, "data", None)
@@ -893,9 +889,6 @@ class Tidal(BaseConfig[ModelToken]):
             f"but this login only delivers [bold]{delivered_str}[/bold]. "
             "Keeping configured quality."
         )
-        if session_can_deliver_hires(configured_str) is True and session_can_deliver_hires(delivered_str) is False:
-            _console.print(f"[yellow]{SESSION_HIRES_FALLBACK_NOTICE}[/yellow]")
-            self._hires_fallback_notice_emitted = True
 
     def logout(self) -> bool:
         """Remove the stored token and replace the current session.

@@ -6,6 +6,7 @@ from tidal_dl.download.quality import (
     delivery_is_cd_lossless,
     fetch_track_manifest_formats,
     hifi_quality_param,
+    is_preview_presentation,
     remember_session_hires_fallback,
     session_can_deliver_hires,
     should_require_hires_delivery,
@@ -17,6 +18,14 @@ class QualityMismatchError(ValueError):
     """The provider cannot satisfy the selected audio-quality contract."""
 
 
+class PreviewStreamError(ValueError):
+    """The provider returned a preview clip instead of the full track.
+
+    This is not a quality mismatch. Callers fall through to the next source
+    instead of saving the clip or fail-closing the track.
+    """
+
+
 _LOSSLESS_TIERS = frozenset({"LOSSLESS", "HI_RES", "HI_RES_LOSSLESS"})
 _HIRES_TIERS = frozenset({"HI_RES", "HI_RES_LOSSLESS"})
 _EXPECTED_CODECS = {
@@ -26,6 +35,16 @@ _EXPECTED_CODECS = {
     "HI_RES": ("flac",),
     "HI_RES_LOSSLESS": ("flac",),
 }
+
+
+def _stream_media_label(media: object) -> str:
+    """Label a track for logs without requiring a fully built tidalapi object."""
+    title = getattr(media, "name", None) or getattr(media, "title", None) or getattr(media, "id", "track")
+    artist = getattr(media, "artist", None)
+    artist_name = getattr(artist, "name", None) if artist is not None else None
+    if artist_name:
+        return f"{artist_name} - {title}"
+    return str(title)
 
 
 def is_flac_codec(codecs: str | None) -> bool:
@@ -181,6 +200,11 @@ class StreamMixin:
             raise RuntimeError("Hi-Fi client is not configured")
         self._pace_stream_api(pace_api)
         result = hifi_client.track_stream(media.id, quality_str)
+        if is_preview_presentation(getattr(result, "asset_presentation", None)):
+            raise PreviewStreamError(
+                f"Hi-Fi returned assetPresentation PREVIEW at {result.audio_quality} "
+                f"for track {media.id}. That clip is not the full track."
+            )
         _require_exact_quality(requested, result.audio_quality, result.codecs)
         file_extension, requires_flac_extraction = plan_flac_output(
             result.codecs, result.file_extension, self.settings.data.extract_flac
@@ -194,6 +218,7 @@ class StreamMixin:
             audio_quality=result.audio_quality,
             bit_depth=result.bit_depth,
             sample_rate=result.sample_rate,
+            asset_presentation=str(getattr(result, "asset_presentation", "") or ""),
         )
         return TrackStreamInfo(
             stream_manifest=manifest,
@@ -317,6 +342,11 @@ class StreamMixin:
             hifi_info = self._get_track_stream_info_hifi(
                 media, quality_audio=requested, pace_api=pace_api
             )
+        except PreviewStreamError as exc:
+            self.fn_logger.warning(
+                f"Hi-Fi upgrade for '{_stream_media_label(media)}' was a PREVIEW, not the full track. {exc}"
+            )
+            hifi_info = None
         except (QualityMismatchError, RuntimeError, ValueError, OSError, requests.RequestException):
             hifi_info = None
         manifest = getattr(hifi_info, "stream_manifest", None)
@@ -397,6 +427,15 @@ class StreamMixin:
                     )
             except QualityMismatchError:
                 raise
+            except PreviewStreamError as exc:
+                message = (
+                    f"Hi-Fi returned a PREVIEW for '{_stream_media_label(media)}', not the full track. {exc}"
+                )
+                allow_fallback = getattr(self.settings.data, "download_source_fallback", True)
+                if not allow_fallback:
+                    self.fn_logger.error(f"{message} Fallback is disabled. This track was not saved.")
+                    return None, "", False, None
+                self.fn_logger.warning(f"{message} Trying the next source.")
             except TooManyRequests:
                 self._on_rate_limit_hit()
                 self.fn_logger.exception(
@@ -507,6 +546,16 @@ class StreamMixin:
 
         return None, "", False, None
 
+    def _track_needs_login_session(self, media: Track) -> bool:
+        """Hi-Fi builds Track with object.__new__, so get_stream has no session.
+
+        Doubles that replace get_stream keep their own method. A real tidalapi
+        Track without session or requests is loaded through the login session.
+        """
+        if type(media).get_stream is not Track.get_stream:
+            return False
+        return getattr(media, "session", None) is None or getattr(media, "requests", None) is None
+
     def _get_track_stream_info(self, media: Track) -> TrackStreamInfo:
         """Get stream info for a Track, handling Atmos/Normal session switching.
 
@@ -533,7 +582,10 @@ class StreamMixin:
                 self.fn_logger.error(f"Failed to restore normal session for track: {media.id}")
                 return TrackStreamInfo(None, "", False, None)
 
-        media_stream = self.session.track(str(media.id)).get_stream() if want_atmos else media.get_stream()
+        if want_atmos or self._track_needs_login_session(media):
+            media_stream = self.session.track(str(media.id)).get_stream()
+        else:
+            media_stream = media.get_stream()
 
         stream_manifest = media_stream.get_stream_manifest()
         if not want_atmos:

@@ -70,6 +70,7 @@ class HiFiStreamManifest:
     audio_quality: str | None = None
     bit_depth: int | None = None
     sample_rate: int | None = None
+    asset_presentation: str = ""
 
     def get_urls(self) -> list[str]:
         return self.urls

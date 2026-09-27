@@ -2,6 +2,30 @@
 
 ## 2026-09-27 — Overlay keycaps reused the settings-card fill
 
+## 2026-09-27 — Hi-Fi PREVIEW was saved as a 24-bit download
+
+**What happened:** Track 66024828 from monochrome-api.samidy.com had `assetPresentation: PREVIEW` at HI_RES_LOSSLESS. The FLAC header said 216s; ffmpeg decoded 29.91s. tidal_dl moved the file and `library.db` recorded it as 24-bit. The login probe also printed "downloading Lossless instead" even though that 24-bit clip was what got saved. Hi-Fi LOSSLESS then returned 403.
+
+**Root cause:** `parse_track_payload` dropped `assetPresentation`, so a preview looked like a successful Hi-Res manifest. The session notice was printed when the probe measured LOSSLESS, not when a LOSSLESS file was actually kept.
+
+**Prevention:** Reject `PREVIEW` before save and fall through to the next source (or fail the track if fallback is off). Before `shutil.move`, refuse audio whose decoded duration is far short of the catalog duration. Print the Lossless notice only from `_accept_session_capped_cd`, when that is the quality delivered.
+
+## 2026-09-27 — Playlist copy died on SMB `copystat`
+
+**What happened:** Owned tracks in a playlist are copied into that playlist's dest (the #189 rule: skip only when this job's dest already has the file). One copy raised `PermissionError: [Errno 1]` from `shutil.copystat` because the source is on `/Volumes/Music` with the macOS `arch` flag. `future.result()` was uncaught, so that one track aborted the collection.
+
+**Root cause:** `shutil.copy2` treats file-flag copy as part of success, and the collection loop treated any worker exception as fatal.
+
+**Prevention:** `copyfile` the bytes, then `copystat` in its own try. A flag error is a warning and the track stays COPIED. A data-copy error returns FAILED for that track. `_process_download_futures` records FAILED and continues.
+
+## 2026-09-27 — Hi-Fi Track had no session for OAuth fallback
+
+**What happened:** After Hi-Fi failed, `media.get_stream()` raised `AttributeError: 'Track' object has no attribute 'session'` at `streams.py`. Zero of five new tracks downloaded.
+
+**Root cause:** Hi-Fi metadata uses `object.__new__(Track)`, which skips `Track.__init__`. `tidalapi.Track.get_stream` needs `self.session` and `self.requests`.
+
+**Prevention:** `_bind_login_session` on every Hi-Fi track, album, playlist, and mix. If a Track still has no session, load the stream with `session.track(id).get_stream()`. Doubles that replace `get_stream` keep their own method.
+
 ## 2026-09-27 — Logout kept the previous login's Hi-Res cap
 
 **What happened:** `logout()` replaced the OAuth session but left `session_max_quality` and `_hires_fallback_notice_emitted` on the Tidal singleton. `ensure_session_max_quality()` skipped the probe because the cap was already set. Reset Tidal connection then a new login kept the previous client's gate.

@@ -370,6 +370,81 @@ class TestItemCopyAction:
         assert dest_flac.is_file()
         assert dest_flac.read_bytes() == b"audio data"
 
+    def test_copy_keeps_the_audio_when_copystat_hits_smb_arch_flag(self, tmp_path, monkeypatch):
+        """macOS `arch` on an SMB source makes shutil.copystat raise EPERM. The bytes still land."""
+        import shutil
+
+        src = tmp_path / "src.flac"
+        src.write_bytes(b"audio data")
+
+        def reject_flags(_src, _dst, **_kwargs):
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(shutil, "copystat", reject_flags)
+        dl = self._build_minimal_download(tmp_path)
+        dl._library_db.register_isrc_path("US-TST-00-00002", src, commit=True)
+
+        track = _make_track(100, "US-TST-00-00002")
+        track.isrc = "US-TST-00-00002"
+        track.album = MagicMock()
+        track.allow_streaming = True
+        track.media_metadata_tags = []
+
+        with (
+            patch.object(dl, "_validate_and_prepare_media", return_value=track),
+            patch.object(dl, "_prepare_file_paths_and_skip_logic") as mock_paths,
+        ):
+            dst = tmp_path / "output" / "dest.flac"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            mock_paths.return_value = (dst.with_suffix(".m4a"), ".m4a", False, False)
+            outcome, result_path = dl.item(
+                file_template="test/{track_title}",
+                media=track,
+                duplicate_action_override="copy",
+            )
+
+        assert outcome == DownloadOutcome.COPIED
+        dest_flac = pathlib.Path(result_path)
+        assert dest_flac.is_file()
+        assert dest_flac.read_bytes() == b"audio data"
+        assert dl.fn_logger.warning.called
+
+    def test_copy_io_error_fails_only_that_track(self, tmp_path, monkeypatch):
+        import shutil
+
+        src = tmp_path / "src.flac"
+        src.write_bytes(b"audio data")
+
+        def reject_data(_src, _dst, **_kwargs):
+            raise OSError("read failed")
+
+        monkeypatch.setattr(shutil, "copyfile", reject_data)
+        dl = self._build_minimal_download(tmp_path)
+        dl._library_db.register_isrc_path("US-TST-00-00003", src, commit=True)
+
+        track = _make_track(101, "US-TST-00-00003")
+        track.isrc = "US-TST-00-00003"
+        track.album = MagicMock()
+        track.allow_streaming = True
+        track.media_metadata_tags = []
+
+        with (
+            patch.object(dl, "_validate_and_prepare_media", return_value=track),
+            patch.object(dl, "_prepare_file_paths_and_skip_logic") as mock_paths,
+        ):
+            dst = tmp_path / "output" / "dest.flac"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            mock_paths.return_value = (dst.with_suffix(".m4a"), ".m4a", False, False)
+            outcome, result_path = dl.item(
+                file_template="test/{track_title}",
+                media=track,
+                duplicate_action_override="copy",
+            )
+
+        assert outcome == DownloadOutcome.FAILED
+        assert not (tmp_path / "output" / "dest.flac").is_file()
+        assert result_path == ""
+
     def test_prepare_paths_skip_existing_uses_canonical_path(self, tmp_path):
         """skip_existing must check the canonical path before any _01 uniquify."""
         dl = self._build_minimal_download(tmp_path)
@@ -514,3 +589,37 @@ class TestCheckpointOutcomeMapping:
     def test_skipped_marks_checkpoint_downloaded(self):
         checkpoint = self._run_process_download_futures(DownloadOutcome.SKIPPED)
         checkpoint.mark.assert_called_once_with("42", STATUS_DOWNLOADED)
+
+    def test_one_track_exception_does_not_drop_the_rest(self):
+        from tidal_dl.download import Download
+        from tidal_dl.helper.checkpoint import STATUS_FAILED
+
+        dl = Download.__new__(Download)
+        dl.event_abort = Event()
+        dl.fn_logger = MagicMock()
+        process_fn = Download._process_download_futures.__get__(dl, Download)
+
+        good_track = _make_track(1, "US-TST-00-00011")
+        bad_track = _make_track(2, "US-TST-00-00012")
+        good = Future()
+        good.set_result((DownloadOutcome.DOWNLOADED, pathlib.Path("/tmp/good.flac")))
+        bad = Future()
+        bad.set_exception(PermissionError(1, "Operation not permitted"))
+        summary = DownloadSummary()
+        checkpoint = MagicMock()
+
+        process_fn(
+            [bad, good],
+            progress=MagicMock(),
+            progress_task=1,
+            progress_stdout=True,
+            summary=summary,
+            checkpoint=checkpoint,
+            future_to_item={bad: bad_track, good: good_track},
+        )
+
+        assert summary.downloaded == 1
+        assert summary.failed == 1
+        marked = {call.args for call in checkpoint.mark.call_args_list}
+        assert ("1", STATUS_DOWNLOADED) in marked
+        assert ("2", STATUS_FAILED) in marked

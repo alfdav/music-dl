@@ -307,8 +307,12 @@ class CollectionMixin:
 
         # Report results as they become available
         for future in futures.as_completed(futures_list):
-            # Retrieve result
-            outcome, result_path_file = future.result()
+            # One track must not abort the rest of the album, playlist, or mix.
+            try:
+                outcome, result_path_file = future.result()
+            except Exception:
+                self.fn_logger.exception("Track failed; continuing with the rest of the collection.")
+                outcome, result_path_file = DownloadOutcome.FAILED, ""
 
             if summary is not None:
                 summary.record(outcome)

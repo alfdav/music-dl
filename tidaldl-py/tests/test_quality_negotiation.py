@@ -177,6 +177,41 @@ def test_hifi_parses_flat_tidal_playbackinfo_payload():
     assert parsed.bit_depth == 16
     assert parsed.sample_rate == 44100
     assert parsed.urls == ["https://example.invalid/cd.flac"]
+    assert parsed.asset_presentation == "FULL"
+
+
+def test_hifi_payload_keeps_preview_presentation():
+    """Track 66024828: Hi-Fi stamped HI_RES_LOSSLESS on a PREVIEW clip."""
+    from tidal_dl.download.quality import is_preview_presentation
+
+    payload = {
+        **_OAUTH_PLAYBACKINFO,
+        "assetPresentation": "PREVIEW",
+        "audioQuality": "HI_RES_LOSSLESS",
+        "bitDepth": 24,
+        "sampleRate": 44100,
+        "manifest": _bts_manifest(),
+    }
+    parsed = HiFiApiClient.parse_track_payload(payload)
+    assert parsed.asset_presentation == "PREVIEW"
+    assert parsed.audio_quality == "HI_RES_LOSSLESS"
+    assert parsed.bit_depth == 24
+    assert is_preview_presentation(parsed.asset_presentation) is True
+    assert is_preview_presentation("full") is False
+    assert is_preview_presentation(None) is False
+
+
+def test_decoded_duration_far_short_of_catalog_is_a_preview():
+    """29.91s decoded against a 216s track is a preview; a few seconds short is not."""
+    from tidal_dl.download.quality import duration_is_far_short
+
+    assert duration_is_far_short(29.91, 216) is True
+    assert duration_is_far_short(100, 216) is True
+    assert duration_is_far_short(210, 216) is False
+    assert duration_is_far_short(200, 216) is False
+    assert duration_is_far_short(216, 216) is False
+    assert duration_is_far_short(None, 216) is False
+    assert duration_is_far_short(30, 0) is False
 
 
 def test_hifi_dash_selects_flac_hires_not_first_cd_representation():

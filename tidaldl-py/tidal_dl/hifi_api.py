@@ -43,6 +43,7 @@ class HiFiStreamResult:
     bit_depth: int | None = None
     sample_rate: int | None = None
     encryption_type: str = "NONE"
+    asset_presentation: str = ""
 
 
 class HiFiApiClient:
@@ -90,6 +91,7 @@ class HiFiApiClient:
         audio_quality = str(data.get("audioQuality", ""))
         bit_depth = data.get("bitDepth")
         sample_rate = data.get("sampleRate")
+        asset_presentation = str(data.get("assetPresentation") or "")
 
         if manifest_mime_type == "application/vnd.tidal.bts":
             manifest = json.loads(decoded.decode("utf-8"))
@@ -97,6 +99,8 @@ class HiFiApiClient:
             codecs = manifest.get("codecs", "")
             urls = manifest.get("urls", []) or []
             encryption_type = manifest.get("encryptionType", "NONE")
+            if not asset_presentation:
+                asset_presentation = str(manifest.get("assetPresentation") or "")
         elif manifest_mime_type == "application/dash+xml":
             manifest_xml = decoded.decode("utf-8")
             parsed = parse_manifest(manifest_xml)
@@ -131,6 +135,7 @@ class HiFiApiClient:
             bit_depth=bit_depth,
             sample_rate=sample_rate,
             encryption_type=encryption_type,
+            asset_presentation=asset_presentation,
         )
 
     def discover_instances(self) -> list[str]:
