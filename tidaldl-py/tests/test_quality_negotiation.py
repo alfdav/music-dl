@@ -272,6 +272,43 @@ def test_select_highest_flac_representation_skips_aac_across_sets():
     assert select_highest_flac_representation([aac]) is None
 
 
+def test_hifi_dash_aac_only_keeps_aac_urls_instead_of_empty():
+    """LOW/HIGH Hi-Fi DASH is AAC-only. Dropping it yields empty URLs and QualityMismatchError."""
+    from tidal_dl.download.quality import select_best_audio_representation
+
+    aac = _rep("AACLC,44100,16", "256000", "mp4a.40.2")
+    assert select_highest_flac_representation([aac]) is None
+    assert select_best_audio_representation([aac]) is aac
+
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static">'
+        "  <Period>"
+        '    <AdaptationSet contentType="audio" mimeType="audio/mp4">'
+        '      <Representation id="AACLC,44100,16" bandwidth="256000" codecs="mp4a.40.2">'
+        "        <SegmentList>"
+        '          <SegmentURL media="https://example.invalid/aac.m4a"/>'
+        "        </SegmentList>"
+        "      </Representation>"
+        "    </AdaptationSet>"
+        "  </Period>"
+        "</MPD>"
+    )
+    encoded = base64.b64encode(xml.encode()).decode()
+    parsed = HiFiApiClient.parse_track_payload(
+        {
+            "data": {
+                "audioQuality": "HIGH",
+                "manifestMimeType": "application/dash+xml",
+                "manifest": encoded,
+            }
+        }
+    )
+    assert parsed.urls == ["https://example.invalid/aac.m4a"]
+    assert "mp4a" in (parsed.codecs or "")
+    assert parsed.audio_quality == "HIGH"
+
+
 def test_listed_hires_without_flac_hires_capability_keeps_cd(tmp_path):
     """Stale HIRES tags + trackManifests FLAC-only must not fail-closed."""
     from tests.test_hires_flac_quality import (

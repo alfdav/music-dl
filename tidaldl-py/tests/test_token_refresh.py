@@ -469,3 +469,15 @@ class TestLogoutReset:
             assert tidal.logout() is True
 
         assert "enter" in lock.calls or "acquire" in lock.calls
+
+    def test_logout_clears_session_quality_cap_so_next_login_reprobes(self, tidal):
+        """Reset Tidal connection must not keep the previous client's Hi-Res gate."""
+        self._prepare(tidal)
+        tidal.session_max_quality = "HI_RES_LOSSLESS"
+        tidal._hires_fallback_notice_emitted = True
+
+        with patch("tidal_dl.config._api.getItem", return_value={"valid": "False"}):
+            assert tidal.logout() is True
+
+        assert tidal.session_max_quality is None
+        assert tidal._hires_fallback_notice_emitted is False

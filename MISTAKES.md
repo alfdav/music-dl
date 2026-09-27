@@ -2,6 +2,54 @@
 
 ## 2026-09-27 — Overlay keycaps reused the settings-card fill
 
+## 2026-09-27 — Logout kept the previous login's Hi-Res cap
+
+**What happened:** `logout()` replaced the OAuth session but left `session_max_quality` and `_hires_fallback_notice_emitted` on the Tidal singleton. `ensure_session_max_quality()` skipped the probe because the cap was already set. Reset Tidal connection then a new login kept the previous client's gate.
+
+**Root cause:** Session capability was treated as process-lifetime state, not login-lifetime state.
+
+**Prevention:** Clear `session_max_quality` and the one-notice flag in `logout()`. The next login / restore probes again.
+
+## 2026-09-27 — Probe stored a Hi-Res stamp as capability
+
+**What happened:** `_probe_subscription_quality` stored raw `stream.audio_quality`. A 16/44.1 delivery stamped `HI_RES_LOSSLESS` was classified Hi-Res capable, so `_accept_session_capped_cd` fail-closed again.
+
+**Root cause:** Capability used the vendor stamp, not bit-depth / sample rate. Labels already knew that stamp+16/44.1 is CD.
+
+**Prevention:** Store `delivered_quality_label` (LOSSLESS for 16/44.1). Keep a true 24-bit probe as `HI_RES_LOSSLESS`.
+
+## 2026-09-27 — Quality probe timeout still waited on the hung worker
+
+**What happened:** `future.result(timeout=2)` was followed by `ThreadPoolExecutor` shutdown `wait=True`. A hung `get_stream` blocked silent restore far past `SOURCE_RESOLVE_TIMEOUT_SEC`.
+
+**Root cause:** The timeout only abandoned the future, not the worker.
+
+**Prevention:** `shutdown(wait=False, cancel_futures=True)`. Unprobed stays fail-closed.
+
+## 2026-09-27 — DASH parser dropped AAC-only Hi-Fi streams
+
+**What happened:** `parse_track_payload` always used `select_highest_flac_representation`. AAC-only LOW/HIGH DASH yielded empty URLs, then `_require_exact_quality` raised `QualityMismatchError` and the Hi-Fi path re-raised instead of falling back to OAuth.
+
+**Root cause:** FLAC-first selection had no fallback to the remaining representations.
+
+**Prevention:** `select_best_audio_representation` prefers FLAC, then the highest remaining stream. AAC-only DASH keeps URLs and codecs.
+
+## 2026-09-27 — Preflight dest ignored playlist `{list_pos}`
+
+**What happened:** `dest_already_present` always called prepare with `list_position=0`. The default playlist template uses `{list_pos}`, so preflight looked at `0. Artist - Title` instead of `1. Artist - Title` and never treated the real numbered dest as present.
+
+**Root cause:** Dest rendering dropped the collection index that download uses (`count + 1`).
+
+**Prevention:** Pass 1-based item index and `list_total` into dest check. Skip only the numbered dest this job will write.
+
+## 2026-09-27 — Lazy quality probe raced the stream lock
+
+**What happened:** `_prefer_listed_hires` runs after `stream_lock` is released. `_accept_session_capped_cd` then called OAuth `get_stream` on the probe track with no lock. Parallel collection workers could overlap that probe with an Atmos/normal credential switch.
+
+**Root cause:** The new probe used the shared tidalapi session but skipped the lock that serializes credential changes.
+
+**Prevention:** Hold `stream_lock` around probe `get_stream`. Restore/login probes and lazy probes share that path.
+
 ## 2026-09-26 — Preflight skip treated any ISRC as this job's dest
 
 **What happened:** `dest_already_present` reused `_prepare_file_paths_and_skip_logic` `skip_file` and always expanded `format_album`. `skip_file` is also true when the ISRC lives anywhere. Playlists and mixes then skipped their own copies and finished incomplete.

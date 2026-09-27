@@ -795,6 +795,7 @@ class Tidal(BaseConfig[ModelToken]):
         """
         from tidal_dl.download.quality import (
             SESSION_HIRES_FALLBACK_NOTICE,
+            delivered_quality_label,
             session_can_deliver_hires,
         )
 
@@ -825,12 +826,28 @@ class Tidal(BaseConfig[ModelToken]):
             import concurrent.futures
 
             def _run_probe():
-                track = self.session.track(QUALITY_PROBE_TRACK_ID)
-                return track.get_stream()
+                def _get():
+                    track = self.session.track(QUALITY_PROBE_TRACK_ID)
+                    return track.get_stream()
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                lock = getattr(self, "stream_lock", None)
+                if lock is not None:
+                    with lock:
+                        return _get()
+                return _get()
+
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
                 stream = pool.submit(_run_probe).result(timeout=SOURCE_RESOLVE_TIMEOUT_SEC)
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
             delivered = stream.audio_quality
+            bit_depth = getattr(stream, "bit_depth", None)
+            if bit_depth is None:
+                bit_depth = getattr(stream, "bitDepth", None)
+            sample_rate = getattr(stream, "sample_rate", None)
+            if sample_rate is None:
+                sample_rate = getattr(stream, "sampleRate", None)
         except (
             OSError,
             TimeoutError,
@@ -852,7 +869,7 @@ class Tidal(BaseConfig[ModelToken]):
             )
             return
 
-        delivered_str = quality_name(delivered)
+        delivered_str = delivered_quality_label(delivered, bit_depth, sample_rate)
         self.session_max_quality = delivered_str
         delivered_rank = QUALITY_RANK.get(delivered_str, 0)
 
@@ -908,6 +925,8 @@ class Tidal(BaseConfig[ModelToken]):
             self.is_atmos_session = False
             self._active_key_index = 0
             self.api_cache.clear()
+            self.session_max_quality = None
+            self._hires_fallback_notice_emitted = False
             return True
 
 

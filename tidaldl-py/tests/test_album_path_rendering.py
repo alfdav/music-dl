@@ -329,3 +329,59 @@ def test_preflight_skips_normal_album_rerun(tmp_path: Path):
     assert any("will be skipped" in message for message in info_messages)
     assert not any("will be copied" in message for message in info_messages)
     assert dest.is_file()
+
+
+_PLAYLIST_LIST_POS = "Playlists/Favorites/{list_pos}. {artist_name} - {track_title}"
+
+
+def test_preflight_skips_playlist_file_at_real_list_pos(tmp_path: Path):
+    """Default playlist dest uses {list_pos}. Position 0 is not the numbered dest."""
+    track = _cohen_track()
+    track.artists = [_Artist("Leonard Cohen")]
+    track.artist = _Artist("Leonard Cohen")
+    real_dest = tmp_path / "Playlists" / "Favorites" / "1. Leonard Cohen - If I Didn't Have Your Love.flac"
+    wrong_zero = tmp_path / "Playlists" / "Favorites" / "0. Leonard Cohen - If I Didn't Have Your Love.flac"
+    dl = _download_for_legacy_placeholder(tmp_path)
+    dl.settings.data.skip_duplicate_isrc = True
+    _register_isrc_file(dl, track, real_dest)
+
+    with patch.object(dl, "extension_guess", return_value=".flac"):
+        resolved = dl._preflight_isrc_scan(
+            [track],
+            ensure_complete=True,
+            file_template=_PLAYLIST_LIST_POS,
+        )
+
+    info_messages = [str(call.args[0]) for call in dl.fn_logger.info.call_args_list]
+    dl._library_db.close()
+
+    assert resolved == {"66024828": "skip"}
+    assert any("will be skipped" in message for message in info_messages)
+    assert not any("will be copied" in message for message in info_messages)
+    assert real_dest.is_file()
+    assert not wrong_zero.exists()
+
+
+def test_preflight_copies_when_only_zero_list_pos_file_exists(tmp_path: Path):
+    """A leftover 0. dest from the old preflight must not count as this job's dest."""
+    track = _cohen_track()
+    track.artists = [_Artist("Leonard Cohen")]
+    track.artist = _Artist("Leonard Cohen")
+    wrong_zero = tmp_path / "Playlists" / "Favorites" / "0. Leonard Cohen - If I Didn't Have Your Love.flac"
+    dl = _download_for_legacy_placeholder(tmp_path)
+    dl.settings.data.skip_duplicate_isrc = True
+    _register_isrc_file(dl, track, wrong_zero)
+
+    with patch.object(dl, "extension_guess", return_value=".flac"):
+        resolved = dl._preflight_isrc_scan(
+            [track],
+            ensure_complete=True,
+            file_template=_PLAYLIST_LIST_POS,
+        )
+
+    info_messages = [str(call.args[0]) for call in dl.fn_logger.info.call_args_list]
+    dl._library_db.close()
+
+    assert resolved == {"66024828": "copy"}
+    assert any("will be copied" in message for message in info_messages)
+    assert not any("will be skipped" in message for message in info_messages)

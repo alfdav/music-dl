@@ -195,6 +195,16 @@ def select_highest_flac_representation(representations: list[Representation]) ->
     return max(pool, key=_rep_score)
 
 
+def select_best_audio_representation(representations: list[Representation]) -> Representation | None:
+    """Prefer the highest FLAC, then the highest remaining (AAC/LOW/HIGH) stream."""
+    chosen = select_highest_flac_representation(representations)
+    if chosen is not None:
+        return chosen
+    if not representations:
+        return None
+    return max(representations, key=_rep_score)
+
+
 # One line, one session. Login-client pointer is part of the same notice.
 # Do not add a login flow, wipe token.json, or auto re-login.
 SESSION_HIRES_FALLBACK_NOTICE = (

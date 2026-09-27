@@ -8,6 +8,8 @@ def dest_already_present(
     media,
     source_path: str,
     file_template: str | None = None,
+    list_position: int = 0,
+    list_total: int = 0,
 ) -> bool:
     """True when a file exists at this job's dest (including legacy `_/`).
 
@@ -25,7 +27,7 @@ def dest_already_present(
         or "{track_title}"
     )
     try:
-        result = prepare(media, template, None, 0, 0, bypass_isrc=True)
+        result = prepare(media, template, None, list_position, list_total, bypass_isrc=True)
     except TypeError:
         return False
     if not isinstance(result, tuple) or len(result) < 3:
@@ -60,6 +62,12 @@ class DuplicateMixin:
 
         hits_with_source: list[tuple] = []  # (Track, path_str) — source file exists
         hits_missing_source: list[tuple] = []  # (Track, path_str) — source file gone
+        list_total = len(items)
+        positions = {
+            str(item_media.id): index
+            for index, item_media in enumerate(items, start=1)
+            if isinstance(item_media, Track) and getattr(item_media, "id", None) is not None
+        }
 
         for item_media in items:
             if not isinstance(item_media, Track):
@@ -88,7 +96,14 @@ class DuplicateMixin:
             skip_n = 0
             copy_n = 0
             for track, path_str in hits_with_source:
-                if dest_already_present(self, track, path_str, file_template=file_template):
+                if dest_already_present(
+                    self,
+                    track,
+                    path_str,
+                    file_template=file_template,
+                    list_position=positions.get(str(track.id), 0),
+                    list_total=list_total,
+                ):
                     resolved[str(track.id)] = "skip"
                     skip_n += 1
                 else:

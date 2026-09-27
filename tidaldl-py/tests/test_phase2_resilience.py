@@ -490,6 +490,153 @@ def test_subscription_quality_probe_records_oauth_session_max_when_account_is_hi
     assert probe.session.audio_quality == Quality.hi_res_lossless
 
 
+def test_subscription_quality_probe_treats_hires_stamp_on_cd_as_lossless():
+    """Tidal Web can stamp HI_RES_LOSSLESS on a 16/44.1 stream. Cap must be LOSSLESS."""
+    from tidal_dl.download.quality import session_can_deliver_hires
+
+    class SettingsData:
+        quality_audio = Quality.hi_res_lossless
+
+    class ProbeSession:
+        audio_quality = Quality.hi_res_lossless
+
+        def track(self, _track_id):
+            stream = type(
+                "Stream",
+                (),
+                {
+                    "audio_quality": Quality.hi_res_lossless,
+                    "bit_depth": 16,
+                    "sample_rate": 44100,
+                },
+            )()
+            return type("Track", (), {"get_stream": lambda self: stream})()
+
+    probe = type(
+        "Probe",
+        (),
+        {
+            "settings": type("Settings", (), {"data": SettingsData()})(),
+            "session": ProbeSession(),
+            "refresh_account_quality": lambda self: "HI_RES",
+        },
+    )()
+
+    Tidal._probe_subscription_quality(probe)
+
+    assert probe.session_max_quality == "LOSSLESS"
+    assert session_can_deliver_hires(probe.session_max_quality) is False
+    assert probe.settings.data.quality_audio == Quality.hi_res_lossless
+
+
+def test_subscription_quality_probe_keeps_true_hires_delivery():
+    class SettingsData:
+        quality_audio = Quality.hi_res_lossless
+
+    class ProbeSession:
+        audio_quality = Quality.hi_res_lossless
+
+        def track(self, _track_id):
+            stream = type(
+                "Stream",
+                (),
+                {
+                    "audio_quality": Quality.hi_res_lossless,
+                    "bit_depth": 24,
+                    "sample_rate": 44100,
+                },
+            )()
+            return type("Track", (), {"get_stream": lambda self: stream})()
+
+    probe = type("Probe", (), {"settings": type("Settings", (), {"data": SettingsData()})(), "session": ProbeSession()})()
+
+    Tidal._probe_subscription_quality(probe)
+
+    assert probe.session_max_quality == "HI_RES_LOSSLESS"
+
+
+def test_subscription_quality_probe_timeout_does_not_wait_for_hung_worker():
+    """Silent restore must not stall past SOURCE_RESOLVE_TIMEOUT_SEC on a hung get_stream."""
+    import time
+
+    from tidal_dl.constants import SOURCE_RESOLVE_TIMEOUT_SEC
+
+    hang = threading.Event()
+
+    class SettingsData:
+        quality_audio = Quality.hi_res_lossless
+
+    class ProbeSession:
+        audio_quality = Quality.hi_res_lossless
+
+        def track(self, _track_id):
+            def get_stream(_self):
+                hang.wait(8)
+                return type("Stream", (), {"audio_quality": Quality.high_lossless})()
+
+            return type("Track", (), {"get_stream": get_stream})()
+
+    probe = type("Probe", (), {"settings": type("Settings", (), {"data": SettingsData()})(), "session": ProbeSession()})()
+
+    started = time.monotonic()
+    Tidal._probe_subscription_quality(probe)
+    elapsed = time.monotonic() - started
+    hang.set()
+
+    assert elapsed < SOURCE_RESOLVE_TIMEOUT_SEC + 2.0
+    assert getattr(probe, "session_max_quality", None) is None
+
+
+def test_subscription_quality_probe_holds_stream_lock_during_get_stream():
+    """Lazy probe must serialize with Atmos/normal credential switches."""
+
+    class RecordingLock:
+        def __init__(self):
+            self.held_during_get_stream = False
+            self._held = False
+            self._lock = threading.Lock()
+
+        def __enter__(self):
+            self._lock.acquire()
+            self._held = True
+            return self
+
+        def __exit__(self, *_args):
+            self._held = False
+            self._lock.release()
+            return False
+
+    lock = RecordingLock()
+
+    class SettingsData:
+        quality_audio = Quality.hi_res_lossless
+
+    class ProbeSession:
+        audio_quality = Quality.hi_res_lossless
+
+        def track(self, _track_id):
+            def get_stream(_self):
+                lock.held_during_get_stream = lock._held
+                return type("Stream", (), {"audio_quality": Quality.high_lossless})()
+
+            return type("Track", (), {"get_stream": get_stream})()
+
+    probe = type(
+        "Probe",
+        (),
+        {
+            "settings": type("Settings", (), {"data": SettingsData()})(),
+            "session": ProbeSession(),
+            "stream_lock": lock,
+        },
+    )()
+
+    Tidal._probe_subscription_quality(probe)
+
+    assert lock.held_during_get_stream is True
+    assert probe.session_max_quality == "LOSSLESS"
+
+
 def test_subscription_quality_probe_unknown_warns_without_pass(capsys):
     class SettingsData:
         quality_audio = Quality.low_96k

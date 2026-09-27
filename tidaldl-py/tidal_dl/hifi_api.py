@@ -79,7 +79,7 @@ class HiFiApiClient:
         from tidal_dl.download.quality import (
             delivery_is_hires,
             parse_representation_params,
-            select_highest_flac_representation,
+            select_best_audio_representation,
             unwrap_playback_payload,
         )
 
@@ -106,7 +106,7 @@ class HiFiApiClient:
                 for adaptation in period.adaptation_sets
                 for rep in adaptation.representations
             ]
-            chosen = select_highest_flac_representation(representations)
+            chosen = select_best_audio_representation(representations)
             urls = chosen.segments if chosen is not None else []
             codecs = (chosen.codec or "") if chosen is not None else ""
             if chosen is not None:
