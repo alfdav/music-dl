@@ -33,9 +33,10 @@ from tidal_dl.constants import (
     DownloadSource,
     quality_name,
 )
-from tidal_dl.helper.cache import TTLCache
 from tidal_dl.helper.atomic_io import atomic_write_text, exclusive_file_lock, token_lock_path
+from tidal_dl.helper.cache import TTLCache
 from tidal_dl.helper.path import path_config_base, path_file_settings, path_file_token
+from tidal_dl.helper.redact import redact_secrets
 from tidal_dl.hifi_api import HiFiApiClient
 from tidal_dl.model.cfg import DEFAULT_FORMAT_PLAYLIST, LEGACY_DEFAULT_FORMAT_PLAYLIST
 from tidal_dl.model.cfg import Settings as ModelSettings
@@ -50,6 +51,12 @@ _refresh_inflight_lock = Lock()
 _settings_instance: "Settings | None" = None
 _tidal_instance: "Tidal | None" = None
 _handling_app_instance: "HandlingApp | None" = None
+
+
+def _nonempty_secret(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def token_refresh_in_flight() -> bool:
@@ -342,16 +349,47 @@ class Tidal(BaseConfig[ModelToken]):
     def _model_has_payload(self, data: ModelToken) -> bool:
         return bool(getattr(data, "refresh_token", None) or getattr(data, "access_token", None))
 
+    def _refresh_token_on_disk(self) -> str:
+        path = Path(self.file_path)
+        if not path.is_file():
+            return ""
+        try:
+            raw = path.read_text(encoding="utf-8")
+            loaded = self.cls_model.from_json(raw)
+        except (OSError, JSONDecodeError, TypeError, ValueError):
+            return ""
+        return _nonempty_secret(getattr(loaded, "refresh_token", None))
+
+    def _keep_stored_refresh_token(self, stored: str) -> None:
+        """Never replace a live refresh token with an empty one."""
+        self.data.refresh_token = stored
+        session = getattr(self, "session", None)
+        if session is not None and not _nonempty_secret(getattr(session, "refresh_token", None)):
+            session.refresh_token = stored
+        self._warn_kept_refresh_token()
+
+    def _warn_kept_refresh_token(self) -> None:
+        _console.print(
+            "[yellow]Warning:[/yellow] "
+            + redact_secrets(
+                "Refused to replace a stored refresh_token with an empty value; kept the previous refresh_token."
+            )
+        )
+
     def save(self, config_to_compare: str | None = None) -> None:
-        """Persist tokens without truncating a working file or writing empties."""
+        """Persist tokens without truncating a working file or dropping a refresh token."""
         if not self._model_has_payload(self.data) and Path(self.file_path).is_file():
             return
-        if config_to_compare is None and Path(self.file_path).is_file():
-            try:
-                config_to_compare = Path(self.file_path).read_text(encoding="utf-8")
-            except OSError:
-                config_to_compare = None
-        super().save(config_to_compare)
+        with exclusive_file_lock(token_lock_path(self.file_path)):
+            stored = self._refresh_token_on_disk()
+            if stored and not _nonempty_secret(getattr(self.data, "refresh_token", None)):
+                self._keep_stored_refresh_token(stored)
+            if config_to_compare is None and Path(self.file_path).is_file():
+                try:
+                    config_to_compare = Path(self.file_path).read_text(encoding="utf-8")
+                except OSError:
+                    config_to_compare = None
+            super().save(config_to_compare)
 
     def _reread_token_from_disk(self) -> None:
         path = Path(self.file_path)
@@ -628,11 +666,22 @@ class Tidal(BaseConfig[ModelToken]):
         return result
 
     def token_persist(self) -> None:
-        """Save the current session token to disk."""
-        with _token_fresh_lock:
+        """Save the current session token to disk.
+
+        ``tidalapi`` ``Session.token_refresh`` updates the access token and
+        leaves ``session.refresh_token`` untouched. A session that never had
+        the refresh token loaded would otherwise persist ``null`` and wipe
+        the only seat.
+        """
+        with exclusive_file_lock(token_lock_path(self.file_path)), _token_fresh_lock:
+            stored = self._refresh_token_on_disk() or _nonempty_secret(self.data.refresh_token)
+            incoming = _nonempty_secret(getattr(self.session, "refresh_token", None))
+            if not incoming and stored:
+                self._keep_stored_refresh_token(stored)
+                incoming = stored
             self.set_option("token_type", self.session.token_type)
             self.set_option("access_token", self.session.access_token)
-            self.set_option("refresh_token", self.session.refresh_token)
+            self.set_option("refresh_token", incoming or None)
             _exp = self.session.expiry_time
             if isinstance(_exp, datetime) and _exp.tzinfo is None:
                 _exp = _exp.replace(tzinfo=UTC)
@@ -690,6 +739,12 @@ class Tidal(BaseConfig[ModelToken]):
                         if refreshed is False:
                             self._last_refresh_outcome = "rejected"
                             return False
+                        # tidalapi does not copy refresh_token out of the
+                        # response. Omitted (or ignored) means keep the one
+                        # we sent. A rotated value already on the session stays.
+                        if not _nonempty_secret(getattr(self.session, "refresh_token", None)):
+                            self.session.refresh_token = refresh_token
+                            self._warn_kept_refresh_token()
                         self.token_persist()
                         self._last_refresh_outcome = "ok"
                         return True

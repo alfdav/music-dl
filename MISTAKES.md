@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-27 — Refresh persist wrote an empty refresh_token
+
+**What happened:** A live run against a copied config dir left `token.json` with a new access token and `refresh_token` null. The real file was not touched. The copy could no longer refresh, so the next Connect would be a new Tidal seat.
+
+**Root cause:** `tidalapi.Session.token_refresh` stores `access_token` and does not set `refresh_token` (the response often omits it). `Tidal.token_persist` then saved `session.refresh_token`. On a session that had not loaded the refresh token, that value is `None`. `Token.save` still wrote the file because the access token counted as payload.
+
+**Prevention:** A save keeps a non-empty refresh token already on disk when the session value is empty, logs that refusal with secrets redacted, and puts the kept value back on the session. A refresh response that does include a new refresh token still wins. Cover the omit-refresh response and concurrent persists.
+
 ## 2026-09-27 — Bind-all minted the UI secret to any Host-spoofed GET /
 
 **What happened:** `server.py` auto-filled `MUSIC_DL_UI_SECRET` before `make_uvicorn_config` fail-closed. `GET /` then `Set-Cookie`d `music_dl_ui`. A client that could reach a `MUSIC_DL_BIND_ALL` listener sent `Host: localhost:<port>` and replayed the cookie as `X-Music-DL-UI`.

@@ -76,6 +76,98 @@ def test_token_persist_crash_before_rename_keeps_working_file(tmp_path, monkeypa
     assert saved["access_token"] == "live-access-1-7-11"
 
 
+def test_refresh_response_without_refresh_token_keeps_stored(tmp_path, monkeypatch):
+    """tidalapi token_refresh updates access_token and leaves session.refresh_token empty."""
+    from tidal_dl.config import Tidal, reset_singletons
+
+    reset_singletons()
+    monkeypatch.setenv("MUSIC_DL_CONFIG_DIR", str(tmp_path))
+    token_path = tmp_path / "token.json"
+    token_path.write_text(_legacy_token(expiry=time.time() - 120), encoding="utf-8")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "tidal_dl.config._console.print",
+        lambda *args, **kwargs: warnings.append(" ".join(str(arg) for arg in args)),
+    )
+
+    class RefreshResponse:
+        status_code = 200
+        ok = True
+
+        def json(self):
+            return {
+                "access_token": "refreshed-access",
+                "expires_in": 86400,
+                "token_type": "Bearer",
+            }
+
+    tidal = Tidal()
+    assert not tidal.session.refresh_token
+    tidal.session.request_session.post = lambda *_args, **_kwargs: RefreshResponse()
+
+    assert tidal._ensure_token_fresh(refresh_window_sec=300) is True
+
+    saved = json.loads(token_path.read_text(encoding="utf-8"))
+    assert saved["refresh_token"] == "live-refresh-1-7-11"
+    assert saved["access_token"] == "refreshed-access"
+    assert tidal.session.refresh_token == "live-refresh-1-7-11"
+    logged = " ".join(warnings)
+    assert "live-refresh-1-7-11" not in logged
+    assert "refreshed-access" not in logged
+    assert "empty value" in logged
+
+
+def test_save_refuses_to_drop_stored_refresh_token(tmp_path, monkeypatch):
+    from tidal_dl.config import Tidal, reset_singletons
+
+    reset_singletons()
+    monkeypatch.setenv("MUSIC_DL_CONFIG_DIR", str(tmp_path))
+    token_path = tmp_path / "token.json"
+    token_path.write_text(_legacy_token(), encoding="utf-8")
+    tidal = Tidal()
+    tidal.data.access_token = "still-valid-access"
+    tidal.data.refresh_token = None
+    tidal.session.refresh_token = None
+
+    tidal.save()
+
+    saved = json.loads(token_path.read_text(encoding="utf-8"))
+    assert saved["refresh_token"] == "live-refresh-1-7-11"
+    assert saved["access_token"] == "still-valid-access"
+
+
+def test_concurrent_persists_cannot_drop_refresh_token(tmp_path, monkeypatch):
+    from tidal_dl.config import Tidal, reset_singletons
+
+    reset_singletons()
+    monkeypatch.setenv("MUSIC_DL_CONFIG_DIR", str(tmp_path))
+    token_path = tmp_path / "token.json"
+    token_path.write_text(_legacy_token(), encoding="utf-8")
+    tidal = Tidal()
+    tidal.session.token_type = "Bearer"
+    tidal.session.expiry_time = time.time() + 3600
+    barrier = threading.Barrier(2)
+
+    def persist(refresh, access):
+        barrier.wait(timeout=5)
+        tidal.session.refresh_token = refresh
+        tidal.session.access_token = access
+        tidal.token_persist()
+
+    threads = [
+        threading.Thread(target=persist, args=(None, "access-from-omit")),
+        threading.Thread(target=persist, args=("rotated-refresh", "access-from-rotate")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    saved = json.loads(token_path.read_text(encoding="utf-8"))
+    assert saved["refresh_token"] in {"live-refresh-1-7-11", "rotated-refresh"}
+    assert saved["refresh_token"]
+
+
 def test_corrupt_primary_restores_valid_bak(tmp_path):
     from tidal_dl.config import Tidal, reset_singletons
 

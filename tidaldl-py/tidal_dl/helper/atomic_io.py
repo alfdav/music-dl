@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import os
 import secrets
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+
+_lock_owner = threading.local()
 
 
 def atomic_write_text(path: str | Path, body: str, *, mode: int = 0o600) -> None:
@@ -60,14 +63,29 @@ def token_lock_path(token_path: str | Path) -> Path:
 
 @contextmanager
 def exclusive_file_lock(lock_path: str | Path) -> Iterator[None]:
-    """Exclusive lock shared by CLI and sidecar processes."""
+    """Exclusive lock shared by CLI and sidecar processes.
+
+    Re-enters on the same thread. ``token_persist`` takes the lock while
+    ``_ensure_token_fresh`` already holds it; a second ``flock`` on a new
+    descriptor would deadlock.
+    """
     path = Path(lock_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    key = str(path.resolve())
+    held: set[str] | None = getattr(_lock_owner, "keys", None)
+    if held is None:
+        held = set()
+        _lock_owner.keys = held
+    if key in held:
+        yield
+        return
     with open(path, "a+b") as handle:
         try:
             _lock_exclusive(handle)
+            held.add(key)
             yield
         finally:
+            held.discard(key)
             _unlock(handle)
 
 
