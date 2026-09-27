@@ -229,13 +229,16 @@ def create_app(
             html = html.replace(f'/{asset}', f'/{asset}?v={v}')
         html = html.replace("__APP_VERSION__", _APP_VERSION)
         response = HTMLResponse(html.replace("__CSRF_TOKEN__", ""))
-        response.set_cookie(
-            "music_dl_ui",
-            ui_secret,
-            httponly=False,
-            samesite="strict",
-            path="/",
-        )
+        # Loopback desktop/dev: the webview reads this cookie. Bind-all
+        # (Docker) must not mint a secret to any TCP client that spoofs Host.
+        if not os.environ.get("MUSIC_DL_BIND_ALL"):
+            response.set_cookie(
+                "music_dl_ui",
+                ui_secret,
+                httponly=False,
+                samesite="strict",
+                path="/",
+            )
         return response
 
     app.mount("/", StaticFiles(directory=str(_STATIC_DIR)), name="static")

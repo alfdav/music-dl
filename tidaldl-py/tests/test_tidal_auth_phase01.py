@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -438,3 +440,91 @@ def test_bind_all_requires_ui_secret(monkeypatch):
     meta = DaemonMetadata.for_current_process(port=8765, mode="browser")
     with pytest.raises(RuntimeError, match="MUSIC_DL_UI_SECRET"):
         make_uvicorn_config(meta, bind_all=True)
+
+
+def test_gui_run_does_not_autofill_ui_secret_when_binding_all(monkeypatch):
+    from tidal_dl.gui import server as gui_server
+    from tidal_dl.gui.daemon import DaemonMetadata
+
+    monkeypatch.setenv("MUSIC_DL_BIND_ALL", "1")
+    monkeypatch.delenv("MUSIC_DL_UI_SECRET", raising=False)
+    monkeypatch.setattr(gui_server, "discover_ready_daemon", lambda: None)
+    monkeypatch.setattr(gui_server, "select_port", lambda port: 8765)
+    monkeypatch.setattr(gui_server, "write_metadata", lambda *_a, **_k: None)
+    monkeypatch.setattr(gui_server, "remove_metadata", lambda *_a, **_k: None)
+    seen: dict[str, object] = {}
+
+    def refuse(meta, bind_all=False):
+        seen["secret"] = os.environ.get("MUSIC_DL_UI_SECRET")
+        seen["bind_all"] = bind_all
+        seen["meta"] = meta
+        raise RuntimeError("MUSIC_DL_UI_SECRET")
+
+    monkeypatch.setattr(gui_server, "make_uvicorn_config", refuse)
+
+    with pytest.raises(RuntimeError, match="MUSIC_DL_UI_SECRET"):
+        gui_server.run(port=8765, open_browser=False)
+
+    assert not (seen.get("secret") or "").strip()
+    assert seen["bind_all"] is True
+    assert isinstance(seen["meta"], DaemonMetadata)
+
+
+def test_bind_all_get_does_not_set_ui_cookie(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from tidal_dl.gui import create_app
+
+    monkeypatch.setenv("MUSIC_DL_BIND_ALL", "1")
+    monkeypatch.setenv("MUSIC_DL_UI_SECRET", "operator-held-secret")
+    app = create_app(port=8765, job_db_path=tmp_path / "jobs.db")
+    with TestClient(app) as client:
+        index = client.get("/", headers={"host": "localhost:8765"})
+        assert index.status_code == 200
+        assert "music_dl_ui" not in index.cookies
+        assert "music_dl_ui=" not in index.headers.get("set-cookie", "")
+        assert "operator-held-secret" not in index.text
+        stolen = index.cookies.get("music_dl_ui")
+        assert stolen is None
+        login = client.post(
+            "/api/auth/login",
+            json={"confirm": True},
+            headers={"host": "localhost:8765"},
+        )
+        assert login.status_code == 403
+        download = client.post(
+            "/api/download",
+            json={"track_ids": [1]},
+            headers={"host": "localhost:8765"},
+        )
+        assert download.status_code == 403
+
+
+def test_loopback_get_still_sets_ui_cookie(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from tidal_dl.gui import create_app
+
+    monkeypatch.delenv("MUSIC_DL_BIND_ALL", raising=False)
+    app = create_app(port=8765, job_db_path=tmp_path / "jobs.db")
+    with TestClient(app) as client:
+        index = client.get("/", headers={"host": "localhost:8765"})
+        assert index.status_code == 200
+        assert index.cookies.get("music_dl_ui") == app.state.ui_secret
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def test_docker_compose_requires_operator_held_ui_secret():
+    compose = (_repo_root() / "docker" / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "MUSIC_DL_UI_SECRET: ${MUSIC_DL_UI_SECRET:?set MUSIC_DL_UI_SECRET; bind-all will not mint one}" in compose
+
+
+def test_docker_installer_persists_operator_held_ui_secret():
+    script = (_repo_root() / "scripts" / "install-docker.sh").read_text(encoding="utf-8")
+    assert "ensure_ui_secret" in script
+    assert "bind-all will not mint one" in script
+    assert 'export MUSIC_DL_UI_SECRET' in script
+    assert "openssl rand -hex 32" in script

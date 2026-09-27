@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-27 — Bind-all minted the UI secret to any Host-spoofed GET /
+
+**What happened:** `server.py` auto-filled `MUSIC_DL_UI_SECRET` before `make_uvicorn_config` fail-closed. `GET /` then `Set-Cookie`d `music_dl_ui`. A client that could reach a `MUSIC_DL_BIND_ALL` listener sent `Host: localhost:<port>` and replayed the cookie as `X-Music-DL-UI`.
+
+**Root cause:** Bind-all treated a missing operator secret as "generate one" and used GET `/` as the delivery path. Host checks do not prove the peer is local.
+
+**Prevention:** Bind-all starts only with an already-set `MUSIC_DL_UI_SECRET`. GET `/` sets the cookie only on loopback. Cover run-does-not-autofill and bind-all GET `/` leaking no cookie.
+
 ## 2026-09-26 — Auto-login after 401 and in-place token writes
 
 **What happened:** A 401 in `apiTidal()` called `triggerLogin()`, which started device-code OAuth while a refresh token still existed. `token.json` was also written in place, so a crash could truncate a working session. Recovery deleted a valid `.bak`.

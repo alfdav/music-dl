@@ -175,7 +175,7 @@ All security logic in `gui/security.py`.
 ### CSRF
 
 - Token: 32-byte URL-safe random, generated at server startup
-- Per-launch secret is **not** injected into `index.html`. GET `/` sets a `music_dl_ui` cookie; the webview or Tauri `get_ui_secret` command supplies `X-Music-DL-UI`.
+- Per-launch secret is **not** injected into `index.html`. On loopback, GET `/` sets a `music_dl_ui` cookie; the webview or Tauri `get_ui_secret` command supplies `X-Music-DL-UI`. Bind-all does not set that cookie.
 - Frontend sends `X-Music-DL-UI` (and `X-CSRF-Token` as an alias) on API calls. Tokens are never returned from any endpoint.
 - Timing-safe comparison via `secrets.compare_digest()`
 - `/api/bot/*` is exempt from browser CSRF and instead requires bearer auth.
