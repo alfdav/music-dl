@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-26 — Treated CLI `Tidal.login()` as the GUI login contract
+
+**What happened:** While auditing Tidal auth, `config.py` `login()` looked like it never starts device-code while a `refresh_token` exists. The GUI `POST /auth/login` path still calls `login_oauth()` after a rejected refresh. A spec that praised both as the same law would have hidden the extra-seat bug.
+
+**Root cause:** Two functions named "login" with different rejected-refresh behavior. Tests even require the GUI path to start OAuth (`test_gui_auth_login_uses_oauth_when_refresh_cannot_repair`).
+
+**Prevention:** Cite `Tidal.login()` and `auth_login()` separately. Rejected refresh in the GUI is `needs_attention`, not a new device-code seat. Verify `file:line` against the live line, not the function name.
+
 ## 2026-09-26 — Advisory QA hid master failures until enforcement
 
 **What happened:** `.github/workflows/qa.yml` collected check outcomes with `continue-on-error` and scored them without `--enforce`. Master stayed "green" while `python_smoke` (download 401 hole), `security_tests` (bot pid race), stale lyrics/settings contracts, and ruff deductions were already would_block.
