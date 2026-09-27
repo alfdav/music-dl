@@ -63,15 +63,12 @@ def exclusive_file_lock(lock_path: str | Path) -> Iterator[None]:
     """Exclusive lock shared by CLI and sidecar processes."""
     path = Path(lock_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle = open(path, "a+b")
-    try:
-        _lock_exclusive(handle)
-        yield
-    finally:
+    with open(path, "a+b") as handle:
         try:
-            _unlock(handle)
+            _lock_exclusive(handle)
+            yield
         finally:
-            handle.close()
+            _unlock(handle)
 
 
 def _lock_exclusive(handle) -> None:

@@ -9,8 +9,6 @@ Uses the shared `client` fixture from conftest.py which provides:
 import wave
 from types import SimpleNamespace
 
-import pytest
-
 from tidal_dl.helper.library_db import LibraryDB
 
 

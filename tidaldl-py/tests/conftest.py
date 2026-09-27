@@ -5,7 +5,6 @@ import tempfile
 
 import pytest
 
-
 _session_config_dir = tempfile.TemporaryDirectory(prefix="music-dl-pytest-")
 os.environ["MUSIC_DL_CONFIG_DIR"] = _session_config_dir.name
 
@@ -36,8 +35,9 @@ def clear_singletons():
 @pytest.fixture
 def client(tmp_path):
     """FastAPI TestClient with the per-launch UI secret."""
-    from tidal_dl.gui import create_app
     from fastapi.testclient import TestClient
+
+    from tidal_dl.gui import create_app
     app = create_app(port=8765, job_db_path=tmp_path / "jobs.db")
     with TestClient(app) as c:
         c._host_header = {"host": "localhost:8765"}

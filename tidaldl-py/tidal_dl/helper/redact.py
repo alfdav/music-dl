@@ -32,7 +32,7 @@ class RedactingFilter:
             formatted = record.getMessage()
             record.msg = redact_secrets(formatted)
             record.args = None
-        except Exception:
+        except Exception:  # noqa: BLE001
             return True
         return True
 

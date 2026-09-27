@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
@@ -111,9 +108,10 @@ def test_both_bad_does_not_write_empty_token_or_discard_bak(tmp_path):
 
 
 def test_upgrade_keeps_1_7_11_token_without_rewrite_or_oauth(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
     from tidal_dl.config import Tidal, reset_singletons
     from tidal_dl.gui import create_app
-    from fastapi.testclient import TestClient
 
     reset_singletons()
     body = _legacy_token()
@@ -271,6 +269,7 @@ def test_auth_login_confirm_starts_device_code():
 
 def test_rejected_refresh_is_needs_attention_not_oauth(monkeypatch, tmp_path):
     from fastapi import HTTPException
+
     from tidal_dl.gui.api import settings as settings_api
 
     class Session:
@@ -400,7 +399,7 @@ def test_js_api_tidal_does_not_autologin():
 
 
 def test_cross_process_lock_serializes_refresh(tmp_path):
-    from tidal_dl.helper.atomic_io import exclusive_file_lock, token_lock_path
+    from tidal_dl.helper.atomic_io import token_lock_path
 
     lock = token_lock_path(tmp_path / "token.json")
     counter = tmp_path / "refreshes.txt"
