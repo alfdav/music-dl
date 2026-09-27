@@ -3942,19 +3942,91 @@ body {
 
 .settings-shortcuts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   padding-top: 10px;
 }
 
+@media (min-width: 1680px) {
+  .settings-shortcuts {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
 .settings-shortcut-row {
   display: flex;
+  align-items: baseline;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 10px;
+  min-width: 0;
+  padding: 10px 12px;
   border: 1px solid var(--glass-border);
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   background: var(--surface);
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.settings-shortcut-row:hover {
+  background: var(--surface-hover);
+  border-color: rgba(212, 160, 83, 0.28);
+}
+
+.settings-shortcut-row:hover .shortcut-keycap {
+  color: var(--accent);
+}
+
+.settings-shortcut-label {
+  font-size: 13px;
+  color: var(--text);
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shortcut-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.shortcut-keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 7px;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--text);
+  background: var(--bg-warm);
+  border: 1px solid rgba(255, 245, 235, 0.16);
+  border-radius: var(--radius-xs);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+}
+
+.shortcuts-card .shortcut-keycap {
+  background: var(--surface-active);
+}
+
+.shortcut-keycap-symbol {
+  font-size: 15px;
+}
+
+.shortcut-keycap[aria-label="Space"] {
+  min-width: 52px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-shortcut-row {
+    transition: none;
+  }
 }
 
 /* ---- Recently Played page ---- */

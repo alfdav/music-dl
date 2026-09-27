@@ -16,6 +16,14 @@
 
 **Prevention:** Bind-all starts only with an already-set `MUSIC_DL_UI_SECRET`. GET `/` sets the cookie only on loopback. Cover run-does-not-autofill and bind-all GET `/` leaking no cookie.
 
+## 2026-09-27 — Overlay keycaps reused the settings-card fill
+
+**What happened:** The `?` help overlay switched to `shortcut-keycap` chips. Those chips fill with `--bg-warm`, the same token as `.shortcuts-card`, so chords lost their key surface and kept only a faint border.
+
+**Root cause:** The settings strip sits on `--surface` over `--bg`. The overlay card *is* `--bg-warm`. One keycap fill cannot serve both parents.
+
+**Prevention:** `.shortcuts-card .shortcut-keycap` uses `--surface-active` so overlay keys lift off the `--bg-warm` card. Keep the settings strip on `--bg-warm`. Tests lock that the two fills differ. Do not reuse a surface token as both card and keycap. `--bg` on `--bg-warm` is too close to count.
+
 ## 2026-09-26 — Auto-login after 401 and in-place token writes
 
 **What happened:** A 401 in `apiTidal()` called `triggerLogin()`, which started device-code OAuth while a refresh token still existed. `token.json` was also written in place, so a crash could truncate a working session. Recovery deleted a valid `.bak`.
@@ -31,6 +39,14 @@
 **Root cause:** Calibration left the final `qa` job advisory. Status reporting was treated as the merge gate. Publishing `discord_bot_process` before the pid file made `running=True` visible before `discord-bot.pid` existed. Settings field-count and lyrics `lyricsBody` wheel assertions were not updated when #186 and the viewport scroller landed.
 
 **Prevention:** Final `qa` job always passes `--enforce`. Check steps still continue so evidence is complete. Write the bot pid file before publishing process state. `running=True` means the pid file exists. Settings field-count tests name the new fields, not a magic number alone. Lyrics detach tests lock the viewport listener. Player-bar invariance is the bun lyrics-sync contract: do not hide `#now-heart` / `#now-download` on `.lyrics-open`. LibraryDB probe ceilings must match GitHub-hosted 10k-probe cost (`visible_scanned_path_sql` + `fold_search`), not a quiet laptop. Do not skip or delete a failing test to go green.
+
+## 2026-09-26 — Shortcut strip showed Cmd/Ctrl as one wide string
+
+**What happened:** Settings Playback shortcut cards used a single amber monospace box per combo (`ArrowLeft`, `Cmd/Ctrl+Shift+Q`). Queue overflowed its card, Forward 10s wrapped, and card widths were uneven.
+
+**Root cause:** Display copied the event-code / cross-platform chord text instead of rendering one keycap per key. Labels sat after the wide key box with no nowrap/ellipsis contract.
+
+**Prevention:** Render platform-specific `kbd.shortcut-keycap` chips (`⌘ ⇧ Q` / `Ctrl Shift Q`) via `_shortcutKeycaps`. Detect OS through Tauri `os.platform` / `plugin:os|platform`, then `navigator.userAgentData.platform` / `navigator.platform`. Never paint `Cmd/Ctrl`. Keep labels sentence-case, nowrap, `min-width: 0`, ellipsis fallback. Shortcut *behavior* stays `metaKey || e.ctrlKey`. Glyphs use `--text` on `--bg-warm` (≥ AA). Symbols get `shortcut-keycap-symbol` at 1.15× letter size. Grid is 3+3 through the default 1440 window and 6 only at ≥1680, when Windows `Ctrl Shift Q` still fits — never `auto-fit` that wraps 6 items as 4+2. Screenshot harness labels stay out of app DOM.
 
 ## 2026-09-18 — Module-on delete gate kept only Jev-actable extras
 
