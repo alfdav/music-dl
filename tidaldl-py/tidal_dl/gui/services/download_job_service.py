@@ -209,7 +209,7 @@ class DownloadJobService:
         try:
             data = settings_cls().data
             n = int(getattr(data, "downloads_concurrent_max", 3) or 3)
-        except Exception:
+        except (TypeError, ValueError, AttributeError, OSError):
             n = 3
         return max(1, min(n, 10))
 

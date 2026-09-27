@@ -1,6 +1,7 @@
 """Download collections helpers."""
 
-from tidal_dl.download._common import *  # noqa: F403
+from tidal_dl.download._common import *
+
 
 class CollectionMixin:
     def items(
@@ -61,7 +62,7 @@ class CollectionMixin:
                 )
                 checkpoint.initialize_tracks(track_ids)
                 checkpoint.save()
-        except Exception as exc:
+        except (OSError, TypeError, ValueError, KeyError) as exc:
             self.fn_logger.warning(
                 f"Could not set up checkpoint for '{list_media_name}': {exc}. Continuing without checkpoint."
             )
@@ -69,7 +70,9 @@ class CollectionMixin:
 
         # Pre-flight: resolve duplicate ISRCs before dispatching the thread pool.
         # Collections (albums, playlists, mixes) are always completed in full.
-        resolved_actions: dict[str, str] = self._preflight_isrc_scan(items, checkpoint, ensure_complete=True)
+        resolved_actions: dict[str, str] = self._preflight_isrc_scan(
+            items, checkpoint, ensure_complete=True, file_template=file_name_relative
+        )
 
         # Set up progress tracking
         progress: Progress = self.progress_overall if self.progress_overall else self.progress
@@ -222,12 +225,15 @@ class CollectionMixin:
                 future_to_item: dict[futures.Future, object] = {}
 
                 for count, item_media in enumerate(items):
-                    if checkpoint is not None and isinstance(item_media, Track):
-                        if checkpoint.status_of(str(item_media.id)) == STATUS_DOWNLOADED:
-                            if summary is not None:
-                                summary.record(DownloadOutcome.SKIPPED)
-                            progress.advance(progress_task)
-                            continue
+                    if (
+                        checkpoint is not None
+                        and isinstance(item_media, Track)
+                        and checkpoint.status_of(str(item_media.id)) == STATUS_DOWNLOADED
+                    ):
+                        if summary is not None:
+                            summary.record(DownloadOutcome.SKIPPED)
+                        progress.advance(progress_task)
+                        continue
 
                     # Apply pre-flight resolved action for this track.
                     override: str | None = None

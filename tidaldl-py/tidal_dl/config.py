@@ -15,11 +15,13 @@ from datetime import UTC, datetime
 from json import JSONDecodeError
 from pathlib import Path
 from threading import Event, Lock, RLock
-from typing import Any, Generic, Protocol, Self, TypeVar
+from typing import Any, Protocol, Self
 
 import certifi
+import requests
 import typer
 from rich.console import Console as RichConsole
+from tidalapi.exceptions import AuthenticationError, ObjectNotFound, StreamNotAvailable, TidalAPIError
 from tidalapi.media import Quality, VideoQuality
 from tidalapi.session import Config as TidalConfig
 from tidalapi.session import Session
@@ -67,14 +69,11 @@ class JsonConfigModel(Protocol):
     def to_json(self) -> str: ...
 
 
-ConfigModelT = TypeVar("ConfigModelT", bound=JsonConfigModel)
-
-
 class MessagePrinter(Protocol):
     def __call__(self, message: str) -> object: ...
 
 
-class BaseConfig(Generic[ConfigModelT]):
+class BaseConfig[ConfigModelT: JsonConfigModel]:
     """Base class for JSON-backed configuration objects."""
 
     data: ConfigModelT
@@ -465,7 +464,18 @@ class Tidal(BaseConfig[ModelToken]):
                     expiry_time,
                     is_pkce=do_pkce,
                 )
-            except Exception:
+            except (
+                OSError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+                KeyError,
+                AttributeError,
+                JSONDecodeError,
+                requests.RequestException,
+                TidalAPIError,
+                AuthenticationError,
+            ):
                 result = False
 
                 if not quiet:
@@ -474,9 +484,12 @@ class Tidal(BaseConfig[ModelToken]):
                         "side. Try logging in again by re-running this app."
                     )
 
-            if not result and (self.data.refresh_token or refresh_token):
-                if self._ensure_token_fresh(refresh_window_sec=30 * 24 * 3600):
-                    result = self._reload_oauth_session()
+            if (
+                not result
+                and (self.data.refresh_token or refresh_token)
+                and self._ensure_token_fresh(refresh_window_sec=30 * 24 * 3600)
+            ):
+                result = self._reload_oauth_session()
 
             if (
                 not result
@@ -510,7 +523,18 @@ class Tidal(BaseConfig[ModelToken]):
                 expiry_time,
                 is_pkce=self.is_pkce,
             )
-        except Exception:
+        except (
+            OSError,
+            TypeError,
+            ValueError,
+            RuntimeError,
+            KeyError,
+            AttributeError,
+            JSONDecodeError,
+            requests.RequestException,
+            TidalAPIError,
+            AuthenticationError,
+        ):
             return False
         if not loaded:
             return False
@@ -518,7 +542,16 @@ class Tidal(BaseConfig[ModelToken]):
         if callable(check):
             try:
                 loaded = bool(check())
-            except Exception:
+            except (
+                OSError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+                AttributeError,
+                requests.RequestException,
+                TidalAPIError,
+                AuthenticationError,
+            ):
                 return False
         if loaded:
             self.ensure_session_max_quality()
@@ -571,7 +604,18 @@ class Tidal(BaseConfig[ModelToken]):
                 self.set_option("account_quality", quality)
                 self.save()
             return quality or cached
-        except Exception:
+        except (
+            OSError,
+            TypeError,
+            ValueError,
+            RuntimeError,
+            KeyError,
+            AttributeError,
+            JSONDecodeError,
+            requests.RequestException,
+            TidalAPIError,
+            AuthenticationError,
+        ):
             return cached
 
     def _ensure_token_fresh(self, refresh_window_sec: int = 300) -> bool:
@@ -600,7 +644,18 @@ class Tidal(BaseConfig[ModelToken]):
                 self.token_persist()
                 self._last_refresh_outcome = "ok"
                 return True
-            except Exception as exc:
+            except (
+                OSError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+                KeyError,
+                AttributeError,
+                JSONDecodeError,
+                requests.RequestException,
+                TidalAPIError,
+                AuthenticationError,
+            ) as exc:
                 self._last_refresh_error = exc
                 self._last_refresh_outcome = "failed"
                 _console.print("[yellow]Warning:[/yellow] Token refresh failed; proceeding with current token.")
@@ -696,7 +751,7 @@ class Tidal(BaseConfig[ModelToken]):
         try:
             typer.launch(url)
             _console.print("[green]Browser opened.[/green] If it did not open, visit:")
-        except Exception:
+        except (OSError, RuntimeError, NotImplementedError):
             _console.print("[yellow]Could not open browser automatically.[/yellow] Visit:")
 
         _console.print(
@@ -776,7 +831,20 @@ class Tidal(BaseConfig[ModelToken]):
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 stream = pool.submit(_run_probe).result(timeout=SOURCE_RESOLVE_TIMEOUT_SEC)
             delivered = stream.audio_quality
-        except Exception:
+        except (
+            OSError,
+            TimeoutError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            KeyError,
+            requests.RequestException,
+            TidalAPIError,
+            AuthenticationError,
+            ObjectNotFound,
+            StreamNotAvailable,
+        ):
             # Non-fatal: unknown session cap stays fail-closed at download time.
             _console.print(
                 "[dim]Could not probe this login's stream quality (network or track unavailable). "

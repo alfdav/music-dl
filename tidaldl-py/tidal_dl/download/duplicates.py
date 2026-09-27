@@ -3,15 +3,31 @@
 from tidal_dl.download._common import *
 
 
-def dest_already_present(downloader, media, source_path: str) -> bool:
-    """True when skip_existing would keep the live file (same dest, including `_/`)."""
+def dest_already_present(
+    downloader,
+    media,
+    source_path: str,
+    file_template: str | None = None,
+) -> bool:
+    """True when a file exists at this job's dest (including legacy `_/`).
+
+    Presence is path-only. An ISRC or library row at another location must not
+    count as dest — playlists and mixes still copy into their own folder.
+    """
     if getattr(downloader, "skip_existing", False) is not True:
         return False
     prepare = getattr(downloader, "_prepare_file_paths_and_skip_logic", None)
     if not callable(prepare):
         return False
-    template = getattr(getattr(downloader.settings, "data", None), "format_album", None) or "{track_title}"
-    result = prepare(media, template, None, 0, 0)
+    template = (
+        file_template
+        or getattr(getattr(downloader.settings, "data", None), "format_album", None)
+        or "{track_title}"
+    )
+    try:
+        result = prepare(media, template, None, 0, 0, bypass_isrc=True)
+    except TypeError:
+        return False
     if not isinstance(result, tuple) or len(result) < 3:
         return False
     dest, _ext, skip_file = result[0], result[1], result[2]
@@ -29,6 +45,7 @@ class DuplicateMixin:
         items: list,
         checkpoint: "DownloadCheckpoint | None" = None,
         ensure_complete: bool = False,
+        file_template: str | None = None,
     ) -> dict[str, str]:
         """Scan items for duplicate ISRCs before downloads start.
 
@@ -48,9 +65,8 @@ class DuplicateMixin:
             if not isinstance(item_media, Track):
                 continue
             # Skip tracks already completed in checkpoint
-            if checkpoint is not None:
-                if checkpoint.status_of(str(item_media.id)) == STATUS_DOWNLOADED:
-                    continue
+            if checkpoint is not None and checkpoint.status_of(str(item_media.id)) == STATUS_DOWNLOADED:
+                continue
             isrc = getattr(item_media, "isrc", None)
             if not isrc:
                 continue
@@ -72,7 +88,7 @@ class DuplicateMixin:
             skip_n = 0
             copy_n = 0
             for track, path_str in hits_with_source:
-                if dest_already_present(self, track, path_str):
+                if dest_already_present(self, track, path_str, file_template=file_template):
                     resolved[str(track.id)] = "skip"
                     skip_n += 1
                 else:

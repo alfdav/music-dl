@@ -544,7 +544,7 @@ def test_restore_then_download_lazy_probes_capped_login():
 
     subject.tidal._probe_subscription_quality = _probe
 
-    manifest, extension, _extract, media_stream = subject._get_stream_info(
+    _manifest, extension, _extract, media_stream = subject._get_stream_info(
         _listed_hires_track(_oauth_cd_stream())
     )
 
@@ -558,7 +558,6 @@ def test_restore_then_download_lazy_probes_capped_login():
 def test_hires_labeled_cd_delivery_records_lossless_not_hires():
     """Tidal can stamp HI_RES_LOSSLESS on a 16/44.1 stream. Labels must be LOSSLESS."""
     from tests.test_hires_flac_quality import _listed_hires_track
-    from tidalapi import Quality
 
     subject, _warnings = _dead_hifi_subject()
     subject.tidal.session_max_quality = "LOSSLESS"

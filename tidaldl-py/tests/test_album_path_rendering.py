@@ -205,7 +205,11 @@ def test_preflight_skips_legacy_placeholder_instead_of_promising_copy(tmp_path: 
     dl._library_db.register_isrc_path(track.isrc, legacy, commit=True)
 
     with patch.object(dl, "extension_guess", return_value=".flac"):
-        resolved = dl._preflight_isrc_scan([track], ensure_complete=True)
+        resolved = dl._preflight_isrc_scan(
+            [track],
+            ensure_complete=True,
+            file_template=_DEFAULT_ALBUM,
+        )
 
     info_messages = [str(call.args[0]) for call in dl.fn_logger.info.call_args_list]
     dl._library_db.close()
@@ -213,3 +217,115 @@ def test_preflight_skips_legacy_placeholder_instead_of_promising_copy(tmp_path: 
     assert resolved == {"66024828": "skip"}
     assert any("will be skipped" in message for message in info_messages)
     assert not any("will be copied" in message for message in info_messages)
+
+
+_PLAYLIST_DEST = "Playlists/Favorites/{track_title}"
+_MIX_DEST = "Mix/Radio/{track_title}"
+
+
+def _register_isrc_file(dl, track, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_bytes(b"existing")
+    dl._library_db.record(str(path), status="tagged", isrc=track.isrc)
+    dl._library_db.register_isrc_path(track.isrc, path, commit=True)
+
+
+def _cohen_track() -> _Track:
+    track = _Track(
+        "If I Didn't Have Your Love",
+        _Album("You Want It Darker", num_volumes=1),
+        tags=["LOSSLESS"],
+    )
+    track.id = 66024828
+    track.isrc = "CAB679603552"
+    return track
+
+
+def test_preflight_copies_when_isrc_lives_in_other_album(tmp_path: Path):
+    """Same ISRC in another album folder must still land in the playlist dest."""
+    album_file = (
+        tmp_path
+        / "Leonard Cohen"
+        / "Songs of Leonard Cohen"
+        / "If I Didn't Have Your Love.flac"
+    )
+    track = _cohen_track()
+    dl = _download_for_legacy_placeholder(tmp_path)
+    dl.settings.data.skip_duplicate_isrc = True
+    _register_isrc_file(dl, track, album_file)
+
+    with patch.object(dl, "extension_guess", return_value=".flac"):
+        resolved = dl._preflight_isrc_scan(
+            [track],
+            ensure_complete=True,
+            file_template=_PLAYLIST_DEST,
+        )
+
+    info_messages = [str(call.args[0]) for call in dl.fn_logger.info.call_args_list]
+    dl._library_db.close()
+
+    assert resolved == {"66024828": "copy"}
+    assert any("will be copied" in message for message in info_messages)
+    assert not any("will be skipped" in message for message in info_messages)
+    playlist_dest = tmp_path / "Playlists" / "Favorites" / "If I Didn't Have Your Love.flac"
+    assert not playlist_dest.exists()
+    assert album_file.is_file()
+
+
+def test_preflight_copies_when_isrc_lives_in_other_playlist(tmp_path: Path):
+    """Same ISRC in a playlist folder must still land in the mix dest."""
+    playlist_file = (
+        tmp_path / "Playlists" / "Favorites" / "If I Didn't Have Your Love.flac"
+    )
+    track = _cohen_track()
+    dl = _download_for_legacy_placeholder(tmp_path)
+    dl.settings.data.skip_duplicate_isrc = True
+    _register_isrc_file(dl, track, playlist_file)
+
+    with patch.object(dl, "extension_guess", return_value=".flac"):
+        resolved = dl._preflight_isrc_scan(
+            [track],
+            ensure_complete=True,
+            file_template=_MIX_DEST,
+        )
+
+    info_messages = [str(call.args[0]) for call in dl.fn_logger.info.call_args_list]
+    dl._library_db.close()
+
+    assert resolved == {"66024828": "copy"}
+    assert any("will be copied" in message for message in info_messages)
+    assert not any("will be skipped" in message for message in info_messages)
+    mix_dest = tmp_path / "Mix" / "Radio" / "If I Didn't Have Your Love.flac"
+    assert not mix_dest.exists()
+    assert playlist_file.is_file()
+
+
+def test_preflight_skips_normal_album_rerun(tmp_path: Path):
+    """A collapsed Artist/Album/Track file is already at dest — album re-run skips."""
+    dest = (
+        tmp_path
+        / "Leonard Cohen"
+        / "You Want It Darker"
+        / "If I Didn't Have Your Love.flac"
+    )
+    track = _cohen_track()
+    dl = _download_for_legacy_placeholder(tmp_path)
+    dl.settings.data.skip_duplicate_isrc = True
+    dl.settings.data.format_album = _DEFAULT_ALBUM
+    _register_isrc_file(dl, track, dest)
+
+    with patch.object(dl, "extension_guess", return_value=".flac"):
+        resolved = dl._preflight_isrc_scan(
+            [track],
+            ensure_complete=True,
+            file_template=_DEFAULT_ALBUM,
+        )
+
+    info_messages = [str(call.args[0]) for call in dl.fn_logger.info.call_args_list]
+    dl._library_db.close()
+
+    assert resolved == {"66024828": "skip"}
+    assert any("will be skipped" in message for message in info_messages)
+    assert not any("will be copied" in message for message in info_messages)
+    assert dest.is_file()

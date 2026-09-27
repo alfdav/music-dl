@@ -2,6 +2,14 @@
 
 ## 2026-09-27 — Overlay keycaps reused the settings-card fill
 
+## 2026-09-26 — Preflight skip treated any ISRC as this job's dest
+
+**What happened:** `dest_already_present` reused `_prepare_file_paths_and_skip_logic` `skip_file` and always expanded `format_album`. `skip_file` is also true when the ISRC lives anywhere. Playlists and mixes then skipped their own copies and finished incomplete.
+
+**Root cause:** Dest presence was "ISRC already in the library", not "file exists at this job's dest".
+
+**Prevention:** Pass the collection `file_template`. Call prepare with `bypass_isrc=True`. Skip only when a file exists at this dest, including that dest's legacy `Album/_/` equivalent. An ISRC at another path still copies, matching master.
+
 ## 2026-09-26 — Silent restore left session_max unset so the Hi-Res gate fail-closed
 
 **What happened:** Desktop restart and Hi-Fi-down used `allow_interactive_login=False`. That path restored the token and never called `_probe_subscription_quality`. `_accept_session_capped_cd` treats unprobed as strict. A Lossless-only Tidal Web login then raised `QualityMismatchError` after a working session.
