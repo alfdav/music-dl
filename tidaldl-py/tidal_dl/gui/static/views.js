@@ -4631,6 +4631,25 @@ function _tryPlaylistScrollRestore(scroller, pending) {
   return { applied: false, scrollY: target, pending: true };
 }
 
+function _playlistLaterPageFailure(loadedCount, total, status) {
+  const loaded = loadedCount || 0;
+  const count = total || loaded;
+  if (loaded <= 0) {
+    return { keepRows: false, empty: true, retry: false, hasMore: false, toast: null };
+  }
+  const rateLimited = status === 429;
+  const toast = rateLimited
+    ? 'Tidal rate limit — ' + loaded + ' of ' + count + ' loaded, will retry'
+    : 'Playlist load paused — ' + loaded + ' of ' + count + ' loaded, will retry';
+  return {
+    keepRows: true,
+    empty: false,
+    retry: true,
+    hasMore: loaded < count,
+    toast: toast,
+  };
+}
+
 function _playlistUnqueuedByPosition(loaded, queuedUntil) {
   const start = Math.max(0, queuedUntil || 0);
   return (loaded || []).slice(start);
@@ -4950,16 +4969,18 @@ async function loadPlaylistTracks(resultsArea, pl) {
       if (!loaded.length) return;
       state.shuffle = false;
       btnShuffle.classList.remove('active');
-      _setQueueOrder(loaded, loaded[0]);
       noteQueueStarted();
+      if (loaded.length < total) continuePages(true);
+      _setQueueOrder(loaded, loaded[0]);
       playTrack(state.queue[state.queueIndex]);
     });
     shuffleBtn.addEventListener('click', () => {
       if (!loaded.length) return;
       state.shuffle = true;
       btnShuffle.classList.add('active');
-      _setQueueOrder(loaded, loaded[0]);
       noteQueueStarted();
+      if (loaded.length < total) continuePages(true);
+      _setQueueOrder(loaded, loaded[0]);
       playTrack(state.queue[state.queueIndex]);
     });
     dlBtn.addEventListener('click', async () => {
@@ -5019,6 +5040,7 @@ async function loadPlaylistTracks(resultsArea, pl) {
   const onScroll = () => {
     if (_playlistScrollAssignIsOurs(scrollParent)) return;
     cancelRestore('scroll');
+    if (loaded.length && loaded.length < total) continuePages(false);
     if ((total || loaded.length) > PLAYLIST_VIRTUAL_THRESHOLD) {
       _paintPlaylistVirtual(trackList, loaded, total || loaded.length);
     }
@@ -5026,6 +5048,7 @@ async function loadPlaylistTracks(resultsArea, pl) {
   const onKey = (e) => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     cancelRestore('keyboard');
+    if (loaded.length && loaded.length < (total || loaded.length)) continuePages(false);
     e.preventDefault();
     e.stopPropagation();
     const count = total || loaded.length;
@@ -5059,6 +5082,7 @@ async function loadPlaylistTracks(resultsArea, pl) {
     viewEl._viewCleanup = () => {
       if (typeof prevCleanup === 'function') prevCleanup();
       cancelRestore('navigate');
+      if (pageRetryTimer) clearTimeout(pageRetryTimer);
       if (scrollParent && scrollParent.removeEventListener) {
         scrollParent.removeEventListener('scroll', onScroll);
         scrollParent.removeEventListener('wheel', onWheel);
@@ -5066,6 +5090,52 @@ async function loadPlaylistTracks(resultsArea, pl) {
       }
       trackList.removeEventListener('keydown', onKey);
     };
+  }
+
+  let pageRetryTimer = null;
+  let pageRetryNotBefore = 0;
+  let pagesBusy = false;
+  let offset = 0;
+
+  async function continuePages(force) {
+    if (pagesBusy) return;
+    if (!force && Date.now() < pageRetryNotBefore) return;
+    if (pageRetryTimer) {
+      clearTimeout(pageRetryTimer);
+      pageRetryTimer = null;
+    }
+    pagesBusy = true;
+    try {
+      while (offset < total) {
+        let page;
+        try {
+          page = await api(playlistTracksUrl(pl, PLAYLIST_PAGE_SIZE, offset));
+        } catch (err) {
+          const failure = _playlistLaterPageFailure(loaded.length, total, err && err.status);
+          if (!failure.keepRows) throw err;
+          if (onThisView() || filling) toast(failure.toast, 'error');
+          if (failure.retry && (onThisView() || (filling && stillThisFill()))) {
+            pageRetryNotBefore = Date.now() + 1500;
+            pageRetryTimer = setTimeout(() => {
+              pageRetryTimer = null;
+              continuePages(true);
+            }, 1500);
+          }
+          return;
+        }
+        const decision = afterAwait();
+        if (decision !== 'continue') return;
+        const rows = page.tracks || [];
+        if (!rows.length) break;
+        loaded.push.apply(loaded, rows);
+        if (page.total) total = page.total;
+        _playlistFillTotal = total;
+        offset += rows.length;
+        paintOrFill(total);
+      }
+    } finally {
+      pagesBusy = false;
+    }
   }
 
   try {
@@ -5077,22 +5147,16 @@ async function loadPlaylistTracks(resultsArea, pl) {
     paintOrFill(total);
     wireActions();
 
-    let offset = (first.offset || 0) + loaded.length;
-    while (offset < total) {
-      const page = await api(playlistTracksUrl(pl, PLAYLIST_PAGE_SIZE, offset));
-      const decision = afterAwait();
-      if (decision !== 'continue') return;
-      const rows = page.tracks || [];
-      if (!rows.length) break;
-      loaded.push.apply(loaded, rows);
-      if (page.total) total = page.total;
-      _playlistFillTotal = total;
-      offset += rows.length;
-      paintOrFill(total);
-    }
+    offset = (first.offset || 0) + loaded.length;
+    await continuePages(true);
 
-    if (onThisView()) _scanPlaylistUpgrades(loaded, trackList, upgradeBtn, refreshUpgradeBtn);
+    if (onThisView() && !pageRetryTimer) _scanPlaylistUpgrades(loaded, trackList, upgradeBtn, refreshUpgradeBtn);
   } catch (err) {
+    const failure = _playlistLaterPageFailure(loaded.length, total, err && err.status);
+    if (failure.keepRows) {
+      if (onThisView() || filling) toast(failure.toast, 'error');
+      return;
+    }
     const message = (err && err.message) || 'Failed to load tracks';
     const rateLimited = !!(err && err.status === 429);
     if (filling || rateLimited) toast(message, 'error');

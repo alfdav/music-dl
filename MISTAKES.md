@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-27 — A later playlist page 429 replaced rows already on screen
+
+**What happened:** `loadPlaylistTracks` treated every 429 like a first-page failure. After page 1 had painted, a 429 on a later page cleared the list and showed the "Tidal rate limit" empty state.
+
+**Root cause:** The catch always removed `trackList` children. The server already returns HTTP 429 after a capped backoff and leaves earlier pages in the playlist cache, but the client threw that away.
+
+**Prevention:** If any page after the first fails and rows are already rendered, keep those rows, toast `Tidal rate limit — N of M loaded, will retry` (or the non-429 pause toast), and retry that offset on a backoff and on scroll, play, or keyboard. Only a first-page failure may show the empty state. A later-page 429 must stay HTTP 429 and must not drop the cached first page.
+
 ## 2026-09-27 — Playlist scroll restore fired while the list was still the placeholder
 
 **What happened:** On the Us playlist the user scrolled `#view` to 20000 and the app saved scrollY 19100. Album then browser-back, album then in-app back, and Home then browser-back all left `#view.scrollTop` around 99–107.

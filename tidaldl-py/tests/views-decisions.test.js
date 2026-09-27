@@ -2303,7 +2303,7 @@ function loadPlaylistPageHelpers() {
     throw new Error('playlist page helpers not found');
   }
   return new Function(
-    `${viewsSource.slice(scrollStart, scrollEnd)}\n${viewsSource.slice(start, end)}\nreturn { PLAYLIST_PAGE_SIZE, playlistTracksUrl, _playlistVirtualRange, playlistViewKey, _playlistMoveIndex, _playlistEnsureVisibleScroll, _playlistListScrollTop, _playlistUnqueuedByPosition, _appendPlaylistQueueEntries, _playlistFetchContinues, _playlistLeaveDecision, _playlistQueueIncomplete, _playlistListOffset, _playlistScrollParent, _appScrollEl };`,
+    `${viewsSource.slice(scrollStart, scrollEnd)}\n${viewsSource.slice(start, end)}\nreturn { PLAYLIST_PAGE_SIZE, playlistTracksUrl, _playlistVirtualRange, playlistViewKey, _playlistMoveIndex, _playlistEnsureVisibleScroll, _playlistListScrollTop, _playlistLaterPageFailure, _playlistUnqueuedByPosition, _appendPlaylistQueueEntries, _playlistFetchContinues, _playlistLeaveDecision, _playlistQueueIncomplete, _playlistListOffset, _playlistScrollParent, _appScrollEl };`,
   )();
 }
 
@@ -2626,6 +2626,35 @@ describe('playlist first-page load', () => {
     expect(load).toContain('err.status === 429');
     expect(load).toContain("toast(message, 'error')");
     expect(load).toContain("rateLimited ? 'Tidal rate limit'");
+  });
+
+  test('a later playlist page 429 keeps rendered rows and will retry', () => {
+    const start = viewsSource.indexOf('function _playlistLaterPageFailure(');
+    if (start < 0) throw new Error('_playlistLaterPageFailure missing');
+    const helpers = loadPlaylistPageHelpers();
+    const later = helpers._playlistLaterPageFailure(50, 555, 429);
+    expect(later.keepRows).toBe(true);
+    expect(later.empty).toBe(false);
+    expect(later.retry).toBe(true);
+    expect(later.hasMore).toBe(true);
+    expect(later.toast).toBe('Tidal rate limit — 50 of 555 loaded, will retry');
+
+    const other = helpers._playlistLaterPageFailure(50, 555, 500);
+    expect(other.keepRows).toBe(true);
+    expect(other.empty).toBe(false);
+    expect(other.retry).toBe(true);
+    expect(other.toast).toContain('50 of 555');
+    expect(other.toast).toContain('will retry');
+
+    const first = helpers._playlistLaterPageFailure(0, 555, 429);
+    expect(first.keepRows).toBe(false);
+    expect(first.empty).toBe(true);
+    expect(first.retry).toBe(false);
+
+    const load = viewsSource.split('async function loadPlaylistTracks')[1].split('// ---- DOWNLOAD TRIGGER')[0];
+    expect(load).toContain('_playlistLaterPageFailure(');
+    expect(load).toContain('failure.keepRows');
+    expect(load).toContain('continuePages');
   });
 
   test('playlist detail is a drill-in view that restores scroll after navigating back', () => {

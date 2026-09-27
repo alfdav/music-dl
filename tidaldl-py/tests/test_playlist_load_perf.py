@@ -549,6 +549,64 @@ def test_playlist_429_retries_are_capped(monkeypatch, clear_singletons):
     assert sum(1 for wait in sleeps if wait == 1.0) == playlists_api._PLAYLIST_429_RETRIES
 
 
+class LaterPageBlockedPlaylist(SlowTidalPlaylist):
+    """Succeed on the first page, then 429 every later page until unblocked."""
+
+    def __init__(self, tracks: list, **kwargs):
+        super().__init__(tracks, **kwargs)
+        self.block_from = PAGE_SIZE
+        self.blocked = True
+        self.attempts_by_offset: dict[int, int] = {}
+
+    def tracks(self, limit=None, offset=0, **_kwargs):
+        from tidalapi.exceptions import TooManyRequests
+
+        off = int(offset or 0)
+        with self._lock:
+            self.attempts_by_offset[off] = self.attempts_by_offset.get(off, 0) + 1
+        if self.blocked and off >= self.block_from:
+            raise TooManyRequests("Too many requests", retry_after=1)
+        return super().tracks(limit=limit, offset=offset)
+
+
+def test_later_page_429_keeps_cached_pages_for_resume(monkeypatch, clear_singletons):
+    """A 429 on page 2 must stay HTTP 429 and leave page 1 cached so the client can resume."""
+    from fastapi import HTTPException
+
+    from tidal_dl.download.api_pacing import reset_shared_pacer_for_tests
+    from tidal_dl.gui.api import playlists as playlists_api
+
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    reset_shared_pacer_for_tests()
+    playlist = LaterPageBlockedPlaylist(_make_tracks(120), latency=0.0)
+    session = SlowTidalSession(playlist, latency=0.0)
+    _bind(monkeypatch, playlists_api, session, CountingDB({}))
+
+    first = playlists_api.playlist_tracks("pl-429-later", limit=PAGE_SIZE, offset=0)
+    assert len(first["tracks"]) == PAGE_SIZE
+    assert first["has_more"] is True
+    assert first["total"] == 120
+    first_attempts = playlist.attempts_by_offset[0]
+
+    with pytest.raises(HTTPException) as caught:
+        playlists_api.playlist_tracks("pl-429-later", limit=PAGE_SIZE, offset=PAGE_SIZE)
+    assert caught.value.status_code == 429
+
+    again = playlists_api.playlist_tracks("pl-429-later", limit=PAGE_SIZE, offset=0)
+    assert len(again["tracks"]) == PAGE_SIZE
+    assert again["has_more"] is True
+    assert again["tracks"][0]["id"] == first["tracks"][0]["id"]
+    assert playlist.attempts_by_offset[0] == first_attempts
+
+    playlist.blocked = False
+    resumed = playlists_api.playlist_tracks(
+        "pl-429-later", limit=PAGE_SIZE, offset=PAGE_SIZE,
+    )
+    assert len(resumed["tracks"]) == PAGE_SIZE
+    assert resumed["has_more"] is True
+    assert resumed["offset"] == PAGE_SIZE
+
+
 def test_first_page_stamp_does_not_touch_the_filesystem(monkeypatch, clear_singletons, tmp_path):
     """Owned display match is ISRC → indexed path. Any stat fails the test."""
     import os
