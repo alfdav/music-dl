@@ -172,12 +172,30 @@ def format_path_media(
         )
 
         if result_fmt != match.group(1):
+            if result_fmt == "":
+                result = _collapse_empty_template_segment(result, template_str)
+                continue
             value = (
                 _sanitize_name(result_fmt) if result_fmt != FORMAT_TEMPLATE_EXPLICIT else FORMAT_TEMPLATE_EXPLICIT
             )
             result = result.replace(template_str, value)
 
     return result
+
+
+def _collapse_empty_template_segment(path: str, token: str) -> str:
+    """Drop a path segment that is only an empty optional token.
+
+    ``{track_volume_num_optional_CD}`` is empty on a single-disc album. Sanitizing
+    that to ``_`` minted ``Artist/Album/_/track``. Collapse the segment instead.
+    """
+    if f"/{token}/" in path:
+        return path.replace(f"/{token}/", "/")
+    if path.endswith(f"/{token}"):
+        return path[: -len(token) - 1]
+    if path.startswith(f"{token}/"):
+        return path[len(token) + 1 :]
+    return path.replace(token, "")
 
 
 def format_str_media(
@@ -608,6 +626,41 @@ def _find_legacy_album_dir(base: pathlib.Path, artist: str, album: str) -> list[
     return candidates[0][1]
 
 
+def _legacy_placeholder_track_exists(legacy_dir: pathlib.Path, filename: str) -> bool:
+    """True if v1.7 `_` dest still holds this track stem or audio file."""
+    try:
+        if (legacy_dir / filename).is_file():
+            return True
+    except OSError:
+        return False
+    for ext in AudioExtensions:
+        try:
+            if (legacy_dir / f"{filename}{ext}").is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _reuse_legacy_placeholder_extra(
+    path_base: pathlib.Path,
+    dest_dirs: list[str],
+    extra: list[str],
+    filename: str,
+) -> list[str]:
+    """Keep dest under `Artist/Album/_/` when that file already exists.
+
+    v1.7.0+ wrote empty optional CD segments as `_`. Collapsing that segment
+    would remint `Artist/Album/Track` and re-download. Do not move files.
+    """
+    if extra:
+        return extra
+    legacy_dir = path_base.joinpath(*dest_dirs, FILENAME_SANITIZE_PLACEHOLDER)
+    if _legacy_placeholder_track_exists(legacy_dir, filename):
+        return [FILENAME_SANITIZE_PLACEHOLDER]
+    return extra
+
+
 def resolve_library_relative(path_base: str | pathlib.Path, relative: str) -> str:
     """Rewrite an expanded save path to Artist/Album/track.
 
@@ -631,6 +684,9 @@ def resolve_library_relative(path_base: str | pathlib.Path, relative: str) -> st
     artist, album, extra = parsed
     match = _find_legacy_album_dir(pathlib.Path(path_base).expanduser(), artist, album)
     dest_dirs = match if match is not None else [artist, album]
+    extra = _reuse_legacy_placeholder_extra(
+        pathlib.Path(path_base).expanduser(), dest_dirs, extra, filename
+    )
     return str(pathlib.PurePosixPath(*dest_dirs, *extra, filename))
 
 
@@ -679,14 +735,21 @@ def resolve_live_library_path(path: str | pathlib.Path | None) -> str | None:
         except OSError:
             pass
         leftover = _find_legacy_album_dir(root, artist, album)
-        if leftover is None:
-            continue
-        alt = root.joinpath(*leftover, *extra, filename)
-        try:
-            if alt.is_file():
-                return str(alt)
-        except OSError:
-            continue
+        if leftover is not None:
+            alt = root.joinpath(*leftover, *extra, filename)
+            try:
+                if alt.is_file():
+                    return str(alt)
+            except OSError:
+                pass
+        if not extra:
+            album_dirs = leftover if leftover is not None else [artist, album]
+            placeholder = root.joinpath(*album_dirs, FILENAME_SANITIZE_PLACEHOLDER, filename)
+            try:
+                if placeholder.is_file():
+                    return str(placeholder)
+            except OSError:
+                pass
     return None
 
 

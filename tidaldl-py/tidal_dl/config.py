@@ -15,11 +15,13 @@ from datetime import UTC, datetime
 from json import JSONDecodeError
 from pathlib import Path
 from threading import Event, Lock, RLock
-from typing import Any, Generic, Protocol, Self, TypeVar
+from typing import Any, Protocol, Self
 
 import certifi
+import requests
 import typer
 from rich.console import Console as RichConsole
+from tidalapi.exceptions import AuthenticationError, ObjectNotFound, StreamNotAvailable, TidalAPIError
 from tidalapi.media import Quality, VideoQuality
 from tidalapi.session import Config as TidalConfig
 from tidalapi.session import Session
@@ -67,14 +69,11 @@ class JsonConfigModel(Protocol):
     def to_json(self) -> str: ...
 
 
-ConfigModelT = TypeVar("ConfigModelT", bound=JsonConfigModel)
-
-
 class MessagePrinter(Protocol):
     def __call__(self, message: str) -> object: ...
 
 
-class BaseConfig(Generic[ConfigModelT]):
+class BaseConfig[ConfigModelT: JsonConfigModel]:
     """Base class for JSON-backed configuration objects."""
 
     data: ConfigModelT
@@ -255,6 +254,11 @@ class Tidal(BaseConfig[ModelToken]):
         self.is_pkce = False  # default; updated by login_token()
         self.active_source = DownloadSource.OAUTH
         self.hifi_client: HiFiApiClient | None = None
+        # In-memory only. OAuth playback cap for this login client, not account tier.
+        # Proposed later: login-client picker overlapping Tidal auth v2.
+        # Do not persist, wipe token.json, or start a new login from this field.
+        self.session_max_quality: str | None = None
+        self._hires_fallback_notice_emitted = False
         self._active_key_index = 0
         self.token_from_storage = self.read(self.file_path)
 
@@ -324,7 +328,7 @@ class Tidal(BaseConfig[ModelToken]):
                 is_token = self._try_login_with_key_rotation(quiet=True)
                 if is_token:
                     fn_print("OAuth session restored (available as fallback).")
-                    self._probe_subscription_quality()
+                    self.ensure_session_max_quality()
                 else:
                     fn_print("Not logged in. Run 'music-dl login' for OAuth fallback and favourites.")
                 return True
@@ -343,6 +347,7 @@ class Tidal(BaseConfig[ModelToken]):
         )
         if is_login:
             self.active_source = DownloadSource.OAUTH
+            self.ensure_session_max_quality()
         return is_login
 
     # ------------------------------------------------------------------
@@ -459,7 +464,18 @@ class Tidal(BaseConfig[ModelToken]):
                     expiry_time,
                     is_pkce=do_pkce,
                 )
-            except Exception:
+            except (
+                OSError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+                KeyError,
+                AttributeError,
+                JSONDecodeError,
+                requests.RequestException,
+                TidalAPIError,
+                AuthenticationError,
+            ):
                 result = False
 
                 if not quiet:
@@ -468,9 +484,12 @@ class Tidal(BaseConfig[ModelToken]):
                         "side. Try logging in again by re-running this app."
                     )
 
-            if not result and (self.data.refresh_token or refresh_token):
-                if self._ensure_token_fresh(refresh_window_sec=30 * 24 * 3600):
-                    result = self._reload_oauth_session()
+            if (
+                not result
+                and (self.data.refresh_token or refresh_token)
+                and self._ensure_token_fresh(refresh_window_sec=30 * 24 * 3600)
+            ):
+                result = self._reload_oauth_session()
 
             if (
                 not result
@@ -504,17 +523,39 @@ class Tidal(BaseConfig[ModelToken]):
                 expiry_time,
                 is_pkce=self.is_pkce,
             )
-        except Exception:
+        except (
+            OSError,
+            TypeError,
+            ValueError,
+            RuntimeError,
+            KeyError,
+            AttributeError,
+            JSONDecodeError,
+            requests.RequestException,
+            TidalAPIError,
+            AuthenticationError,
+        ):
             return False
         if not loaded:
             return False
         check = getattr(self.session, "check_login", None)
         if callable(check):
             try:
-                return bool(check())
-            except Exception:
+                loaded = bool(check())
+            except (
+                OSError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+                AttributeError,
+                requests.RequestException,
+                TidalAPIError,
+                AuthenticationError,
+            ):
                 return False
-        return True
+        if loaded:
+            self.ensure_session_max_quality()
+        return loaded
 
     def login_finalize(self) -> bool:
         """Check and persist a newly-established login session.
@@ -563,7 +604,18 @@ class Tidal(BaseConfig[ModelToken]):
                 self.set_option("account_quality", quality)
                 self.save()
             return quality or cached
-        except Exception:
+        except (
+            OSError,
+            TypeError,
+            ValueError,
+            RuntimeError,
+            KeyError,
+            AttributeError,
+            JSONDecodeError,
+            requests.RequestException,
+            TidalAPIError,
+            AuthenticationError,
+        ):
             return cached
 
     def _ensure_token_fresh(self, refresh_window_sec: int = 300) -> bool:
@@ -592,7 +644,18 @@ class Tidal(BaseConfig[ModelToken]):
                 self.token_persist()
                 self._last_refresh_outcome = "ok"
                 return True
-            except Exception as exc:
+            except (
+                OSError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+                KeyError,
+                AttributeError,
+                JSONDecodeError,
+                requests.RequestException,
+                TidalAPIError,
+                AuthenticationError,
+            ) as exc:
                 self._last_refresh_error = exc
                 self._last_refresh_outcome = "failed"
                 _console.print("[yellow]Warning:[/yellow] Token refresh failed; proceeding with current token.")
@@ -669,7 +732,7 @@ class Tidal(BaseConfig[ModelToken]):
 
         if is_token:
             fn_print("Yep, looks good! You are logged in.")
-            self._probe_subscription_quality()
+            self.ensure_session_max_quality()
             return True
 
         if self.data.refresh_token or getattr(self.session, "refresh_token", None):
@@ -688,7 +751,7 @@ class Tidal(BaseConfig[ModelToken]):
         try:
             typer.launch(url)
             _console.print("[green]Browser opened.[/green] If it did not open, visit:")
-        except Exception:
+        except (OSError, RuntimeError, NotImplementedError):
             _console.print("[yellow]Could not open browser automatically.[/yellow] Visit:")
 
         _console.print(
@@ -701,45 +764,115 @@ class Tidal(BaseConfig[ModelToken]):
 
         if is_login:
             fn_print("The login was successful. I have stored your credentials (token).")
-            self._probe_subscription_quality()
+            self.ensure_session_max_quality()
             return True
 
         fn_print("Something went wrong. Did you complete the browser login? You may try again.")
         return False
 
+    def ensure_session_max_quality(self) -> str | None:
+        """Probe this login's stream cap if it has not been measured yet.
+
+        Silent restore, token refresh, sidecar start, and CLI start all land
+        here so ``session_max_quality`` is set before the Hi-Res gate. Unprobed
+        stays fail-closed; that is what bit a Lossless-only Tidal Web login.
+        """
+        if getattr(self, "session_max_quality", None) is None:
+            self._probe_subscription_quality()
+        return getattr(self, "session_max_quality", None)
+
     def _probe_subscription_quality(self) -> None:
-        """Report the account's observed quality without changing the selection."""
-        configured = Quality(self.settings.data.quality_audio)
+        """Report account vs this-login quality. Never change the setting.
+
+        Account ``highestSoundQuality`` can be HI_RES while this OAuth client
+        (Tidal Web API key [0]) silently returns LOSSLESS 16/44.1. Measure the
+        login with OAuth ``get_stream`` and store ``session_max_quality``
+        in-memory only.
+
+        Proposed later (do not implement here): a login-client picker overlapping
+        Tidal auth v2 so a Hi-Res-capable client can be chosen. Never wipe
+        token.json and never start a new login from this probe.
+        """
+        from tidal_dl.download.quality import delivered_quality_label
+
+        settings = getattr(self, "settings", None)
+        data = getattr(settings, "data", None)
+        if data is None or not hasattr(data, "quality_audio"):
+            return
+
+        configured = Quality(data.quality_audio)
         configured_rank = QUALITY_RANK.get(quality_name(configured), 0)
+        configured_str = quality_name(configured)
+
+        account = ""
+        refresh = getattr(self, "refresh_account_quality", None)
+        if callable(refresh):
+            try:
+                account = str(refresh() or "").upper()
+            except (TypeError, ValueError, OSError, RuntimeError):
+                account = ""
+
+        if account:
+            _console.print(
+                f"[green]Account subscription reports {account}[/green] "
+                f"(requested {configured_str})."
+            )
 
         try:
             import concurrent.futures
 
             def _run_probe():
-                track = self.session.track(QUALITY_PROBE_TRACK_ID)
-                return track.get_stream()
+                def _get():
+                    track = self.session.track(QUALITY_PROBE_TRACK_ID)
+                    return track.get_stream()
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                lock = getattr(self, "stream_lock", None)
+                if lock is not None:
+                    with lock:
+                        return _get()
+                return _get()
+
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
                 stream = pool.submit(_run_probe).result(timeout=SOURCE_RESOLVE_TIMEOUT_SEC)
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
             delivered = stream.audio_quality
-            delivered_rank = QUALITY_RANK.get(quality_name(delivered), 0)
-        except Exception:
-            # Non-fatal: if the probe fails we just keep the configured quality.
+            bit_depth = getattr(stream, "bit_depth", None)
+            if bit_depth is None:
+                bit_depth = getattr(stream, "bitDepth", None)
+            sample_rate = getattr(stream, "sample_rate", None)
+            if sample_rate is None:
+                sample_rate = getattr(stream, "sampleRate", None)
+        except (
+            OSError,
+            TimeoutError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            KeyError,
+            requests.RequestException,
+            TidalAPIError,
+            AuthenticationError,
+            ObjectNotFound,
+            StreamNotAvailable,
+        ):
+            # Non-fatal: unknown session cap stays fail-closed at download time.
             _console.print(
-                "[dim]Could not probe subscription quality (network or track unavailable). "
+                "[dim]Could not probe this login's stream quality (network or track unavailable). "
                 "Keeping configured quality.[/dim]"
             )
             return
 
-        # Quality may be a StrEnum member or a plain str depending on tidalapi version;
-        # normalise to string for display and enum for comparison.
-        delivered_str = quality_name(delivered)
-        configured_str = quality_name(configured)
+        delivered_str = delivered_quality_label(delivered, bit_depth, sample_rate)
+        self.session_max_quality = delivered_str
+        delivered_rank = QUALITY_RANK.get(delivered_str, 0)
 
         if delivered_str not in QUALITY_RANK:
             _console.print(
                 f"[yellow]Warning:[/yellow] Requested quality [bold]{configured_str}[/bold] "
-                f"but the provider reported unknown delivery quality [bold]{delivered_str}[/bold]. "
+                f"but this login reported unknown delivery quality [bold]{delivered_str}[/bold]. "
                 "Keeping configured quality."
             )
             return
@@ -747,13 +880,13 @@ class Tidal(BaseConfig[ModelToken]):
         if delivered_rank >= configured_rank:
             _console.print(
                 f"[green]Audio quality check passed:[/green] "
-                f"account supports {delivered_str} (requested {configured_str})."
+                f"this login delivers {delivered_str} (requested {configured_str})."
             )
             return
 
         _console.print(
             f"[yellow]Warning:[/yellow] Requested quality [bold]{configured_str}[/bold] "
-            f"but your subscription only delivers [bold]{delivered_str}[/bold]. "
+            f"but this login only delivers [bold]{delivered_str}[/bold]. "
             "Keeping configured quality."
         )
 
@@ -785,6 +918,8 @@ class Tidal(BaseConfig[ModelToken]):
             self.is_atmos_session = False
             self._active_key_index = 0
             self.api_cache.clear()
+            self.session_max_quality = None
+            self._hires_fallback_notice_emitted = False
             return True
 
 

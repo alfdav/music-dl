@@ -1,6 +1,23 @@
 """Download collections helpers."""
 
-from tidal_dl.download._common import *  # noqa: F403
+from tidal_dl.download._common import *
+from tidal_dl.download.duplicates import track_file_is_in_output
+from tidal_dl.download.items import UNAVAILABLE_ON_TIDAL_REASON
+from tidal_dl.helper.checkpoint import checkpoint_path_for, resolved_output_dir
+
+
+def _failure_label(item_media: object | None) -> str:
+    if item_media is None:
+        return "track"
+    name = getattr(item_media, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    title = getattr(item_media, "title", None)
+    if isinstance(title, str) and title:
+        return title
+    ident = getattr(item_media, "id", None)
+    return str(ident) if isinstance(ident, str | int) else "track"
+
 
 class CollectionMixin:
     def items(
@@ -14,7 +31,7 @@ class CollectionMixin:
         quality_audio: Quality | None = None,
         quality_video: QualityVideo | None = None,
         event_stop: Event | None = None,
-    ) -> None:
+    ) -> bool:
         """Download all items in an album, playlist, or mix.
 
         Args:
@@ -27,11 +44,14 @@ class CollectionMixin:
             quality_audio (Quality | None, optional): Audio quality. Defaults to None.
             quality_video (QualityVideo | None, optional): Video quality. Defaults to None.
             event_stop (Event | None, optional): Event to stop the download. Defaults to None.
+
+        Returns:
+            bool: False when any track failed. True when every track was kept or skipped.
         """
         # Validate and prepare media collection
         validated_media = self._validate_and_prepare_media(media, media_id, media_type, video_download)
         if validated_media is None or not isinstance(validated_media, Album | Playlist | UserPlaylist | Mix):
-            return
+            return True
 
         media = validated_media
 
@@ -39,14 +59,19 @@ class CollectionMixin:
         download_context = self._setup_collection_download_context(media, file_template, video_download)
         file_name_relative, list_media_name, list_media_name_short, items, progress_stdout = download_context
 
-        # Set up checkpoint for collection resume.
+        # Set up checkpoint for collection resume. The key includes this output dir
+        # so a checkpoint from another --output cannot skip files that are not here.
         collection_id = f"{type(media).__name__.lower()}_{media.id}"
-        checkpoint_path = pathlib.Path(path_config_base()) / "checkpoints" / f"{collection_id}.json"
+        output_dir = resolved_output_dir(self.path_base)
+        checkpoint_path = checkpoint_path_for(path_config_base(), collection_id, output_dir)
         checkpoint: DownloadCheckpoint | None = None
         try:
             track_ids = [str(item.id) for item in items if isinstance(item, Track)]
             if checkpoint_path.exists():
-                checkpoint = DownloadCheckpoint.load(checkpoint_path)
+                loaded = DownloadCheckpoint.load(checkpoint_path)
+                if loaded.same_output_dir(output_dir):
+                    checkpoint = loaded
+            if checkpoint is not None:
                 checkpoint.initialize_tracks(track_ids)
                 already_done = sum(1 for v in checkpoint.tracks.values() if v == STATUS_DOWNLOADED)
                 if already_done:
@@ -58,10 +83,11 @@ class CollectionMixin:
                     path=checkpoint_path,
                     collection_id=collection_id,
                     collection_type=type(media).__name__.lower(),
+                    output_dir=output_dir,
                 )
                 checkpoint.initialize_tracks(track_ids)
                 checkpoint.save()
-        except Exception as exc:
+        except (OSError, TypeError, ValueError, KeyError) as exc:
             self.fn_logger.warning(
                 f"Could not set up checkpoint for '{list_media_name}': {exc}. Continuing without checkpoint."
             )
@@ -69,7 +95,9 @@ class CollectionMixin:
 
         # Pre-flight: resolve duplicate ISRCs before dispatching the thread pool.
         # Collections (albums, playlists, mixes) are always completed in full.
-        resolved_actions: dict[str, str] = self._preflight_isrc_scan(items, checkpoint, ensure_complete=True)
+        resolved_actions: dict[str, str] = self._preflight_isrc_scan(
+            items, checkpoint, ensure_complete=True, file_template=file_name_relative
+        )
 
         # Set up progress tracking
         progress: Progress = self.progress_overall if self.progress_overall else self.progress
@@ -113,7 +141,7 @@ class CollectionMixin:
 
         self.fn_logger.info(f"Finished list '{list_media_name}'.")
 
-        # Print outcome summary
+        # Print outcome summary, then fail the command if any track failed.
         summary_lines = [
             f"[green]✓ Downloaded:[/green]  {summary.downloaded}",
             f"[yellow]⏭ Skipped:[/yellow]    {summary.skipped}",
@@ -121,6 +149,14 @@ class CollectionMixin:
         ]
         if summary.copied > 0:
             summary_lines.append(f"[cyan]⎘ Copied:[/cyan]      {summary.copied}")
+        if summary.unavailable:
+            summary_lines.append(f"[yellow]Unavailable on TIDAL:[/yellow]  {summary.unavailable}")
+            for label, reason in summary.unavailable_items:
+                who = label or "track"
+                summary_lines.append(f"[yellow]{who}: {reason}[/yellow]")
+        for label, reason in summary.failures:
+            who = label or "track"
+            summary_lines.append(f"[red]{who}: {reason}[/red]")
         summary_lines.append(f"[bold]Total:[/bold]         {summary.total}")
         Console().print(
             Panel(
@@ -130,6 +166,7 @@ class CollectionMixin:
                 expand=False,
             )
         )
+        return summary.failed == 0
 
     def _setup_collection_download_context(
         self,
@@ -222,12 +259,22 @@ class CollectionMixin:
                 future_to_item: dict[futures.Future, object] = {}
 
                 for count, item_media in enumerate(items):
-                    if checkpoint is not None and isinstance(item_media, Track):
-                        if checkpoint.status_of(str(item_media.id)) == STATUS_DOWNLOADED:
-                            if summary is not None:
-                                summary.record(DownloadOutcome.SKIPPED)
-                            progress.advance(progress_task)
-                            continue
+                    if (
+                        checkpoint is not None
+                        and isinstance(item_media, Track)
+                        and checkpoint.status_of(str(item_media.id)) == STATUS_DOWNLOADED
+                        and track_file_is_in_output(
+                            self,
+                            item_media,
+                            file_name_relative,
+                            list_position=count + 1,
+                            list_total=list_total,
+                        )
+                    ):
+                        if summary is not None:
+                            summary.record(DownloadOutcome.SKIPPED)
+                        progress.advance(progress_task)
+                        continue
 
                     # Apply pre-flight resolved action for this track.
                     override: str | None = None
@@ -301,11 +348,31 @@ class CollectionMixin:
 
         # Report results as they become available
         for future in futures.as_completed(futures_list):
-            # Retrieve result
-            outcome, result_path_file = future.result()
+            # One track must not abort the rest of the album, playlist, or mix.
+            item_media = future_to_item.get(future) if future_to_item else None
+            label = ""
+            reason = ""
+            try:
+                outcome, result_path_file = future.result()
+            except Exception as exc:
+                self.fn_logger.exception("Track failed; continuing with the rest of the collection.")
+                outcome, result_path_file = DownloadOutcome.FAILED, ""
+                if item_media is not None:
+                    self._take_item_failure(item_media)
+                label = _failure_label(item_media)
+                reason = f"{type(exc).__name__}: {exc}"
+            else:
+                if outcome == DownloadOutcome.FAILED:
+                    noted = self._take_item_failure(item_media) if item_media is not None else ""
+                    label = _failure_label(item_media)
+                    reason = noted or "download failed"
+                elif outcome == DownloadOutcome.UNAVAILABLE:
+                    noted = self._take_item_unavailable(item_media) if item_media is not None else ""
+                    label = _failure_label(item_media)
+                    reason = noted or UNAVAILABLE_ON_TIDAL_REASON
 
             if summary is not None:
-                summary.record(outcome)
+                summary.record(outcome, label=label, reason=reason)
 
             if result_path_file:
                 result_dirs.append(result_path_file.parent)

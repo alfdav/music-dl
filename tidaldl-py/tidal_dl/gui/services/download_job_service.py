@@ -209,7 +209,7 @@ class DownloadJobService:
         try:
             data = settings_cls().data
             n = int(getattr(data, "downloads_concurrent_max", 3) or 3)
-        except Exception:
+        except (TypeError, ValueError, AttributeError, OSError):
             n = 3
         return max(1, min(n, 10))
 
@@ -661,6 +661,10 @@ class DownloadJobService:
             self._mark_job_error(current, error)
             self._broadcast_error(current, error)
             return
+        if download_outcome == DownloadOutcome.UNAVAILABLE:
+            finished_at = time.time()
+            self._update_job(job, status=JobStatus.DONE.value, progress=100, finished_at=finished_at)
+            return
 
         if not self._update_job(job, status=JobStatus.INDEXING.value, progress=100):
             self._mark_cancelled(job)
@@ -696,6 +700,9 @@ class DownloadJobService:
             return
 
         finished_at = time.time()
+        delivered = getattr(dl, "last_delivered_quality", None)
+        if delivered:
+            quality = self._quality_value(delivered)
         self._record_history(
             track_id=job.track_id,
             name=name,
@@ -707,7 +714,9 @@ class DownloadJobService:
             cover_url=cover_url,
             quality=quality,
         )
-        self._update_job(job, status=JobStatus.DONE.value, progress=100, finished_at=finished_at)
+        self._update_job(
+            job, status=JobStatus.DONE.value, progress=100, finished_at=finished_at, quality=quality
+        )
         self.events.broadcast(
             {
                 "type": "complete",

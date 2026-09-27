@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, cast
 
 from tidalapi.album import Album
 from tidalapi.artist import Artist, Role
 from tidalapi.media import MediaMetadataTags, Quality, Track, Video
 from tidalapi.mix import Mix
-from tidalapi.playlist import Playlist, UserPlaylist
+from tidalapi.playlist import Playlist
 from tidalapi.session import Session
 from tidalapi.user import LoggedInUser
 
@@ -23,11 +23,22 @@ if TYPE_CHECKING:
     from tidal_dl.hifi_api import HiFiApiClient
 
 
-TidalObjT = TypeVar("TidalObjT")
-
-
-def _blank_tidal_obj(cls: type[TidalObjT]) -> TidalObjT:
+def _blank_tidal_obj[TidalObjT](cls: type[TidalObjT]) -> TidalObjT:
     return object.__new__(cls)
+
+
+def _bind_login_session(obj: object, session: Session | None) -> None:
+    """Attach the login session so tidalapi Track.get_stream can run.
+
+    Hi-Fi metadata is built with object.__new__, which skips Track.__init__
+    and leaves session and requests unset.
+    """
+    if obj is None or session is None:
+        return
+    obj.session = session
+    request = getattr(session, "request", None)
+    if request is not None:
+        obj.requests = request
 
 
 def name_builder_artist(media: Track | Video | Album, delimiter: str = ", ") -> str:
@@ -157,7 +168,7 @@ def url_ending_clean(url: str) -> str:
     Returns:
         str: Cleaned URL.
     """
-    return url[:-2] if url.endswith("/u") or url.endswith("?u") else url
+    return url[:-2] if url.endswith(("/u", "?u")) else url
 
 
 def _parse_release_date(raw_date: str | None):
@@ -165,7 +176,7 @@ def _parse_release_date(raw_date: str | None):
         return None
     try:
         # API may return ISO datetime; keep only YYYY-MM-DD.
-        return datetime.strptime(str(raw_date)[:10], "%Y-%m-%d")
+        return datetime.strptime(str(raw_date)[:10], "%Y-%m-%d").replace(tzinfo=UTC)
     except ValueError:
         return None
 
@@ -179,8 +190,8 @@ def _cover_url(cover_id: str | None, size: int) -> str:
 def _mark_hifi_resolved(media_obj):
     try:
         media_obj._resolved_via_hifi = True
-    except Exception:
-        pass
+    except AttributeError:
+        return media_obj
     return media_obj
 
 
@@ -237,7 +248,11 @@ def _hifi_album_obj(raw_album: dict | None, tracks: list | None = None):
     return _mark_hifi_resolved(album)
 
 
-def _hifi_track_obj(raw_track: dict, parent_album: object | None = None):
+def _hifi_track_obj(
+    raw_track: dict,
+    parent_album: object | None = None,
+    session: Session | None = None,
+):
     data = raw_track or {}
     track = _blank_tidal_obj(Track)
 
@@ -285,6 +300,7 @@ def _hifi_track_obj(raw_track: dict, parent_album: object | None = None):
         subtitles = ""
 
     track.lyrics = lambda: _LyricsEmpty()
+    _bind_login_session(track, session)
     return _mark_hifi_resolved(track)
 
 
@@ -299,14 +315,15 @@ def _hifi_items_unwrap(items: list | None) -> list[dict]:
 
 
 def _instantiate_media_hifi(
-    hifi_client: "HiFiApiClient",
+    hifi_client: HiFiApiClient,
     media_type: MediaType,
     id_media: str,
+    session: Session | None = None,
 ) -> Track | Video | Album | Playlist | Mix | Artist:
     if media_type == MediaType.TRACK:
         payload = hifi_client.track_info(int(id_media))
         data = payload.get("data", payload)
-        return _hifi_track_obj(data)
+        return _hifi_track_obj(data, session=session)
 
     if media_type == MediaType.ALBUM:
         payload = hifi_client.album(int(id_media))
@@ -324,7 +341,8 @@ def _instantiate_media_hifi(
             raw_tracks.extend(page_items)
             offset += len(page_items)
         album_obj = _hifi_album_obj(album_data)
-        tracks = [_hifi_track_obj(t, parent_album=album_obj) for t in raw_tracks]
+        _bind_login_session(album_obj, session)
+        tracks = [_hifi_track_obj(t, parent_album=album_obj, session=session) for t in raw_tracks]
         album_obj.items = lambda limit=100, offset=0: tracks[offset : offset + limit]
         album_obj.tracks = album_obj.items
         album_obj.num_tracks = len(tracks) or album_obj.num_tracks
@@ -345,7 +363,7 @@ def _instantiate_media_hifi(
                 break
             raw_tracks.extend(page_items)
             offset += len(page_items)
-        tracks = [_hifi_track_obj(t) for t in raw_tracks]
+        tracks = [_hifi_track_obj(t, session=session) for t in raw_tracks]
         playlist = _blank_tidal_obj(Playlist)
         playlist.id = playlist_data.get("uuid", str(id_media))
         playlist.name = playlist_data.get("title", "")
@@ -356,18 +374,20 @@ def _instantiate_media_hifi(
         playlist.share_url = playlist_data.get("url", "")
         playlist.items = lambda limit=100, offset=0: tracks[offset : offset + limit]
         playlist.tracks = playlist.items
+        _bind_login_session(playlist, session)
         return _mark_hifi_resolved(playlist)
 
     if media_type == MediaType.MIX:
         payload = hifi_client.mix(str(id_media))
         mix_data = payload.get("mix", payload)
         raw_tracks = _hifi_items_unwrap(payload.get("items"))
-        tracks = [_hifi_track_obj(t) for t in raw_tracks]
+        tracks = [_hifi_track_obj(t, session=session) for t in raw_tracks]
         mix = _blank_tidal_obj(Mix)
         mix.id = mix_data.get("id", str(id_media))
         mix.title = mix_data.get("title", "")
         mix.name = mix.title
         mix.items = lambda: tracks
+        _bind_login_session(mix, session)
         return _mark_hifi_resolved(mix)
 
     raise MediaUnknown
@@ -429,7 +449,7 @@ def instantiate_media(
     hifi_supported_types = {MediaType.TRACK, MediaType.ALBUM, MediaType.PLAYLIST, MediaType.MIX}
     if prefer_hifi and hifi_client is not None and media_type in hifi_supported_types:
         try:
-            result = _instantiate_media_hifi(hifi_client, media_type, id_media)
+            result = _instantiate_media_hifi(hifi_client, media_type, id_media, session=session)
         except Exception:
             if not oauth_fallback:
                 raise

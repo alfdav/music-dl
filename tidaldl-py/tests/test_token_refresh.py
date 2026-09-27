@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 from tidalapi.media import Quality, VideoQuality
 
 from tidal_dl.config import reset_singletons
@@ -174,7 +175,7 @@ class TestTokenPersistOnRefresh:
     def test_token_persist_not_called_on_refresh_failure(self, tidal):
         tidal.data.expiry_time = time.time() + 60
         tidal.data.refresh_token = "bad-token"
-        tidal.session.token_refresh.side_effect = Exception("network error")
+        tidal.session.token_refresh.side_effect = requests.RequestException("network error")
 
         with patch.object(tidal, "token_persist") as mock_persist:
             result = tidal._ensure_token_fresh()
@@ -212,7 +213,7 @@ class TestEnsureTokenFreshErrorHandling:
         """_ensure_token_fresh must not raise — callers depend on bool return."""
         tidal.data.expiry_time = time.time() + 60
         tidal.data.refresh_token = "some-token"
-        tidal.session.token_refresh.side_effect = Exception("unexpected")
+        tidal.session.token_refresh.side_effect = requests.RequestException("unexpected")
 
         # Must not raise
         result = tidal._ensure_token_fresh()
@@ -275,9 +276,7 @@ class TestDatetimeExpiryHandling:
 
     def test_datetime_expiry_near_triggers_refresh(self, tidal):
         """expiry_time as a datetime object within the refresh window fires refresh."""
-        from datetime import datetime
-
-        tidal.data.expiry_time = datetime.fromtimestamp(time.time() + 60)
+        tidal.data.expiry_time = datetime.fromtimestamp(time.time() + 60, tz=UTC)
         tidal.data.refresh_token = "datetime-token"
 
         with patch.object(tidal, "token_persist"):
@@ -288,9 +287,7 @@ class TestDatetimeExpiryHandling:
 
     def test_datetime_expiry_far_skips_refresh(self, tidal):
         """expiry_time as a datetime far in the future does not trigger refresh."""
-        from datetime import datetime
-
-        tidal.data.expiry_time = datetime.fromtimestamp(time.time() + 3600)
+        tidal.data.expiry_time = datetime.fromtimestamp(time.time() + 3600, tz=UTC)
         tidal.data.refresh_token = "fresh-datetime-token"
 
         result = tidal._ensure_token_fresh()
@@ -412,9 +409,11 @@ class TestLogoutReset:
     def test_logout_preserves_state_when_session_construction_fails(self, tidal):
         old_session, old_data = self._prepare(tidal)
 
-        with patch("tidal_dl.config.Session", side_effect=RuntimeError("construction failed")):
-            with pytest.raises(RuntimeError, match="construction failed"):
-                tidal.logout()
+        with (
+            patch("tidal_dl.config.Session", side_effect=RuntimeError("construction failed")),
+            pytest.raises(RuntimeError, match="construction failed"),
+        ):
+            tidal.logout()
 
         assert tidal.session is old_session
         assert tidal.data is old_data
@@ -426,9 +425,11 @@ class TestLogoutReset:
     def test_logout_preserves_state_when_token_delete_fails(self, tidal):
         old_session, old_data = self._prepare(tidal)
 
-        with patch("tidal_dl.config.Path.unlink", side_effect=PermissionError("read-only")):
-            with pytest.raises(PermissionError, match="read-only"):
-                tidal.logout()
+        with (
+            patch("tidal_dl.config.Path.unlink", side_effect=PermissionError("read-only")),
+            pytest.raises(PermissionError, match="read-only"),
+        ):
+            tidal.logout()
 
         assert tidal.session is old_session
         assert tidal.data is old_data
@@ -438,7 +439,7 @@ class TestLogoutReset:
         assert tidal.file_path_obj.exists()
 
     def test_logout_takes_token_fresh_lock(self, tidal):
-        import tidal_dl.config as config
+        from tidal_dl import config
 
         class RecordingLock:
             def __init__(self):
@@ -461,8 +462,22 @@ class TestLogoutReset:
 
         lock = RecordingLock()
         self._prepare(tidal)
-        with patch("tidal_dl.config._api.getItem", return_value={"valid": "False"}):
-            with patch.object(config, "_token_fresh_lock", lock):
-                assert tidal.logout() is True
+        with (
+            patch("tidal_dl.config._api.getItem", return_value={"valid": "False"}),
+            patch.object(config, "_token_fresh_lock", lock),
+        ):
+            assert tidal.logout() is True
 
         assert "enter" in lock.calls or "acquire" in lock.calls
+
+    def test_logout_clears_session_quality_cap_so_next_login_reprobes(self, tidal):
+        """Reset Tidal connection must not keep the previous client's Hi-Res gate."""
+        self._prepare(tidal)
+        tidal.session_max_quality = "HI_RES_LOSSLESS"
+        tidal._hires_fallback_notice_emitted = True
+
+        with patch("tidal_dl.config._api.getItem", return_value={"valid": "False"}):
+            assert tidal.logout() is True
+
+        assert tidal.session_max_quality is None
+        assert tidal._hires_fallback_notice_emitted is False
