@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-27 — Playlist first-page stamp and virtual list dropped playability and queue
+
+**What happened:** Bugbot on #194 at 7707ffb: paginated `_stamp_sql_only` set `is_local` without `path`/`local_path`, so owned tracks looked unplayable. Virtual paint used raw `.main.scrollTop` while chrome sat above `.tracks`. `paintLoaded` reapplied saved scroll on every remaining page. Play/Shuffle snapshotted the first 50 tracks.
+
+**Root cause:** First-page identity skipped `stamp_track`. Virtual range treated parent scroll as list scroll. Restore ran on every paint. Queue used `loaded.slice()` at click and never appended later pages.
+
+**Prevention:** First-page SQL stamp goes through `stamp_track` (no NAS). Paint uses `_playlistListScrollTop(parent.scrollTop, list.offsetTop)` and 66px border-box rows. Restore is one-shot via `_applyPlaylistScrollRestore`. After Play/Shuffle/play-from-here, `_playlistUnqueuedTracks` appends later pages into `queue`/`queueOriginal`.
+
 ## 2026-09-26 — Advisory QA hid master failures until enforcement
 
 **What happened:** `.github/workflows/qa.yml` collected check outcomes with `continue-on-error` and scored them without `--enforce`. Master stayed "green" while `python_smoke` (download 401 hole), `security_tests` (bot pid race), stale lyrics/settings contracts, and ruff deductions were already would_block.

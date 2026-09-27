@@ -665,6 +665,12 @@ body {
   right: 0;
 }
 
+.tracks-virtual .track {
+  height: 66px;
+  min-height: 66px;
+  box-sizing: border-box;
+}
+
 .track-header {
   display: grid;
   grid-template-columns: 40px 44px 1fr 1fr 72px 52px 44px 52px 84px 32px;

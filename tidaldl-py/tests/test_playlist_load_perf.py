@@ -368,6 +368,28 @@ def test_cache_uses_last_updated_and_etag_invalidation(
     assert len(playlist.calls) > track_calls
 
 
+def test_paginated_first_page_stamps_local_path_without_nas(
+    monkeypatch, clear_singletons, tmp_path,
+):
+    from tidal_dl.gui.api import playlists as playlists_api
+
+    rows = _library_rows(tmp_path, 3, files=3)
+    playlist = SlowTidalPlaylist(_make_tracks(3), latency=0.0)
+    session = SlowTidalSession(playlist, latency=0.0)
+    db = CountingDB({row["isrc"]: [row] for row in rows}, all_rows=rows)
+    _bind(monkeypatch, playlists_api, session, db)
+    _patch_nas_stat(monkeypatch, playlists_api, db)
+
+    data = playlists_api.playlist_tracks("pl-local", limit=PAGE_SIZE, offset=0)
+    track = data["tracks"][0]
+
+    assert track["is_local"] is True
+    assert track["local_path"] == rows[0]["path"]
+    assert track["path"] == rows[0]["path"]
+    assert db.stat_calls == 0
+    assert db.all_tracks_calls == 0
+
+
 def test_paginated_tracks_keep_catalog_fields_without_catalog_stash(
     monkeypatch, clear_singletons,
 ):

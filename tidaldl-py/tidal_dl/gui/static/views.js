@@ -4487,6 +4487,7 @@ const PLAYLIST_VIRTUAL_ROW_PX = 66;
 const PLAYLIST_VIRTUAL_THRESHOLD = 80;
 let _playlistSelectedIndex = 0;
 let _playlistFocusSelected = false;
+let _playlistQueueLive = false;
 
 function playlistViewKey(pl) {
   const id = (pl && pl.id != null) ? String(pl.id) : '';
@@ -4511,6 +4512,47 @@ function _playlistEnsureVisibleScroll(index, scrollTop, viewHeight, rowPx) {
   if (top < (scrollTop || 0)) return top;
   if (bottom > (scrollTop || 0) + viewHeight) return Math.max(0, bottom - viewHeight);
   return scrollTop || 0;
+}
+
+function _playlistListScrollTop(parentScrollTop, listOffsetTop) {
+  return Math.max(0, (parentScrollTop || 0) - (listOffsetTop || 0));
+}
+
+function _applyPlaylistScrollRestore(viewState, view, alreadyApplied) {
+  if (alreadyApplied) return { applied: true, scrollY: null };
+  const saved = viewState && viewState[view];
+  const scrollY = saved && saved.scrollY ? saved.scrollY : null;
+  return { applied: true, scrollY: scrollY };
+}
+
+function _playlistUnqueuedTracks(loaded, queuedKeys, keyFn) {
+  const extra = [];
+  (loaded || []).forEach(track => {
+    const key = keyFn(track);
+    if (!key || queuedKeys.has(key)) return;
+    extra.push(track);
+  });
+  return extra;
+}
+
+function _syncPlaylistLiveQueue(loaded) {
+  if (!_playlistQueueLive) return 0;
+  const queued = new Set(
+    (state.queueOriginal || []).map(t => String(_trackKey(t))).filter(Boolean),
+  );
+  const extra = _playlistUnqueuedTracks(loaded, queued, t => String(_trackKey(t)));
+  extra.forEach(track => {
+    const entry = _cloneQueueTrack(track, ++_queueEntrySeq);
+    state.queueOriginal.push(entry);
+    state.queue.push(entry);
+  });
+  if (extra.length) {
+    _saveQueue();
+    if (typeof queuePanel !== 'undefined' && queuePanel && queuePanel.classList.contains('open')) {
+      renderQueue();
+    }
+  }
+  return extra.length;
 }
 
 function playlistTracksUrl(pl, limit, offset) {
@@ -4560,7 +4602,10 @@ function _playlistMarkSelected(row, index) {
       _playlistFocusSelected = false;
     }
   }
-  row.addEventListener('click', () => { _playlistSelectedIndex = index; });
+  row.addEventListener('click', () => {
+    _playlistSelectedIndex = index;
+    _playlistQueueLive = true;
+  });
   row.addEventListener('focus', () => { _playlistSelectedIndex = index; });
 }
 
@@ -4582,7 +4627,9 @@ function renderPlaylistRows(trackList, tracks, total) {
 function _paintPlaylistVirtual(trackList, tracks, total) {
   trackList.classList.add('tracks-virtual');
   const parent = _playlistScrollParent(trackList);
-  const scrollTop = parent && parent !== trackList ? (parent.scrollTop || 0) : 0;
+  const rawTop = parent && parent !== trackList ? (parent.scrollTop || 0) : 0;
+  const listOffsetTop = parent && parent !== trackList ? (trackList.offsetTop || 0) : 0;
+  const scrollTop = _playlistListScrollTop(rawTop, listOffsetTop);
   const viewHeight = parent && parent.clientHeight ? parent.clientHeight : 720;
   const range = _playlistVirtualRange(scrollTop, viewHeight, total, PLAYLIST_VIRTUAL_ROW_PX, 8);
   while (trackList.firstChild) trackList.removeChild(trackList.firstChild);
@@ -4615,6 +4662,7 @@ function _paintPlaylistVirtual(trackList, tracks, total) {
 async function loadPlaylistTracks(resultsArea, pl) {
   _rememberPlaylist(pl);
   _playlistSelectedIndex = 0;
+  _playlistQueueLive = false;
   while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
   resultsArea.className = 'album-detail-view';
 
@@ -4689,19 +4737,18 @@ async function loadPlaylistTracks(resultsArea, pl) {
 
   const loaded = [];
   let actionsWired = false;
-
-  const restorePlaylistScroll = () => {
-    const saved = _viewState[state.view];
-    const scrollParent = _playlistScrollParent(trackList);
-    if (saved && saved.scrollY && scrollParent) {
-      scrollParent.scrollTop = saved.scrollY;
-    }
-  };
+  let scrollRestoreApplied = false;
 
   const paintLoaded = (totalHint) => {
     const total = totalHint || loaded.length;
-    restorePlaylistScroll();
+    const restore = _applyPlaylistScrollRestore(_viewState, state.view, scrollRestoreApplied);
+    scrollRestoreApplied = restore.applied;
+    const scrollParent = _playlistScrollParent(trackList);
+    if (restore.scrollY != null && scrollParent) {
+      scrollParent.scrollTop = restore.scrollY;
+    }
     renderPlaylistRows(trackList, loaded, total);
+    _syncPlaylistLiveQueue(loaded);
     const countEl = plMeta.querySelector('.album-detail-sub');
     if (countEl) countEl.textContent = total + ' tracks';
     if (loaded.length) {
@@ -4725,6 +4772,7 @@ async function loadPlaylistTracks(resultsArea, pl) {
       if (!loaded.length) return;
       state.shuffle = false;
       btnShuffle.classList.remove('active');
+      _playlistQueueLive = true;
       _setQueueOrder(loaded, loaded[0]);
       playTrack(state.queue[state.queueIndex]);
     });
@@ -4732,6 +4780,7 @@ async function loadPlaylistTracks(resultsArea, pl) {
       if (!loaded.length) return;
       state.shuffle = true;
       btnShuffle.classList.add('active');
+      _playlistQueueLive = true;
       _setQueueOrder(loaded, loaded[0]);
       playTrack(state.queue[state.queueIndex]);
     });
@@ -4786,13 +4835,16 @@ async function loadPlaylistTracks(resultsArea, pl) {
       );
       _playlistFocusSelected = true;
       if (scrollParent) {
+        const listOffsetTop = trackList.offsetTop || 0;
+        const listScroll = _playlistListScrollTop(scrollParent.scrollTop || 0, listOffsetTop);
         const next = _playlistEnsureVisibleScroll(
           _playlistSelectedIndex,
-          scrollParent.scrollTop || 0,
+          listScroll,
           scrollParent.clientHeight || 720,
           PLAYLIST_VIRTUAL_ROW_PX,
         );
-        if (next !== scrollParent.scrollTop) scrollParent.scrollTop = next;
+        const parentNext = next + listOffsetTop;
+        if (parentNext !== scrollParent.scrollTop) scrollParent.scrollTop = parentNext;
       }
       renderPlaylistRows(trackList, loaded, count);
     };

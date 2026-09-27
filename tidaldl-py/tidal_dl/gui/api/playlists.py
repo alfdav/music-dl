@@ -176,9 +176,7 @@ def _stamp_sql_only(tracks: list[dict], db: Any) -> list[dict]:
     for data in tracks:
         row = dict(data)
         local_row = _best_local_row(row, db)
-        row["is_local"] = bool(local_row)
-        row.pop("playable", None)
-        stamped.append(finish_stamp(row))
+        stamped.append(finish_stamp(stamp_track(row, local_row)))
     return stamped
 
 
