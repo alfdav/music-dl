@@ -22,6 +22,7 @@ const DEEP_LINK_SCHEME: &str = "music-dl";
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const POLL_TIMEOUT: Duration = Duration::from_secs(30);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
+const STALE_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HealthEndpoint {
@@ -37,12 +38,18 @@ struct DaemonMetadata {
     base_url: String,
     health_url: String,
     mode: String,
+    #[serde(default)]
+    version: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct HealthResponse {
     app: String,
     status: String,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    pid: Option<u32>,
 }
 
 #[derive(Default)]
@@ -543,6 +550,134 @@ fn navigate_to(handle: &tauri::AppHandle, base_url: &str) {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum AttachDecision {
+    Attach,
+    ReplaceStale,
+    SpawnOwn,
+}
+
+fn normalized_version(version: &str) -> &str {
+    let trimmed = version.trim();
+    trimmed.strip_prefix('v').unwrap_or(trimmed)
+}
+
+fn versions_equal(left: &str, right: &str) -> bool {
+    normalized_version(left) == normalized_version(right)
+}
+
+fn decide_attach(
+    meta_version: Option<&str>,
+    own_version: &str,
+    mode: &str,
+    verified: bool,
+) -> AttachDecision {
+    if meta_version.is_some_and(|version| versions_equal(version, own_version)) {
+        return AttachDecision::Attach;
+    }
+    if mode == SIDECAR_MODE && verified {
+        AttachDecision::ReplaceStale
+    } else {
+        AttachDecision::SpawnOwn
+    }
+}
+
+fn is_own_bundle_server_command(cmd: &str, own_dir: &str) -> bool {
+    let own_dir = own_dir.trim().trim_end_matches('/');
+    if own_dir.is_empty() {
+        return false;
+    }
+    let expected = format!("{own_dir}/music-dl-server");
+    match cmd.trim().strip_prefix(&expected) {
+        Some(rest) => rest.is_empty() || rest.starts_with(char::is_whitespace),
+        None => false,
+    }
+}
+
+#[cfg(not(windows))]
+fn process_command_line(pid: u32) -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let command = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!command.is_empty()).then_some(command)
+}
+
+#[cfg(not(windows))]
+fn own_executable_dir() -> Option<String> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|dir| dir.to_string_lossy().into_owned()))
+}
+
+fn verified_stale_sidecar(meta: &DaemonMetadata) -> bool {
+    let Ok(endpoint) = parse_health_url(&meta.health_url) else {
+        return false;
+    };
+    let Ok(health) = read_health(&endpoint) else {
+        return false;
+    };
+    if health.pid != Some(meta.pid) {
+        return false;
+    }
+    if let (Some(file_version), Some(live_version)) =
+        (meta.version.as_deref(), health.version.as_deref())
+    {
+        if !versions_equal(file_version, live_version) {
+            return false;
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        return true;
+    }
+
+    #[cfg(not(windows))]
+    {
+        let Some(own_dir) = own_executable_dir() else {
+            return false;
+        };
+        let Some(command) = process_command_line(meta.pid) else {
+            return false;
+        };
+        is_own_bundle_server_command(&command, &own_dir)
+    }
+}
+
+fn signal_external_sidecar(pid: u32) {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("taskkill")
+        .args(windows_sidecar_kill_args(pid))
+        .status();
+
+    #[cfg(not(windows))]
+    let _ = std::process::Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status();
+}
+
+fn health_answers(health_url: &str) -> bool {
+    parse_health_url(health_url)
+        .and_then(|endpoint| read_health(&endpoint))
+        .is_ok()
+}
+
+fn wait_for_health_to_stop(health_url: &str) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < STALE_STOP_TIMEOUT {
+        if !health_answers(health_url) {
+            return true;
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+    !health_answers(health_url)
+}
+
 fn show_loading_error(handle: &tauri::AppHandle, message: &str) {
     if let Some(window) = handle.get_webview_window("main") {
         let script = format!(
@@ -564,21 +699,53 @@ fn launch_initial_sidecar(handle: tauri::AppHandle) {
     thread::spawn(move || {
         if let Some(meta) = read_daemon_metadata() {
             if local_metadata_is_ready(&meta) {
-                match state_from_external_metadata(meta) {
-                    Ok(state) => {
-                        let base_url = state.base_url.clone();
-                        if let Some(sidecar) = handle.try_state::<Sidecar>() {
-                            *sidecar.0.lock().unwrap() = state;
-                        }
+                let own_version = env!("CARGO_PKG_VERSION");
+                let verified = meta.mode == SIDECAR_MODE
+                    && !meta
+                        .version
+                        .as_deref()
+                        .is_some_and(|version| versions_equal(version, own_version))
+                    && verified_stale_sidecar(&meta);
+                match decide_attach(meta.version.as_deref(), own_version, &meta.mode, verified) {
+                    AttachDecision::Attach => {
+                        match state_from_external_metadata(meta) {
+                            Ok(state) => {
+                                let base_url = state.base_url.clone();
+                                if let Some(sidecar) = handle.try_state::<Sidecar>() {
+                                    *sidecar.0.lock().unwrap() = state;
+                                }
 
-                        if let Some(base_url) = base_url {
-                            let view = take_launch_view(&handle);
-                            navigate_to_view(&handle, &base_url, view.as_deref());
+                                if let Some(base_url) = base_url {
+                                    let view = take_launch_view(&handle);
+                                    navigate_to_view(&handle, &base_url, view.as_deref());
+                                }
+                            }
+                            Err(err) => show_loading_error(&handle, &err),
+                        }
+                        return;
+                    }
+                    AttachDecision::ReplaceStale => {
+                        eprintln!(
+                            "music-dl: replacing stale tauri-sidecar version {} (shell {own_version}) pid {}",
+                            meta.version.as_deref().unwrap_or("missing"),
+                            meta.pid
+                        );
+                        signal_external_sidecar(meta.pid);
+                        if !wait_for_health_to_stop(&meta.health_url) {
+                            eprintln!(
+                                "music-dl: stale sidecar pid {} still answering after stop; spawning bundled sidecar without SIGKILL",
+                                meta.pid
+                            );
                         }
                     }
-                    Err(err) => show_loading_error(&handle, &err),
+                    AttachDecision::SpawnOwn => {
+                        eprintln!(
+                            "music-dl: leaving {} server version {} alone (verified={verified}); spawning bundled sidecar",
+                            meta.mode,
+                            meta.version.as_deref().unwrap_or("missing")
+                        );
+                    }
                 }
-                return;
             }
         }
 
@@ -862,6 +1029,7 @@ mod tests {
             base_url: "http://127.0.0.1:8766".to_string(),
             health_url: "http://127.0.0.1:8766/api/server/health".to_string(),
             mode: "browser".to_string(),
+            version: None,
         };
 
         assert!(reusable_metadata(&meta, true));
@@ -920,6 +1088,7 @@ mod tests {
             base_url: "http://127.0.0.1:8766".to_string(),
             health_url: "http://127.0.0.1:8766/api/server/health".to_string(),
             mode: SIDECAR_MODE.to_string(),
+            version: None,
         };
 
         assert!(reusable_local_metadata(&meta, true));
@@ -939,6 +1108,7 @@ mod tests {
             base_url: "http://127.0.0.1:8766".to_string(),
             health_url: "http://127.0.0.1:8766/api/server/health".to_string(),
             mode: mode.to_string(),
+            version: None,
         }
     }
 
@@ -1041,5 +1211,95 @@ mod tests {
         .unwrap();
 
         assert_eq!(path, PathBuf::from("C:\\Users\\tester"));
+    }
+
+    #[test]
+    fn same_version_attaches() {
+        assert_eq!(
+            decide_attach(Some("1.7.12"), "1.7.12", SIDECAR_MODE, true),
+            AttachDecision::Attach
+        );
+    }
+
+    #[test]
+    fn older_sidecar_is_replaced_when_verified() {
+        assert_eq!(
+            decide_attach(Some("1.7.11"), "1.7.12", SIDECAR_MODE, true),
+            AttachDecision::ReplaceStale
+        );
+    }
+
+    #[test]
+    fn newer_sidecar_is_replaced_when_verified() {
+        assert_eq!(
+            decide_attach(Some("1.7.13"), "1.7.12", SIDECAR_MODE, true),
+            AttachDecision::ReplaceStale
+        );
+    }
+
+    #[test]
+    fn missing_sidecar_version_is_replaced_when_verified() {
+        assert_eq!(
+            decide_attach(None, "1.7.12", SIDECAR_MODE, true),
+            AttachDecision::ReplaceStale
+        );
+    }
+
+    #[test]
+    fn browser_mode_with_stale_version_spawns_own() {
+        assert_eq!(
+            decide_attach(Some("1.7.11"), "1.7.12", BROWSER_MODE, true),
+            AttachDecision::SpawnOwn
+        );
+    }
+
+    #[test]
+    fn unverified_stale_sidecar_spawns_own() {
+        assert_eq!(
+            decide_attach(Some("1.7.11"), "1.7.12", SIDECAR_MODE, false),
+            AttachDecision::SpawnOwn
+        );
+    }
+
+    #[test]
+    fn leading_v_versions_are_equal() {
+        assert_eq!(
+            decide_attach(Some("v1.7.12"), "1.7.12", SIDECAR_MODE, true),
+            AttachDecision::Attach
+        );
+        assert_eq!(
+            decide_attach(Some("1.7.12"), "v1.7.12", SIDECAR_MODE, false),
+            AttachDecision::Attach
+        );
+    }
+
+    #[test]
+    fn bundle_server_command_accepts_macos_bundle_path() {
+        let own_dir = "/Applications/music-dl.app/Contents/MacOS";
+        assert!(is_own_bundle_server_command(
+            "/Applications/music-dl.app/Contents/MacOS/music-dl-server",
+            own_dir
+        ));
+        assert!(is_own_bundle_server_command(
+            "  /Applications/music-dl.app/Contents/MacOS/music-dl-server --port 9000\n",
+            own_dir
+        ));
+    }
+
+    #[test]
+    fn bundle_server_command_rejects_lookalikes() {
+        let own_dir = "/Applications/music-dl.app/Contents/MacOS";
+        assert!(!is_own_bundle_server_command(
+            "/tmp/evil/music-dl-server",
+            own_dir
+        ));
+        assert!(!is_own_bundle_server_command(
+            "/Applications/music-dl.app/Contents/MacOS/music-dl-server-old",
+            own_dir
+        ));
+        assert!(!is_own_bundle_server_command(
+            "music-dl-server-old",
+            own_dir
+        ));
     }
 }
