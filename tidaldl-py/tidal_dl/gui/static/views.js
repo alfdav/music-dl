@@ -101,7 +101,7 @@ function navigate(view, opts) {
       scrollY: scrollEl ? scrollEl.scrollTop : 0,
     };
     if (String(state.view).indexOf('playlist:') === 0) {
-      outgoing.playlistTracks = _playlistFillTotal || 0;
+      outgoing.playlistTracks = _playlistKnownByView[state.view] || 0;
     }
     _viewState[state.view] = outgoing;
   }
@@ -123,9 +123,10 @@ function navigate(view, opts) {
     librarySort = next.librarySort;
     libraryQuery = next.libraryQuery;
     const prior = _viewState[restore.view];
+    const ownCount = _playlistKnownByView[restore.view] || (prior && prior.playlistTracks) || 0;
     _viewState[restore.view] = {
       scrollY: restore.scrollY || 0,
-      playlistTracks: (prior && prior.playlistTracks) || 0,
+      playlistTracks: ownCount,
     };
   }
 
@@ -4520,6 +4521,7 @@ let _playlistFillGen = 0;
 let _playlistFillPlaylistId = null;
 let _playlistQueuedUntil = 0;
 let _playlistFillTotal = 0;
+let _playlistKnownByView = {};
 let _playlistNoteQueueStarted = null;
 
 function playlistViewKey(pl) {
@@ -4638,6 +4640,12 @@ function _tryPlaylistScrollRestore(scroller, pending) {
     return { applied: true, scrollY: null, pending: false };
   }
   return { applied: false, scrollY: target, pending: true };
+}
+
+function _rememberPlaylistKnownCount(view, count) {
+  const n = Number(count) || 0;
+  if (!view || String(view).indexOf('playlist:') !== 0 || n <= 0) return;
+  _playlistKnownByView[view] = n;
 }
 
 function _playlistKnownTrackCount(pl, viewState, view) {
@@ -4960,6 +4968,7 @@ async function loadPlaylistTracks(resultsArea, pl) {
     total = knownTotal;
     _playlistFillTotal = knownTotal;
   }
+  _rememberPlaylistKnownCount(viewKey, total);
   if (knownTotal > PLAYLIST_VIRTUAL_THRESHOLD) {
     _paintPlaylistVirtual(trackList, [], knownTotal);
   } else {
@@ -5208,6 +5217,7 @@ async function loadPlaylistTracks(resultsArea, pl) {
         if (!rows.length) break;
         loaded.push.apply(loaded, rows);
         if (page.total) total = page.total;
+        _rememberPlaylistKnownCount(viewKey, total);
         _playlistFillTotal = total;
         offset += rows.length;
         paintOrFill(total);
@@ -5226,6 +5236,7 @@ async function loadPlaylistTracks(resultsArea, pl) {
     if (afterAwait() !== 'continue') return;
     loaded.push.apply(loaded, first.tracks || []);
     total = first.total || pl.num_tracks || loaded.length;
+    _rememberPlaylistKnownCount(viewKey, total);
     _playlistFillTotal = total;
     paintOrFill(total);
     wireActions();

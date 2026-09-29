@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-29 — Playlist spacer used another playlist's queue-fill total
+
+**What happened:** Leaving playlist B while playlist A was still filling the queue saved A's track count onto B. Coming back, the virtual spacer was A's count times 66px until B's first page arrived (36630px instead of 7920px, or the reverse).
+
+**Root cause:** `navigate()` stored the module-wide `_playlistFillTotal` on every `playlist:*` view. That variable is also written by whichever playlist is loading or filling the queue, so the view being left did not own the number.
+
+**Prevention:** Remember each playlist's own count under its view key when that load learns `num_tracks`, the first page total, or a later page total. Save and restore that count. Leave `_playlistFillTotal` for the live queue-fill message only.
+
 ## 2026-09-27 — Upgrade probe held the library write lock across Tidal lookups
 
 **What happened:** Opening a playlist started `/api/upgrade/probe`. From then on the download worker logged "deferred claim; library db locked", and Play on a stale `Artist/Artist - Album` path returned HTTP 500. The player skipped ahead. Time-to-play went from about 0.2 s to several seconds. Blocking `/api/upgrade/*` made the lock go away.
