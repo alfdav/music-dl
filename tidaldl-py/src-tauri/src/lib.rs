@@ -614,6 +614,16 @@ fn own_executable_dir() -> Option<String> {
         .and_then(|path| path.parent().map(|dir| dir.to_string_lossy().into_owned()))
 }
 
+// daemon.json and /health must not contradict each other about the version. A
+// version missing from either side (older servers did not report one) is not a
+// contradiction, so the pid and process checks decide.
+fn recorded_versions_consistent(file_version: Option<&str>, live_version: Option<&str>) -> bool {
+    match (file_version, live_version) {
+        (Some(file), Some(live)) => versions_equal(file, live),
+        _ => true,
+    }
+}
+
 fn verified_stale_sidecar(meta: &DaemonMetadata) -> bool {
     let Ok(endpoint) = parse_health_url(&meta.health_url) else {
         return false;
@@ -624,12 +634,8 @@ fn verified_stale_sidecar(meta: &DaemonMetadata) -> bool {
     if health.pid != Some(meta.pid) {
         return false;
     }
-    if let (Some(file_version), Some(live_version)) =
-        (meta.version.as_deref(), health.version.as_deref())
-    {
-        if !versions_equal(file_version, live_version) {
-            return false;
-        }
+    if !recorded_versions_consistent(meta.version.as_deref(), health.version.as_deref()) {
+        return false;
     }
 
     #[cfg(windows)]
@@ -1243,6 +1249,41 @@ mod tests {
             decide_attach(None, "1.7.12", SIDECAR_MODE, true),
             AttachDecision::ReplaceStale
         );
+    }
+
+    #[test]
+    fn version_missing_only_in_daemon_json_is_still_verifiable() {
+        assert!(recorded_versions_consistent(None, Some("1.7.11")));
+        assert_eq!(
+            decide_attach(None, "1.7.12", SIDECAR_MODE, true),
+            AttachDecision::ReplaceStale
+        );
+    }
+
+    #[test]
+    fn version_missing_only_in_health_is_still_verifiable() {
+        assert!(recorded_versions_consistent(Some("1.7.11"), None));
+        assert_eq!(
+            decide_attach(Some("1.7.11"), "1.7.12", SIDECAR_MODE, true),
+            AttachDecision::ReplaceStale
+        );
+    }
+
+    #[test]
+    fn version_missing_in_both_is_still_verifiable() {
+        assert!(recorded_versions_consistent(None, None));
+    }
+
+    #[test]
+    fn contradicting_recorded_versions_are_not_verifiable() {
+        assert!(!recorded_versions_consistent(
+            Some("1.7.11"),
+            Some("1.7.10")
+        ));
+        assert!(recorded_versions_consistent(
+            Some("v1.7.11"),
+            Some("1.7.11")
+        ));
     }
 
     #[test]
