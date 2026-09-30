@@ -1,5 +1,13 @@
 # Mistakes
 
+## 2026-09-29 — Desktop shell attached to a stale sidecar after an update
+
+**What happened:** A 1.7.12 app installed over 1.7.11 still found the Sep 15 `music-dl-server` on port 8765. Health reported `version: 1.7.11` and `mode: tauri-sidecar`. Quitting the old app left that process running, and the new shell would have attached to it.
+
+**Root cause:** `launch_initial_sidecar` reused any ready `daemon.json` server. `DaemonMetadata` and `HealthResponse` dropped `version` and the health `pid`. External servers are not owned, so nothing stopped them.
+
+**Prevention:** Compare trimmed versions and ignore one leading `v`. A different or missing version on a verified `tauri-sidecar` (health pid matches `daemon.json`, and on Unix the process command is this bundle's `music-dl-server`) gets SIGTERM, or `taskkill` on Windows, then the bundled sidecar starts. If it is still answering after about 5 seconds, leave it and spawn on another port. Browser mode and a failed check are never signalled. The same version still attaches.
+
 ## 2026-09-29 — Playlist spacer used another playlist's queue-fill total
 
 **What happened:** Leaving playlist B while playlist A was still filling the queue saved A's track count onto B. Coming back, the virtual spacer was A's count times 66px until B's first page arrived (36630px instead of 7920px, or the reverse).
