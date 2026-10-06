@@ -291,9 +291,9 @@ def _load_tracks(
     if work_source is None or playlist is None or work.governor.halted_reason:
         return []
     name_norm = normalize_playlist_name(name)
-    token = playlist.last_updated or ""
+    stamp = playlist.last_updated or ""
     seen = work.ledger.get_playlist(work_source.name, playlist.source_playlist_id)
-    if seen is not None and seen["last_updated_seen"] == token:
+    if seen is not None and seen["last_updated_seen"] == stamp:
         stored = work.ledger.tracks_for(work_source.name, name_norm)
         if stored:
             return stored
@@ -305,7 +305,7 @@ def _load_tracks(
             work.governor.halt(str(code))
             return []
         raise
-    work.ledger.upsert_playlist(work_source.name, playlist.source_playlist_id, name_norm, token)
+    work.ledger.upsert_playlist(work_source.name, playlist.source_playlist_id, name_norm, stamp)
     for track in tracks:
         work.ledger.remember_track(track, name_norm, seen_at=work.seen_at)
     return tracks
@@ -619,17 +619,43 @@ def _post_download(
 ) -> tuple[Candidate, VerifyResult] | None:
     looked_up = apply_prefix_map(outcome.path or "", work.path_prefixes)
     if not looked_up:
-        empty = Candidate(id="", title="", artist="", duration=None, isrc=None)
-        return empty, verify(track, empty)
+        looked_up = _existing_library_path(work, track) or ""
+    if not looked_up:
+        return _downloaded_file_not_found()
     tags = work.tag_reader(looked_up)
     if not tags:
         empty = Candidate(id=looked_up, title="", artist="", duration=None, isrc=None)
         return empty, verify(track, empty)
-    candidate = candidate_from_mapping({**tags, "id": looked_up})
+    candidate = candidate_from_mapping({**tags, "id": looked_up, "path": looked_up})
     result = verify(track, candidate)
     if result.confidence == "confirmed":
         return None
     return candidate, result
+
+
+def _existing_library_path(work: _Work, track: Track) -> str | None:
+    """NFC path of an ISRC library row whose file is still on disk."""
+    if work.library is None or not track.isrc:
+        return None
+    for candidate in work.library(track) or []:
+        path = nfc_path(candidate.path)
+        if path and work.file_exists(path):
+            return path
+    return None
+
+
+def _downloaded_file_not_found() -> tuple[Candidate, VerifyResult]:
+    empty = Candidate(id="", title="", artist="", duration=None, isrc=None)
+    result = VerifyResult(
+        artist_ok=False,
+        title_ok=False,
+        duration_ok=False,
+        isrc_ok=False,
+        version_ok=False,
+        confidence="reject",
+        reasons=("downloaded_file_not_found",),
+    )
+    return empty, result
 
 
 def _download_choice(
@@ -677,7 +703,8 @@ def _local(work: _Work, track: Track) -> tuple[str, Candidate | None, VerifyResu
     stale = False
     live: list[Candidate] = []
     for candidate in work.library(track) or []:
-        if candidate.path and not work.file_exists(nfc_path(candidate.path)):
+        path = nfc_path(candidate.path)
+        if not path or not work.file_exists(path):
             stale = True
             continue
         live.append(candidate)

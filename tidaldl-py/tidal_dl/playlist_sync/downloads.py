@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from tidal_dl.playlist_sync.models import DownloadResult
 
 _DONE = {"done", "completed"}
-_FAILED = {"error", "failed", "cancelled", "interrupted"}
+_FAILED = {"error", "failed", "cancelled"}
 
 
 class DownloadClient(Protocol):
@@ -37,7 +37,7 @@ class JobServiceDownloader:
         service: Any,
         *,
         sleep: Callable[[float], None] | None = None,
-        timeout_sec: float = 0.0,
+        timeout_sec: float = 900.0,
     ) -> None:
         self._service = service
         self._sleep = sleep or time.sleep
@@ -57,10 +57,13 @@ class JobServiceDownloader:
         return self._poll_jobs(track_id)
 
     def _poll_jobs(self, track_id: int) -> DownloadResult:
+        status_for = getattr(self._service, "job_status_for_track", None)
+        if not callable(status_for):
+            return DownloadResult(status="failed", error="timeout")
         deadline = time.monotonic() + self._timeout
         while True:
-            row = self._latest_job(track_id)
-            if row is not None:
+            row = status_for(track_id)
+            if isinstance(row, dict):
                 status = str(row.get("status") or "")
                 if status in _DONE:
                     path = row.get("new_path") or row.get("path")
@@ -75,23 +78,9 @@ class JobServiceDownloader:
                 return DownloadResult(status="failed", error="timeout")
             self._sleep(0.05)
 
-    def _latest_job(self, track_id: int) -> dict | None:
-        opener = getattr(self._service, "_open_db", None)
-        if not callable(opener):
-            return None
-        db = opener()
-        try:
-            row = db._conn.execute(
-                "SELECT * FROM download_jobs WHERE track_id = ? ORDER BY id DESC LIMIT 1",
-                (track_id,),
-            ).fetchone()
-        finally:
-            db.close()
-        return dict(row) if row else None
-
 
 def service_downloader() -> JobServiceDownloader:
     """Build a downloader that queues onto the process job service without starting it."""
     from tidal_dl.gui.services.download_job_service import DownloadJobService
 
-    return JobServiceDownloader(DownloadJobService(autostart=False), timeout_sec=30)
+    return JobServiceDownloader(DownloadJobService(autostart=False), timeout_sec=900)

@@ -8,7 +8,7 @@ from tidal_dl.gui.api.playlists import fetch_user_playlists, playlist_track_cata
 from tidal_dl.playlist_sync.models import PlaylistRef, Track, _duration
 
 
-def _updated_token(value: Any) -> str:
+def _updated_stamp(value: Any) -> str:
     if value is None:
         return ""
     if hasattr(value, "isoformat"):
@@ -34,13 +34,13 @@ class TidalSource:
     def list_playlists(self) -> list[PlaylistRef]:
         refs: list[PlaylistRef] = []
         for playlist in fetch_user_playlists(self.session):
-            token = _updated_token(getattr(playlist, "last_updated", None))
+            stamp = _updated_stamp(getattr(playlist, "last_updated", None))
             refs.append(
                 PlaylistRef(
                     source=self.name,
                     source_playlist_id=_track_id(getattr(playlist, "id", "")),
                     name=str(getattr(playlist, "name", "") or ""),
-                    last_updated=token or None,
+                    last_updated=stamp or None,
                     num_tracks=int(getattr(playlist, "num_tracks", 0) or 0),
                 )
             )

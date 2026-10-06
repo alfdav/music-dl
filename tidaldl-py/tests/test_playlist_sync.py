@@ -548,10 +548,20 @@ def test_union_across_tidal_apple_and_plex(tmp_path: Path):
     )
     sink = _Sink([plex_only, shared])
     downloads = _Downloads()
+    local_file = tmp_path / "local.flac"
+    local_file.write_bytes(b"local")
 
     def library(track: Track) -> list[Candidate]:
         if track.isrc == "XX0000000008":
-            return [_candidate("Local Song", duration=190, isrc="XX0000000008", ident="/music/local.flac")]
+            return [
+                _candidate(
+                    "Local Song",
+                    duration=190,
+                    isrc="XX0000000008",
+                    ident="row-8",
+                    path=str(local_file),
+                )
+            ]
         return []
 
     def search(track: Track) -> list[Candidate]:
@@ -657,10 +667,20 @@ def test_apple_two_candidates_and_isrc_artist_mismatch_do_not_download(tmp_path:
     tidal = _track("tidal", "1001", "Example Song", isrc="XX0000000001")
     tidal_source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [tidal])])
     blocked = _Downloads()
+    other_file = tmp_path / "other.flac"
+    other_file.write_bytes(b"other")
 
     def library(track: Track) -> list[Candidate]:
         if track.isrc == "XX0000000001":
-            return [_candidate("Example Song", artist=OTHER, isrc="XX0000000001", ident="/music/other.flac")]
+            return [
+                _candidate(
+                    "Example Song",
+                    artist=OTHER,
+                    isrc="XX0000000001",
+                    ident="row-1",
+                    path=str(other_file),
+                )
+            ]
         return []
 
     report, _, _ = _run(tmp_path / "isrc", tidal_source, downloads=blocked, library=library)
@@ -768,6 +788,28 @@ def test_job_service_downloader_queues_one_track():
     assert seen == [[1001]]
     with pytest.raises(ValueError):
         client.enqueue_download([1001, 1002])
+
+    class StatusService:
+        def __init__(self, status: str, error: str | None = None) -> None:
+            self.status = status
+            self.error = error
+
+        def enqueue_download(self, track_ids: list[int]) -> dict:
+            return {"status": "queued", "count": len(track_ids)}
+
+        def job_status_for_track(self, track_id: int) -> dict:
+            return {"status": self.status, "error": self.error, "job_id": str(track_id)}
+
+    done = JobServiceDownloader(StatusService("done"), sleep=lambda _seconds: None, timeout_sec=900)
+    assert done.wait_for(1001).status == "completed"
+    assert done.wait_for(1001).path is None
+    failed = JobServiceDownloader(StatusService("error", "429"), sleep=lambda _seconds: None, timeout_sec=900)
+    assert failed.wait_for(1002).status == "failed"
+    assert failed.wait_for(1002).http_status == 429
+    waiting = JobServiceDownloader(StatusService("running"), sleep=lambda _seconds: None, timeout_sec=0)
+    timed_out = waiting.wait_for(1003)
+    assert timed_out.status == "failed"
+    assert timed_out.error == "timeout"
 
 
 def test_library_lookup_uses_isrc_rows():
@@ -1029,3 +1071,66 @@ def test_plex_cover_and_other_artist_are_not_accepted(tmp_path: Path):
     assert report.playlists[0].to_download == 1
     assert all("cover-1" not in ids and "other-1" not in ids for _name, ids in sink.appends)
     assert report.needs_review == []
+
+
+def test_library_candidate_without_a_path_is_stale(tmp_path: Path):
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+
+    def library(_track: Track) -> list[Candidate]:
+        return [_candidate("Example Song", isrc="XX0000000001", ident="row-1", path="")]
+
+    report, _, _ = _run(tmp_path, source, library=library, settings=_cfg(dry_run=True))
+    playlist = report.playlists[0]
+    assert playlist.already_local == 0
+    assert playlist.to_download == 1
+    assert "stale_library_row" in playlist.tracks[0]["reasons"]
+
+
+def test_completed_download_without_a_path_needs_an_existing_library_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    downloads = _Downloads({1001: DownloadResult(status="completed", path=None)})
+    sink = _Sink()
+
+    def removed(*_args, **_kwargs):
+        raise AssertionError("file deleted")
+
+    monkeypatch.setattr(os, "remove", removed)
+    monkeypatch.setattr(os, "unlink", removed)
+    report, _, _ = _run(tmp_path / "missing", source, sink=sink, downloads=downloads, library=lambda _item: [])
+    assert sink.appends == []
+    assert report.added == []
+    assert report.download_mismatch
+    assert report.download_mismatch[0]["status"] == "download_mismatch"
+    assert "downloaded_file_not_found" in report.download_mismatch[0]["reasons"]
+
+    audio = tmp_path / "example.flac"
+    audio.write_bytes(b"audio")
+    found = _Sink()
+    again = _Downloads({1001: DownloadResult(status="completed", path=None)})
+    lookups = {"n": 0}
+
+    def library(_track: Track) -> list[Candidate]:
+        lookups["n"] += 1
+        if lookups["n"] == 1:
+            return []
+        return [_candidate("Example Song", isrc="XX0000000001", ident="row-1", path=str(audio))]
+
+    def reader(path: str) -> dict:
+        assert path == str(audio)
+        return {"title": "Example Song", "artist": ARTIST, "duration": 180, "isrc": "XX0000000001"}
+
+    report, _, _ = _run(
+        tmp_path / "found",
+        source,
+        sink=found,
+        downloads=again,
+        library=library,
+        tag_reader=reader,
+    )
+    assert report.download_mismatch == []
+    assert found.appends == [("Playlist A", ["1001"])]
