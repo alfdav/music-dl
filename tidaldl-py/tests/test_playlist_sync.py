@@ -294,6 +294,30 @@ def test_allowlist_comes_from_settings(tmp_path: Path):
     assert {item.name for item in report.playlists} == {"Playlist A", "Playlist B"}
 
 
+def test_dry_run_counts_tracks_deferred_by_the_cap(tmp_path: Path):
+    rows = [
+        _track("tidal", str(1001 + index), f"Example Song {index}", isrc=f"XX{index:010d}", duration=180)
+        for index in range(7)
+    ]
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
+    downloads = _Downloads()
+    report, _, _ = _run(
+        tmp_path,
+        source,
+        downloads=downloads,
+        settings=_cfg(dry_run=True, max_per_cycle=5, max_per_day=30),
+    )
+    playlist = report.playlists[0]
+    deferred = [item for item in playlist.tracks if item.get("status") == "deferred_cap"]
+    planned = [item for item in playlist.tracks if item.get("status") != "deferred_cap"]
+    assert playlist.to_download == 7
+    assert len(planned) == 5
+    assert len(deferred) == 2
+    assert all(item["action"] == "download" for item in planned)
+    assert downloads.calls == []
+    assert [item["status"] for item in report.skipped] == ["deferred_cap", "deferred_cap"]
+
+
 def test_caps_hold_across_playlists_and_reset_at_local_midnight(tmp_path: Path):
     tracks = [
         _track("tidal", str(1000 + index), f"Example Song {index}", isrc=f"XX{index:010d}", duration=180)
@@ -637,6 +661,12 @@ def test_verify_rules():
     check(_candidate("Example Song (Album Version)"), "confirmed")
     check(_candidate("Example Song (Mono Version)"), "confirmed")
     check(_candidate("Example Song [Stereo Version]"), "confirmed")
+    check(_candidate("Example Song", version="Album Version"), "confirmed")
+    check(_candidate("Example Song", version="Remastered 2011"), "confirmed")
+    check(_candidate("Example Song", version="Live"), "reject")
+    check(_candidate("Example Song", version="Acoustic Version"), "reject")
+    check(_candidate("Example Song", version="Karaoke Version"), "reject")
+    check(_candidate("Example Song", version="Versi\u00f3n Ac\u00fastica"), "reject")
     check(
         _candidate("Example Song (feat. Other Artist)", artist="Example Artist feat. Other Artist"),
         "confirmed",

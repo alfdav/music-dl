@@ -19,24 +19,19 @@ _FEAT_TAIL = re.compile(
 _PRIMARY_SPLIT = re.compile(r"\s+(?:with|&|x)\s+", re.IGNORECASE)
 _PUNCT = re.compile(r"[^\w\s]", re.UNICODE)
 _SPACES = re.compile(r"\s+")
+_SAFE_PHRASE = r"""
+    remaster(?:ed)?(?:\s+\d{4})?
+    | \d{4}\s+remaster(?:ed)?
+    | album\s+version
+    | (?:mono|stereo)\s+version
+"""
 _SAFE_SUFFIX = re.compile(
-    r"""(?:
-        \s*[([]\s*
-            (?:
-                remaster(?:ed)?(?:\s+\d{4})?
-                | \d{4}\s+remaster(?:ed)?
-                | album\s+version
-                | (?:mono|stereo)\s+version
-            )
-        \s*[])]
+    rf"""(?:
+        \s*[([]\s*(?:{_SAFE_PHRASE})\s*[])]
         |
-        \s+-\s+
-            (?:
-                remaster(?:ed)?(?:\s+\d{4})?
-                | \d{4}\s+remaster(?:ed)?
-                | album\s+version
-                | (?:mono|stereo)\s+version
-            )
+        \s+-\s+(?:{_SAFE_PHRASE})
+        |
+        ^(?:{_SAFE_PHRASE})$
     )\s*$""",
     re.IGNORECASE | re.VERBOSE,
 )

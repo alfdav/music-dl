@@ -526,6 +526,10 @@ def _consider(
     )
 
 
+def _deferred_by_cap(work: _Work) -> bool:
+    return work.governor.halted_reason is None and not work.governor.can_download()
+
+
 def _plan_download(
     work: _Work,
     report: PlaylistReport,
@@ -538,7 +542,9 @@ def _plan_download(
 ) -> None:
     if not work.governor.can_download():
         entry = _entry(track, "download", "confirmed", candidate, result, notes=notes)
-        entry["status"] = "skipped"
+        entry["status"] = "deferred_cap" if _deferred_by_cap(work) else "skipped"
+        if entry["status"] == "deferred_cap":
+            report.to_download += 1
         report.tracks.append(entry)
         work.report.skipped.append(entry)
         placed.append(_Placed(track, "download", entry))
@@ -573,7 +579,9 @@ def _run_download(
     outcome = work.governor.download(once)
     if outcome is None:
         entry = _entry(track, "download", "confirmed", candidate, result, notes=notes)
-        entry["status"] = "skipped"
+        entry["status"] = "deferred_cap" if _deferred_by_cap(work) else "skipped"
+        if entry["status"] == "deferred_cap":
+            report.to_download += 1
         report.tracks.append(entry)
         work.report.skipped.append(entry)
         placed.append(_Placed(track, "download", entry))
