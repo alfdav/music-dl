@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
 
+from tidal_dl.helper.library_db.utils import sqlite_int64
 from tidal_dl.helper.library_scanner import is_skipped_scan_dir, path_has_skipped_scan_dir
 
 AUDIO_EXTENSIONS = {".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac"}
@@ -182,6 +183,9 @@ class FileIdentity:
     def __post_init__(self) -> None:
         if not self.basename:
             object.__setattr__(self, "basename", normalize_basename(self.path))
+        # Compare and store the same signed int64 the DB layer binds.
+        object.__setattr__(self, "inode", sqlite_int64(self.inode))
+        object.__setattr__(self, "device", sqlite_int64(self.device))
 
 
 @dataclass
@@ -207,9 +211,10 @@ class PathReconcileResult:
 
 @dataclass
 class _DirInfo:
-    path: str
+    path: str  # canon_path() key: comparison only, never opened
     signature: str
     audio_names: tuple[str, ...]
+    actual: str = ""  # real on-disk spelling: the only string handed to stat/scandir
 
 
 def _row_identity(row: dict) -> FileIdentity:
@@ -217,8 +222,8 @@ def _row_identity(row: dict) -> FileIdentity:
         path=row["path"],
         size=row.get("file_size"),
         mtime=row.get("file_mtime"),
-        inode=row.get("file_inode"),
-        device=row.get("file_device"),
+        inode=sqlite_int64(row.get("file_inode")),
+        device=sqlite_int64(row.get("file_device")),
         duration=row.get("duration"),
         codec=row.get("codec"),
         title=row.get("title"),
@@ -623,10 +628,21 @@ def apply_path_migrations(
     return kept, failed
 
 
+def _compare_path(path: str | Path) -> Path:
+    """Canonical path for containment checks.
+
+    ``os.walk`` onerror strings keep the platform separator. Folding ``\\``
+    to ``/`` before :func:`canon_path` makes the same album compare equal on
+    every OS, while ``Album 10`` stays outside ``Album 1``.
+    """
+    text = os.fspath(path).replace("\\", "/")
+    return Path(canon_path(text))
+
+
 def _is_under(path: str, prefixes: Iterable[str]) -> bool:
-    candidate = Path(canon_path(path))
+    candidate = _compare_path(path)
     for prefix in prefixes:
-        root = Path(canon_path(prefix))
+        root = _compare_path(prefix)
         try:
             if candidate == root or candidate.is_relative_to(root):
                 return True
@@ -648,16 +664,19 @@ class PathReconciler:
         roots: Sequence[Path],
         *,
         read_metadata: Callable[[Path], dict | None],
-        stat_fn: Callable[..., os.stat_result] = os.stat,
-        scandir_fn=os.scandir,
+        stat_fn: Callable[..., os.stat_result] | None = None,
+        scandir_fn=None,
         now_fn: Callable[[], int] | None = None,
         index_file: Callable[[Path, FileIdentity, dict | None], None] | None = None,
     ) -> None:
         self.db = db
         self.roots = [Path(root) for root in roots]
         self.read_metadata = read_metadata
-        self.stat_fn = stat_fn
-        self.scandir_fn = scandir_fn
+        # Look up os.stat / os.scandir at construction, not at import. A default
+        # bound at import keeps the first os.stat object forever, so a scan
+        # (Path.stat) and a later reconcile can disagree about st_ino.
+        self.stat_fn = os.stat if stat_fn is None else stat_fn
+        self.scandir_fn = os.scandir if scandir_fn is None else scandir_fn
         self.now_fn = now_fn or (lambda: int(time.time()))
         self.index_file = index_file
         self.metadata_reads: list[str] = []
@@ -669,21 +688,22 @@ class PathReconciler:
         current: dict[str, _DirInfo] = {}
         unreadable: set[str] = set()
         for root in self.roots:
-            stack = [canon_path(root)]
+            stack = [os.path.normpath(os.fspath(root))]
             seen: set[str] = set()
             while stack:
-                directory = stack.pop()
+                actual = stack.pop()
+                directory = canon_path(actual)
                 if directory in seen:
                     continue
                 seen.add(directory)
                 try:
-                    st = self._stat(directory)
+                    st = self._stat(actual)
                 except OSError:
                     unreadable.add(directory)
                     continue
                 audio_names: list[str] = []
                 try:
-                    with self.scandir_fn(directory) as iterator:
+                    with self.scandir_fn(actual) as iterator:
                         for entry in iterator:
                             if path_has_skipped_scan_dir(Path(entry.path) / "x"):
                                 continue
@@ -692,7 +712,7 @@ class PathReconciler:
                                     continue
                                 if entry.is_dir(follow_symlinks=False):
                                     if not is_skipped_scan_dir(entry.name):
-                                        stack.append(canon_path(entry.path))
+                                        stack.append(entry.path)
                                 elif (
                                     entry.is_file(follow_symlinks=False)
                                     and Path(entry.name).suffix.lower() in AUDIO_EXTENSIONS
@@ -707,6 +727,7 @@ class PathReconciler:
                     path=directory,
                     signature=directory_signature(st.st_mtime_ns, len(audio_names)),
                     audio_names=tuple(sorted(audio_names)),
+                    actual=actual,
                 )
         return current, unreadable
 
@@ -718,20 +739,28 @@ class PathReconciler:
         meta = None
         if read_tags:
             self.metadata_reads.append(str(path))
-            meta = self.read_metadata(path)
-        return FileIdentity(
-            path=str(path),
-            size=st.st_size,
-            mtime=int(st.st_mtime),
-            inode=st.st_ino,
-            device=st.st_dev,
-            duration=None if meta is None else meta.get("duration"),
-            codec=None if meta is None else meta.get("codec"),
-            title=None if meta is None else (meta.get("name") or meta.get("title")),
-            artist=None if meta is None else meta.get("artist"),
-            album=None if meta is None else meta.get("album"),
-            isrc=None if meta is None else meta.get("isrc"),
-        ), meta
+            try:
+                meta = self.read_metadata(path)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[library] Skipping metadata: {type(exc).__name__}")
+                meta = None
+        try:
+            return FileIdentity(
+                path=str(path),
+                size=st.st_size,
+                mtime=int(st.st_mtime),
+                inode=sqlite_int64(st.st_ino),
+                device=sqlite_int64(st.st_dev),
+                duration=None if meta is None else meta.get("duration"),
+                codec=None if meta is None else meta.get("codec"),
+                title=None if meta is None else (meta.get("name") or meta.get("title")),
+                artist=None if meta is None else meta.get("artist"),
+                album=None if meta is None else meta.get("album"),
+                isrc=None if meta is None else meta.get("isrc"),
+            ), meta
+        except (OverflowError, ValueError) as exc:
+            print(f"[library] Skipping file: {type(exc).__name__}")
+            return None
 
     def _index_appeared(self, path: Path, identity: FileIdentity, meta: dict | None) -> None:
         if self.index_file is not None:
@@ -784,8 +813,9 @@ class PathReconciler:
     def _on_disk_by_canon(self, current: dict[str, _DirInfo]) -> dict[str, str]:
         on_disk: dict[str, str] = {}
         for directory, info in current.items():
+            base = info.actual or directory
             for name in info.audio_names:
-                actual = str(Path(directory) / name)
+                actual = str(Path(base) / name)
                 on_disk[canon_path(actual)] = actual
         return on_disk
 
@@ -906,6 +936,45 @@ class PathReconciler:
             appeared = others + self._enrich_tags(needs, appeared_meta)
         return vanished_rows, appeared, appeared_meta, resurfaced
 
+    def _backfill_null_identity(self, current: dict[str, _DirInfo]) -> int:
+        """Stat live NULL-identity rows this walk can see. One pass per row."""
+        conn = getattr(self.db, "_conn", None)
+        backfill = getattr(self.db, "backfill_file_identity", None)
+        if conn is None or backfill is None:
+            return 0
+        rows = conn.execute(
+            "SELECT path FROM scanned WHERE file_size IS NULL AND missing_since IS NULL"
+        ).fetchall()
+        if hasattr(self.db, "commit"):
+            self.db.commit()
+        on_disk = self._on_disk_by_canon(current)
+        updates: list[tuple] = []
+        for row in rows:
+            actual = on_disk.get(canon_path(row["path"]))
+            if actual is None:
+                continue
+            try:
+                packed = self._file_identity(Path(actual), read_tags=False)
+            except (OSError, OverflowError, ValueError) as exc:
+                print(f"[library] Skipping file: {type(exc).__name__}")
+                continue
+            if packed is None or packed[0].size is None:
+                continue
+            identity = packed[0]
+            updates.append((
+                identity.size,
+                identity.mtime,
+                identity.inode,
+                identity.device,
+                row["path"],
+            ))
+        if not updates:
+            return 0
+        filled = backfill(updates)
+        if filled:
+            print(f"[library] Backfilled file identity for {filled} rows")
+        return filled
+
     def reconcile(
         self,
         *,
@@ -918,8 +987,16 @@ class PathReconciler:
 
         self._emit(on_progress, phase="walking")
         current, unreadable = self.walk_dirs()
+        # A configured root that cannot be listed must not backfill, migrate,
+        # mark missing, or rewrite signatures for the roots that did list.
+        unread_canon = {canon_path(path) for path in unreadable}
+        if any(canon_path(root) in unread_canon for root in self.roots):
+            return PathReconcileResult(unchanged=True, skipped_dirs=sorted(unreadable))
         if not current and unreadable:
             return PathReconcileResult(unchanged=True, skipped_dirs=sorted(unreadable))
+        # The scan signature fast path never stats legacy rows. This walk
+        # already has the live files, so fill NULL identity here too.
+        self._backfill_null_identity(current)
 
         stored = self.db.dir_signatures()
         stored_keys = set(stored)
@@ -1051,9 +1128,13 @@ class PathReconciler:
         )
         indexed_paths: list[str] = []
         for identity in index_identities:
-            self._index_appeared(
-                Path(identity.path), identity, appeared_meta.get(identity.path),
-            )
+            try:
+                self._index_appeared(
+                    Path(identity.path), identity, appeared_meta.get(identity.path),
+                )
+            except (OSError, OverflowError, ValueError) as exc:
+                print(f"[library] Skipping file: {type(exc).__name__}")
+                continue
             indexed_paths.append(identity.path)
             if len(indexed_paths) % RECONCILE_COMMIT_BATCH == 0:
                 self.db.commit()
@@ -1186,8 +1267,8 @@ def identity_from_stat(path: Path, st: os.stat_result, meta: dict | None = None)
         path=str(path),
         size=st.st_size,
         mtime=int(st.st_mtime),
-        inode=st.st_ino,
-        device=st.st_dev,
+        inode=sqlite_int64(st.st_ino),
+        device=sqlite_int64(st.st_dev),
         duration=payload.get("duration"),
         codec=payload.get("codec"),
         title=payload.get("name") or payload.get("title"),

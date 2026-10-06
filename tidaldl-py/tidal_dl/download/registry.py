@@ -6,6 +6,7 @@ import logging
 import pathlib
 
 from tidal_dl.helper.library_db import LibraryDB
+from tidal_dl.helper.library_db.utils import sqlite_int64
 from tidal_dl.helper.path import path_config_base
 
 logger = logging.getLogger("music-dl.download.registry")
@@ -23,6 +24,16 @@ def register_downloaded_track(file_path: pathlib.Path | str) -> None:
         meta = _read_metadata(fp)
         if not meta:
             return
+        try:
+            st = fp.stat()
+            identity = {
+                "file_size": st.st_size,
+                "file_mtime": int(st.st_mtime),
+                "file_inode": sqlite_int64(st.st_ino),
+                "file_device": sqlite_int64(st.st_dev),
+            }
+        except (OSError, OverflowError, ValueError):
+            identity = {}
 
         db = LibraryDB(pathlib.Path(path_config_base()) / "library.db")
         db.open()
@@ -51,6 +62,7 @@ def register_downloaded_track(file_path: pathlib.Path | str) -> None:
                 fmt=meta["format"],
                 codec=meta["codec"],
                 metadata_complete=True,
+                **identity,
             )
             db.commit()
         finally:
