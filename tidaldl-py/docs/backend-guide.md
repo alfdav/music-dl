@@ -679,6 +679,11 @@ class BaseConfig(Generic[ConfigModelT]):
 | `downloads_simultaneous_per_track_max` | int | `20` | Parallel segment downloads |
 | `format_album` | str | template | Download path template for albums |
 | `format_track` | str | template | Download path template for tracks |
+| `playlist_sync_enabled` | bool | `false` | Playlist sync does not run unless this is set |
+| `playlist_sync_dry_run` | bool | `true` | Report only; queue and append stay idle |
+| `playlist_sync_max_per_cycle` | int | `5` | Download cap for one cycle |
+| `playlist_sync_max_per_day` | int | `30` | Download cap per local day |
+| `playlist_sync_allowlist` | list | `[]` | Empty includes every created playlist |
 
 ---
 

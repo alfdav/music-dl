@@ -1,8 +1,8 @@
 import dataclasses
 import enum
 import json
-from dataclasses import dataclass
-from typing import Any, Self, cast
+from dataclasses import dataclass, field
+from typing import Any, Self, cast, get_args, get_origin
 
 from tidalapi.media import Quality
 
@@ -33,6 +33,17 @@ def _coerce_field(field_type: type, value: Any, current: Any) -> Any:
         return int(value)
     if isinstance(current, float) and not isinstance(value, bool):
         return float(value)
+    origin = get_origin(field_type)
+    if origin is list:
+        if not isinstance(value, list):
+            raise TypeError("expected a list")
+        args = get_args(field_type)
+        item_type = args[0] if args else Any
+        if item_type is str:
+            return [item for item in value if isinstance(item, str)]
+        if item_type is Any:
+            return list(value)
+        return [item for item in value if isinstance(item, item_type)]
     if field_type is not Any and not isinstance(value, field_type):
         return field_type(value)
     return value
@@ -43,7 +54,7 @@ class _JsonDataclassMixin:
     def from_json(cls, s: str) -> Self:
         raw = json.loads(s)
         if not isinstance(raw, dict):
-            raise ValueError("config must be a JSON object")
+            raise ValueError("config must be a JSON object")  # noqa: TRY004
         return cls.from_dict(raw)
 
     @classmethod
@@ -176,6 +187,17 @@ SETTINGS_HELP: dict[str, str] = {
         "Optional path to the typesafe-music-edition sidecar. "
         "When empty, music-dl looks on PATH and well-known install locations."
     ),
+    "playlist_sync_enabled": "Run playlist sync. Off by default; nothing starts it automatically.",
+    "playlist_sync_dry_run": "Plan playlist sync and write the report, but queue nothing and append nothing.",
+    "playlist_sync_poll_minutes": "Minutes between playlist sync cycles when a scheduler is configured.",
+    "playlist_sync_max_per_cycle": "Maximum downloads started in one playlist sync cycle.",
+    "playlist_sync_max_per_day": "Maximum playlist sync downloads per local day, across every playlist.",
+    "playlist_sync_gap_sec_min": "Minimum seconds to wait between playlist sync downloads.",
+    "playlist_sync_gap_sec_max": "Maximum seconds to wait between playlist sync downloads.",
+    "playlist_sync_allowlist": (
+        "Playlist names included in sync. Empty means every playlist the user created. "
+        "Matching is case-insensitive. Set this only in local settings."
+    ),
 }
 
 
@@ -188,7 +210,7 @@ class Settings(_JsonDataclassMixin):
     video_download: bool = True
     download_delay: bool = True
     download_base_path: str = "~/download"
-    quality_audio: Quality = cast(Quality, Quality.hi_res_lossless)
+    quality_audio: Quality = cast(Quality, Quality.hi_res_lossless)  # noqa: RUF009
     quality_video: QualityVideo = QualityVideo.P1080
     download_source: DownloadSource = DownloadSource.OAUTH
     download_source_fallback: bool = True
@@ -231,6 +253,14 @@ class Settings(_JsonDataclassMixin):
     upgrade_target_quality: str = "HI_RES_LOSSLESS"
     edition_advice_enabled: bool = False
     edition_scorer_path: str = ""
+    playlist_sync_enabled: bool = False
+    playlist_sync_dry_run: bool = True
+    playlist_sync_poll_minutes: int = 15
+    playlist_sync_max_per_cycle: int = 5
+    playlist_sync_max_per_day: int = 30
+    playlist_sync_gap_sec_min: float = 30
+    playlist_sync_gap_sec_max: float = 60
+    playlist_sync_allowlist: list[str] = field(default_factory=list)
 
 
 @dataclass
