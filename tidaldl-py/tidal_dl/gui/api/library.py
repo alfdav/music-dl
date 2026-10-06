@@ -1490,8 +1490,13 @@ def _migrate_moved_scan_paths(
     known: set[str],
     disk_paths: set[str],
     scan_dirs: list[Path],
-) -> None:
-    """Identity-migrate rows before the scan indexes new paths or prunes old ones."""
+    skip_paths: set[str] | None = None,
+) -> set[str]:
+    """Identity-migrate rows before the scan indexes new paths or prunes old ones.
+
+    Returns the canonical old paths that moved, so a rescan does not count
+    them as vanished when it applies the mass-prune guard.
+    """
     from tidal_dl.helper.library_reconcile import (
         FileIdentity,
         apply_path_migrations,
@@ -1499,10 +1504,14 @@ def _migrate_moved_scan_paths(
         plan_path_reconcile,
     )
 
-    stale = [path for path in known - disk_paths if not path_has_skipped_scan_dir(path)]
+    blocked = skip_paths or set()
+    stale = [
+        path for path in known - disk_paths
+        if not path_has_skipped_scan_dir(path) and not _under_any_dir(path, blocked)
+    ]
     appeared_paths = disk_paths - known
     if not stale or not appeared_paths:
-        return
+        return set()
 
     vanished: list[FileIdentity] = []
     for path in stale:
@@ -1540,7 +1549,7 @@ def _migrate_moved_scan_paths(
 
     plan = plan_path_reconcile(vanished, appeared)
     if not plan.migrations:
-        return
+        return set()
     kept, _failed = apply_path_migrations(
         db,
         plan.migrations,
@@ -1548,6 +1557,7 @@ def _migrate_moved_scan_paths(
         directory_moves=plan.directory_moves,
     )
     _remember_playback_migrations(kept)
+    return {canonical_library_path(old) for old, _new in kept}
 
 
 def request_path_reconcile(*, force: bool = False) -> dict:
@@ -1579,8 +1589,31 @@ def _unreadable_roots(scan_dirs: list[Path], unreadable: Iterable[str]) -> list[
 
 
 def _under_any_dir(path: str, directories: set[str]) -> bool:
-    canon = canonical_library_path(path)
-    return any(canon.startswith(directory.rstrip("/") + "/") for directory in directories)
+    """True when *path* is one of *directories* or a file inside one.
+
+    Both sides are canonicalised, so ``Album 10`` is not inside ``Album 1``
+    and a Windows backslash listing matches a slash row.
+    """
+    from tidal_dl.helper.library_reconcile import _is_under
+
+    if not path or not directories:
+        return False
+    return _is_under(path, directories)
+
+
+def _scan_root_unlistable(root: Path) -> bool:
+    """True when a configured directory cannot be listed.
+
+    Same failure ``os.walk`` reports through ``onerror`` and ``walk_dirs``
+    records as an unreadable root: ``stat`` or ``scandir`` raises ``OSError``.
+    """
+    actual = os.path.normpath(os.fspath(root))
+    try:
+        os.stat(actual)
+        with os.scandir(actual):
+            return False
+    except OSError:
+        return True
 
 
 def _background_path_reconcile() -> None:
@@ -1589,11 +1622,20 @@ def _background_path_reconcile() -> None:
     _update_reconcile_progress(phase="walking")
     try:
         scan_dirs = _scan_directories()
+        # Before any reconcile write. One unlistable root used to migrate and
+        # backfill the readable roots, then report that the reconcile was skipped.
+        if any(_scan_root_unlistable(root) for root in scan_dirs):
+            print("[library] Library folder is not readable — skipping reconcile to preserve cache")
+            _update_reconcile_progress(phase="error", done=True, error=_UNREADABLE_ROOT_ERROR)
+            _reconcile_last_at = time.time()
+            return
         db = LibraryDB(Path(path_config_base()) / "library.db")
         db.open()
         if scan_dirs:
             _migrate_volume_prefixes(db, scan_dirs)
         result = _run_path_reconcile(db, scan_dirs, on_progress=_update_reconcile_progress)
+        # Backstop only. reconcile() returns before writing when a configured
+        # root is unlistable, so this cannot follow a partial update.
         unreadable_roots = _unreadable_roots(scan_dirs, result.skipped_dirs)
         if not result.unchanged:
             dropped = drop_skipped_scan_paths(db)
@@ -1878,6 +1920,7 @@ def _background_scan(rescan: bool) -> None:
         _update_scan_progress(phase="discovering", scanned=0, total=0, done=False, error=None)
         disk_paths: set[str] = set()
         walk_errors: set[str] = set()
+        discovery_failures: set[str] = set()
 
         def _on_walk_error(exc: OSError) -> None:
             # os.walk() drops unlistable directories by default. An unreadable
@@ -1901,6 +1944,9 @@ def _background_scan(rescan: bool) -> None:
                         disk_paths.add(canonical_library_path(str(f)))
                     except (OSError, OverflowError, ValueError) as exc:
                         print(f"[library] Skipping file: {type(exc).__name__}")
+                        # A stat failure is not proof the file vanished. Keep the
+                        # existing row, and do not index this path as new.
+                        discovery_failures.add(canonical_library_path(os.path.normpath(str(f))))
                         continue
                     _update_scan_progress(
                         phase="discovering",
@@ -1921,13 +1967,23 @@ def _background_scan(rescan: bool) -> None:
             _update_scan_progress(phase="error", done=True, error=_UNREADABLE_ROOT_ERROR)
             return
 
-        # Phase 2: Read metadata + waveform only for NEW files (the diff)
+        # Phase 2: Heal renames before indexing. Rescan still re-reads every
+        # file afterwards; the moved row keeps plays and favourites.
+        # Vanished = prior rows not on disk. Appeared = on-disk paths not in
+        # those rows. Discovery failures stay out of both sets.
         from tidal_dl.helper.waveform import extract_both, peaks_to_json
 
+        protected = walk_errors | discovery_failures
+        migrated_old = _migrate_moved_scan_paths(
+            db,
+            prior_known,
+            disk_paths,
+            scan_dirs,
+            skip_paths=protected,
+        )
         if not rescan:
-            _migrate_moved_scan_paths(db, known, disk_paths, scan_dirs)
             known = db.known_paths()
-            db.commit()
+        db.commit()
 
         new_paths = disk_paths - known
         pending: list[dict] = []
@@ -2025,8 +2081,8 @@ def _background_scan(rescan: bool) -> None:
         prune_base = prior_known if rescan else known
         stale = prune_base - disk_paths
         skipped_stale = {path for path in stale if path_has_skipped_scan_dir(path)}
-        unreadable_stale = {path for path in stale if _under_any_dir(path, walk_errors)}
-        prune = stale - skipped_stale - unreadable_stale
+        unreadable_stale = {path for path in stale if _under_any_dir(path, protected)}
+        prune = stale - skipped_stale - unreadable_stale - migrated_old
         if len(prune) > 0.5 * len(prune_base) and len(prune_base) > 100:
             print(
                 f"[library] Skipping prune: {len(prune)}/{len(prune_base)} paths would be removed"

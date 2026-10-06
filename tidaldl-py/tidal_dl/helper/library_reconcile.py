@@ -628,10 +628,21 @@ def apply_path_migrations(
     return kept, failed
 
 
+def _compare_path(path: str | Path) -> Path:
+    """Canonical path for containment checks.
+
+    ``os.walk`` onerror strings keep the platform separator. Folding ``\\``
+    to ``/`` before :func:`canon_path` makes the same album compare equal on
+    every OS, while ``Album 10`` stays outside ``Album 1``.
+    """
+    text = os.fspath(path).replace("\\", "/")
+    return Path(canon_path(text))
+
+
 def _is_under(path: str, prefixes: Iterable[str]) -> bool:
-    candidate = Path(canon_path(path))
+    candidate = _compare_path(path)
     for prefix in prefixes:
-        root = Path(canon_path(prefix))
+        root = _compare_path(prefix)
         try:
             if candidate == root or candidate.is_relative_to(root):
                 return True
@@ -976,6 +987,11 @@ class PathReconciler:
 
         self._emit(on_progress, phase="walking")
         current, unreadable = self.walk_dirs()
+        # A configured root that cannot be listed must not backfill, migrate,
+        # mark missing, or rewrite signatures for the roots that did list.
+        unread_canon = {canon_path(path) for path in unreadable}
+        if any(canon_path(root) in unread_canon for root in self.roots):
+            return PathReconcileResult(unchanged=True, skipped_dirs=sorted(unreadable))
         if not current and unreadable:
             return PathReconcileResult(unchanged=True, skipped_dirs=sorted(unreadable))
         # The scan signature fast path never stats legacy rows. This walk

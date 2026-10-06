@@ -19,6 +19,7 @@ from tests.library_scan_support import (
     build_legacy_library,
     dir_count,
     fake_metadata,
+    legacy_row,
     open_db,
     rows_by_path,
     skip_unless_chmod_blocks,
@@ -295,6 +296,171 @@ def test_download_registration_records_identity(library_scan_env, monkeypatch):
     registry.register_downloaded_track(path)
     row = rows_by_path(tmp_path)[str(path)]
     assert row["file_size"] == path.stat().st_size and row["file_inode"] is not None
+
+
+def test_under_any_dir_is_separator_agnostic_and_path_aware():
+    """Unreadable-dir prune must keep the album and spare the sibling name."""
+    from tidal_dl.gui.api.library import _under_any_dir
+
+    slash_album = {"/music/Album 1"}
+    assert _under_any_dir("/music/Album 1/01 Song.flac", slash_album) is True
+    assert _under_any_dir("/music/Album 1", slash_album) is True
+    assert _under_any_dir("/music/Album 10/01 Song.flac", slash_album) is False
+    assert _under_any_dir("/music/Album 10", slash_album) is False
+
+    windows_album = {r"C:\music\Album 1"}
+    assert _under_any_dir(r"C:\music\Album 1\01 Song.flac", windows_album) is True
+    assert _under_any_dir(r"C:\music\Album 1", windows_album) is True
+    assert _under_any_dir(r"C:\music\Album 10\01 Song.flac", windows_album) is False
+    assert _under_any_dir("/music/Album 1/01 Song.flac", {r"\music\Album 1"}) is True
+    assert _under_any_dir(r"\music\Album 10\01 Song.flac", {"/music/Album 1"}) is False
+    assert _under_any_dir("/music/Album 1/01 Song.flac", set()) is False
+
+
+def test_discovery_oserror_does_not_mark_existing_row_missing(library_scan_env, monkeypatch):
+    """A file whose lstat fails stays put, and is not indexed as a new row."""
+    import pathlib
+
+    lib, root, tmp_path = library_scan_env
+    existing = root / "Artist" / "Album" / "01 Kept.wav"
+    healthy = root / "Artist" / "Album" / "02 Healthy.wav"
+    unseen = root / "Artist" / "Album" / "03 Unseen.wav"
+    write_wav(existing, 8)
+    write_wav(healthy, 8)
+    write_wav(unseen, 8)
+    DURATIONS[existing.name] = 8
+    DURATIONS[healthy.name] = 8
+    DURATIONS[unseen.name] = 8
+    db = open_db(tmp_path)
+    legacy_row(db, existing, 8)
+    db.commit()
+    db.close()
+
+    real_lstat = pathlib.Path.lstat
+
+    def flaky_lstat(self, *args, **kwargs):
+        if self.name in {"01 Kept.wav", "03 Unseen.wav"}:
+            raise OSError("lstat failed")
+        return real_lstat(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "lstat", flaky_lstat)
+
+    def run(rescan: bool) -> None:
+        lib._scan_running = True
+        lib._background_scan(rescan)
+        assert lib._scan_progress["phase"] == "done", lib._scan_progress
+        assert lib._scan_progress["error"] is None
+        db = open_db(tmp_path)
+        kept = db.get(str(existing))
+        fresh = db.get(str(unseen))
+        good = db.get(str(healthy))
+        db.close()
+        assert kept is not None and kept["missing_since"] is None
+        assert fresh is None
+        assert good is not None and good["missing_since"] is None
+
+    run(False)
+    run(True)
+
+
+def test_rescan_heals_renamed_folder(library_scan_env):
+    """rescan=true migrates a renamed folder before it re-reads the file."""
+    lib, root, tmp_path = library_scan_env
+    old_dir = root / "Artist" / "Old Album"
+    track = old_dir / "01 Song.wav"
+    write_wav(track, 12)
+    DURATIONS[track.name] = 12
+    lib._scan_running = True
+    lib._background_scan(False)
+    assert lib._scan_progress["phase"] == "done", lib._scan_progress
+
+    db = open_db(tmp_path)
+    stored = db.get(str(track))
+    assert stored is not None
+    db._conn.execute(
+        "UPDATE scanned SET play_count = 4 WHERE path = ?",
+        (stored["path"],),
+    )
+    db.commit()
+    db.close()
+
+    new_dir = root / "Artist" / "New Album"
+    old_dir.rename(new_dir)
+    moved = new_dir / track.name
+    lib._scan_running = True
+    lib._background_scan(True)
+    assert lib._scan_progress["phase"] == "done", lib._scan_progress
+    assert lib._scan_progress["error"] is None
+
+    db = open_db(tmp_path)
+    old = db.get(str(track))
+    new = db.get(str(moved))
+    rows = db.identity_rows()
+    db.close()
+    assert old is None
+    assert new is not None
+    assert new["missing_since"] is None
+    assert new["play_count"] == 4
+    assert len(rows) == 1
+    assert all(row["missing_since"] is None for row in rows)
+
+
+def _scan_snapshot(tmp_path: Path) -> tuple:
+    db = open_db(tmp_path)
+    rows = tuple(sorted(
+        (
+            row["path"],
+            row["missing_since"],
+            row["file_size"],
+            row["file_mtime"],
+            row["file_inode"],
+            row["file_device"],
+        )
+        for row in db.identity_rows()
+    ))
+    signatures = tuple(sorted(db.dir_signatures().items()))
+    db.close()
+    return rows, signatures
+
+
+@skip_unless_chmod_blocks
+def test_reconcile_unlistable_root_writes_nothing(library_scan_env, monkeypatch, chmod_restore):
+    """One unlistable root aborts reconcile before any other root is written."""
+    lib, _root, tmp_path = library_scan_env
+    readable = tmp_path / "library-a"
+    locked = tmp_path / "library-b"
+    live = readable / "Artist" / "Album" / "01 Live.wav"
+    gone = readable / "Artist" / "Album" / "02 Gone.wav"
+    new = readable / "Artist" / "Album" / "03 New.wav"
+    hidden = locked / "Artist" / "Album" / "01 Hidden.wav"
+    write_wav(live, 8)
+    write_wav(gone, 8)
+    write_wav(new, 8)
+    write_wav(hidden, 8)
+    db = open_db(tmp_path)
+    for path, duration in ((live, 8), (gone, 9), (hidden, 8)):
+        legacy_row(db, path, duration)
+    db.commit()
+    db.close()
+    gone.unlink()
+
+    class FakeSettings:
+        data = SimpleNamespace(download_base_path=str(readable), scan_paths=str(locked))
+
+    monkeypatch.setattr(lib, "Settings", FakeSettings)
+    os.chmod(locked, 0)
+    chmod_restore.append(locked)
+    before = _scan_snapshot(tmp_path)
+    assert len(before[0]) == 3
+    assert before[1] == ()
+    assert all(row[1] is None and row[2] is None for row in before[0])
+
+    lib._reconcile_running = True
+    lib._background_path_reconcile()
+    progress = lib._reconcile_progress
+    assert progress["phase"] == "error", progress
+    assert progress["error"] == "Library folder is not readable — library kept"
+    assert _scan_snapshot(tmp_path) == before
 
 
 def test_linux_nfd_named_new_file_is_stored_under_nfc_path(library_scan_env, monkeypatch):
