@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -29,7 +30,7 @@ from tidal_dl.playlist_sync.mount import download_path_available
 from tidal_dl.playlist_sync.sink import NullPlexSink, PlexSink
 from tidal_dl.playlist_sync.source import Source
 from tidal_dl.playlist_sync.tags import read_audio_tags
-from tidal_dl.playlist_sync.unicode_norm import apply_prefix_map
+from tidal_dl.playlist_sync.unicode_norm import apply_prefix_map, nfc_path
 from tidal_dl.playlist_sync.verify import verify
 
 LibraryLookup = Callable[[Track], list[Candidate]]
@@ -67,6 +68,7 @@ class _Work:
     tag_reader: TagReader
     downloads: DownloadClient | None
     path_prefixes: Mapping[str, str] = field(default_factory=dict)
+    file_exists: Callable[[str], bool] = os.path.exists
     report: CycleReport = field(default_factory=CycleReport)
     _downloads_ready: DownloadClient | None = None
 
@@ -125,6 +127,7 @@ def run_cycle(
     force: bool = False,
     download_path_ready: Callable[[str], bool] | None = None,
     path_prefixes: Mapping[str, str] | None = None,
+    file_exists: Callable[[str], bool] | None = None,
 ) -> CycleReport:
     """Plan or run one append-only sync cycle.
 
@@ -172,6 +175,7 @@ def run_cycle(
         tag_reader=tag_reader or read_audio_tags,
         downloads=downloads,
         path_prefixes=dict(path_prefixes or {}),
+        file_exists=file_exists or os.path.exists,
     )
     readers = list(sources) if sources is not None else _default_sources(tidal)
     groups = _collect_groups(readers, cfg.allowlist, governor)
@@ -346,7 +350,8 @@ def _consider(
         placed.append(_Placed(track, prior.action, entry))
         return
 
-    local_state, local_candidate, local_result = _local(work, track)
+    local_state, local_candidate, local_result, stale = _local(work, track)
+    notes = ("stale_library_row",) if stale else ()
     if local_state == "confirmed":
         union.append(track)
         _keep(
@@ -384,14 +389,68 @@ def _consider(
         )
         return
 
+    if local_state == "none":
+        plex_hit = _plex_library(work, track)
+        if plex_hit is not None:
+            plex_state, plex_track, plex_choice, plex_verified = plex_hit
+            if plex_state == "confirmed" and plex_track is not None:
+                union.append(track)
+                _keep(
+                    work,
+                    report,
+                    placed,
+                    track,
+                    name_norm,
+                    "append",
+                    "confirmed",
+                    "matched_local",
+                    plex_choice,
+                    plex_verified,
+                    bucket="added",
+                    already_local=True,
+                    notes=notes,
+                )
+                if not work.cfg.dry_run:
+                    work.sink.append(group.name, [plex_track])
+                    work.ledger.set_status(track, name_norm, "added", seen_at=work.seen_at)
+                return
+            if plex_state == "review":
+                union.append(track)
+                _keep(
+                    work,
+                    report,
+                    placed,
+                    track,
+                    name_norm,
+                    "review",
+                    "review",
+                    "needs_review",
+                    plex_choice,
+                    plex_verified,
+                    bucket="needs_review",
+                    notes=notes,
+                )
+                return
+
     row = work.ledger.get_track(track.source, track.source_track_id, name_norm)
     if row and row["last_failure_day"] == work.day and row["status"] == "unobtainable":
         union.append(track)
-        _keep(work, report, placed, track, name_norm, "unobtainable", "reject", "unobtainable", bucket="unobtainable")
+        _keep(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            "unobtainable",
+            "reject",
+            "unobtainable",
+            bucket="unobtainable",
+            notes=notes,
+        )
         return
     if row and row["last_failure_day"] == work.day and row["status"] == "failed":
         union.append(track)
-        entry = _entry(track, "download", "reject", None, None)
+        entry = _entry(track, "download", "reject", None, None, notes=notes)
         entry["status"] = "failed"
         report.tracks.append(entry)
         work.report.skipped.append(entry)
@@ -411,6 +470,7 @@ def _consider(
             "unobtainable",
             bucket="unobtainable",
             last_failure_day=work.day,
+            notes=notes,
         )
         return
 
@@ -429,18 +489,41 @@ def _consider(
             choice_candidate,
             choice_result,
             bucket="needs_review",
+            notes=notes,
         )
         return
     if choice == "unmatched" or download_id is None:
         union.append(track)
-        _keep(work, report, placed, track, name_norm, "review", "reject", "unmatched", bucket="unmatched")
+        _keep(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            "review",
+            "reject",
+            "unmatched",
+            bucket="unmatched",
+            notes=notes,
+        )
         return
 
     union.append(track)
     if work.cfg.dry_run:
-        _plan_download(work, report, placed, track, name_norm, choice_candidate, choice_result)
+        _plan_download(work, report, placed, track, name_norm, choice_candidate, choice_result, notes=notes)
         return
-    _run_download(work, group, report, placed, track, name_norm, download_id, choice_candidate, choice_result)
+    _run_download(
+        work,
+        group,
+        report,
+        placed,
+        track,
+        name_norm,
+        download_id,
+        choice_candidate,
+        choice_result,
+        notes=notes,
+    )
 
 
 def _plan_download(
@@ -451,9 +534,10 @@ def _plan_download(
     name_norm: str,
     candidate: Candidate | None,
     result: VerifyResult | None,
+    notes: tuple[str, ...] = (),
 ) -> None:
     if not work.governor.can_download():
-        entry = _entry(track, "download", "confirmed", candidate, result)
+        entry = _entry(track, "download", "confirmed", candidate, result, notes=notes)
         entry["status"] = "skipped"
         report.tracks.append(entry)
         work.report.skipped.append(entry)
@@ -461,7 +545,7 @@ def _plan_download(
         return
     work.governor.cycle_count += 1
     report.to_download += 1
-    entry = _entry(track, "download", "confirmed", candidate, result)
+    entry = _entry(track, "download", "confirmed", candidate, result, notes=notes)
     report.tracks.append(entry)
     placed.append(_Placed(track, "download", entry))
     work.ledger.set_status(track, name_norm, "seen", seen_at=work.seen_at)
@@ -477,6 +561,7 @@ def _run_download(
     download_id: int,
     candidate: Candidate | None,
     result: VerifyResult | None,
+    notes: tuple[str, ...] = (),
 ) -> None:
     work.ledger.set_status(track, name_norm, "queued", seen_at=work.seen_at)
 
@@ -487,7 +572,7 @@ def _run_download(
 
     outcome = work.governor.download(once)
     if outcome is None:
-        entry = _entry(track, "download", "confirmed", candidate, result)
+        entry = _entry(track, "download", "confirmed", candidate, result, notes=notes)
         entry["status"] = "skipped"
         report.tracks.append(entry)
         work.report.skipped.append(entry)
@@ -497,7 +582,7 @@ def _run_download(
 
     report.to_download += 1
     if outcome.http_status in (401, 429) or outcome.status != "completed":
-        entry = _entry(track, "download", "reject", candidate, result)
+        entry = _entry(track, "download", "reject", candidate, result, notes=notes)
         entry["status"] = "failed"
         report.tracks.append(entry)
         work.report.skipped.append(entry)
@@ -507,7 +592,7 @@ def _run_download(
 
     checked = _post_download(work, track, outcome)
     if checked is None:
-        entry = _entry(track, "append", "confirmed", candidate, result)
+        entry = _entry(track, "append", "confirmed", candidate, result, notes=notes)
         entry["status"] = "added"
         report.tracks.append(entry)
         work.report.downloaded.append(entry)
@@ -519,7 +604,7 @@ def _run_download(
         return
 
     mismatch_candidate, mismatch = checked
-    entry = _entry(track, "review", mismatch.confidence, mismatch_candidate, mismatch)
+    entry = _entry(track, "review", mismatch.confidence, mismatch_candidate, mismatch, notes=notes)
     entry["status"] = "download_mismatch"
     report.tracks.append(entry)
     work.report.download_mismatch.append(entry)
@@ -585,10 +670,60 @@ def _apple_choice(
     return None, None, None, "unmatched"
 
 
-def _local(work: _Work, track: Track) -> tuple[str, Candidate | None, VerifyResult | None]:
+def _local(work: _Work, track: Track) -> tuple[str, Candidate | None, VerifyResult | None, bool]:
+    """Return match state plus whether every library row pointed at a missing file."""
     if work.library is None:
-        return "none", None, None
-    return _best(track, work.library(track) or [])
+        return "none", None, None, False
+    stale = False
+    live: list[Candidate] = []
+    for candidate in work.library(track) or []:
+        if candidate.path and not work.file_exists(nfc_path(candidate.path)):
+            stale = True
+            continue
+        live.append(candidate)
+    state, chosen, result = _best(track, live)
+    if state != "none":
+        return state, chosen, result, False
+    return "none", None, None, stale
+
+
+def _plex_library(
+    work: _Work,
+    track: Track,
+) -> tuple[str, Track | None, Candidate | None, VerifyResult | None] | None:
+    finder = getattr(work.sink, "find", None)
+    if finder is None:
+        return None
+    found = list(finder(track) or [])
+    if not found:
+        return None
+    state, candidate, result = _judge(track, [candidate_from_track(item) for item in found])
+    if state == "none":
+        return None
+    chosen = None
+    if candidate is not None:
+        chosen = next((item for item in found if item.source_track_id == candidate.id), found[0])
+    return state, chosen, candidate, result
+
+
+def _judge(
+    track: Track,
+    candidates: list[Candidate],
+) -> tuple[str, Candidate | None, VerifyResult | None]:
+    confirmed: list[tuple[Candidate, VerifyResult]] = []
+    review: list[tuple[Candidate, VerifyResult]] = []
+    for candidate in candidates:
+        result = verify(track, candidate)
+        if result.confidence == "confirmed":
+            confirmed.append((candidate, result))
+        elif result.confidence == "review":
+            review.append((candidate, result))
+    if len(confirmed) > 1 or review:
+        pair = confirmed[0] if confirmed else review[0]
+        return "review", pair[0], pair[1]
+    if len(confirmed) == 1:
+        return "confirmed", confirmed[0][0], confirmed[0][1]
+    return "none", None, None
 
 
 def _best(
@@ -636,8 +771,9 @@ def _keep(
     bucket: str | None = None,
     already_local: bool = False,
     last_failure_day: str | None = None,
+    notes: tuple[str, ...] = (),
 ) -> None:
-    entry = _entry(track, action, confidence, candidate, result)
+    entry = _entry(track, action, confidence, candidate, result, notes=notes)
     if status:
         entry["status"] = status
     report.tracks.append(entry)
@@ -671,7 +807,10 @@ def _entry(
     confidence: str,
     candidate: Candidate | None,
     result: VerifyResult | None,
+    notes: tuple[str, ...] = (),
 ) -> dict[str, Any]:
+    reasons = [] if result is None else list(result.reasons)
+    reasons.extend(notes)
     return {
         "source": track.source,
         "source_track": track.source_view(),
@@ -679,6 +818,7 @@ def _entry(
         "fields_matched": [] if result is None else result.fields_matched(),
         "confidence": confidence,
         "action": action,
+        "reasons": reasons,
     }
 
 

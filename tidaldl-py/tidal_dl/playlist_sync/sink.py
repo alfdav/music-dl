@@ -14,6 +14,9 @@ class PlexSink(Protocol):
     def append(self, name: str, tracks: list[Track]) -> None:
         """Append tracks. Never remove or reorder existing rows."""
 
+    def find(self, track: Track) -> list[Track]:
+        """Candidate tracks already in the Plex library, not only this playlist."""
+
 
 class NullPlexSink:
     def list_tracks(self, name: str) -> list[Track]:
@@ -21,3 +24,6 @@ class NullPlexSink:
 
     def append(self, name: str, tracks: list[Track]) -> None:
         return None
+
+    def find(self, track: Track) -> list[Track]:
+        return []

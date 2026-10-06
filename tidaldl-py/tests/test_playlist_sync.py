@@ -87,7 +87,7 @@ def _playlist(source: str, playlist_id: str, name: str, updated: str | None, cou
 
 
 def _candidate(title: str, *, artist: str = ARTIST, duration: float | None = 180, isrc: str | None = None,
-               album: str = "", version: str = "", ident: str = "c1") -> Candidate:
+               album: str = "", version: str = "", ident: str = "c1", path: str = "") -> Candidate:
     return Candidate(
         id=ident,
         title=title,
@@ -96,6 +96,7 @@ def _candidate(title: str, *, artist: str = ARTIST, duration: float | None = 180
         isrc=isrc,
         album=album,
         version=version,
+        path=path,
     )
 
 
@@ -127,9 +128,11 @@ class _Source:
 
 
 class _Sink:
-    def __init__(self, tracks: list[Track] | None = None):
+    def __init__(self, tracks: list[Track] | None = None, found: list[Track] | None = None):
         self.rows = list(tracks or [])
+        self.found = list(found or [])
         self.appends: list[tuple[str, list[str]]] = []
+        self.find_calls: list[str] = []
 
     def list_tracks(self, name: str) -> list[Track]:
         return list(self.rows)
@@ -137,6 +140,10 @@ class _Sink:
     def append(self, name: str, tracks: list[Track]) -> None:
         self.appends.append((name, [track.source_track_id for track in tracks]))
         self.rows.extend(tracks)
+
+    def find(self, track: Track) -> list[Track]:
+        self.find_calls.append(track.source_track_id)
+        return list(self.found)
 
 
 class _Downloads:
@@ -198,7 +205,7 @@ def _tags_for(tracks: list[Track]):
 
 def _run(tmp_path: Path, source: _Source, *, sink=None, downloads=None, library=None, search=None,
          tag_reader=None, settings=None, now=None, rng=None, auth=None, ledger=None,
-         download_path_ready=None, path_prefixes=None):
+         download_path_ready=None, path_prefixes=None, file_exists=None):
     pacing = _ClockRng() if rng is None else rng
     store = ledger or Ledger(tmp_path / "playlist_sync.db")
     report = run_cycle(
@@ -218,6 +225,7 @@ def _run(tmp_path: Path, source: _Source, *, sink=None, downloads=None, library=
         auth_state=auth or (lambda: "credentials_ready"),
         download_path_ready=download_path_ready or (lambda _path: True),
         path_prefixes=path_prefixes,
+        file_exists=file_exists,
     )
     return report, store, pacing
 
@@ -935,3 +943,89 @@ def test_nfd_and_nfc_playlist_title_and_path_match(tmp_path: Path):
     assert report.playlists[0].tidal_count == 1
     assert report.playlists[0].apple_count == 1
     assert seen == [f"/library/{SONG_NFC}/track.flac"]
+
+
+def test_stale_library_row_is_not_present_unless_plex_confirms(tmp_path: Path):
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    missing = unicodedata.normalize("NFD", f"/music/{SONG_NFC}.flac")
+    looked: list[str] = []
+
+    def exists(path: str) -> bool:
+        looked.append(path)
+        return False
+
+    def library(_track: Track) -> list[Candidate]:
+        return [_candidate("Example Song", isrc="XX0000000001", ident="row-1", path=missing)]
+
+    empty = _Sink()
+    downloads = _Downloads()
+    report, _, _ = _run(
+        tmp_path / "missing",
+        source,
+        sink=empty,
+        downloads=downloads,
+        library=library,
+        tag_reader=_tags_for([row]),
+        file_exists=exists,
+    )
+    assert looked == [nfc_path(missing)]
+    assert downloads.calls == [[1001]]
+    assert report.playlists[0].to_download == 1
+    assert report.playlists[0].already_local == 0
+    assert "stale_library_row" in report.playlists[0].tracks[0]["reasons"]
+
+    plex_hit = _track("plex", "plex-1", "Example Song", isrc="XX0000000001", duration=180)
+    sink = _Sink(found=[plex_hit])
+    held = _Downloads()
+    report, _, _ = _run(
+        tmp_path / "plex",
+        source,
+        sink=sink,
+        downloads=held,
+        library=library,
+        file_exists=exists,
+    )
+    assert held.calls == []
+    assert report.playlists[0].to_download == 0
+    assert report.playlists[0].already_local == 1
+    assert report.playlists[0].tracks[0]["action"] == "append"
+    assert "stale_library_row" in report.playlists[0].tracks[0]["reasons"]
+    assert sink.appends == [("Playlist A", ["plex-1"])]
+
+
+def test_plex_index_appends_when_library_db_has_no_row(tmp_path: Path):
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    plex_hit = _track("plex", "plex-1", "Example Song", isrc="XX0000000001", duration=180)
+    sink = _Sink(found=[plex_hit])
+    downloads = _Downloads()
+    report, _, _ = _run(tmp_path, source, sink=sink, downloads=downloads, library=lambda _item: [])
+    assert downloads.calls == []
+    assert sink.find_calls == ["1001"]
+    assert sink.appends == [("Playlist A", ["plex-1"])]
+    assert report.playlists[0].already_local == 1
+    assert report.playlists[0].to_download == 0
+
+
+def test_plex_cover_and_other_artist_are_not_accepted(tmp_path: Path):
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    cover = _track("plex", "cover-1", "Example Song (Cover)", artist=OTHER, duration=180, isrc="XX0000000099")
+    other = _track("plex", "other-1", "Example Song", artist=OTHER, duration=180, isrc="XX0000000098")
+    sink = _Sink(found=[cover, other])
+    downloads = _Downloads()
+    report, _, _ = _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=downloads,
+        library=lambda _item: [],
+        tag_reader=_tags_for([row]),
+    )
+    assert sink.find_calls == ["1001"]
+    assert downloads.calls == [[1001]]
+    assert report.playlists[0].already_local == 0
+    assert report.playlists[0].to_download == 1
+    assert all("cover-1" not in ids and "other-1" not in ids for _name, ids in sink.appends)
+    assert report.needs_review == []

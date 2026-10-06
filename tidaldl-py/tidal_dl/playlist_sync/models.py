@@ -68,6 +68,7 @@ class Candidate:
     isrc: str | None = None
     album: str = ""
     version: str = ""
+    path: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", nfc(self.id))
@@ -75,6 +76,7 @@ class Candidate:
         object.__setattr__(self, "artist", nfc(self.artist))
         object.__setattr__(self, "album", nfc(self.album))
         object.__setattr__(self, "version", nfc(self.version))
+        object.__setattr__(self, "path", nfc(self.path))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -99,7 +101,9 @@ def candidate_from_track(track: Track) -> Candidate:
 
 
 def candidate_from_mapping(row: dict[str, Any]) -> Candidate:
-    raw_id = row.get("id", row.get("path", row.get("tidal_id", "")))
+    raw_id = row.get("id", row.get("tidal_id"))
+    if raw_id is None:
+        raw_id = row.get("path", "")
     return Candidate(
         id="" if raw_id is None else str(raw_id),
         title=str(row.get("title") or row.get("name") or ""),
@@ -108,6 +112,7 @@ def candidate_from_mapping(row: dict[str, Any]) -> Candidate:
         duration=_duration(row.get("duration")),
         isrc=(str(row.get("isrc")).strip() or None) if row.get("isrc") else None,
         version=str(row.get("version") or ""),
+        path=str(row.get("path") or ""),
     )
 
 
