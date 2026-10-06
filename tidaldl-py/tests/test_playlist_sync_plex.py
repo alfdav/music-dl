@@ -581,7 +581,7 @@ def test_second_pending_track_does_not_wait_another_timeout(tmp_path: Path):
     assert [item["status"] for item in report.pending_plex] == ["pending_plex", "pending_plex"]
     assert report.added == []
     assert sum(clock.sleeps) == 600
-    assert server.scanned_folders == [f"{SERVER}/Example Artist"]
+    assert server.scanned_folders == [f"{SERVER}/Example Artist", f"{SERVER}/Other Artist"]
     assert not any(call["method"] in {"POST", "PUT", "DELETE"} for call in session.calls)
     for track_id, filename in (("1001", "Example Song.flac"), ("1002", "Other Song.flac")):
         stored = store.get_track("tidal", track_id, normalize_playlist_name("Playlist A"))
