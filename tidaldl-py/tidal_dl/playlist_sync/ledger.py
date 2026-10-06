@@ -96,6 +96,14 @@ class Ledger:
                     updated_at TEXT
                 )"""
             )
+            self._conn.execute(
+                """CREATE TABLE IF NOT EXISTS plex_added (
+                    name_norm TEXT NOT NULL,
+                    rating_key TEXT NOT NULL,
+                    added_at TEXT,
+                    PRIMARY KEY (name_norm, rating_key)
+                )"""
+            )
 
         self._write(statements)
 
@@ -310,6 +318,29 @@ class Ledger:
             )
 
         self._write(run)
+
+    def remember_plex_added(self, name_norm: str, rating_key: str, at: str) -> None:
+        """Remember a rating key this sync wrote onto a playlist."""
+        if not name_norm or not rating_key:
+            return
+
+        def run() -> None:
+            self._conn.execute(
+                """INSERT INTO plex_added (name_norm, rating_key, added_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(name_norm, rating_key) DO NOTHING""",
+                (name_norm, rating_key, at),
+            )
+
+        self._write(run)
+
+    def plex_added_keys(self, name_norm: str) -> set[str]:
+        """Rating keys this sync itself added for one playlist."""
+        rows = self._conn.execute(
+            "SELECT rating_key FROM plex_added WHERE name_norm = ?",
+            (name_norm,),
+        ).fetchall()
+        return {str(row["rating_key"]) for row in rows}
 
     def downloads_on(self, day: str) -> int:
         row = self._conn.execute(
