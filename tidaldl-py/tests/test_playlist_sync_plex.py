@@ -1281,3 +1281,77 @@ def test_deleted_playlist_is_not_recreated_for_a_removed_key(tmp_path: Path):
     assert created.rating_keys == ["5003"]
     assert server.playlists[0]["items"] == ["5003"]
     assert ledger.plex_added_keys(normalize_playlist_name("Playlist A")) == {"5001", "5003"}
+
+
+def test_missing_downloaded_file_is_reviewed_once_per_cycle(tmp_path: Path):
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    ledger = Ledger(tmp_path / "playlist_sync.db")
+    name = normalize_playlist_name("Playlist A")
+    ledger.set_status(
+        row,
+        name,
+        "downloaded",
+        seen_at="2026-10-06T00:00:00+00:00",
+        local_path=_local("Example Song"),
+    )
+
+    class Sink:
+        def __init__(self) -> None:
+            self.appends = 0
+
+        def list_tracks(self, _name: str) -> list[Track]:
+            return []
+
+        def append(self, _name: str, _tracks: list[Track], paths=None) -> None:
+            self.appends += 1
+
+        def find(self, _track: Track) -> list[Track]:
+            return []
+
+    def absent(_path: str) -> bool:
+        return False
+
+    sink = Sink()
+    downloads = _Downloads()
+    report, store, _pacing = _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=downloads,
+        ledger=ledger,
+        library=lambda _item: [],
+        file_exists=absent,
+    )
+    assert downloads.calls == []
+    assert sink.appends == 0
+    assert report.pending_plex == []
+    assert len(report.needs_review) == 1
+    reviewed = report.needs_review[0]
+    assert reviewed["action"] == "review"
+    assert reviewed["status"] == "needs_review"
+    assert reviewed["reasons"] == ["file_missing"]
+    assert reviewed["source_track"]["title"] == "Example Song"
+    assert report.playlists[0].needs_review == [reviewed]
+    stored = store.get_track("tidal", "1001", name)
+    assert stored is not None
+    assert stored["status"] == "downloaded"
+
+    sink_again = Sink()
+    downloads_again = _Downloads()
+    again, store, _pacing = _run(
+        tmp_path,
+        source,
+        sink=sink_again,
+        downloads=downloads_again,
+        ledger=ledger,
+        library=lambda _item: [],
+        file_exists=absent,
+    )
+    assert downloads_again.calls == []
+    assert sink_again.appends == 0
+    assert again.pending_plex == []
+    assert len(again.needs_review) == 1
+    assert again.needs_review[0]["reasons"] == ["file_missing"]
+    assert again.playlists[0].needs_review[0]["status"] == "needs_review"
+    assert store.get_track("tidal", "1001", name)["status"] == "downloaded"
