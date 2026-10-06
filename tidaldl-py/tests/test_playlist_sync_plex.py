@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import subprocess
@@ -587,6 +588,121 @@ def test_second_pending_track_does_not_wait_another_timeout(tmp_path: Path):
         assert stored is not None
         assert stored["status"] == "downloaded"
         assert stored["local_path"].endswith(filename)
+
+
+def _forbid_login_and_bulk_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("auth or bulk sync was called")
+
+    import tidal_dl.gui.api.playlists as playlists_api
+    import tidal_dl.gui.api.settings as settings_api
+    import tidal_dl.gui.services.download_job_service as jobs
+    from tidal_dl import cli_sync
+
+    monkeypatch.setattr(playlists_api, "sync_playlist", forbidden, raising=False)
+    monkeypatch.setattr(settings_api, "ensure_tidal_logged_in", forbidden, raising=False)
+    monkeypatch.setattr(cli_sync, "sync", forbidden, raising=False)
+    monkeypatch.setattr(jobs.DownloadJobService, "enqueue_upgrade", forbidden, raising=False)
+
+
+def _two_playlist_source() -> _Source:
+    first = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    second = _track("tidal", "1002", "Other Song", artist=OTHER, isrc="XX0000000002", duration=200)
+    later = _track(
+        "tidal",
+        "1002",
+        "Other Song",
+        artist=OTHER,
+        isrc="XX0000000002",
+        duration=200,
+        playlist_name="Playlist B",
+    )
+    return _Source(
+        "tidal",
+        [
+            (_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [first, second]),
+            (_playlist("tidal", "pl-b", "Playlist B", "2026-01-01"), [later]),
+        ],
+    )
+
+
+def _assert_plex_read_halted(report, downloads: _Downloads, session: FakeSession, caplog: pytest.LogCaptureFixture) -> None:
+    assert report.halted_reason == "plex_unavailable"
+    assert downloads.calls == []
+    assert report.downloaded == []
+    assert report.added == []
+    assert report.pending_plex == []
+    assert all(playlist.to_download == 0 for playlist in report.playlists)
+    assert _mutations(session) == []
+    assert not any(call["method"] in {"POST", "PUT", "DELETE"} for call in session.calls)
+    dumped = json.dumps(report.to_dict())
+    assert TOKEN not in dumped
+    assert TOKEN not in caplog.text
+
+
+@pytest.mark.parametrize("status", [500, 0])
+def test_list_tracks_error_halts_as_plex_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    status: int,
+):
+    caplog.set_level(logging.DEBUG)
+    _forbid_login_and_bulk_sync(monkeypatch)
+    server, session, ledger, _client, sink, _clock = _stack(tmp_path)
+    server.failures.append(("GET", "/playlists", status))
+    source = _two_playlist_source()
+    downloads = _Downloads(
+        {
+            1001: DownloadResult(status="completed", path=_local("Example Song")),
+            1002: DownloadResult(status="completed", path=_local("Other Song")),
+        }
+    )
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=downloads,
+        ledger=ledger,
+        library=lambda _item: [],
+        tag_reader=_tags,
+        file_exists=_exists,
+    )
+    assert source.track_calls == []
+    assert server.playlists == []
+    _assert_plex_read_halted(report, downloads, session, caplog)
+
+
+def test_find_401_halts_as_plex_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    caplog.set_level(logging.DEBUG)
+    _forbid_login_and_bulk_sync(monkeypatch)
+    server, session, ledger, _client, sink, _clock = _stack(tmp_path)
+    server.failures.append(("GET", f"/library/sections/{SECTION}/all", 401))
+    source = _two_playlist_source()
+    downloads = _Downloads(
+        {
+            1001: DownloadResult(status="completed", path=_local("Example Song")),
+            1002: DownloadResult(status="completed", path=_local("Other Song")),
+        }
+    )
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=downloads,
+        ledger=ledger,
+        library=lambda _item: [],
+        tag_reader=_tags,
+        file_exists=_exists,
+    )
+    assert source.track_calls == ["pl-a"]
+    assert server.playlists == []
+    assert report.halted_reason != "401"
+    _assert_plex_read_halted(report, downloads, session, caplog)
 
 
 def test_unmapped_path_makes_no_plex_calls(tmp_path: Path):
