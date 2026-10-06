@@ -163,34 +163,43 @@ def run_cycle(
     if not ready(cfg.download_base_path):
         return CycleReport(halted_reason="download_path_unavailable")
 
-    # Callers inject a fake. Otherwise each track gets one short library read.
-    lookup = library if library is not None else _library_from_db
-    work = _Work(
-        cfg=cfg,
-        ledger=store,
-        sink=sink or NullPlexSink(),
-        governor=governor,
-        day=day,
-        seen_at=moment.isoformat(),
-        library=lookup,
-        search=search,
-        tag_reader=tag_reader or read_audio_tags,
-        downloads=downloads,
-        path_prefixes=dict(path_prefixes or {}),
-        file_exists=file_exists or os.path.exists,
-    )
-    readers = list(sources) if sources is not None else _default_sources(tidal)
-    groups = _collect_groups(readers, cfg.allowlist, governor)
-    if governor.halted_reason:
+    # An injected lookup is used as-is. Otherwise one connection covers the cycle.
+    if library is not None:
+        lookup = library
+        handle: _LibraryHandle | None = None
+    else:
+        handle = _LibraryHandle()
+        lookup = handle
+    try:
+        work = _Work(
+            cfg=cfg,
+            ledger=store,
+            sink=sink or NullPlexSink(),
+            governor=governor,
+            day=day,
+            seen_at=moment.isoformat(),
+            library=lookup,
+            search=search,
+            tag_reader=tag_reader or read_audio_tags,
+            downloads=downloads,
+            path_prefixes=dict(path_prefixes or {}),
+            file_exists=file_exists or os.path.exists,
+        )
+        readers = list(sources) if sources is not None else _default_sources(tidal)
+        groups = _collect_groups(readers, cfg.allowlist, governor)
+        if governor.halted_reason:
+            work.report.halted_reason = governor.halted_reason
+            return work.report
+
+        for group in groups.values():
+            if governor.halted_reason:
+                break
+            _sync_group(work, group)
         work.report.halted_reason = governor.halted_reason
         return work.report
-
-    for group in groups.values():
-        if governor.halted_reason:
-            break
-        _sync_group(work, group)
-    work.report.halted_reason = governor.halted_reason
-    return work.report
+    finally:
+        if handle is not None:
+            handle.close()
 
 
 def _default_sources(tidal: Any | None) -> list[Source]:
@@ -885,6 +894,26 @@ def _as_int(value: object) -> int | None:
         return None
 
 
+class _LibraryHandle:
+    """One library.db read for a cycle. Opened on the first ISRC lookup."""
+
+    def __init__(self) -> None:
+        self._db: Any | None = None
+
+    def __call__(self, track: Track) -> list[Candidate]:
+        if not track.isrc:
+            return []
+        if self._db is None:
+            self._db = open_library_db()
+        return library_candidates(self._db, track)
+
+    def close(self) -> None:
+        database = self._db
+        self._db = None
+        if database is not None:
+            database.close()
+
+
 def open_library_db() -> Any:
     """Open library.db for one read. The caller closes it."""
     from pathlib import Path
@@ -895,17 +924,6 @@ def open_library_db() -> Any:
     database = LibraryDB(Path(path_config_base()) / "library.db")
     database.open()
     return database
-
-
-def _library_from_db(track: Track) -> list[Candidate]:
-    """ISRC rows from library.db. The connection is closed before the caller continues."""
-    if not track.isrc:
-        return []
-    database = open_library_db()
-    try:
-        return library_candidates(database, track)
-    finally:
-        database.close()
 
 
 def library_candidates(db: Any, track: Track) -> list[Candidate]:

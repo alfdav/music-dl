@@ -1033,14 +1033,159 @@ def test_real_job_status_resolves_the_file_from_the_library(tmp_path: Path):
     assert sink.appends == [("Playlist A", ["1001"])]
 
 
-def test_omitted_library_reads_the_library_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def _patch_library_db(monkeypatch: pytest.MonkeyPatch, events: list[object], database: object) -> None:
+    def opener() -> object:
+        events.append("open")
+        return database
+
+    monkeypatch.setattr("tidal_dl.playlist_sync.cycle.open_library_db", opener)
+
+
+def _cycle_with_default_library(tmp_path: Path, source: _Source, **kwargs):
+    pacing = _ClockRng()
+    return run_cycle(
+        _wall(2026, 10, 6, 12),
+        settings=kwargs.get("settings", _cfg(dry_run=True)),
+        sources=[source],
+        sink=kwargs.get("sink") or _Sink(),
+        ledger=Ledger(tmp_path / "playlist_sync.db"),
+        downloads=kwargs.get("downloads") or _Downloads(),
+        tag_reader=kwargs.get("tag_reader"),
+        clock=pacing.clock,
+        rng=pacing,
+        sleep=pacing.sleep,
+        pacer=TidalApiPacer(delay_min=0, delay_max=0, sleeper=pacing.sleep, clock=pacing.clock),
+        auth_state=kwargs.get("auth_state", lambda: "credentials_ready"),
+        download_path_ready=kwargs.get("download_path_ready", lambda _path: True),
+    )
+
+
+def test_omitted_library_opens_the_db_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     audio = tmp_path / "example.flac"
     audio.write_bytes(b"audio")
+    events: list[object] = []
+    titles = {
+        "XX0000000001": "Example Song",
+        "XX0000000002": "Second Song",
+        "XX0000000003": "Third Song",
+    }
+    misses = {"XX0000000003": 0}
+
+    class FakeDB:
+        def tracks_by_isrc(self, isrc: str) -> list[dict]:
+            events.append(("lookup", isrc))
+            if isrc == "XX0000000003":
+                misses[isrc] += 1
+                if misses[isrc] == 1:
+                    return []
+            return [
+                {
+                    "path": str(audio),
+                    "title": titles[isrc],
+                    "artist": ARTIST,
+                    "duration": 180,
+                    "isrc": isrc,
+                }
+            ]
+
+        def close(self) -> None:
+            events.append("close")
+
+    class Service:
+        def __init__(self) -> None:
+            self.calls: list[list[int]] = []
+
+        def enqueue_download(self, track_ids: list[int]) -> dict:
+            self.calls.append(list(track_ids))
+            return {"status": "queued", "count": len(track_ids)}
+
+        def job_status_for_track(self, track_id: int) -> dict:
+            return {
+                "job_id": str(track_id),
+                "status": "done",
+                "progress": 100.0,
+                "title": "Third Song",
+                "artist": ARTIST,
+                "started_at": 1.0,
+                "finished_at": 2.0,
+                "error": None,
+            }
+
+    _patch_library_db(monkeypatch, events, FakeDB())
+    rows = [
+        _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180),
+        _track("tidal", "1002", "Second Song", isrc="XX0000000002", duration=180),
+        _track("tidal", "1003", "Third Song", isrc="XX0000000003", duration=180),
+    ]
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
+    service = Service()
+
+    def reader(path: str) -> dict:
+        assert path == str(audio)
+        return {"title": "Third Song", "artist": ARTIST, "duration": 180, "isrc": "XX0000000003"}
+
+    report = _cycle_with_default_library(
+        tmp_path,
+        source,
+        settings=_cfg(),
+        downloads=JobServiceDownloader(service, sleep=lambda _seconds: None),
+        tag_reader=reader,
+    )
+    assert events == [
+        "open",
+        ("lookup", "XX0000000001"),
+        ("lookup", "XX0000000002"),
+        ("lookup", "XX0000000003"),
+        ("lookup", "XX0000000003"),
+        "close",
+    ]
+    assert report.playlists[0].already_local == 2
+    assert report.playlists[0].to_download == 1
+    assert service.calls == [[1003]]
+    assert report.download_mismatch == []
+
+
+def test_early_halt_never_opens_the_library_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     events: list[object] = []
 
     class FakeDB:
         def tracks_by_isrc(self, isrc: str) -> list[dict]:
             events.append(("lookup", isrc))
+            return []
+
+        def close(self) -> None:
+            events.append("close")
+
+    _patch_library_db(monkeypatch, events, FakeDB())
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    expired = _cycle_with_default_library(
+        tmp_path / "auth",
+        source,
+        auth_state=lambda: "expired",
+    )
+    assert expired.halted_reason == "auth_state=expired"
+    assert events == []
+
+    blocked = _cycle_with_default_library(
+        tmp_path / "mount",
+        source,
+        download_path_ready=lambda _path: False,
+    )
+    assert blocked.halted_reason == "download_path_unavailable"
+    assert events == []
+
+
+def test_library_db_closes_when_the_cycle_stops(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    audio = tmp_path / "example.flac"
+    audio.write_bytes(b"audio")
+    events: list[object] = []
+
+    class RaisingDB:
+        def tracks_by_isrc(self, isrc: str) -> list[dict]:
+            events.append(("lookup", isrc))
+            if isrc == "XX0000000002":
+                raise RuntimeError("lookup failed")
             return [
                 {
                     "path": str(audio),
@@ -1054,33 +1199,55 @@ def test_omitted_library_reads_the_library_db(tmp_path: Path, monkeypatch: pytes
         def close(self) -> None:
             events.append("close")
 
-    def opener() -> FakeDB:
-        events.append("open")
-        return FakeDB()
+    _patch_library_db(monkeypatch, events, RaisingDB())
+    rows = [
+        _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180),
+        _track("tidal", "1002", "Second Song", isrc="XX0000000002", duration=180),
+    ]
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
+    with pytest.raises(RuntimeError, match="lookup failed"):
+        _cycle_with_default_library(tmp_path / "raise", source)
+    assert events == [
+        "open",
+        ("lookup", "XX0000000001"),
+        ("lookup", "XX0000000002"),
+        "close",
+    ]
 
-    monkeypatch.setattr("tidal_dl.playlist_sync.cycle.open_library_db", opener)
-    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
-    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
-    pacing = _ClockRng()
-    downloads = _Downloads()
-    report = run_cycle(
-        _wall(2026, 10, 6, 12),
-        settings=_cfg(dry_run=True),
-        sources=[source],
-        sink=_Sink(),
-        ledger=Ledger(tmp_path / "playlist_sync.db"),
-        downloads=downloads,
-        clock=pacing.clock,
-        rng=pacing,
-        sleep=pacing.sleep,
-        pacer=TidalApiPacer(delay_min=0, delay_max=0, sleeper=pacing.sleep, clock=pacing.clock),
-        auth_state=lambda: "credentials_ready",
-        download_path_ready=lambda _path: True,
+    events.clear()
+
+    class HaltDB:
+        def tracks_by_isrc(self, isrc: str) -> list[dict]:
+            events.append(("lookup", isrc))
+            if isrc == "XX0000000002":
+                return []
+            return [
+                {
+                    "path": str(audio),
+                    "title": "Example Song",
+                    "artist": ARTIST,
+                    "duration": 180,
+                    "isrc": isrc,
+                }
+            ]
+
+        def close(self) -> None:
+            events.append("close")
+
+    _patch_library_db(monkeypatch, events, HaltDB())
+    halted = _cycle_with_default_library(
+        tmp_path / "halt",
+        source,
+        settings=_cfg(),
+        downloads=_Downloads({1002: DownloadResult(status="failed", http_status=429, error="429")}),
     )
-    assert events == ["open", ("lookup", "XX0000000001"), "close"]
-    assert report.playlists[0].already_local == 1
-    assert report.playlists[0].to_download == 0
-    assert downloads.calls == []
+    assert halted.halted_reason == "429"
+    assert events == [
+        "open",
+        ("lookup", "XX0000000001"),
+        ("lookup", "XX0000000002"),
+        "close",
+    ]
 
 
 def test_library_lookup_uses_isrc_rows():
