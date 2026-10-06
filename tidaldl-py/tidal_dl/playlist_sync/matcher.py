@@ -1,0 +1,110 @@
+"""Title, artist, and playlist normalisation for sync dedupe."""
+
+from __future__ import annotations
+
+import re
+import unicodedata
+from typing import Protocol
+
+_FEAT_PAREN = re.compile(
+    r"[([]\s*(?:feat(?:uring)?\.?|ft\.?|with)\s+[^)\]]*[)\]]",
+    re.IGNORECASE,
+)
+_FEAT_TAIL = re.compile(
+    r"\s+(?:feat(?:uring)?\.?|ft\.?)\s+.*$",
+    re.IGNORECASE,
+)
+_PRIMARY_SPLIT = re.compile(r"\s+(?:with|&|x)\s+", re.IGNORECASE)
+_PUNCT = re.compile(r"[^\w\s]", re.UNICODE)
+_SPACES = re.compile(r"\s+")
+_SAFE_SUFFIX = re.compile(
+    r"""(?:
+        \s*[([]\s*
+            (?:
+                remaster(?:ed)?(?:\s+\d{4})?
+                | \d{4}\s+remaster(?:ed)?
+                | album\s+version
+                | (?:mono|stereo)\s+version
+            )
+        \s*[])]
+        |
+        \s+-\s+
+            (?:
+                remaster(?:ed)?(?:\s+\d{4})?
+                | \d{4}\s+remaster(?:ed)?
+                | album\s+version
+                | (?:mono|stereo)\s+version
+            )
+    )\s*$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+class _Named(Protocol):
+    artist: str
+    title: str
+    duration: float | None
+    isrc: str | None
+
+
+def strip_accents(value: str) -> str:
+    folded = unicodedata.normalize("NFKD", value or "")
+    return "".join(char for char in folded if not unicodedata.combining(char))
+
+
+def _collapse(value: str) -> str:
+    return _SPACES.sub(" ", value).strip()
+
+
+def strip_safe_suffixes(value: str) -> str:
+    text = value or ""
+    while True:
+        updated = _SAFE_SUFFIX.sub("", text).strip()
+        if updated == text:
+            return text
+        text = updated
+
+
+def normalize_artist(artist: str) -> str:
+    text = strip_accents(artist or "").casefold()
+    text = _FEAT_PAREN.sub(" ", text)
+    text = _FEAT_TAIL.sub(" ", text)
+    text = _PRIMARY_SPLIT.split(text, maxsplit=1)[0]
+    text = _PUNCT.sub(" ", text)
+    return _collapse(text)
+
+
+def normalize_title(title: str) -> str:
+    text = strip_accents(title or "").casefold()
+    text = _FEAT_PAREN.sub(" ", text)
+    text = _FEAT_TAIL.sub(" ", text)
+    text = strip_safe_suffixes(text)
+    text = _PUNCT.sub(" ", text)
+    return _collapse(text)
+
+
+def normalize_playlist_name(name: str) -> str:
+    return _collapse(strip_accents(name or "").casefold())
+
+
+def isrc_key(isrc: str | None) -> str:
+    return (isrc or "").strip().upper()
+
+
+def same_recording(left: _Named, right: _Named) -> bool:
+    """True when two rows are the same recording for union dedupe.
+
+    Both ISRCs present: equal codes only. A missing ISRC falls back to
+    normalised primary artist + title and duration within 3 seconds.
+    """
+    left_isrc = isrc_key(left.isrc)
+    right_isrc = isrc_key(right.isrc)
+    if left_isrc and right_isrc:
+        return left_isrc == right_isrc
+    if normalize_artist(left.artist) != normalize_artist(right.artist):
+        return False
+    if normalize_title(left.title) != normalize_title(right.title):
+        return False
+    if left.duration is None or right.duration is None:
+        return False
+    return abs(float(left.duration) - float(right.duration)) <= 3

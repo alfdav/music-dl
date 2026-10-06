@@ -1,0 +1,799 @@
+"""Playlist sync core. Fakes only: no network, no real names, no tokens."""
+
+from __future__ import annotations
+
+import ast
+import json
+import os
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from tidal_dl.download.api_pacing import TidalApiPacer
+from tidal_dl.model.cfg import Settings as ModelSettings
+from tidal_dl.playlist_sync.config import PlaylistSyncConfig, load_config
+from tidal_dl.playlist_sync.cycle import library_candidates, run_cycle
+from tidal_dl.playlist_sync.downloads import JobServiceDownloader
+from tidal_dl.playlist_sync.ledger import Ledger, default_ledger_path
+from tidal_dl.playlist_sync.matcher import normalize_playlist_name, same_recording
+from tidal_dl.playlist_sync.models import Candidate, DownloadResult, PlaylistRef, Track
+from tidal_dl.playlist_sync.verify import markers_in, verify
+
+ARTIST = "Example Artist"
+OTHER = "Other Artist"
+
+
+def _wall(year: int, month: int, day: int, hour: int = 0, minute: int = 0, second: int = 0) -> datetime:
+    """Local wall clock. The daily cap uses this calendar date."""
+    local_tz = datetime.now(UTC).astimezone().tzinfo
+    return datetime(year, month, day, hour, minute, second, tzinfo=local_tz)
+
+
+def _cfg(**kwargs) -> PlaylistSyncConfig:
+    values = {
+        "enabled": True,
+        "dry_run": False,
+        "poll_minutes": 15,
+        "max_per_cycle": 5,
+        "max_per_day": 30,
+        "gap_sec_min": 30,
+        "gap_sec_max": 60,
+        "allowlist": (),
+    }
+    values.update(kwargs)
+    return PlaylistSyncConfig(**values)
+
+
+def _track(
+    source: str,
+    track_id: str,
+    title: str,
+    *,
+    artist: str = ARTIST,
+    duration: float | None = 180,
+    isrc: str | None = None,
+    available: bool = True,
+    album: str = "",
+    version: str = "",
+    playlist_name: str = "Playlist A",
+) -> Track:
+    return Track(
+        source=source,
+        source_track_id=str(track_id),
+        title=title,
+        artist=artist,
+        album=album,
+        duration=duration,
+        isrc=isrc,
+        available=available,
+        version=version,
+        playlist_name=playlist_name,
+    )
+
+
+def _playlist(source: str, playlist_id: str, name: str, updated: str | None, count: int = 0) -> PlaylistRef:
+    return PlaylistRef(
+        source=source,
+        source_playlist_id=playlist_id,
+        name=name,
+        last_updated=updated,
+        num_tracks=count,
+    )
+
+
+def _candidate(title: str, *, artist: str = ARTIST, duration: float | None = 180, isrc: str | None = None,
+               album: str = "", version: str = "", ident: str = "c1") -> Candidate:
+    return Candidate(
+        id=ident,
+        title=title,
+        artist=artist,
+        duration=duration,
+        isrc=isrc,
+        album=album,
+        version=version,
+    )
+
+
+class _Source:
+    def __init__(self, name: str, playlists: list[tuple[PlaylistRef, list[Track]]]):
+        self.name = name
+        self._rows = {item[0].source_playlist_id: (item[0], list(item[1])) for item in playlists}
+        self.track_calls: list[str] = []
+
+    def list_playlists(self) -> list[PlaylistRef]:
+        return [row[0] for row in self._rows.values()]
+
+    def list_tracks(self, playlist: PlaylistRef) -> list[Track]:
+        self.track_calls.append(playlist.source_playlist_id)
+        return list(self._rows[playlist.source_playlist_id][1])
+
+    def set_tracks(self, playlist_id: str, tracks: list[Track], updated: str) -> None:
+        current = self._rows[playlist_id][0]
+        self._rows[playlist_id] = (
+            PlaylistRef(
+                current.source,
+                current.source_playlist_id,
+                current.name,
+                updated,
+                len(tracks),
+            ),
+            list(tracks),
+        )
+
+
+class _Sink:
+    def __init__(self, tracks: list[Track] | None = None):
+        self.rows = list(tracks or [])
+        self.appends: list[tuple[str, list[str]]] = []
+
+    def list_tracks(self, name: str) -> list[Track]:
+        return list(self.rows)
+
+    def append(self, name: str, tracks: list[Track]) -> None:
+        self.appends.append((name, [track.source_track_id for track in tracks]))
+        self.rows.extend(tracks)
+
+
+class _Downloads:
+    def __init__(self, outcomes: dict[int, DownloadResult] | None = None):
+        self.calls: list[list[int]] = []
+        self.depth = 0
+        self.max_depth = 0
+        self.events: list[str] = []
+        self.outcomes = outcomes or {}
+
+    def enqueue_download(self, track_ids: list[int]) -> dict:
+        self.depth += 1
+        self.max_depth = max(self.max_depth, self.depth)
+        self.events.append("enqueue")
+        self.calls.append(list(track_ids))
+        return {"status": "queued", "count": len(track_ids)}
+
+    def wait_for(self, track_id: int) -> DownloadResult:
+        self.events.append("wait")
+        self.depth -= 1
+        return self.outcomes.get(
+            track_id,
+            DownloadResult(status="completed", path=f"/music/{track_id}.flac"),
+        )
+
+
+class _ClockRng:
+    def __init__(self) -> None:
+        self.sleeps: list[float] = []
+        self.bounds: list[tuple[float, float]] = []
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+
+    def uniform(self, low: float, high: float) -> float:
+        self.bounds.append((low, high))
+        return 45
+
+    def clock(self) -> float:
+        return 0.0
+
+
+def _tags_for(tracks: list[Track]):
+    by_id = {track.source_track_id: track for track in tracks}
+
+    def reader(path: str) -> dict:
+        item = by_id[Path(path).stem]
+        return {
+            "title": item.title,
+            "artist": item.artist,
+            "album": item.album,
+            "duration": item.duration,
+            "isrc": item.isrc,
+            "version": item.version,
+        }
+
+    return reader
+
+
+def _run(tmp_path: Path, source: _Source, *, sink=None, downloads=None, library=None, search=None,
+         tag_reader=None, settings=None, now=None, rng=None, auth=None, ledger=None):
+    pacing = _ClockRng() if rng is None else rng
+    store = ledger or Ledger(tmp_path / "playlist_sync.db")
+    report = run_cycle(
+        now or _wall(2026, 10, 6, 12),
+        settings=settings or _cfg(),
+        sources=[source] if not isinstance(source, list) else source,
+        sink=sink or _Sink(),
+        ledger=store,
+        downloads=downloads or _Downloads(),
+        library=library or (lambda _track: []),
+        search=search,
+        tag_reader=tag_reader,
+        clock=pacing.clock,
+        rng=pacing,
+        sleep=pacing.sleep,
+        pacer=TidalApiPacer(delay_min=0, delay_max=0, sleeper=pacing.sleep, clock=pacing.clock),
+        auth_state=auth or (lambda: "credentials_ready"),
+    )
+    return report, store, pacing
+
+
+def test_settings_defaults_are_safe():
+    data = ModelSettings()
+    assert data.playlist_sync_enabled is False
+    assert data.playlist_sync_dry_run is True
+    assert data.playlist_sync_poll_minutes == 15
+    assert data.playlist_sync_max_per_cycle == 5
+    assert data.playlist_sync_max_per_day == 30
+    assert data.playlist_sync_gap_sec_min == 30.0
+    assert data.playlist_sync_gap_sec_max == 60.0
+    assert data.playlist_sync_allowlist == []
+    loaded = load_config(data)
+    assert loaded.enabled is False
+    assert loaded.dry_run is True
+    assert loaded.allowlist == ()
+
+
+def test_disabled_cycle_does_no_work(tmp_path: Path):
+    report = run_cycle(settings=PlaylistSyncConfig(), ledger=Ledger(tmp_path / "playlist_sync.db"))
+    assert report.halted_reason == "disabled"
+    assert report.playlists == []
+    assert report.to_dict()["halted_reason"] == "disabled"
+
+
+def test_allowlist_comes_from_settings(tmp_path: Path):
+    tidal_a = _track("tidal", "1001", "Example Song", isrc="XX0000000001")
+    tidal_b = _track("tidal", "1002", "Other Song", isrc="XX0000000002", playlist_name="Playlist B")
+    source = _Source(
+        "tidal",
+        [
+            (_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [tidal_a]),
+            (_playlist("tidal", "pl-b", "Playlist B", "2026-01-01"), [tidal_b]),
+        ],
+    )
+    downloads = _Downloads()
+    report, _, _ = _run(
+        tmp_path,
+        source,
+        downloads=downloads,
+        tag_reader=_tags_for([tidal_a, tidal_b]),
+        settings=_cfg(allowlist=(" Playlist A ",)),
+    )
+    assert source.track_calls == ["pl-a"]
+    assert [call[0] for call in downloads.calls] == [1001]
+    assert [item.name for item in report.playlists] == ["Playlist A"]
+
+    source.track_calls.clear()
+    downloads.calls.clear()
+    empty = _Source(
+        "tidal",
+        [
+            (_playlist("tidal", "pl-a", "Playlist A", "2026-01-02"), [tidal_a]),
+            (_playlist("tidal", "pl-b", "Playlist B", "2026-01-02"), [tidal_b]),
+        ],
+    )
+    report, _, _ = _run(
+        tmp_path / "all",
+        empty,
+        downloads=_Downloads(),
+        tag_reader=_tags_for([tidal_a, tidal_b]),
+        settings=_cfg(allowlist=()),
+    )
+    assert {item.name for item in report.playlists} == {"Playlist A", "Playlist B"}
+
+
+def test_caps_hold_across_playlists_and_reset_at_local_midnight(tmp_path: Path):
+    tracks = [
+        _track("tidal", str(1000 + index), f"Example Song {index}", isrc=f"XX{index:010d}", duration=180)
+        for index in range(40)
+    ]
+    first = tracks[:20]
+    second = tracks[20:]
+    source = _Source(
+        "tidal",
+        [
+            (_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), first),
+            (_playlist("tidal", "pl-b", "Playlist B", "2026-01-01"), second),
+        ],
+    )
+    downloads = _Downloads()
+    sink = _Sink()
+    ledger = Ledger(tmp_path / "playlist_sync.db")
+    day = _wall(2026, 10, 6, 22)
+    seen: list[int] = []
+    for _ in range(7):
+        before = len(downloads.calls)
+        _run(
+            tmp_path,
+            source,
+            sink=sink,
+            downloads=downloads,
+            tag_reader=_tags_for(tracks),
+            now=day,
+            ledger=ledger,
+            settings=_cfg(max_per_cycle=5, max_per_day=30),
+        )
+        seen.append(len(downloads.calls) - before)
+    assert seen == [5, 5, 5, 5, 5, 5, 0]
+    assert len(downloads.calls) == 30
+    assert downloads.max_depth == 1
+    flat = [call[0] for call in downloads.calls]
+    assert len(flat) == len(set(flat))
+    assert flat[:5] == [1000, 1001, 1002, 1003, 1004]
+    assert 1020 in flat
+
+    _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=downloads,
+        tag_reader=_tags_for(tracks),
+        now=_wall(2026, 10, 7, 0, 5),
+        ledger=ledger,
+        settings=_cfg(max_per_cycle=5, max_per_day=30),
+    )
+    assert len(downloads.calls) == 35
+
+
+def test_one_download_and_gap(tmp_path: Path):
+    rows = [
+        _track("tidal", "1001", "Example Song", isrc="XX0000000001"),
+        _track("tidal", "1002", "Second Song", isrc="XX0000000002"),
+        _track("tidal", "1003", "Third Song", isrc="XX0000000003"),
+    ]
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
+    downloads = _Downloads()
+    pacing = _ClockRng()
+    _run(
+        tmp_path,
+        source,
+        downloads=downloads,
+        tag_reader=_tags_for(rows),
+        rng=pacing,
+        settings=_cfg(max_per_cycle=5),
+    )
+    assert downloads.max_depth == 1
+    assert downloads.events == ["enqueue", "wait", "enqueue", "wait", "enqueue", "wait"]
+    assert pacing.sleeps == [45, 45]
+    assert pacing.bounds == [(30, 60), (30, 60)]
+
+
+def test_halts_on_429_401_and_auth_without_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("auth or bulk sync was called")
+
+    import tidal_dl.gui.api.playlists as playlists_api
+    import tidal_dl.gui.api.settings as settings_api
+    import tidal_dl.gui.services.download_job_service as jobs
+    from tidal_dl import cli_sync
+
+    monkeypatch.setattr(playlists_api, "sync_playlist", forbidden, raising=False)
+    monkeypatch.setattr(settings_api, "ensure_tidal_logged_in", forbidden, raising=False)
+    monkeypatch.setattr(cli_sync, "sync", forbidden, raising=False)
+    monkeypatch.setattr(jobs.DownloadJobService, "enqueue_upgrade", forbidden, raising=False)
+
+    rows = [
+        _track("tidal", "1001", "Example Song", isrc="XX0000000001"),
+        _track("tidal", "1002", "Second Song", isrc="XX0000000002"),
+    ]
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
+    limited = _Downloads(
+        {1001: DownloadResult(status="failed", http_status=429, error="429")}
+    )
+    report, _, _ = _run(tmp_path, source, downloads=limited, tag_reader=_tags_for(rows))
+    assert report.halted_reason == "429"
+    assert limited.calls == [[1001]]
+
+    unauthorized = _Downloads(
+        {1001: DownloadResult(status="failed", http_status=401, error="401")}
+    )
+    source_401 = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
+    report, _, _ = _run(
+        tmp_path / "auth401",
+        source_401,
+        downloads=unauthorized,
+        tag_reader=_tags_for(rows),
+    )
+    assert report.halted_reason == "401"
+    assert unauthorized.calls == [[1001]]
+
+    report, _, _ = _run(
+        tmp_path / "state",
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)]),
+        downloads=_Downloads(),
+        auth=lambda: "expired",
+    )
+    assert report.halted_reason == "auth_state=expired"
+    assert report.downloaded == []
+
+
+def test_unobtainable_and_failed_retry_once_per_day(tmp_path: Path):
+    gone = _track("tidal", "1004", "Gone Song", isrc="XX0000000004", available=False)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [gone])])
+    downloads = _Downloads()
+    ledger = Ledger(tmp_path / "playlist_sync.db")
+    day = _wall(2026, 10, 6, 12)
+    for _ in range(2):
+        report, _, _ = _run(tmp_path, source, downloads=downloads, ledger=ledger, now=day)
+        assert report.playlists[0].unobtainable == 1
+    assert downloads.calls == []
+
+    ready = _track("tidal", "1004", "Gone Song", isrc="XX0000000004", available=True)
+    source.set_tracks("pl-a", [ready], "2026-01-02")
+    _run(
+        tmp_path,
+        source,
+        downloads=downloads,
+        ledger=ledger,
+        now=_wall(2026, 10, 7, 12),
+        tag_reader=_tags_for([ready]),
+    )
+    assert downloads.calls == [[1004]]
+
+    failed = _track("tidal", "1005", "Retry Song", isrc="XX0000000005")
+    fail_source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-02-01"), [failed])])
+    fail_dl = _Downloads({1005: DownloadResult(status="failed", error="nope")})
+    fail_ledger = Ledger(tmp_path / "fail" / "playlist_sync.db")
+    _run(tmp_path / "fail", fail_source, downloads=fail_dl, ledger=fail_ledger, now=day, tag_reader=_tags_for([failed]))
+    _run(tmp_path / "fail", fail_source, downloads=fail_dl, ledger=fail_ledger, now=day, tag_reader=_tags_for([failed]))
+    assert fail_dl.calls == [[1005]]
+    _run(
+        tmp_path / "fail",
+        fail_source,
+        downloads=fail_dl,
+        ledger=fail_ledger,
+        now=_wall(2026, 10, 7, 8),
+        tag_reader=_tags_for([failed]),
+    )
+    _run(
+        tmp_path / "fail",
+        fail_source,
+        downloads=fail_dl,
+        ledger=fail_ledger,
+        now=_wall(2026, 10, 7, 9),
+        tag_reader=_tags_for([failed]),
+    )
+    assert fail_dl.calls == [[1005], [1005]]
+
+
+def test_only_changed_playlists_are_fetched(tmp_path: Path):
+    one = _track("tidal", "1001", "Example Song", isrc="XX0000000001")
+    two = _track("tidal", "1002", "Second Song", isrc="XX0000000002", playlist_name="Playlist B")
+    source = _Source(
+        "tidal",
+        [
+            (_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [one]),
+            (_playlist("tidal", "pl-b", "Playlist B", "2026-01-01"), [two]),
+        ],
+    )
+    ledger = Ledger(tmp_path / "playlist_sync.db")
+    settings = _cfg(dry_run=True)
+    _run(tmp_path, source, ledger=ledger, settings=settings)
+    _run(tmp_path, source, ledger=ledger, settings=settings)
+    assert source.track_calls == ["pl-a", "pl-b"]
+    source.set_tracks("pl-a", [one], "2026-02-01")
+    _run(tmp_path, source, ledger=ledger, settings=settings)
+    assert source.track_calls == ["pl-a", "pl-b", "pl-a"]
+
+
+def test_dedupe_keys_and_playlist_names():
+    left = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    same = _track("apple", "a1", "example song", isrc="xx0000000001", duration=200, artist="EXAMPLE ARTIST")
+    other = _track("tidal", "1002", "Example Song", isrc="XX0000000002", duration=180)
+    assert same_recording(left, same)
+    assert not same_recording(left, other)
+    meta = _track("apple", "a2", "Example Song", duration=181, artist="Example Artist feat. Other Artist")
+    studio = _track("tidal", "1003", "Example Song", duration=180, isrc=None)
+    assert same_recording(meta, studio)
+    assert not same_recording(studio, _track("apple", "a3", "Example Song", duration=184, isrc=None))
+    assert normalize_playlist_name(" Playlist A ") == normalize_playlist_name("playlist a")
+
+
+def test_dry_run_reports_without_queue_or_append(tmp_path: Path):
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001")
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+
+    class ExplodingDownloads(_Downloads):
+        def enqueue_download(self, track_ids: list[int]) -> dict:
+            raise AssertionError("dry run queued a download")
+
+    class ExplodingSink(_Sink):
+        def append(self, name: str, tracks: list[Track]) -> None:
+            raise AssertionError("dry run appended")
+
+    report, _, _ = _run(
+        tmp_path,
+        source,
+        sink=ExplodingSink(),
+        downloads=ExplodingDownloads(),
+        settings=_cfg(dry_run=True),
+    )
+    playlist = report.playlists[0]
+    assert playlist.to_download == 1
+    assert playlist.tracks[0]["action"] == "download"
+    assert playlist.tracks[0]["source_track"]["title"] == "Example Song"
+    assert playlist.tracks[0]["source_track"]["isrc"] == "XX0000000001"
+    json.dumps(report.to_dict())
+
+
+def test_union_across_tidal_apple_and_plex(tmp_path: Path):
+    plex_only = _track("plex", "p1", "Plex Only", isrc="XX0000000001", duration=200)
+    shared = _track("plex", "p2", "Shared Song", isrc="XX0000000002", duration=180)
+    tidal_shared = _track("tidal", "1002", "Shared Song", isrc="XX0000000002", duration=180)
+    local = _track("tidal", "1008", "Local Song", isrc="XX0000000008", duration=190)
+    tidal_new = _track("tidal", "1003", "Tidal Song", isrc="XX0000000003", duration=210)
+    gone = _track("tidal", "1004", "Gone Song", isrc="XX0000000004", duration=170, available=False)
+    apple_shared = _track("apple", "a2", "Shared Song", duration=181, playlist_name="playlist a")
+    apple_new = _track("apple", "a6", "Apple Song", duration=220, playlist_name="playlist a")
+    ambiguous = _track("apple", "a7", "Ambiguous Song", duration=230, playlist_name="playlist a")
+    tidal = _Source(
+        "tidal",
+        [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [tidal_shared, local, tidal_new, gone])],
+    )
+    apple = _Source(
+        "apple",
+        [(_playlist("apple", "ap-a", " playlist a ", "2026-01-01"), [apple_shared, apple_new, ambiguous])],
+    )
+    sink = _Sink([plex_only, shared])
+    downloads = _Downloads()
+
+    def library(track: Track) -> list[Candidate]:
+        if track.isrc == "XX0000000008":
+            return [_candidate("Local Song", duration=190, isrc="XX0000000008", ident="/music/local.flac")]
+        return []
+
+    def search(track: Track) -> list[Candidate]:
+        if track.title == "Apple Song":
+            return [_candidate("Apple Song", duration=220, isrc="XX0000000006", ident="1006")]
+        if track.title == "Ambiguous Song":
+            return [
+                _candidate("Ambiguous Song", duration=230, isrc="XX0000000011", ident="2001"),
+                _candidate("Ambiguous Song", duration=230, isrc="XX0000000012", ident="2002"),
+            ]
+        return []
+
+    catalog = [tidal_shared, local, tidal_new, gone, apple_shared, apple_new, ambiguous]
+    report, _, _ = _run(
+        tmp_path,
+        [tidal, apple],
+        sink=sink,
+        downloads=downloads,
+        library=library,
+        search=search,
+        tag_reader=_tags_for(catalog + [_track("tidal", "1006", "Apple Song", isrc="XX0000000006", duration=220)]),
+    )
+    assert len(report.playlists) == 1
+    playlist = report.playlists[0]
+    assert playlist.name == "Playlist A"
+    assert playlist.tidal_count == 4
+    assert playlist.apple_count == 3
+    assert playlist.plex_count == 2
+    assert playlist.union_count == 7
+    assert playlist.to_download == 2
+    assert playlist.already_local == 1
+    assert playlist.unobtainable == 1
+    assert playlist.unmatched == 0
+    assert len(playlist.needs_review) == 1
+    assert playlist.needs_review[0]["source_track"]["title"] == "Ambiguous Song"
+    assert [call[0] for call in downloads.calls] == [1003, 1006]
+    assert sink.rows[0].source_track_id == "p1"
+    assert sink.rows[1].source_track_id == "p2"
+    assert [track.source_track_id for track in sink.rows] == ["p1", "p2", "1008", "1003", "a6"]
+    assert all(name == "Playlist A" for name, _ids in sink.appends)
+
+
+def test_verify_rules():
+    source = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+
+    def check(candidate: Candidate, confidence: str):
+        assert verify(source, candidate).confidence == confidence
+
+    check(_candidate("Example Song", artist=OTHER, isrc="XX0000000099", ident="cover"), "reject")
+    check(_candidate("Example Song (Karaoke)"), "reject")
+    check(_candidate("Example Song (Tribute)"), "reject")
+    check(_candidate("Example Song (In the Style of Example Artist)"), "reject")
+    check(_candidate("Example Song (Live)"), "reject")
+    check(_candidate("Example Song (Remix)"), "reject")
+    check(_candidate("Example Song (Instrumental)"), "reject")
+    check(_candidate("Example Song (En Vivo)"), "reject")
+    check(_candidate("Example Song (Tributo)"), "reject")
+    check(_candidate("Example Song (Remastered)"), "confirmed")
+    check(_candidate("Example Song (Remastered 2011)"), "confirmed")
+    check(_candidate("Example Song (2011 Remaster)"), "confirmed")
+    check(_candidate("Example Song - Remaster"), "confirmed")
+    check(_candidate("Example Song (Album Version)"), "confirmed")
+    check(_candidate("Example Song (Mono Version)"), "confirmed")
+    check(_candidate("Example Song [Stereo Version]"), "confirmed")
+    check(
+        _candidate("Example Song (feat. Other Artist)", artist="Example Artist feat. Other Artist"),
+        "confirmed",
+    )
+    check(_candidate("EXÁMPLE SONG", artist="Exámple Artist"), "confirmed")
+    check(_candidate("Example Song", duration=183), "confirmed")
+    check(_candidate("Example Song", duration=184), "review")
+    check(_candidate("Example Song", duration=185), "review")
+    check(_candidate("Example Song", duration=186), "reject")
+    mismatch = verify(source, _candidate("Example Song", artist=OTHER, isrc="XX0000000001", ident="same-isrc"))
+    assert mismatch.confidence == "review"
+    assert mismatch.isrc_ok is True
+    assert mismatch.artist_ok is False
+    live_source = _track("tidal", "1009", "Example Song (Live)", duration=180, isrc="XX0000000009")
+    assert verify(live_source, _candidate("Example Song - Live", isrc="XX0000000009", ident="live")).confidence == (
+        "confirmed"
+    )
+    alive = _track("tidal", "1010", "Alive", duration=180, isrc="XX0000000010")
+    assert "live" not in markers_in("Alive")
+    assert verify(alive, _candidate("Alive", isrc="XX0000000010", ident="alive")).confidence == "confirmed"
+
+
+def test_apple_two_candidates_and_isrc_artist_mismatch_do_not_download(tmp_path: Path):
+    apple = _track("apple", "a7", "Ambiguous Song", duration=230)
+    source = _Source("apple", [(_playlist("apple", "ap-a", "Playlist A", "2026-01-01"), [apple])])
+    downloads = _Downloads()
+
+    def search(_track: Track) -> list[Candidate]:
+        return [
+            _candidate("Ambiguous Song", duration=230, ident="2001", isrc="XX0000000011"),
+            _candidate("Ambiguous Song", duration=230, ident="2002", isrc="XX0000000012"),
+        ]
+
+    report, _, _ = _run(tmp_path, source, downloads=downloads, search=search)
+    assert downloads.calls == []
+    assert report.playlists[0].needs_review[0]["action"] == "review"
+    assert report.playlists[0].to_download == 0
+
+    tidal = _track("tidal", "1001", "Example Song", isrc="XX0000000001")
+    tidal_source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [tidal])])
+    blocked = _Downloads()
+
+    def library(track: Track) -> list[Candidate]:
+        if track.isrc == "XX0000000001":
+            return [_candidate("Example Song", artist=OTHER, isrc="XX0000000001", ident="/music/other.flac")]
+        return []
+
+    report, _, _ = _run(tmp_path / "isrc", tidal_source, downloads=blocked, library=library)
+    assert blocked.calls == []
+    assert report.needs_review
+    assert report.added == []
+
+
+def test_post_download_mismatch_is_not_appended_or_deleted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001")
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    target = tmp_path / "1001.flac"
+    target.write_bytes(b"keep")
+    sink = _Sink()
+    downloads = _Downloads({1001: DownloadResult(status="completed", path=str(target))})
+
+    def reader(_path: str) -> dict:
+        return {
+            "title": "Example Song",
+            "artist": OTHER,
+            "album": "",
+            "duration": 180,
+            "isrc": "XX0000000001",
+            "version": "",
+        }
+
+    def removed(*_args, **_kwargs):
+        raise AssertionError("file deleted")
+
+    monkeypatch.setattr(os, "remove", removed)
+    monkeypatch.setattr(os, "unlink", removed)
+    report, _, _ = _run(tmp_path, source, sink=sink, downloads=downloads, tag_reader=reader)
+    assert sink.appends == []
+    assert report.download_mismatch
+    assert report.download_mismatch[0]["status"] == "download_mismatch"
+    assert report.added == []
+    assert target.read_bytes() == b"keep"
+
+
+def test_package_never_references_bulk_sync_or_tokens():
+    root = Path(__file__).resolve().parents[1] / "tidal_dl" / "playlist_sync"
+    text = "\n".join(path.read_text(encoding="utf-8") for path in root.rglob("*.py"))
+    for banned in ("sync_playlist", "cli_sync", "enqueue_upgrade", "Upgrade All", "token.json", "login_oauth"):
+        assert banned not in text
+    for path in root.rglob("*.py"):
+        ast.parse(path.read_text(encoding="utf-8"))
+
+
+def test_tidal_source_reuses_catalog_helpers():
+    from tidal_dl.playlist_sync.tidal_source import TidalSource
+
+    class Obj:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    artist = Obj(name=ARTIST, id=1)
+    album = Obj(name="Example Album", id=2, image=lambda _size: "")
+
+    def raw(track_id: int, allow: bool, ready: bool, title: str):
+        return Obj(
+            id=track_id,
+            name=title,
+            full_name=None,
+            artists=[artist],
+            album=album,
+            duration=180,
+            isrc="XX0000000001",
+            allow_streaming=allow,
+            stream_ready=ready,
+            audio_quality="HIGH",
+            media_metadata_tags=[],
+            version="",
+        )
+
+    playlist = Obj(
+        tracks=lambda limit, offset: []
+        if offset
+        else [raw(1001, False, True, "Example Song"), raw(1002, True, True, "Second Song")]
+    )
+    session = Obj(
+        user=Obj(playlists=lambda: [Obj(id="pl-a", name="Playlist A", num_tracks=2, last_updated="2026-01-01")]),
+        playlist=lambda _playlist_id: playlist,
+    )
+    tidal = TidalSource(session)
+    listed = tidal.list_playlists()
+    assert listed[0].name == "Playlist A"
+    tracks = tidal.list_tracks(listed[0])
+    assert [(item.source_track_id, item.available) for item in tracks] == [("1001", False), ("1002", True)]
+
+
+def test_job_service_downloader_queues_one_track():
+    seen: list[list[int]] = []
+
+    class Service:
+        def enqueue_download(self, track_ids: list[int]) -> dict:
+            seen.append(list(track_ids))
+            return {"status": "queued", "count": 1}
+
+        def poll_download(self, track_id: int) -> DownloadResult:
+            return DownloadResult(status="completed", path=f"/music/{track_id}.flac")
+
+    client = JobServiceDownloader(Service())
+    assert client.enqueue_download([1001])["count"] == 1
+    assert client.wait_for(1001).status == "completed"
+    assert seen == [[1001]]
+    with pytest.raises(ValueError):
+        client.enqueue_download([1001, 1002])
+
+
+def test_library_lookup_uses_isrc_rows():
+    row = _track("tidal", "1008", "Local Song", isrc="XX0000000008", duration=190)
+
+    class Db:
+        def tracks_by_isrc(self, isrc: str) -> list[dict]:
+            assert isrc == "XX0000000008"
+            return [
+                {
+                    "path": "/music/local.flac",
+                    "title": "Local Song",
+                    "artist": ARTIST,
+                    "duration": 190,
+                    "isrc": isrc,
+                }
+            ]
+
+    found = library_candidates(Db(), row)
+    assert found[0].id == "/music/local.flac"
+    assert verify(row, found[0]).confidence == "confirmed"
+
+
+def test_ledger_file_is_not_the_library_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setattr("tidal_dl.helper.path.path_config_base", lambda: str(tmp_path))
+    path = default_ledger_path()
+    assert path.name == "playlist_sync.db"
+    assert path.name != "library.db"
+
+
+def test_case_insensitive_playlist_merge(tmp_path: Path):
+    tidal = _Source(
+        "tidal",
+        [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [_track("tidal", "1001", "Example Song")])],
+    )
+    apple = _Source(
+        "apple",
+        [(_playlist("apple", "ap-a", "PLAYLIST A", "2026-01-01"), [_track("apple", "a1", "Second Song", duration=200)])],
+    )
+    report, _, _ = _run(tmp_path, [tidal, apple], settings=_cfg(dry_run=True, max_per_cycle=5))
+    assert len(report.playlists) == 1
+    assert report.playlists[0].tidal_count == 1
+    assert report.playlists[0].apple_count == 1
+    assert report.playlists[0].union_count == 2

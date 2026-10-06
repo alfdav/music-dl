@@ -1,0 +1,687 @@
+"""One playlist-sync cycle. Nothing here runs unless the caller asks."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any
+
+from tidal_dl.download.api_pacing import TidalApiPacer
+from tidal_dl.playlist_sync.config import PlaylistSyncConfig, load_config, name_allowed
+from tidal_dl.playlist_sync.downloads import DownloadClient, service_downloader
+from tidal_dl.playlist_sync.governor import Governor, status_code_of
+from tidal_dl.playlist_sync.ledger import Ledger, default_ledger_path
+from tidal_dl.playlist_sync.matcher import isrc_key, normalize_playlist_name, same_recording
+from tidal_dl.playlist_sync.models import (
+    Candidate,
+    CycleReport,
+    DownloadResult,
+    PlaylistRef,
+    PlaylistReport,
+    Track,
+    VerifyResult,
+    candidate_from_mapping,
+    candidate_from_track,
+    coerce_track,
+)
+from tidal_dl.playlist_sync.sink import NullPlexSink, PlexSink
+from tidal_dl.playlist_sync.source import Source
+from tidal_dl.playlist_sync.tags import read_audio_tags
+from tidal_dl.playlist_sync.verify import verify
+
+LibraryLookup = Callable[[Track], list[Candidate]]
+SearchFn = Callable[[Track], list[Candidate]]
+TagReader = Callable[[str], dict[str, Any] | None]
+AuthState = Callable[[], str]
+
+
+@dataclass
+class _Group:
+    name: str
+    tidal: PlaylistRef | None = None
+    apple: PlaylistRef | None = None
+    tidal_source: Source | None = None
+    apple_source: Source | None = None
+
+
+@dataclass
+class _Placed:
+    track: Track
+    action: str
+    entry: dict[str, Any]
+
+
+@dataclass
+class _Work:
+    cfg: PlaylistSyncConfig
+    ledger: Ledger
+    sink: PlexSink
+    governor: Governor
+    day: str
+    seen_at: str
+    library: LibraryLookup | None
+    search: SearchFn | None
+    tag_reader: TagReader
+    downloads: DownloadClient | None
+    report: CycleReport = field(default_factory=CycleReport)
+    _downloads_ready: DownloadClient | None = None
+
+    def client(self) -> DownloadClient:
+        if self._downloads_ready is not None:
+            return self._downloads_ready
+        if self.downloads is not None:
+            self._downloads_ready = self.downloads
+            return self.downloads
+        self._downloads_ready = service_downloader()
+        return self._downloads_ready
+
+
+def read_auth_state(tidal: Any) -> str:
+    """Read auth_state from an in-memory session. Does not log in or write tokens."""
+    data = getattr(tidal, "data", None)
+    access = getattr(data, "access_token", None) if data is not None else None
+    if not access:
+        return "not_configured"
+    expiry = getattr(data, "expiry_time", 0) or 0
+    try:
+        expiry_value = expiry.timestamp() if hasattr(expiry, "timestamp") else float(expiry)
+    except (TypeError, ValueError):
+        return "unavailable"
+    if expiry_value > 0 and expiry_value <= datetime.now(UTC).timestamp():
+        return "expired"
+    user = getattr(getattr(tidal, "session", None), "user", None)
+    if user is None:
+        return "unavailable"
+    return "credentials_ready"
+
+
+def local_day(now: datetime) -> str:
+    if now.tzinfo is not None:
+        now = now.astimezone()
+    return now.date().isoformat()
+
+
+def run_cycle(
+    now: datetime | None = None,
+    *,
+    settings: Any | None = None,
+    sources: Sequence[Source] | None = None,
+    sink: PlexSink | None = None,
+    ledger: Ledger | None = None,
+    downloads: DownloadClient | None = None,
+    library: LibraryLookup | None = None,
+    search: SearchFn | None = None,
+    tag_reader: TagReader | None = None,
+    clock: Callable[[], float] | None = None,
+    rng: Any | None = None,
+    sleep: Callable[[float], None] | None = None,
+    pacer: TidalApiPacer | None = None,
+    auth_state: AuthState | None = None,
+    tidal: Any | None = None,
+    force: bool = False,
+) -> CycleReport:
+    """Plan or run one append-only sync cycle.
+
+    Disabled settings return a report and do no work. Dry-run queues nothing
+    and appends nothing. Pass force to run when the setting is off.
+    """
+    cfg = load_config(settings)
+    if not cfg.enabled and not force:
+        return CycleReport(halted_reason="disabled")
+
+    moment = now or datetime.now(UTC).astimezone()
+    day = local_day(moment)
+    if auth_state is None:
+        auth_state = (lambda: read_auth_state(tidal)) if tidal is not None else (lambda: "not_configured")
+    store = ledger or Ledger(default_ledger_path())
+    governor = Governor(
+        ledger=store,
+        day=day,
+        max_per_cycle=cfg.max_per_cycle,
+        max_per_day=cfg.max_per_day,
+        gap_sec_min=cfg.gap_sec_min,
+        gap_sec_max=cfg.gap_sec_max,
+        auth_state=auth_state,
+        sleep=sleep,
+        rng=rng,
+        pacer=pacer,
+        clock=clock,
+        persist_counts=not cfg.dry_run,
+    )
+    if not governor.auth_ok():
+        return CycleReport(halted_reason=governor.halted_reason)
+
+    work = _Work(
+        cfg=cfg,
+        ledger=store,
+        sink=sink or NullPlexSink(),
+        governor=governor,
+        day=day,
+        seen_at=moment.isoformat(),
+        library=library,
+        search=search,
+        tag_reader=tag_reader or read_audio_tags,
+        downloads=downloads,
+    )
+    readers = list(sources) if sources is not None else _default_sources(tidal)
+    groups = _collect_groups(readers, cfg.allowlist, governor)
+    if governor.halted_reason:
+        work.report.halted_reason = governor.halted_reason
+        return work.report
+
+    for group in groups.values():
+        if governor.halted_reason:
+            break
+        _sync_group(work, group)
+    work.report.halted_reason = governor.halted_reason
+    return work.report
+
+
+def _default_sources(tidal: Any | None) -> list[Source]:
+    if tidal is None:
+        return []
+    from tidal_dl.playlist_sync.tidal_source import TidalSource
+
+    session = getattr(tidal, "session", tidal)
+    return [TidalSource(session)]
+
+
+def _collect_groups(
+    sources: Sequence[Source],
+    allowlist: tuple[str, ...],
+    governor: Governor,
+) -> dict[str, _Group]:
+    groups: dict[str, _Group] = {}
+    for source in sources:
+        if governor.halted_reason:
+            break
+        try:
+            listed = source.list_playlists()
+        except Exception as exc:
+            code = status_code_of(exc)
+            if code in (401, 429):
+                governor.halt(str(code))
+                break
+            raise
+        kind = source.name.casefold()
+        for playlist in listed:
+            if not name_allowed(playlist.name, allowlist):
+                continue
+            key = normalize_playlist_name(playlist.name)
+            group = groups.setdefault(key, _Group(name=playlist.name))
+            if kind == "tidal":
+                group.tidal = playlist
+                group.tidal_source = source
+                group.name = playlist.name
+            elif kind == "apple":
+                group.apple = playlist
+                group.apple_source = source
+                if group.tidal is None:
+                    group.name = playlist.name
+    return groups
+
+
+def _sync_group(work: _Work, group: _Group) -> None:
+    plex_tracks = [
+        coerce_track(item, source="plex", playlist_name=group.name) for item in work.sink.list_tracks(group.name)
+    ]
+    tidal_tracks = _load_tracks(work, work_source=group.tidal_source, playlist=group.tidal, name=group.name)
+    if work.governor.halted_reason:
+        _partial(work, group, plex_tracks, tidal_tracks, [])
+        return
+    apple_tracks = _load_tracks(work, work_source=group.apple_source, playlist=group.apple, name=group.name)
+    if work.governor.halted_reason and not apple_tracks and group.apple is not None:
+        _partial(work, group, plex_tracks, tidal_tracks, apple_tracks)
+        return
+    report = PlaylistReport(
+        name=group.name,
+        tidal_count=len(tidal_tracks),
+        apple_count=len(apple_tracks),
+        plex_count=len(plex_tracks),
+    )
+    union: list[Track] = list(plex_tracks)
+    placed: list[_Placed] = []
+    for track in (*tidal_tracks, *apple_tracks):
+        if work.governor.halted_reason:
+            break
+        _consider(work, group, report, union, placed, plex_tracks, track)
+    report.union_count = len(union)
+    work.report.playlists.append(report)
+
+
+def _partial(
+    work: _Work,
+    group: _Group,
+    plex_tracks: list[Track],
+    tidal_tracks: list[Track],
+    apple_tracks: list[Track],
+) -> None:
+    work.report.playlists.append(
+        PlaylistReport(
+            name=group.name,
+            tidal_count=len(tidal_tracks),
+            apple_count=len(apple_tracks),
+            plex_count=len(plex_tracks),
+            union_count=len(plex_tracks),
+        )
+    )
+
+
+def _load_tracks(
+    work: _Work,
+    *,
+    work_source: Source | None,
+    playlist: PlaylistRef | None,
+    name: str,
+) -> list[Track]:
+    if work_source is None or playlist is None or work.governor.halted_reason:
+        return []
+    name_norm = normalize_playlist_name(name)
+    token = playlist.last_updated or ""
+    seen = work.ledger.get_playlist(work_source.name, playlist.source_playlist_id)
+    if seen is not None and seen["last_updated_seen"] == token:
+        stored = work.ledger.tracks_for(work_source.name, name_norm)
+        if stored:
+            return stored
+    try:
+        tracks = list(work_source.list_tracks(playlist))
+    except Exception as exc:
+        code = status_code_of(exc)
+        if code in (401, 429):
+            work.governor.halt(str(code))
+            return []
+        raise
+    work.ledger.upsert_playlist(work_source.name, playlist.source_playlist_id, name_norm, token)
+    for track in tracks:
+        work.ledger.remember_track(track, name_norm, seen_at=work.seen_at)
+    return tracks
+
+
+def _consider(
+    work: _Work,
+    group: _Group,
+    report: PlaylistReport,
+    union: list[Track],
+    placed: list[_Placed],
+    plex_tracks: list[Track],
+    track: Track,
+) -> None:
+    name_norm = normalize_playlist_name(group.name)
+    plex_state, plex_candidate, plex_result = _best(track, [candidate_from_track(item) for item in plex_tracks])
+    if plex_state == "none" and _same_isrc_on_plex(track, plex_tracks):
+        plex_state = "review"
+    if plex_state == "confirmed":
+        _keep(work, report, placed, track, name_norm, "skip_present", "confirmed", "seen", plex_candidate, plex_result)
+        return
+    if plex_state == "review":
+        _keep(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            "review",
+            "review",
+            "needs_review",
+            plex_candidate,
+            plex_result,
+            bucket="needs_review",
+        )
+        return
+
+    prior = _prior(placed, track)
+    if prior is not None:
+        entry = _entry(track, prior.action, prior.entry["confidence"], None, None)
+        report.tracks.append(entry)
+        placed.append(_Placed(track, prior.action, entry))
+        return
+
+    local_state, local_candidate, local_result = _local(work, track)
+    if local_state == "confirmed":
+        union.append(track)
+        _keep(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            "append",
+            "confirmed",
+            "matched_local",
+            local_candidate,
+            local_result,
+            bucket="added",
+            already_local=True,
+        )
+        if not work.cfg.dry_run:
+            work.sink.append(group.name, [track])
+            work.ledger.set_status(track, name_norm, "added", seen_at=work.seen_at)
+        return
+    if local_state == "review":
+        union.append(track)
+        _keep(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            "review",
+            "review",
+            "needs_review",
+            local_candidate,
+            local_result,
+            bucket="needs_review",
+        )
+        return
+
+    row = work.ledger.get_track(track.source, track.source_track_id, name_norm)
+    if row and row["last_failure_day"] == work.day and row["status"] == "unobtainable":
+        union.append(track)
+        _keep(work, report, placed, track, name_norm, "unobtainable", "reject", "unobtainable", bucket="unobtainable")
+        return
+    if row and row["last_failure_day"] == work.day and row["status"] == "failed":
+        union.append(track)
+        entry = _entry(track, "download", "reject", None, None)
+        entry["status"] = "failed"
+        report.tracks.append(entry)
+        work.report.skipped.append(entry)
+        placed.append(_Placed(track, "download", entry))
+        return
+
+    if not track.available:
+        union.append(track)
+        _keep(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            "unobtainable",
+            "reject",
+            "unobtainable",
+            bucket="unobtainable",
+            last_failure_day=work.day,
+        )
+        return
+
+    download_id, choice_candidate, choice_result, choice = _download_choice(work, track)
+    if choice == "review":
+        union.append(track)
+        _keep(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            "review",
+            "review",
+            "needs_review",
+            choice_candidate,
+            choice_result,
+            bucket="needs_review",
+        )
+        return
+    if choice == "unmatched" or download_id is None:
+        union.append(track)
+        _keep(work, report, placed, track, name_norm, "review", "reject", "unmatched", bucket="unmatched")
+        return
+
+    union.append(track)
+    if work.cfg.dry_run:
+        _plan_download(work, report, placed, track, name_norm, choice_candidate, choice_result)
+        return
+    _run_download(work, group, report, placed, track, name_norm, download_id, choice_candidate, choice_result)
+
+
+def _plan_download(
+    work: _Work,
+    report: PlaylistReport,
+    placed: list[_Placed],
+    track: Track,
+    name_norm: str,
+    candidate: Candidate | None,
+    result: VerifyResult | None,
+) -> None:
+    if not work.governor.can_download():
+        entry = _entry(track, "download", "confirmed", candidate, result)
+        entry["status"] = "skipped"
+        report.tracks.append(entry)
+        work.report.skipped.append(entry)
+        placed.append(_Placed(track, "download", entry))
+        return
+    work.governor.cycle_count += 1
+    report.to_download += 1
+    entry = _entry(track, "download", "confirmed", candidate, result)
+    report.tracks.append(entry)
+    placed.append(_Placed(track, "download", entry))
+    work.ledger.set_status(track, name_norm, "seen", seen_at=work.seen_at)
+
+
+def _run_download(
+    work: _Work,
+    group: _Group,
+    report: PlaylistReport,
+    placed: list[_Placed],
+    track: Track,
+    name_norm: str,
+    download_id: int,
+    candidate: Candidate | None,
+    result: VerifyResult | None,
+) -> None:
+    work.ledger.set_status(track, name_norm, "queued", seen_at=work.seen_at)
+
+    def once() -> DownloadResult:
+        client = work.client()
+        client.enqueue_download([download_id])
+        return client.wait_for(download_id)
+
+    outcome = work.governor.download(once)
+    if outcome is None:
+        entry = _entry(track, "download", "confirmed", candidate, result)
+        entry["status"] = "skipped"
+        report.tracks.append(entry)
+        work.report.skipped.append(entry)
+        placed.append(_Placed(track, "download", entry))
+        work.ledger.set_status(track, name_norm, "seen", seen_at=work.seen_at)
+        return
+
+    report.to_download += 1
+    if outcome.http_status in (401, 429) or outcome.status != "completed":
+        entry = _entry(track, "download", "reject", candidate, result)
+        entry["status"] = "failed"
+        report.tracks.append(entry)
+        work.report.skipped.append(entry)
+        placed.append(_Placed(track, "download", entry))
+        work.ledger.set_status(track, name_norm, "failed", seen_at=work.seen_at, last_failure_day=work.day)
+        return
+
+    checked = _post_download(work, track, outcome)
+    if checked is None:
+        entry = _entry(track, "append", "confirmed", candidate, result)
+        entry["status"] = "added"
+        report.tracks.append(entry)
+        work.report.downloaded.append(entry)
+        work.report.added.append(entry)
+        placed.append(_Placed(track, "append", entry))
+        work.ledger.set_status(track, name_norm, "downloaded", seen_at=work.seen_at)
+        work.sink.append(group.name, [track])
+        work.ledger.set_status(track, name_norm, "added", seen_at=work.seen_at)
+        return
+
+    mismatch_candidate, mismatch = checked
+    entry = _entry(track, "review", mismatch.confidence, mismatch_candidate, mismatch)
+    entry["status"] = "download_mismatch"
+    report.tracks.append(entry)
+    work.report.download_mismatch.append(entry)
+    placed.append(_Placed(track, "review", entry))
+    work.ledger.set_status(track, name_norm, "download_mismatch", seen_at=work.seen_at)
+
+
+def _post_download(
+    work: _Work,
+    track: Track,
+    outcome: DownloadResult,
+) -> tuple[Candidate, VerifyResult] | None:
+    if not outcome.path:
+        empty = Candidate(id="", title="", artist="", duration=None, isrc=None)
+        return empty, verify(track, empty)
+    tags = work.tag_reader(outcome.path)
+    if not tags:
+        empty = Candidate(id=outcome.path, title="", artist="", duration=None, isrc=None)
+        return empty, verify(track, empty)
+    candidate = candidate_from_mapping({**tags, "id": outcome.path})
+    result = verify(track, candidate)
+    if result.confidence == "confirmed":
+        return None
+    return candidate, result
+
+
+def _download_choice(
+    work: _Work,
+    track: Track,
+) -> tuple[int | None, Candidate | None, VerifyResult | None, str]:
+    if track.source.casefold() == "apple":
+        return _apple_choice(work, track)
+    track_id = _as_int(track.source_track_id)
+    if track_id is None:
+        return None, None, None, "unmatched"
+    return track_id, None, None, "download"
+
+
+def _apple_choice(
+    work: _Work,
+    track: Track,
+) -> tuple[int | None, Candidate | None, VerifyResult | None, str]:
+    if work.search is None:
+        return None, None, None, "unmatched"
+    passing: list[tuple[Candidate, VerifyResult]] = []
+    borderline: list[tuple[Candidate, VerifyResult]] = []
+    for candidate in work.search(track) or []:
+        result = verify(track, candidate)
+        if result.confidence == "confirmed":
+            passing.append((candidate, result))
+        elif result.confidence == "review":
+            borderline.append((candidate, result))
+    if len(passing) > 1 or borderline:
+        candidate, result = (passing or borderline)[0]
+        return None, candidate, result, "review"
+    if len(passing) == 1:
+        candidate, result = passing[0]
+        track_id = _as_int(candidate.id)
+        if track_id is None:
+            return None, candidate, result, "unmatched"
+        return track_id, candidate, result, "download"
+    return None, None, None, "unmatched"
+
+
+def _local(work: _Work, track: Track) -> tuple[str, Candidate | None, VerifyResult | None]:
+    if work.library is None:
+        return "none", None, None
+    return _best(track, work.library(track) or [])
+
+
+def _best(
+    track: Track,
+    candidates: list[Candidate],
+) -> tuple[str, Candidate | None, VerifyResult | None]:
+    review: tuple[Candidate, VerifyResult] | None = None
+    for candidate in candidates:
+        result = verify(track, candidate)
+        if result.confidence == "confirmed":
+            return "confirmed", candidate, result
+        if result.confidence == "review" and review is None:
+            review = (candidate, result)
+    if review is not None:
+        return "review", review[0], review[1]
+    return "none", None, None
+
+
+def _same_isrc_on_plex(track: Track, plex_tracks: list[Track]) -> bool:
+    code = isrc_key(track.isrc)
+    if not code:
+        return False
+    return any(isrc_key(item.isrc) == code for item in plex_tracks)
+
+
+def _prior(placed: list[_Placed], track: Track) -> _Placed | None:
+    for item in placed:
+        if same_recording(track, item.track):
+            return item
+    return None
+
+
+def _keep(
+    work: _Work,
+    report: PlaylistReport,
+    placed: list[_Placed],
+    track: Track,
+    name_norm: str,
+    action: str,
+    confidence: str,
+    status: str,
+    candidate: Candidate | None = None,
+    result: VerifyResult | None = None,
+    *,
+    bucket: str | None = None,
+    already_local: bool = False,
+    last_failure_day: str | None = None,
+) -> None:
+    entry = _entry(track, action, confidence, candidate, result)
+    if status:
+        entry["status"] = status
+    report.tracks.append(entry)
+    placed.append(_Placed(track, action, entry))
+    if bucket == "added":
+        work.report.added.append(entry)
+    elif bucket == "needs_review":
+        report.needs_review.append(entry)
+        work.report.needs_review.append(entry)
+    elif bucket == "unobtainable":
+        report.unobtainable += 1
+        work.report.unobtainable.append(entry)
+    elif bucket == "unmatched":
+        report.unmatched += 1
+        work.report.unmatched.append(entry)
+    if already_local:
+        report.already_local += 1
+    if status != "seen":
+        work.ledger.set_status(
+            track,
+            name_norm,
+            status,
+            seen_at=work.seen_at,
+            last_failure_day=last_failure_day,
+        )
+
+
+def _entry(
+    track: Track,
+    action: str,
+    confidence: str,
+    candidate: Candidate | None,
+    result: VerifyResult | None,
+) -> dict[str, Any]:
+    return {
+        "source": track.source,
+        "source_track": track.source_view(),
+        "matched_candidate": None if candidate is None else candidate.to_dict(),
+        "fields_matched": [] if result is None else result.fields_matched(),
+        "confidence": confidence,
+        "action": action,
+    }
+
+
+def _as_int(value: object) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def library_candidates(db: Any, track: Track) -> list[Candidate]:
+    """ISRC lookup against an open library database. Closes nothing."""
+    if not track.isrc or not hasattr(db, "tracks_by_isrc"):
+        return []
+    rows = db.tracks_by_isrc(track.isrc) or []
+    return [candidate_from_mapping(dict(row)) for row in rows if row]

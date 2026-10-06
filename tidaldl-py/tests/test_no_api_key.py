@@ -274,11 +274,14 @@ class TestSettings:
         s = Settings()
         names = {item.name for item in fields(s.data)}
         # 48 historical fields + scan_paths + edition_advice_enabled +
-        # edition_scorer_path from #186 Jev edition advice.
-        assert len(names) == 50
+        # edition_scorer_path from #186 Jev edition advice + playlist sync.
+        assert len(names) == 58
         assert "scan_paths" in names
         assert "edition_advice_enabled" in names
         assert "edition_scorer_path" in names
+        assert "playlist_sync_enabled" in names
+        assert "playlist_sync_dry_run" in names
+        assert "playlist_sync_allowlist" in names
 
     def test_settings_default_quality(self, clear_singletons, tmp_path, monkeypatch):
         from tidalapi.media import Quality
