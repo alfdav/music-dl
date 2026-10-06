@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
 
+from tidal_dl.helper.library_db.utils import prefer_listed_spelling
 from tidal_dl.helper.library_scanner import is_skipped_scan_dir, path_has_skipped_scan_dir
 
 AUDIO_EXTENSIONS = {".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac"}
@@ -210,6 +211,7 @@ class _DirInfo:
     path: str
     signature: str
     audio_names: tuple[str, ...]
+    actual: str = ""
 
 
 def _row_identity(row: dict) -> FileIdentity:
@@ -669,21 +671,32 @@ class PathReconciler:
         current: dict[str, _DirInfo] = {}
         unreadable: set[str] = set()
         for root in self.roots:
-            stack = [canon_path(root)]
-            seen: set[str] = set()
+            stack = [os.path.normpath(os.fspath(root))]
+            seen_actual: set[str] = set()
             while stack:
-                directory = stack.pop()
-                if directory in seen:
+                actual_dir = stack.pop()
+                if actual_dir in seen_actual:
                     continue
-                seen.add(directory)
+                seen_actual.add(actual_dir)
+                key = canon_path(actual_dir)
+                previous = current.get(key)
+                if previous is not None:
+                    kept = previous.actual or previous.path
+                    if prefer_listed_spelling(kept, actual_dir) == kept:
+                        continue
+                    try:
+                        self._stat(actual_dir)
+                    except OSError:
+                        continue
                 try:
-                    st = self._stat(directory)
+                    st = self._stat(actual_dir)
                 except OSError:
-                    unreadable.add(directory)
+                    if previous is None:
+                        unreadable.add(key)
                     continue
                 audio_names: list[str] = []
                 try:
-                    with self.scandir_fn(directory) as iterator:
+                    with self.scandir_fn(actual_dir) as iterator:
                         for entry in iterator:
                             if path_has_skipped_scan_dir(Path(entry.path) / "x"):
                                 continue
@@ -692,7 +705,7 @@ class PathReconciler:
                                     continue
                                 if entry.is_dir(follow_symlinks=False):
                                     if not is_skipped_scan_dir(entry.name):
-                                        stack.append(canon_path(entry.path))
+                                        stack.append(os.path.normpath(entry.path))
                                 elif (
                                     entry.is_file(follow_symlinks=False)
                                     and Path(entry.name).suffix.lower() in AUDIO_EXTENSIONS
@@ -701,13 +714,16 @@ class PathReconciler:
                             except OSError:
                                 continue
                 except OSError:
-                    unreadable.add(directory)
+                    if previous is None:
+                        unreadable.add(key)
                     continue
-                current[directory] = _DirInfo(
-                    path=directory,
+                current[key] = _DirInfo(
+                    path=key,
                     signature=directory_signature(st.st_mtime_ns, len(audio_names)),
                     audio_names=tuple(sorted(audio_names)),
+                    actual=actual_dir,
                 )
+                unreadable.discard(key)
         return current, unreadable
 
     def _file_identity(self, path: Path, *, read_tags: bool) -> tuple[FileIdentity, dict | None] | None:
@@ -784,10 +800,48 @@ class PathReconciler:
     def _on_disk_by_canon(self, current: dict[str, _DirInfo]) -> dict[str, str]:
         on_disk: dict[str, str] = {}
         for directory, info in current.items():
+            base = info.actual or directory
             for name in info.audio_names:
-                actual = str(Path(directory) / name)
-                on_disk[canon_path(actual)] = actual
+                actual = str(Path(base) / name)
+                key = canon_path(actual)
+                on_disk[key] = prefer_listed_spelling(on_disk.get(key), actual)
         return on_disk
+
+    def _align_listed_files(self, current: dict[str, _DirInfo]) -> None:
+        """Heal stored spellings onto the walk path. Not recorded as a move."""
+        on_disk = self._on_disk_by_canon(current)
+        if not on_disk:
+            return
+        rows = list(self.db.identity_rows())
+        self.db.commit()
+        identities: dict[str, dict] = {}
+        for row in rows:
+            actual = on_disk.get(canon_path(row["path"]))
+            if actual is None:
+                continue
+            if (
+                row["path"] == actual
+                and row.get("file_size") is not None
+                and row.get("file_inode") is not None
+            ):
+                continue
+            packed = self._file_identity(Path(actual), read_tags=False)
+            if packed is None:
+                identities[actual] = {}
+                continue
+            identity = packed[0]
+            identities[actual] = {
+                "file_size": identity.size,
+                "file_mtime": identity.mtime,
+                "file_inode": identity.inode,
+                "file_device": identity.device,
+                "duration": identity.duration,
+                "codec": identity.codec,
+                "title": identity.title,
+                "artist": identity.artist,
+                "album": identity.album,
+            }
+        self.db.align_stored_paths(on_disk, identities, canon_path)
 
     def _heal_layout_paths(
         self,
@@ -921,6 +975,7 @@ class PathReconciler:
         if not current and unreadable:
             return PathReconcileResult(unchanged=True, skipped_dirs=sorted(unreadable))
 
+        self._align_listed_files(current)
         stored = self.db.dir_signatures()
         stored_keys = set(stored)
         current_keys = set(current)

@@ -15,7 +15,7 @@ _SQLITE_CORRUPTION_MESSAGES = (
 
 
 def canonical_library_path(path: str) -> str:
-    """Index paths as NFC so macOS NFD walk strings match tag/download NFC."""
+    """NFC comparison key. Not the path to open or store."""
     return unicodedata.normalize("NFC", str(path))
 
 
@@ -23,6 +23,24 @@ def library_path_forms(path: str) -> tuple[str, str]:
     """Return (NFC, NFD) spellings of *path* for indexed twin lookups."""
     nfc = canonical_library_path(path)
     return nfc, unicodedata.normalize("NFD", nfc)
+
+
+def library_path_lookup_keys(path: str) -> tuple[str, ...]:
+    """Exact string, then NFC and NFD, for indexed path lookups."""
+    nfc, nfd = library_path_forms(path)
+    return tuple(dict.fromkeys(item for item in (path, nfc, nfd) if item))
+
+
+def prefer_listed_spelling(current: str | None, candidate: str) -> str:
+    """Keep an NFC spelling the walk listed; otherwise keep the earlier listing.
+
+    Never invents a spelling. Both arguments must be strings the walk returned.
+    """
+    if not current:
+        return candidate
+    if unicodedata.is_normalized("NFC", candidate) and not unicodedata.is_normalized("NFC", current):
+        return candidate
+    return current
 
 
 def _is_sqlite_corruption(exc: sqlite3.DatabaseError) -> bool:

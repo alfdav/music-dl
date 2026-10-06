@@ -88,21 +88,26 @@ class TestUnicodeFormHypothesis:
         assert unicodedata.normalize("NFD", nfc) == nfd
 
 
-class TestRecordStoresNfc:
-    def test_record_nfd_path_stores_nfc_and_get_finds_either_form(self, db):
+class TestRecordStoresGivenSpelling:
+    def test_record_nfd_path_stores_that_spelling_and_get_finds_either_form(self, db):
+        """record() used to force NFC. The stored path is now the spelling passed in.
+
+        NFC remains the lookup key, so get() and is_known() accept either form.
+        """
         nfc, nfd = _alizee_strings()
         db.record(nfd, status="tagged", artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
         db.commit()
 
         stored = db.get(nfd)
         assert stored is not None
-        assert stored["path"] == nfc
-        assert db.get(nfc)["path"] == nfc
+        assert stored["path"] == nfd
+        assert db.get(nfc)["path"] == nfd
         assert db.is_known(nfc)
         assert db.is_known(nfd)
-        assert db.known_paths() == {nfc}
+        assert db.known_paths() == {nfd}
 
     def test_record_nfc_then_nfd_is_one_row(self, db):
+        """A second record of the other spelling folds onto that later spelling."""
         nfc, nfd = _alizee_strings()
         db.record(nfc, status="tagged", artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
         db.record(nfd, status="tagged", artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
@@ -111,7 +116,7 @@ class TestRecordStoresNfc:
         rows, total = db.tracks_page(query="Alizée", limit=50, offset=0)
         assert total == 1
         assert len(rows) == 1
-        assert rows[0]["path"] == nfc
+        assert rows[0]["path"] == nfd
 
 
 class TestCollapseExistingTwins:
@@ -224,14 +229,21 @@ class TestCollapseExistingTwins:
 
 
 class TestReconcilerLookupsAcceptTwins:
-    def test_migrate_path_nfc_to_nfd_is_identity_noop(self, db):
+    def test_migrate_path_same_key_adopts_exact_spelling(self, db):
+        """Same-canonical migrate used to return without writing.
+
+        That left an NFC row in place when the file on disk was NFD, so later
+        opens failed. The stored path is now the exact new_path argument.
+        """
         nfc, nfd = _alizee_strings()
         db.record(nfc, status="tagged", artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)
+        db._conn.execute("UPDATE scanned SET play_count = 4 WHERE path = ?", (nfc,))
         db.commit()
 
         assert db.migrate_path(nfc, nfd) is True
-        assert db.known_paths() == {nfc}
-        assert db.get(nfd)["path"] == nfc
+        assert db.known_paths() == {nfd}
+        assert db.get(nfd)["path"] == nfd
+        assert db.get(nfc)["play_count"] == 4
 
     def test_migrate_path_still_moves_distinct_paths(self, db):
         nfc, _nfd = _alizee_strings()
