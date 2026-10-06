@@ -172,6 +172,41 @@ def _call_tracks(playlist: Any, *, limit: int, offset: int) -> list:
         return raw[offset : offset + limit]
 
 
+def fetch_user_playlists(session) -> list:
+    """Return the user's playlist objects. No cover cache and no login."""
+    user = getattr(session, "user", None)
+    if user is None:
+        return []
+    getter = getattr(user, "playlists", None)
+    if not callable(getter):
+        return []
+    return list(getter() or [])
+
+
+def playlist_track_catalog(playlist: Any, *, page_size: int = _PLAYLIST_PAGE_SIZE) -> list[dict]:
+    """Catalog rows for one playlist object, including an available flag.
+
+    Same page walk as the tracks endpoint. Does not stamp the local library.
+    """
+    offset = 0
+    rows: list[dict] = []
+    while offset <= _PLAYLIST_TOTAL_CAP:
+        raw = _call_tracks(playlist, limit=page_size, offset=offset)
+        if not raw:
+            break
+        for track in raw:
+            payload = _serialize_catalog_track(track)
+            allow = getattr(track, "allow_streaming", True)
+            ready = getattr(track, "stream_ready", True)
+            payload["available"] = bool(allow) and bool(ready)
+            payload["version"] = str(getattr(track, "version", "") or "")
+            rows.append(payload)
+        if len(raw) < page_size:
+            break
+        offset += page_size
+    return rows
+
+
 def _indexed_display_row(track_data: dict, db: Any) -> dict | None:
     """ISRC → indexed library path. No artist walk and no filesystem stat."""
     from tidal_dl.helper.library_scanner import path_has_skipped_scan_dir
@@ -602,17 +637,8 @@ def list_playlists() -> dict:
 
     from tidal_dl.gui.api.settings import call_tidal
 
-    def _user_playlists():
-        user = getattr(tidal.session, "user", None)
-        if user is None:
-            return []
-        getter = getattr(user, "playlists", None)
-        if not callable(getter):
-            return []
-        return getter() or []
-
     tidal = get_tidal()
-    playlists = call_tidal(tidal, _user_playlists)
+    playlists = call_tidal(tidal, lambda: fetch_user_playlists(tidal.session))
 
     # Use DB-cached playlist covers to survive server restarts
     db = _get_playlist_db()
