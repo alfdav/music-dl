@@ -27,7 +27,7 @@ from tidal_dl.playlist_sync.models import (
     coerce_track,
 )
 from tidal_dl.playlist_sync.mount import download_path_available
-from tidal_dl.playlist_sync.sink import NullPlexSink, PlexSink
+from tidal_dl.playlist_sync.sink import PlexSink
 from tidal_dl.playlist_sync.source import Source
 from tidal_dl.playlist_sync.tags import read_audio_tags
 from tidal_dl.playlist_sync.unicode_norm import apply_prefix_map, nfc_path
@@ -128,6 +128,8 @@ def run_cycle(
     download_path_ready: Callable[[str], bool] | None = None,
     path_prefixes: Mapping[str, str] | None = None,
     file_exists: Callable[[str], bool] | None = None,
+    plex_session: Any | None = None,
+    plex_token_resolver: Callable[[], Any] | None = None,
 ) -> CycleReport:
     """Plan or run one append-only sync cycle.
 
@@ -171,10 +173,23 @@ def run_cycle(
         handle = _LibraryHandle()
         lookup = handle
     try:
+        if sink is not None:
+            chosen_sink = sink
+        else:
+            from tidal_dl.playlist_sync.plex_sink import build_plex_sink
+
+            chosen_sink = build_plex_sink(
+                cfg,
+                store,
+                session=plex_session,
+                token_resolver=plex_token_resolver,
+                clock=clock,
+                sleep=sleep,
+            )
         work = _Work(
             cfg=cfg,
             ledger=store,
-            sink=sink or NullPlexSink(),
+            sink=chosen_sink,
             governor=governor,
             day=day,
             seen_at=moment.isoformat(),
@@ -364,7 +379,7 @@ def _consider(
     notes = ("stale_library_row",) if stale else ()
     if local_state == "confirmed":
         union.append(track)
-        _keep(
+        entry = _keep(
             work,
             report,
             placed,
@@ -379,8 +394,17 @@ def _consider(
             already_local=True,
         )
         if not work.cfg.dry_run:
-            work.sink.append(group.name, [track])
-            work.ledger.set_status(track, name_norm, "added", seen_at=work.seen_at)
+            local_path = local_candidate.path if local_candidate is not None else None
+            result = _sink_append(work, group.name, [track], [local_path])
+            _finish_append(
+                work,
+                entry,
+                track,
+                name_norm,
+                result,
+                local_path=local_path,
+                pending_status="matched_local",
+            )
         return
     if local_state == "review":
         union.append(track)
@@ -405,7 +429,7 @@ def _consider(
             plex_state, plex_track, plex_choice, plex_verified = plex_hit
             if plex_state == "confirmed" and plex_track is not None:
                 union.append(track)
-                _keep(
+                entry = _keep(
                     work,
                     report,
                     placed,
@@ -421,8 +445,16 @@ def _consider(
                     notes=notes,
                 )
                 if not work.cfg.dry_run:
-                    work.sink.append(group.name, [plex_track])
-                    work.ledger.set_status(track, name_norm, "added", seen_at=work.seen_at)
+                    result = _sink_append(work, group.name, [plex_track], [None])
+                    _finish_append(
+                        work,
+                        entry,
+                        track,
+                        name_norm,
+                        result,
+                        local_path=None,
+                        pending_status="matched_local",
+                    )
                 return
             if plex_state == "review":
                 union.append(track)
@@ -443,6 +475,8 @@ def _consider(
                 return
 
     row = work.ledger.get_track(track.source, track.source_track_id, name_norm)
+    if row and _retry_saved_file(work, group, report, union, placed, track, name_norm, row):
+        return
     if row and row["status"] == "download_mismatch":
         union.append(track)
         _keep(
@@ -626,7 +660,7 @@ def _run_download(
         work.ledger.set_status(track, name_norm, "failed", seen_at=work.seen_at, last_failure_day=work.day)
         return
 
-    checked = _post_download(work, track, outcome)
+    checked, file_path = _post_download(work, track, outcome)
     if checked is None:
         entry = _entry(track, "append", "confirmed", candidate, result, notes=notes)
         entry["status"] = "added"
@@ -634,9 +668,17 @@ def _run_download(
         work.report.downloaded.append(entry)
         work.report.added.append(entry)
         placed.append(_Placed(track, "append", entry))
-        work.ledger.set_status(track, name_norm, "downloaded", seen_at=work.seen_at)
-        work.sink.append(group.name, [track])
-        work.ledger.set_status(track, name_norm, "added", seen_at=work.seen_at)
+        work.ledger.set_status(track, name_norm, "downloaded", seen_at=work.seen_at, local_path=file_path or None)
+        result_append = _sink_append(work, group.name, [track], [file_path or None])
+        _finish_append(
+            work,
+            entry,
+            track,
+            name_norm,
+            result_append,
+            local_path=file_path or None,
+            pending_status="downloaded",
+        )
         return
 
     mismatch_candidate, mismatch = checked
@@ -660,21 +702,21 @@ def _post_download(
     work: _Work,
     track: Track,
     outcome: DownloadResult,
-) -> tuple[Candidate, VerifyResult] | None:
+) -> tuple[tuple[Candidate, VerifyResult] | None, str]:
     looked_up = apply_prefix_map(outcome.path or "", work.path_prefixes)
     if not looked_up:
         looked_up = _existing_library_path(work, track) or ""
     if not looked_up:
-        return _downloaded_file_not_found()
+        return _downloaded_file_not_found(), ""
     tags = work.tag_reader(looked_up)
     if not tags:
         empty = Candidate(id=looked_up, title="", artist="", duration=None, isrc=None)
-        return empty, verify(track, empty)
+        return (empty, verify(track, empty)), looked_up
     candidate = candidate_from_mapping({**tags, "id": looked_up, "path": looked_up})
     result = verify(track, candidate)
     if result.confidence == "confirmed":
-        return None
-    return candidate, result
+        return None, looked_up
+    return (candidate, result), looked_up
 
 
 def _existing_library_path(work: _Work, track: Track) -> str | None:
@@ -837,7 +879,7 @@ def _keep(
     already_local: bool = False,
     last_failure_day: str | None = None,
     notes: tuple[str, ...] = (),
-) -> None:
+) -> dict[str, Any]:
     entry = _entry(track, action, confidence, candidate, result, notes=notes)
     if status:
         entry["status"] = status
@@ -864,6 +906,151 @@ def _keep(
             seen_at=work.seen_at,
             last_failure_day=last_failure_day,
         )
+    return entry
+
+
+_APPEND_OK = {"added", "already_present"}
+_PLEX_ERRORS = {"refused_smart", "unmapped_path", "failed"}
+
+
+def _sink_append(work: _Work, name: str, tracks: list[Track], paths: list[str | None]) -> Any:
+    try:
+        return work.sink.append(name, tracks, paths=paths)
+    except TypeError as exc:
+        if "paths" not in str(exc):
+            raise
+        return work.sink.append(name, tracks)
+
+
+def _result_status(result: Any) -> str:
+    if result is None:
+        return "added"
+    status = getattr(result, "status", None)
+    if isinstance(status, str) and status:
+        return status
+    return "added"
+
+
+def _result_rating(result: Any) -> str | None:
+    if result is None:
+        return None
+    keys = getattr(result, "rating_keys", None) or ()
+    if not keys:
+        return None
+    first = keys[0]
+    text = "" if first is None else str(first)
+    return text or None
+
+
+def _drop_entry(bucket: list[dict[str, Any]], entry: dict[str, Any]) -> None:
+    for index, item in enumerate(bucket):
+        if item is entry:
+            del bucket[index]
+            return
+
+
+def _finish_append(
+    work: _Work,
+    entry: dict[str, Any],
+    track: Track,
+    name_norm: str,
+    result: Any,
+    *,
+    local_path: str | None,
+    pending_status: str,
+) -> None:
+    status = _result_status(result)
+    rating = _result_rating(result)
+    if status in _APPEND_OK:
+        work.ledger.set_status(
+            track,
+            name_norm,
+            "added",
+            seen_at=work.seen_at,
+            plex_rating_key=rating,
+            local_path=local_path,
+        )
+        return
+    _drop_entry(work.report.added, entry)
+    if status == "pending_plex":
+        entry["status"] = "pending_plex"
+        work.report.pending_plex.append(entry)
+        work.ledger.set_status(
+            track,
+            name_norm,
+            pending_status,
+            seen_at=work.seen_at,
+            local_path=local_path,
+        )
+        return
+    if status == "dry_run":
+        entry["status"] = "dry_run"
+        return
+    entry["status"] = status
+    work.report.plex_errors.append(entry)
+    if status in _PLEX_ERRORS:
+        work.ledger.set_status(
+            track,
+            name_norm,
+            pending_status,
+            seen_at=work.seen_at,
+            local_path=local_path,
+        )
+
+
+def _retry_saved_file(
+    work: _Work,
+    group: _Group,
+    report: PlaylistReport,
+    union: list[Track],
+    placed: list[_Placed],
+    track: Track,
+    name_norm: str,
+    row: dict[str, Any],
+) -> bool:
+    """Retry a saved file into Plex. A downloaded row is never queued again."""
+    status = str(row["status"])
+    local_path = str(row.get("local_path") or "")
+    if status == "downloaded":
+        union.append(track)
+        _replay_append(work, group, report, placed, track, name_norm, local_path, "downloaded")
+        return True
+    if status == "matched_local" and local_path and work.file_exists(local_path):
+        union.append(track)
+        _replay_append(work, group, report, placed, track, name_norm, local_path, "matched_local")
+        return True
+    return False
+
+
+def _replay_append(
+    work: _Work,
+    group: _Group,
+    report: PlaylistReport,
+    placed: list[_Placed],
+    track: Track,
+    name_norm: str,
+    local_path: str,
+    pending_status: str,
+) -> None:
+    entry = _entry(track, "append", "confirmed", None, None)
+    report.tracks.append(entry)
+    placed.append(_Placed(track, "append", entry))
+    if work.cfg.dry_run or not local_path or not work.file_exists(local_path):
+        entry["status"] = "pending_plex"
+        work.report.pending_plex.append(entry)
+        return
+    entry["status"] = "added"
+    work.report.added.append(entry)
+    result = _sink_append(work, group.name, [track], [local_path])
+    _finish_append(
+        work,
+        entry,
+        track,
+        name_norm,
+        result,
+        local_path=local_path,
+        pending_status=pending_status,
+    )
 
 
 def _entry(
