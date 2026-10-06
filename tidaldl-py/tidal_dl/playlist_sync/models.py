@@ -225,6 +225,8 @@ class CycleReport:
     skipped: list[dict[str, Any]] = field(default_factory=list)
     needs_review: list[dict[str, Any]] = field(default_factory=list)
     download_mismatch: list[dict[str, Any]] = field(default_factory=list)
+    pending_plex: list[dict[str, Any]] = field(default_factory=list)
+    plex_errors: list[dict[str, Any]] = field(default_factory=list)
     halted_reason: str | None = None
     playlists: list[PlaylistReport] = field(default_factory=list)
 
@@ -237,6 +239,8 @@ class CycleReport:
             "skipped": self.skipped,
             "needs_review": self.needs_review,
             "download_mismatch": self.download_mismatch,
+            "pending_plex": self.pending_plex,
+            "plex_errors": self.plex_errors,
             "halted_reason": self.halted_reason,
             "playlists": [playlist.to_dict() for playlist in self.playlists],
         }
@@ -248,3 +252,12 @@ class DownloadResult:
     path: str | None = None
     http_status: int | None = None
     error: str | None = None
+
+
+@dataclass
+class AppendResult:
+    """What a Plex append did. ``detail`` never carries a token or a header."""
+
+    status: str
+    rating_keys: list[str] = field(default_factory=list)
+    detail: str = ""
