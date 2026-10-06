@@ -84,9 +84,13 @@ def _prefix(value: Any) -> str:
 
 
 def _timeout(value: Any) -> int:
-    if value is None or value == "":
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
         return 600
-    return int(value)
+    if parsed <= 0:
+        return 600
+    return parsed
 
 
 def name_allowed(name: str, allowlist: tuple[str, ...]) -> bool:

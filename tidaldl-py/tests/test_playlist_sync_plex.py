@@ -941,6 +941,14 @@ def test_token_resolution_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     assert TOKEN not in caplog.text
 
 
+def test_bad_scan_timeout_falls_back_to_600():
+    for value in ("nope", "0", "-3", 0, -1, 0.0, None, ""):
+        loaded = load_config(SimpleNamespace(playlist_sync_plex_scan_timeout_sec=value))
+        assert loaded.plex_scan_timeout_sec == 600
+    assert load_config(SimpleNamespace(playlist_sync_plex_scan_timeout_sec=45)).plex_scan_timeout_sec == 45
+    assert load_config(SimpleNamespace(playlist_sync_plex_scan_timeout_sec="90")).plex_scan_timeout_sec == 90
+
+
 def test_defaults_use_a_null_sink_and_settings_have_no_token(tmp_path: Path):
     data = ModelSettings()
     assert data.playlist_sync_enabled is False
