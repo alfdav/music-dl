@@ -406,6 +406,8 @@ class ScannedMixin:
     ) -> None:
         """Insert or update a scan result."""
         assert self._conn
+        file_inode = sqlite_int64(file_inode)
+        file_device = sqlite_int64(file_device)
         path = self._adopt_canonical_path(path)
         now = time.time()
         self._conn.execute(
@@ -593,6 +595,8 @@ class ScannedMixin:
     ) -> bool:
         """Move a scanned row and its path-keyed user data to *new_path*."""
         assert self._conn
+        file_inode = sqlite_int64(file_inode)
+        file_device = sqlite_int64(file_device)
         old_nfc, old_nfd = library_path_forms(old_path)
         new_nfc, new_nfd = library_path_forms(new_path)
         if old_nfc == new_nfc:
@@ -663,6 +667,25 @@ class ScannedMixin:
             (new_nfc, old_stored, old_nfd),
         )
         return True
+
+    def backfill_file_identity(self, updates: list[tuple]) -> int:
+        """Fill NULL file identity in batches. Inode and device are signed int64."""
+        assert self._conn
+        if not updates:
+            return 0
+        converted = [
+            (size, mtime, sqlite_int64(inode), sqlite_int64(device), path)
+            for size, mtime, inode, device, path in updates
+        ]
+        for offset in range(0, len(converted), 200):
+            with self.write_transaction():
+                self._conn.executemany(
+                    """UPDATE scanned SET file_size = ?, file_mtime = ?,
+                           file_inode = ?, file_device = ?
+                       WHERE path = ? AND file_size IS NULL""",
+                    converted[offset:offset + 200],
+                )
+        return len(converted)
 
     def mark_missing(self, path: str, *, since: int | None = None) -> None:
         assert self._conn
