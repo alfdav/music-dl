@@ -13,7 +13,17 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from tests.test_playlist_sync import _cfg, _ClockRng, _Downloads, _playlist, _run, _Source, _track, _wall
+from tests.test_playlist_sync import (
+    _candidate,
+    _cfg,
+    _ClockRng,
+    _Downloads,
+    _playlist,
+    _run,
+    _Source,
+    _track,
+    _wall,
+)
 from tidal_dl.download.api_pacing import TidalApiPacer
 from tidal_dl.model.cfg import SETTINGS_HELP
 from tidal_dl.model.cfg import Settings as ModelSettings
@@ -1053,6 +1063,7 @@ def test_ledger_migrates_local_path_and_stores_nfc_plex_paths(tmp_path: Path):
     assert "local_path" in columns
     tables = {row["name"] for row in ledger._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert "plex_paths" in tables
+    assert "plex_added" in tables
 
     accent = "Canci\u00f3n"
     nfd = unicodedata.normalize("NFD", f"{SERVER}/{accent}.flac")
@@ -1076,6 +1087,9 @@ def test_ledger_migrates_local_path_and_stores_nfc_plex_paths(tmp_path: Path):
     assert stored["status"] == "downloaded"
     assert stored["local_path"] == _local("Example Song")
     assert stored["plex_rating_key"] == "5001"
+    ledger.remember_plex_added(name, "5001", at="2026-10-06T00:00:00+00:00")
+    ledger.remember_plex_added(name, "5001", at="2026-10-06T01:00:00+00:00")
+    assert ledger.plex_added_keys(name) == {"5001"}
     ledger.close()
 
 
@@ -1093,3 +1107,177 @@ def test_smart_flag_values_from_plex(tmp_path: Path):
         "Playlist C": True,
         "Playlist D": False,
     }
+
+
+def _local_library(track: Track) -> list:
+    if track.source_track_id == "1001":
+        return [_candidate("Example Song", isrc="XX0000000001", ident="row-1", path=_local("Example Song"))]
+    if track.source_track_id == "1002":
+        return [
+            _candidate(
+                "Other Song",
+                artist=OTHER,
+                isrc="XX0000000002",
+                ident="row-2",
+                path=_local("Other Song"),
+            )
+        ]
+    return []
+
+
+def test_user_removed_key_is_not_added_back_and_union_still_appends(tmp_path: Path):
+    server, session, ledger, _client, sink, _clock = _stack(tmp_path)
+    server.add_track(rating_key="5001", title="Example Song", artist=ARTIST, file_path=_server("Example Song"))
+    server.add_track(rating_key="5002", title="Hand Added", artist=ARTIST, file_path=_server("Hand Added"))
+    server.add_track(rating_key="5004", title="Kept Song", artist=ARTIST, file_path=_server("Kept Song"))
+    server.add_track(rating_key="5003", title="Other Song", artist=OTHER, file_path=_server("Other Song"))
+    server.add_playlist("Playlist A", items=["5002", "5004"], rating_key="4001")
+    first = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [first])])
+    downloads = _Downloads()
+    report, store, _pacing = _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=downloads,
+        ledger=ledger,
+        library=_local_library,
+        file_exists=_exists,
+    )
+    name = normalize_playlist_name("Playlist A")
+    assert downloads.calls == []
+    assert report.added
+    assert store.plex_added_keys(name) == {"5001"}
+    assert server.playlists[0]["items"] == ["5002", "5004", "5001"]
+    stored = store.get_track("tidal", "1001", name)
+    assert stored is not None
+    assert stored["status"] == "added"
+    assert stored["plex_rating_key"] == "5001"
+
+    server.playlists[0]["items"] = ["5002", "5004"]
+    second = _track("tidal", "1002", "Other Song", artist=OTHER, isrc="XX0000000002", duration=180)
+    source.set_tracks("pl-a", [first, second], "2026-01-02")
+    session.calls.clear()
+    again_downloads = _Downloads()
+    again, store, _pacing = _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=again_downloads,
+        ledger=ledger,
+        library=_local_library,
+        file_exists=_exists,
+    )
+    writes = _mutations(session)
+    assert again_downloads.calls == []
+    assert [call["method"] for call in writes] == ["PUT"]
+    assert "5001" not in str(writes[0]["params"].get("uri") or "")
+    assert "5003" in str(writes[0]["params"].get("uri") or "")
+    assert not any(call["method"] == "POST" for call in session.calls)
+    assert server.playlists[0]["items"] == ["5002", "5004", "5003"]
+    assert len(again.removed_in_plex) == 1
+    removed = again.removed_in_plex[0]
+    assert removed["action"] == "skip_removed"
+    assert removed["status"] == "removed_in_plex"
+    assert removed["reasons"] == ["removed_in_plex"]
+    assert removed["source_track"]["title"] == "Example Song"
+    assert again.playlists[0].removed_in_plex == 1
+    assert again.playlists[0].to_download == 0
+    assert again.playlists[0].plex_count == 2
+    assert again.playlists[0].union_count == 3
+    assert again.pending_plex == []
+    assert [item["source_track"]["title"] for item in again.added] == ["Other Song"]
+    assert again.to_dict()["removed_in_plex"][0]["status"] == "removed_in_plex"
+    assert again.to_dict()["playlists"][0]["removed_in_plex"] == 1
+    kept = store.get_track("tidal", "1001", name)
+    assert kept is not None
+    assert kept["status"] == "added"
+    assert store.plex_added_keys(name) == {"5001", "5003"}
+
+
+def test_dry_run_reports_removed_in_plex_without_writes(tmp_path: Path):
+    server, session, ledger, _client, sink, _clock = _stack(tmp_path)
+    server.add_track(rating_key="5001", title="Example Song", artist=ARTIST, file_path=_server("Example Song"))
+    server.add_track(rating_key="5002", title="Hand Added", artist=ARTIST, file_path=_server("Hand Added"))
+    server.add_playlist("Playlist A", items=["5002"], rating_key="4001")
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    first, store, _pacing = _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=_Downloads(),
+        ledger=ledger,
+        library=_local_library,
+        file_exists=_exists,
+    )
+    assert first.added
+    assert server.playlists[0]["items"] == ["5002", "5001"]
+    server.playlists[0]["items"] = ["5002"]
+    session.calls.clear()
+    downloads = _Downloads()
+    report, store, _pacing = _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=downloads,
+        ledger=ledger,
+        library=_local_library,
+        file_exists=_exists,
+        settings=_cfg(dry_run=True),
+    )
+    assert downloads.calls == []
+    assert _mutations(session) == []
+    assert server.playlists[0]["items"] == ["5002"]
+    assert len(report.removed_in_plex) == 1
+    assert report.removed_in_plex[0]["status"] == "removed_in_plex"
+    assert report.removed_in_plex[0]["reasons"] == ["removed_in_plex"]
+    assert report.playlists[0].removed_in_plex == 1
+    assert report.pending_plex == []
+    assert report.added == []
+    name = normalize_playlist_name("Playlist A")
+    assert store.get_track("tidal", "1001", name)["status"] == "added"
+
+
+def test_recorded_then_removed_key_is_not_written(tmp_path: Path):
+    server, session, ledger, _client, sink, _clock = _stack(tmp_path)
+    server.add_track(rating_key="5001", title="Example Song", artist=ARTIST, file_path=_server("Example Song"))
+    server.add_track(rating_key="5002", title="Hand Added", artist=ARTIST, file_path=_server("Hand Added"))
+    server.add_track(rating_key="5004", title="Kept Song", artist=ARTIST, file_path=_server("Kept Song"))
+    server.add_playlist("Playlist A", items=["5002", "5004"], rating_key="4001")
+    first = sink.append("Playlist A", [_plex_track("5001", "Example Song")])
+    assert first.status == "added"
+    assert first.rating_keys == ["5001"]
+    name = normalize_playlist_name("Playlist A")
+    assert ledger.plex_added_keys(name) == {"5001"}
+    assert server.playlists[0]["items"] == ["5002", "5004", "5001"]
+
+    server.playlists[0]["items"] = ["5002", "5004"]
+    session.calls.clear()
+    second = sink.append("Playlist A", [_plex_track("5001", "Example Song")])
+    assert second.status == "removed_in_plex"
+    assert second.rating_keys == ["5001"]
+    assert _mutations(session) == []
+    assert server.playlists[0]["items"] == ["5002", "5004"]
+
+
+def test_deleted_playlist_is_not_recreated_for_a_removed_key(tmp_path: Path):
+    server, session, ledger, _client, sink, _clock = _stack(tmp_path)
+    server.add_track(rating_key="5001", title="Example Song", artist=ARTIST, file_path=_server("Example Song"))
+    server.add_track(rating_key="5003", title="Other Song", artist=OTHER, file_path=_server("Other Song"))
+    added = sink.append("Playlist A", [_plex_track("5001", "Example Song")])
+    assert added.status == "added"
+    assert server.playlists[0]["items"] == ["5001"]
+    server.playlists.clear()
+    session.calls.clear()
+    removed = sink.append("Playlist A", [_plex_track("5001", "Example Song")])
+    assert removed.status == "removed_in_plex"
+    assert removed.rating_keys == ["5001"]
+    assert server.playlists == []
+    assert _mutations(session) == []
+
+    created = sink.append("Playlist A", [_plex_track("5003", "Other Song")])
+    assert created.status == "added"
+    assert created.rating_keys == ["5003"]
+    assert server.playlists[0]["items"] == ["5003"]
+    assert ledger.plex_added_keys(normalize_playlist_name("Playlist A")) == {"5001", "5003"}
