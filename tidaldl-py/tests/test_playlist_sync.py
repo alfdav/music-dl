@@ -611,6 +611,17 @@ def test_verify_rules():
         assert verify(source, candidate).confidence == confidence
 
     check(_candidate("Example Song", artist=OTHER, isrc="XX0000000099", ident="cover"), "reject")
+    apple = _track("apple", "a1", "Example Song", duration=180)
+    other_artist = verify(apple, _candidate("Example Song", artist=OTHER, isrc=None, ident="other"))
+    assert other_artist.confidence == "reject"
+    assert other_artist.reasons == ("artist_mismatch",)
+    cover = verify(apple, _candidate("Example Song (Cover)", artist=OTHER, isrc=None, ident="cover-title"))
+    assert cover.confidence == "reject"
+    check(_candidate("Example Song (Originally Performed by Example Artist)"), "reject")
+    check(_candidate("Example Song (Sped Up)"), "reject")
+    check(_candidate("Example Song (Slowed)"), "reject")
+    check(_candidate("Example Song (8-Bit)"), "reject")
+    check(_candidate("Example Song (Versi\u00f3n Ac\u00fastica)"), "reject")
     check(_candidate("Example Song (Karaoke)"), "reject")
     check(_candidate("Example Song (Tribute)"), "reject")
     check(_candidate("Example Song (In the Style of Example Artist)"), "reject")
@@ -643,6 +654,9 @@ def test_verify_rules():
     assert verify(live_source, _candidate("Example Song - Live", isrc="XX0000000009", ident="live")).confidence == (
         "confirmed"
     )
+    remix = verify(live_source, _candidate("Example Song (Remix)", isrc="XX0000000009", ident="remix"))
+    assert remix.confidence == "reject"
+    assert remix.version_ok is False
     alive = _track("tidal", "1010", "Alive", duration=180, isrc="XX0000000010")
     assert "live" not in markers_in("Alive")
     assert verify(alive, _candidate("Alive", isrc="XX0000000010", ident="alive")).confidence == "confirmed"
