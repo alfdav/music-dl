@@ -1572,3 +1572,66 @@ def test_completed_download_without_a_path_needs_an_existing_library_file(
     )
     assert report.download_mismatch == []
     assert found.appends == [("Playlist A", ["1001"])]
+
+
+def test_old_style_sink_append_without_paths_still_succeeds(tmp_path: Path):
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    audio = tmp_path / "example.flac"
+    audio.write_bytes(b"audio")
+
+    class OldSink:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, list[str]]] = []
+
+        def list_tracks(self, name: str) -> list[Track]:
+            return []
+
+        def append(self, name: str, tracks: list[Track]):
+            self.calls.append((name, [item.source_track_id for item in tracks]))
+
+        def find(self, track: Track) -> list[Track]:
+            return []
+
+    sink = OldSink()
+
+    def library(_item: Track) -> list[Candidate]:
+        return [_candidate("Example Song", isrc="XX0000000001", ident="row-1", path=str(audio))]
+
+    report, store, _pacing = _run(tmp_path, source, sink=sink, library=library)
+    assert sink.calls == [("Playlist A", ["1001"])]
+    assert report.added
+    assert report.plex_errors == []
+    stored = store.get_track("tidal", "1001", normalize_playlist_name("Playlist A"))
+    assert stored is not None
+    assert stored["status"] == "added"
+
+
+def test_paths_typeerror_after_a_write_is_not_retried(tmp_path: Path):
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    audio = tmp_path / "example.flac"
+    audio.write_bytes(b"audio")
+
+    class PartialSink:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def list_tracks(self, name: str) -> list[Track]:
+            return []
+
+        def find(self, track: Track) -> list[Track]:
+            return []
+
+        def append(self, name: str, tracks: list[Track], paths: list[str | None] | None = None) -> None:
+            self.calls += 1
+            raise TypeError("paths already written")
+
+    sink = PartialSink()
+
+    def library(_item: Track) -> list[Candidate]:
+        return [_candidate("Example Song", isrc="XX0000000001", ident="row-1", path=str(audio))]
+
+    with pytest.raises(TypeError, match="paths"):
+        _run(tmp_path, source, sink=sink, library=library)
+    assert sink.calls == 1

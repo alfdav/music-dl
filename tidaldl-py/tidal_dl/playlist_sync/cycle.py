@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -933,15 +934,30 @@ def _keep(
 
 _APPEND_OK = {"added", "already_present"}
 _PLEX_ERRORS = {"refused_smart", "unmapped_path", "failed"}
+_APPEND_ACCEPTS_PATHS: dict[type[Any], bool] = {}
+
+
+def _append_accepts_paths(sink: Any) -> bool:
+    kind = type(sink)
+    cached = _APPEND_ACCEPTS_PATHS.get(kind)
+    if cached is not None:
+        return cached
+    try:
+        parameters = inspect.signature(sink.append).parameters
+    except (TypeError, ValueError):
+        accepts = True
+    else:
+        accepts = "paths" in parameters or any(
+            item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters.values()
+        )
+    _APPEND_ACCEPTS_PATHS[kind] = accepts
+    return accepts
 
 
 def _sink_append(work: _Work, name: str, tracks: list[Track], paths: list[str | None]) -> Any:
-    try:
+    if _append_accepts_paths(work.sink):
         return work.sink.append(name, tracks, paths=paths)
-    except TypeError as exc:
-        if "paths" not in str(exc):
-            raise
-        return work.sink.append(name, tracks)
+    return work.sink.append(name, tracks)
 
 
 def _result_status(result: Any) -> str:
