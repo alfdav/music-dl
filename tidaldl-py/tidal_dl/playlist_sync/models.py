@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from tidal_dl.playlist_sync.unicode_norm import nfc
+
 
 def _duration(value: Any) -> float | None:
     if value is None or value == "":
@@ -23,6 +25,9 @@ class PlaylistRef:
     last_updated: str | None = None
     num_tracks: int = 0
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", nfc(self.name))
+
 
 @dataclass(frozen=True)
 class Track:
@@ -37,6 +42,13 @@ class Track:
     version: str = ""
     playlist_name: str = ""
     source_playlist_id: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "title", nfc(self.title))
+        object.__setattr__(self, "artist", nfc(self.artist))
+        object.__setattr__(self, "album", nfc(self.album))
+        object.__setattr__(self, "version", nfc(self.version))
+        object.__setattr__(self, "playlist_name", nfc(self.playlist_name))
 
     def source_view(self) -> dict[str, Any]:
         return {
@@ -56,6 +68,13 @@ class Candidate:
     isrc: str | None = None
     album: str = ""
     version: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", nfc(self.id))
+        object.__setattr__(self, "title", nfc(self.title))
+        object.__setattr__(self, "artist", nfc(self.artist))
+        object.__setattr__(self, "album", nfc(self.album))
+        object.__setattr__(self, "version", nfc(self.version))
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -5,19 +5,23 @@ from __future__ import annotations
 import ast
 import json
 import os
+import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from tidal_dl.download.api_pacing import TidalApiPacer
 from tidal_dl.model.cfg import Settings as ModelSettings
-from tidal_dl.playlist_sync.config import PlaylistSyncConfig, load_config
+from tidal_dl.playlist_sync.config import PlaylistSyncConfig, load_config, name_allowed
 from tidal_dl.playlist_sync.cycle import library_candidates, run_cycle
 from tidal_dl.playlist_sync.downloads import JobServiceDownloader
 from tidal_dl.playlist_sync.ledger import Ledger, default_ledger_path
-from tidal_dl.playlist_sync.matcher import normalize_playlist_name, same_recording
+from tidal_dl.playlist_sync.matcher import normalize_playlist_name, normalize_title, same_recording
 from tidal_dl.playlist_sync.models import Candidate, DownloadResult, PlaylistRef, Track
+from tidal_dl.playlist_sync.mount import download_path_available
+from tidal_dl.playlist_sync.unicode_norm import apply_prefix_map, nfc_path
 from tidal_dl.playlist_sync.verify import markers_in, verify
 
 ARTIST = "Example Artist"
@@ -193,7 +197,8 @@ def _tags_for(tracks: list[Track]):
 
 
 def _run(tmp_path: Path, source: _Source, *, sink=None, downloads=None, library=None, search=None,
-         tag_reader=None, settings=None, now=None, rng=None, auth=None, ledger=None):
+         tag_reader=None, settings=None, now=None, rng=None, auth=None, ledger=None,
+         download_path_ready=None, path_prefixes=None):
     pacing = _ClockRng() if rng is None else rng
     store = ledger or Ledger(tmp_path / "playlist_sync.db")
     report = run_cycle(
@@ -211,6 +216,8 @@ def _run(tmp_path: Path, source: _Source, *, sink=None, downloads=None, library=
         sleep=pacing.sleep,
         pacer=TidalApiPacer(delay_min=0, delay_max=0, sleeper=pacing.sleep, clock=pacing.clock),
         auth_state=auth or (lambda: "credentials_ready"),
+        download_path_ready=download_path_ready or (lambda _path: True),
+        path_prefixes=path_prefixes,
     )
     return report, store, pacing
 
@@ -797,3 +804,134 @@ def test_case_insensitive_playlist_merge(tmp_path: Path):
     assert report.playlists[0].tidal_count == 1
     assert report.playlists[0].apple_count == 1
     assert report.playlists[0].union_count == 2
+
+
+SONG_NFC = "Canci\u00f3n"
+SONG_NFD = unicodedata.normalize("NFD", SONG_NFC)
+
+
+def _live(tmp_path: Path, base: Path):
+    track = _track("tidal", "1001", "Example Song", isrc="XX0000000001")
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [track])])
+    downloads = _Downloads()
+    pacing = _ClockRng()
+    report = run_cycle(
+        _wall(2026, 10, 6, 12),
+        settings=_cfg(download_base_path=str(base)),
+        sources=[source],
+        sink=_Sink(),
+        ledger=Ledger(tmp_path / "playlist_sync.db"),
+        downloads=downloads,
+        library=lambda _item: [],
+        tag_reader=_tags_for([track]),
+        clock=pacing.clock,
+        rng=pacing,
+        sleep=pacing.sleep,
+        pacer=TidalApiPacer(delay_min=0, delay_max=0, sleeper=pacing.sleep, clock=pacing.clock),
+        auth_state=lambda: "credentials_ready",
+    )
+    return report, downloads
+
+
+def test_missing_download_path_halts_without_creating_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    missing = tmp_path / "download-missing"
+    real_mkdir = Path.mkdir
+
+    def guard(self, *args, **kwargs):
+        if Path(self) == missing or missing in Path(self).parents:
+            raise AssertionError("download folder was created")
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", guard)
+    report, downloads = _live(tmp_path, missing)
+    assert report.halted_reason == "download_path_unavailable"
+    assert downloads.calls == []
+    assert not missing.exists()
+
+
+def test_unmounted_download_path_halts_with_nothing_queued(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    base = tmp_path / "local-disk"
+    base.mkdir()
+    monkeypatch.setattr("tidal_dl.playlist_sync.mount.sys.platform", "linux")
+    monkeypatch.setattr("tidal_dl.playlist_sync.mount.os.path.ismount", lambda _path: False)
+    report, downloads = _live(tmp_path, base)
+    assert report.halted_reason == "download_path_unavailable"
+    assert downloads.calls == []
+    assert base.is_dir()
+
+
+def test_unwritable_download_path_halts_with_nothing_queued(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    base = tmp_path / "locked"
+    base.mkdir()
+    monkeypatch.setattr("tidal_dl.playlist_sync.mount.os.path.ismount", lambda _path: True)
+    monkeypatch.setattr("tidal_dl.playlist_sync.mount.os.access", lambda _path, _mode: False)
+    report, downloads = _live(tmp_path, base)
+    assert report.halted_reason == "download_path_unavailable"
+    assert downloads.calls == []
+    assert base.is_dir()
+
+
+def test_writable_mount_still_downloads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    base = tmp_path / "volume"
+    base.mkdir()
+    monkeypatch.setattr("tidal_dl.playlist_sync.mount.os.path.ismount", lambda _path: True)
+    report, downloads = _live(tmp_path, base)
+    assert report.halted_reason is None
+    assert downloads.calls == [[1001]]
+
+
+def test_macos_network_volume_uses_device_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    base = tmp_path / "share"
+    base.mkdir()
+    monkeypatch.setattr("tidal_dl.playlist_sync.mount.os.path.isdir", lambda _path: True)
+    monkeypatch.setattr("tidal_dl.playlist_sync.mount.os.path.ismount", lambda _path: False)
+    monkeypatch.setattr("tidal_dl.playlist_sync.mount.sys.platform", "darwin")
+
+    def other_device(path: str):
+        return SimpleNamespace(st_dev=1 if path == "/" else 2)
+
+    monkeypatch.setattr("tidal_dl.playlist_sync.mount.os.stat", other_device)
+    assert download_path_available(str(base)) is True
+
+    monkeypatch.setattr("tidal_dl.playlist_sync.mount.os.stat", lambda _path: SimpleNamespace(st_dev=1))
+    assert download_path_available(str(base)) is False
+
+
+def test_nfd_and_nfc_playlist_title_and_path_match(tmp_path: Path):
+    assert SONG_NFD != SONG_NFC
+    assert normalize_playlist_name(SONG_NFD) == normalize_playlist_name(SONG_NFC)
+    assert normalize_title(SONG_NFD) == normalize_title(SONG_NFC)
+    nfd_track = _track("tidal", "1001", SONG_NFD, duration=180)
+    nfc_track = _track("apple", "a1", SONG_NFC, duration=181)
+    assert nfd_track.title == nfc_track.title == SONG_NFC
+    assert same_recording(nfd_track, _track("apple", "a1", SONG_NFC, duration=180))
+    assert name_allowed(SONG_NFD, (SONG_NFC,))
+
+    nfd_path = unicodedata.normalize("NFD", f"/music/{SONG_NFC}/track.flac")
+    nfc_file = f"/music/{SONG_NFC}/track.flac"
+    assert nfd_path != nfc_file
+    assert nfc_path(nfd_path) == nfc_path(nfc_file)
+    prefix = unicodedata.normalize("NFD", f"/music/{SONG_NFC}")
+    assert apply_prefix_map(nfd_path, {prefix: f"/library/{SONG_NFC}"}) == f"/library/{SONG_NFC}/track.flac"
+
+    tidal = _Source("tidal", [(_playlist("tidal", "pl-a", SONG_NFD, "2026-01-01"), [nfd_track])])
+    apple = _Source("apple", [(_playlist("apple", "ap-a", SONG_NFC, "2026-01-01"), [nfc_track])])
+    seen: list[str] = []
+
+    def reader(path: str) -> dict:
+        seen.append(path)
+        return {"title": SONG_NFC, "artist": ARTIST, "duration": 180, "isrc": "XX0000000001"}
+
+    report, _, _ = _run(
+        tmp_path,
+        [tidal, apple],
+        settings=_cfg(max_per_cycle=5),
+        downloads=_Downloads({1001: DownloadResult(status="completed", path=nfd_path)}),
+        tag_reader=reader,
+        path_prefixes={prefix: f"/library/{SONG_NFC}"},
+    )
+    assert len(report.playlists) == 1
+    assert report.playlists[0].name == SONG_NFC
+    assert report.playlists[0].tidal_count == 1
+    assert report.playlists[0].apple_count == 1
+    assert seen == [f"/library/{SONG_NFC}/track.flac"]

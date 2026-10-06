@@ -6,6 +6,8 @@ import re
 import unicodedata
 from typing import Protocol
 
+from tidal_dl.playlist_sync.unicode_norm import nfc
+
 _FEAT_PAREN = re.compile(
     r"[([]\s*(?:feat(?:uring)?\.?|ft\.?|with)\s+[^)\]]*[)\]]",
     re.IGNORECASE,
@@ -66,7 +68,7 @@ def strip_safe_suffixes(value: str) -> str:
 
 
 def normalize_artist(artist: str) -> str:
-    text = strip_accents(artist or "").casefold()
+    text = strip_accents(nfc(artist)).casefold()
     text = _FEAT_PAREN.sub(" ", text)
     text = _FEAT_TAIL.sub(" ", text)
     text = _PRIMARY_SPLIT.split(text, maxsplit=1)[0]
@@ -75,7 +77,7 @@ def normalize_artist(artist: str) -> str:
 
 
 def normalize_title(title: str) -> str:
-    text = strip_accents(title or "").casefold()
+    text = strip_accents(nfc(title)).casefold()
     text = _FEAT_PAREN.sub(" ", text)
     text = _FEAT_TAIL.sub(" ", text)
     text = strip_safe_suffixes(text)
@@ -84,7 +86,7 @@ def normalize_title(title: str) -> str:
 
 
 def normalize_playlist_name(name: str) -> str:
-    return _collapse(strip_accents(name or "").casefold())
+    return _collapse(strip_accents(nfc(name)).casefold())
 
 
 def isrc_key(isrc: str | None) -> str:

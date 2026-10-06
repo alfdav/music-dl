@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -25,9 +25,11 @@ from tidal_dl.playlist_sync.models import (
     candidate_from_track,
     coerce_track,
 )
+from tidal_dl.playlist_sync.mount import download_path_available
 from tidal_dl.playlist_sync.sink import NullPlexSink, PlexSink
 from tidal_dl.playlist_sync.source import Source
 from tidal_dl.playlist_sync.tags import read_audio_tags
+from tidal_dl.playlist_sync.unicode_norm import apply_prefix_map
 from tidal_dl.playlist_sync.verify import verify
 
 LibraryLookup = Callable[[Track], list[Candidate]]
@@ -64,6 +66,7 @@ class _Work:
     search: SearchFn | None
     tag_reader: TagReader
     downloads: DownloadClient | None
+    path_prefixes: Mapping[str, str] = field(default_factory=dict)
     report: CycleReport = field(default_factory=CycleReport)
     _downloads_ready: DownloadClient | None = None
 
@@ -120,6 +123,8 @@ def run_cycle(
     auth_state: AuthState | None = None,
     tidal: Any | None = None,
     force: bool = False,
+    download_path_ready: Callable[[str], bool] | None = None,
+    path_prefixes: Mapping[str, str] | None = None,
 ) -> CycleReport:
     """Plan or run one append-only sync cycle.
 
@@ -151,6 +156,9 @@ def run_cycle(
     )
     if not governor.auth_ok():
         return CycleReport(halted_reason=governor.halted_reason)
+    ready = download_path_ready or download_path_available
+    if not ready(cfg.download_base_path):
+        return CycleReport(halted_reason="download_path_unavailable")
 
     work = _Work(
         cfg=cfg,
@@ -163,6 +171,7 @@ def run_cycle(
         search=search,
         tag_reader=tag_reader or read_audio_tags,
         downloads=downloads,
+        path_prefixes=dict(path_prefixes or {}),
     )
     readers = list(sources) if sources is not None else _default_sources(tidal)
     groups = _collect_groups(readers, cfg.allowlist, governor)
@@ -523,14 +532,15 @@ def _post_download(
     track: Track,
     outcome: DownloadResult,
 ) -> tuple[Candidate, VerifyResult] | None:
-    if not outcome.path:
+    looked_up = apply_prefix_map(outcome.path or "", work.path_prefixes)
+    if not looked_up:
         empty = Candidate(id="", title="", artist="", duration=None, isrc=None)
         return empty, verify(track, empty)
-    tags = work.tag_reader(outcome.path)
+    tags = work.tag_reader(looked_up)
     if not tags:
-        empty = Candidate(id=outcome.path, title="", artist="", duration=None, isrc=None)
+        empty = Candidate(id=looked_up, title="", artist="", duration=None, isrc=None)
         return empty, verify(track, empty)
-    candidate = candidate_from_mapping({**tags, "id": outcome.path})
+    candidate = candidate_from_mapping({**tags, "id": looked_up})
     result = verify(track, candidate)
     if result.confidence == "confirmed":
         return None

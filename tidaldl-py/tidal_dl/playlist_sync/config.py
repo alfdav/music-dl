@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
+
+from tidal_dl.playlist_sync.unicode_norm import nfc, nfc_path
 
 
 @dataclass(frozen=True)
@@ -16,6 +19,7 @@ class PlaylistSyncConfig:
     gap_sec_min: float = 30
     gap_sec_max: float = 60
     allowlist: tuple[str, ...] = ()
+    download_base_path: str = "~/download"
 
 
 def _allowlist(value: Any) -> tuple[str, ...]:
@@ -25,7 +29,7 @@ def _allowlist(value: Any) -> tuple[str, ...]:
         parts = value.split(",")
     else:
         parts = list(value)
-    return tuple(str(part).strip() for part in parts if str(part).strip())
+    return tuple(nfc(str(part)).strip() for part in parts if nfc(str(part)).strip())
 
 
 def load_config(settings: Any | None = None) -> PlaylistSyncConfig:
@@ -50,12 +54,18 @@ def load_config(settings: Any | None = None) -> PlaylistSyncConfig:
         gap_sec_min=low,
         gap_sec_max=high,
         allowlist=_allowlist(getattr(data, "playlist_sync_allowlist", ())),
+        download_base_path=_download_base(getattr(data, "download_base_path", "~/download")),
     )
+
+
+def _download_base(value: Any) -> str:
+    raw = "~/download" if value is None or value == "" else str(value)
+    return nfc_path(os.path.expanduser(raw))
 
 
 def name_allowed(name: str, allowlist: tuple[str, ...]) -> bool:
     """Empty allowlist includes every playlist. Otherwise match trimmed casefold."""
     if not allowlist:
         return True
-    folded = (name or "").strip().casefold()
-    return folded in {item.strip().casefold() for item in allowlist}
+    folded = nfc(name).strip().casefold()
+    return folded in {nfc(item).strip().casefold() for item in allowlist}

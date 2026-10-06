@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from tidal_dl.playlist_sync.models import Track
+from tidal_dl.playlist_sync.unicode_norm import nfc_path
 
 _TRACK_STATUSES = (
     "seen",
@@ -31,7 +32,7 @@ def default_ledger_path() -> Path:
 
 class Ledger:
     def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+        self.path = Path(nfc_path(path))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path)
         self._conn.row_factory = sqlite3.Row
