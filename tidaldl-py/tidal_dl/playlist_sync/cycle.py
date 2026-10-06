@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -141,39 +142,42 @@ def run_cycle(
     if not cfg.enabled and not force:
         return CycleReport(halted_reason="disabled")
 
-    moment = now or datetime.now(UTC).astimezone()
-    day = local_day(moment)
-    if auth_state is None:
-        auth_state = (lambda: read_auth_state(tidal)) if tidal is not None else (lambda: "not_configured")
-    store = ledger or Ledger(default_ledger_path())
-    governor = Governor(
-        ledger=store,
-        day=day,
-        max_per_cycle=cfg.max_per_cycle,
-        max_per_day=cfg.max_per_day,
-        gap_sec_min=cfg.gap_sec_min,
-        gap_sec_max=cfg.gap_sec_max,
-        auth_state=auth_state,
-        sleep=sleep,
-        rng=rng,
-        pacer=pacer,
-        clock=clock,
-        persist_counts=not cfg.dry_run,
-    )
-    if not governor.auth_ok():
-        return CycleReport(halted_reason=governor.halted_reason)
-    ready = download_path_ready or download_path_available
-    if not ready(cfg.download_base_path):
-        return CycleReport(halted_reason="download_path_unavailable")
-
-    # An injected lookup is used as-is. Otherwise one connection covers the cycle.
-    if library is not None:
-        lookup = library
-        handle: _LibraryHandle | None = None
-    else:
-        handle = _LibraryHandle()
-        lookup = handle
+    owned_ledger = ledger is None
+    store: Ledger | None = None
+    handle: _LibraryHandle | None = None
+    work: _Work | None = None
     try:
+        moment = now or datetime.now(UTC).astimezone()
+        day = local_day(moment)
+        if auth_state is None:
+            auth_state = (lambda: read_auth_state(tidal)) if tidal is not None else (lambda: "not_configured")
+        store = ledger or Ledger(default_ledger_path())
+        governor = Governor(
+            ledger=store,
+            day=day,
+            max_per_cycle=cfg.max_per_cycle,
+            max_per_day=cfg.max_per_day,
+            gap_sec_min=cfg.gap_sec_min,
+            gap_sec_max=cfg.gap_sec_max,
+            auth_state=auth_state,
+            sleep=sleep,
+            rng=rng,
+            pacer=pacer,
+            clock=clock,
+            persist_counts=not cfg.dry_run,
+        )
+        if not governor.auth_ok():
+            return CycleReport(halted_reason=governor.halted_reason)
+        ready = download_path_ready or download_path_available
+        if not ready(cfg.download_base_path):
+            return CycleReport(halted_reason="download_path_unavailable")
+
+        # An injected lookup is used as-is. Otherwise one connection covers the cycle.
+        if library is not None:
+            lookup = library
+        else:
+            handle = _LibraryHandle()
+            lookup = handle
         if sink is not None:
             chosen_sink = sink
         else:
@@ -202,7 +206,7 @@ def run_cycle(
             file_exists=file_exists or os.path.exists,
         )
         readers = list(sources) if sources is not None else _default_sources(tidal)
-        groups = _collect_groups(readers, cfg.allowlist, governor)
+        groups = _collect_groups(readers, cfg.allowlist, governor, work.report)
         if governor.halted_reason:
             work.report.halted_reason = governor.halted_reason
             return work.report
@@ -213,9 +217,16 @@ def run_cycle(
             _sync_group(work, group)
         work.report.halted_reason = governor.halted_reason
         return work.report
+    except Exception:
+        logging.getLogger(__name__).exception("playlist sync cycle failed")
+        report = work.report if work is not None else CycleReport()
+        report.halted_reason = "internal_error"
+        return report
     finally:
         if handle is not None:
             handle.close()
+        if owned_ledger and store is not None:
+            store.close()
 
 
 def _default_sources(tidal: Any | None) -> list[Source]:
@@ -227,10 +238,27 @@ def _default_sources(tidal: Any | None) -> list[Source]:
     return [TidalSource(session)]
 
 
+def _note_source_error(
+    report: CycleReport,
+    source: str,
+    playlist: str | None,
+    exc: BaseException,
+) -> None:
+    report.source_errors.append(
+        {
+            "source": source,
+            "playlist": playlist,
+            "status": "source_error",
+            "error": type(exc).__name__,
+        }
+    )
+
+
 def _collect_groups(
     sources: Sequence[Source],
     allowlist: tuple[str, ...],
     governor: Governor,
+    report: CycleReport,
 ) -> dict[str, _Group]:
     groups: dict[str, _Group] = {}
     for source in sources:
@@ -238,12 +266,13 @@ def _collect_groups(
             break
         try:
             listed = source.list_playlists()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — a source listing error must not stop the cycle
             code = status_code_of(exc)
             if code in (401, 429):
                 governor.halt(str(code))
                 break
-            raise
+            _note_source_error(report, source.name, None, exc)
+            continue
         kind = source.name.casefold()
         for playlist in listed:
             if not name_allowed(playlist.name, allowlist):
@@ -269,13 +298,68 @@ def _is_plex_error(exc: BaseException) -> bool:
     return isinstance(exc, PlexError)
 
 
+def _track_snapshot(
+    report: PlaylistReport,
+    cycle: CycleReport,
+    placed: list[_Placed],
+    union: list[Track],
+) -> dict[str, Any]:
+    return {
+        "tracks": len(report.tracks),
+        "needs_review": len(report.needs_review),
+        "placed": len(placed),
+        "union": len(union),
+        "cycle": {name: len(value) for name, value in vars(cycle).items() if isinstance(value, list)},
+        "counters": {name: value for name, value in vars(report).items() if isinstance(value, int)},
+    }
+
+
+def _restore_track_snapshot(
+    snapshot: dict[str, Any],
+    report: PlaylistReport,
+    cycle: CycleReport,
+    placed: list[_Placed],
+    union: list[Track],
+) -> None:
+    del report.tracks[snapshot["tracks"] :]
+    del report.needs_review[snapshot["needs_review"] :]
+    del placed[snapshot["placed"] :]
+    del union[snapshot["union"] :]
+    for name, length in snapshot["cycle"].items():
+        del getattr(cycle, name)[length:]
+    for name, value in snapshot["counters"].items():
+        setattr(report, name, value)
+
+
+def _note_track_error(
+    work: _Work,
+    group: _Group,
+    report: PlaylistReport,
+    placed: list[_Placed],
+    track: Track,
+    exc: BaseException,
+) -> None:
+    name_norm = normalize_playlist_name(group.name)
+    row = work.ledger.get_track(track.source, track.source_track_id, name_norm)
+    if row is not None and row["status"] == "queued":
+        work.ledger.set_status(track, name_norm, "seen", seen_at=work.seen_at)
+    entry = _entry(track, "review", "review", None, None, notes=("track_error",))
+    entry["status"] = "needs_review"
+    entry["error"] = type(exc).__name__
+    report.tracks.append(entry)
+    report.needs_review.append(entry)
+    work.report.needs_review.append(entry)
+    placed.append(_Placed(track, "review", entry))
+
+
 def _sync_group(work: _Work, group: _Group) -> None:
     try:
         listed = work.sink.list_tracks(group.name)
-    except Exception as exc:
-        if not _is_plex_error(exc):
-            raise
-        work.governor.halt("plex_unavailable")
+    except Exception as exc:  # noqa: BLE001 — a Plex listing error must not stop the cycle
+        if _is_plex_error(exc):
+            work.governor.halt("plex_unavailable")
+            return
+        _note_source_error(work.report, "plex", group.name, exc)
         return
     plex_tracks = [
         coerce_track(item, source="plex", playlist_name=group.name) for item in listed
@@ -299,7 +383,16 @@ def _sync_group(work: _Work, group: _Group) -> None:
     for track in (*tidal_tracks, *apple_tracks):
         if work.governor.halted_reason:
             break
-        _consider(work, group, report, union, placed, plex_tracks, track)
+        snapshot = _track_snapshot(report, work.report, placed, union)
+        try:
+            _consider(work, group, report, union, placed, plex_tracks, track)
+        except Exception as exc:  # noqa: BLE001 — one track must not stop the cycle
+            code = status_code_of(exc)
+            if code in (401, 429):
+                work.governor.halt(str(code))
+                break
+            _restore_track_snapshot(snapshot, report, work.report, placed, union)
+            _note_track_error(work, group, report, placed, track, exc)
     report.union_count = len(union)
     work.report.playlists.append(report)
 
@@ -338,12 +431,13 @@ def _load_tracks(
         return work.ledger.tracks_for(work_source.name, name_norm)
     try:
         tracks = list(work_source.list_tracks(playlist))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — a track listing error must not stop the cycle
         code = status_code_of(exc)
         if code in (401, 429):
             work.governor.halt(str(code))
             return []
-        raise
+        _note_source_error(work.report, work_source.name, playlist.name, exc)
+        return []
     work.ledger.upsert_playlist(work_source.name, playlist.source_playlist_id, name_norm, stamp)
     for track in tracks:
         work.ledger.remember_track(track, name_norm, seen_at=work.seen_at)

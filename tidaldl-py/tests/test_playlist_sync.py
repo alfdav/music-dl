@@ -1205,14 +1205,20 @@ def test_library_db_closes_when_the_cycle_stops(tmp_path: Path, monkeypatch: pyt
         _track("tidal", "1002", "Second Song", isrc="XX0000000002", duration=180),
     ]
     source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
-    with pytest.raises(RuntimeError, match="lookup failed"):
-        _cycle_with_default_library(tmp_path / "raise", source)
+    # A lookup error is isolated per track. The library handle still closes.
+    raised = _cycle_with_default_library(tmp_path / "raise", source)
+    assert raised.halted_reason is None
     assert events == [
         "open",
         ("lookup", "XX0000000001"),
         ("lookup", "XX0000000002"),
         "close",
     ]
+    assert raised.playlists[0].already_local == 1
+    failed = raised.needs_review[0]
+    assert "track_error" in failed["reasons"]
+    assert failed["error"] == "RuntimeError"
+    assert "lookup failed" not in json.dumps(raised.to_dict())
 
     events.clear()
 
@@ -1632,6 +1638,347 @@ def test_paths_typeerror_after_a_write_is_not_retried(tmp_path: Path):
     def library(_item: Track) -> list[Candidate]:
         return [_candidate("Example Song", isrc="XX0000000001", ident="row-1", path=str(audio))]
 
-    with pytest.raises(TypeError, match="paths"):
-        _run(tmp_path, source, sink=sink, library=library)
+    # Append is not retried. The error stays on this track and drops the partial added row.
+    report, store, _pacing = _run(tmp_path, source, sink=sink, library=library)
     assert sink.calls == 1
+    assert report.halted_reason is None
+    assert report.added == []
+    assert report.playlists[0].already_local == 0
+    failed = report.needs_review[0]
+    assert "track_error" in failed["reasons"]
+    assert failed["error"] == "TypeError"
+    assert "paths already written" not in json.dumps(report.to_dict())
+    stored = store.get_track("tidal", "1001", normalize_playlist_name("Playlist A"))
+    assert stored is not None
+    assert stored["status"] != "needs_review"
+
+
+def _titles(entries: list[dict]) -> list[str]:
+    return [item["source_track"]["title"] for item in entries]
+
+
+def _local_library(fail_id: str | None = None, exc: Exception | None = None):
+    def library(track: Track) -> list[Candidate]:
+        if fail_id is not None and track.source_track_id == fail_id:
+            raise exc or RuntimeError("lookup failed")
+        return [
+            _candidate(
+                track.title,
+                isrc=track.isrc,
+                ident=track.source_track_id,
+                path=f"/music/{track.source_track_id}.flac",
+            )
+        ]
+
+    return library
+
+
+def test_one_failed_track_does_not_stop_the_cycle(tmp_path: Path):
+    class TrackLookupError(Exception):
+        pass
+
+    rows = [
+        _track("tidal", "1001", "Track One", isrc="XX0000000001"),
+        _track("tidal", "1002", "Track Two", isrc="XX0000000002"),
+        _track("tidal", "1003", "Track Three", isrc="XX0000000003"),
+        _track("tidal", "1004", "Track Four", isrc="XX0000000004"),
+        _track("tidal", "1005", "Track Five", isrc="XX0000000005"),
+    ]
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        library=_local_library("1002", TrackLookupError("hidden detail")),
+        file_exists=lambda _path: True,
+    )
+    assert report.halted_reason is None
+    assert _titles(report.added) == ["Track One", "Track Three", "Track Four", "Track Five"]
+    assert report.playlists[0].already_local == 4
+    assert len(report.playlists[0].tracks) == 5
+    failed = report.needs_review[0]
+    assert failed["source_track"]["title"] == "Track Two"
+    assert failed["status"] == "needs_review"
+    assert "track_error" in failed["reasons"]
+    assert failed["error"] == "TrackLookupError"
+    dumped = json.dumps(report.to_dict())
+    assert "hidden detail" not in dumped
+    assert "TrackLookupError" in dumped
+
+
+def test_tag_reader_error_rolls_queued_status_back_to_seen(tmp_path: Path):
+    class TagReadError(Exception):
+        pass
+
+    rows = [
+        _track("tidal", "1001", "Track One", isrc="XX0000000001"),
+        _track("tidal", "1002", "Track Two", isrc="XX0000000002"),
+    ]
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
+    downloads = _Downloads()
+
+    def reader(path: str) -> dict:
+        if path.endswith("/1001.flac"):
+            raise TagReadError("corrupt bytes")
+        return {"title": "Track Two", "artist": ARTIST, "duration": 180, "isrc": "XX0000000002"}
+
+    report, store, _pacing = _run(
+        tmp_path,
+        source,
+        downloads=downloads,
+        library=lambda _track: [],
+        tag_reader=reader,
+    )
+    assert report.halted_reason is None
+    assert downloads.calls == [[1001], [1002]]
+    assert _titles(report.added) == ["Track Two"]
+    assert report.playlists[0].to_download == 1
+    assert report.playlists[0].union_count == 1
+    failed = report.needs_review[0]
+    assert failed["source_track"]["title"] == "Track One"
+    assert "track_error" in failed["reasons"]
+    assert failed["error"] == "TagReadError"
+    assert "corrupt bytes" not in json.dumps(report.to_dict())
+    stored = store.get_track("tidal", "1001", normalize_playlist_name("Playlist A"))
+    assert stored is not None
+    assert stored["status"] == "seen"
+
+
+def test_search_error_continues_with_the_next_apple_track(tmp_path: Path):
+    class SearchError(Exception):
+        pass
+
+    rows = [
+        _track("apple", "a1", "Apple One", isrc="XX0000000011"),
+        _track("apple", "a2", "Apple Two", isrc="XX0000000012"),
+    ]
+    source = _Source("apple", [(_playlist("apple", "pl-a", "Playlist A", "2026-01-01"), rows)])
+
+    def search(track: Track) -> list[Candidate]:
+        if track.source_track_id == "a1":
+            raise SearchError("search unavailable")
+        return [_candidate(track.title, isrc=track.isrc, ident="2002", duration=180)]
+
+    def reader(path: str) -> dict:
+        assert path.endswith("/2002.flac")
+        return {"title": "Apple Two", "artist": ARTIST, "duration": 180, "isrc": "XX0000000012"}
+
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        library=lambda _track: [],
+        search=search,
+        tag_reader=reader,
+    )
+    assert report.halted_reason is None
+    assert _titles(report.added) == ["Apple Two"]
+    failed = report.needs_review[0]
+    assert failed["source_track"]["title"] == "Apple One"
+    assert "track_error" in failed["reasons"]
+    assert failed["error"] == "SearchError"
+    assert "search unavailable" not in json.dumps(report.to_dict())
+
+
+def test_sink_append_error_does_not_leave_a_stale_added_entry(tmp_path: Path):
+    class AppendError(Exception):
+        pass
+
+    class FlakySink(_Sink):
+        def append(self, name: str, tracks: list[Track], paths: list[str | None] | None = None) -> None:
+            if any(track.source_track_id == "1002" for track in tracks):
+                raise AppendError("append failed")
+            super().append(name, tracks, paths)
+
+    rows = [
+        _track("tidal", "1001", "Track One", isrc="XX0000000001"),
+        _track("tidal", "1002", "Track Two", isrc="XX0000000002"),
+        _track("tidal", "1003", "Track Three", isrc="XX0000000003"),
+    ]
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        sink=FlakySink(),
+        library=_local_library(),
+        file_exists=lambda _path: True,
+    )
+    assert report.halted_reason is None
+    assert _titles(report.added) == ["Track One", "Track Three"]
+    assert all(item["source_track"]["title"] != "Track Two" for item in report.added)
+    failed = report.needs_review[0]
+    assert failed["source_track"]["title"] == "Track Two"
+    assert failed["status"] == "needs_review"
+    assert "track_error" in failed["reasons"]
+    assert failed["error"] == "AppendError"
+    assert "append failed" not in json.dumps(report.to_dict())
+
+
+@pytest.mark.parametrize("code", [401, 429])
+def test_track_status_code_still_halts_the_cycle(tmp_path: Path, code: int):
+    class Coded(Exception):
+        def __init__(self, status_code: int) -> None:
+            self.status_code = status_code
+            super().__init__("rate or auth")
+
+    rows = [
+        _track("tidal", "1001", "Track One", isrc="XX0000000001"),
+        _track("tidal", "1002", "Track Two", isrc="XX0000000002"),
+    ]
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
+    downloads = _Downloads()
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        downloads=downloads,
+        library=_local_library("1001", Coded(code)),
+        file_exists=lambda _path: True,
+    )
+    assert report.halted_reason == str(code)
+    assert downloads.calls == []
+    assert _titles(report.added) == []
+
+
+def test_playlist_list_error_records_source_error_and_continues(tmp_path: Path):
+    class BrokenSource:
+        name = "apple"
+
+        def list_playlists(self) -> list[PlaylistRef]:
+            raise ValueError("list failed")
+
+        def list_tracks(self, playlist: PlaylistRef) -> list[Track]:
+            raise AssertionError("list_tracks called")
+
+    row = _track("tidal", "1001", "Track One", isrc="XX0000000001")
+    tidal = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    report, _store, _pacing = _run(
+        tmp_path,
+        [BrokenSource(), tidal],
+        library=_local_library(),
+        file_exists=lambda _path: True,
+    )
+    assert report.halted_reason is None
+    assert report.source_errors == [
+        {"source": "apple", "playlist": None, "status": "source_error", "error": "ValueError"}
+    ]
+    assert report.to_dict()["source_errors"] == report.source_errors
+    assert [item.name for item in report.playlists] == ["Playlist A"]
+    assert _titles(report.added) == ["Track One"]
+    assert "list failed" not in json.dumps(report.to_dict())
+
+
+def test_track_list_error_records_source_error_and_continues(tmp_path: Path):
+    class FlakySource(_Source):
+        def list_tracks(self, playlist: PlaylistRef) -> list[Track]:
+            self.track_calls.append(playlist.source_playlist_id)
+            if playlist.source_playlist_id == "pl-a":
+                raise OSError("unread")
+            return list(self._rows[playlist.source_playlist_id][1])
+
+    row_b = _track("tidal", "1002", "Track Two", isrc="XX0000000002", playlist_name="Playlist B")
+    source = FlakySource(
+        "tidal",
+        [
+            (_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [
+                _track("tidal", "1001", "Track One", isrc="XX0000000001"),
+            ]),
+            (_playlist("tidal", "pl-b", "Playlist B", "2026-01-01"), [row_b]),
+        ],
+    )
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        library=_local_library(),
+        file_exists=lambda _path: True,
+    )
+    assert report.halted_reason is None
+    assert report.source_errors == [
+        {"source": "tidal", "playlist": "Playlist A", "status": "source_error", "error": "OSError"}
+    ]
+    assert _titles(report.added) == ["Track Two"]
+    assert "unread" not in json.dumps(report.to_dict())
+
+
+def test_sink_list_error_skips_that_playlist(tmp_path: Path):
+    class SelectiveSink(_Sink):
+        def list_tracks(self, name: str) -> list[Track]:
+            if name == "Playlist A":
+                raise RuntimeError("list failed")
+            return []
+
+    row_b = _track("tidal", "1002", "Track Two", isrc="XX0000000002", playlist_name="Playlist B")
+    source = _Source(
+        "tidal",
+        [
+            (_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [
+                _track("tidal", "1001", "Track One", isrc="XX0000000001"),
+            ]),
+            (_playlist("tidal", "pl-b", "Playlist B", "2026-01-01"), [row_b]),
+        ],
+    )
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        sink=SelectiveSink(),
+        library=_local_library(),
+        file_exists=lambda _path: True,
+    )
+    assert report.halted_reason is None
+    assert report.source_errors == [
+        {"source": "plex", "playlist": "Playlist A", "status": "source_error", "error": "RuntimeError"}
+    ]
+    assert [item.name for item in report.playlists] == ["Playlist B"]
+    assert _titles(report.added) == ["Track Two"]
+    assert "list failed" not in json.dumps(report.to_dict())
+
+
+def test_internal_error_closes_owned_ledger_and_library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog):
+    from tidal_dl.playlist_sync import cycle as cycle_mod
+    from tidal_dl.playlist_sync.ledger import Ledger as LedgerCls
+
+    caplog.set_level("ERROR")
+    closed = {"ledger": 0, "library": 0}
+    real_ledger_close = LedgerCls.close
+    real_handle_close = cycle_mod._LibraryHandle.close
+
+    def ledger_close(self) -> None:
+        closed["ledger"] += 1
+        real_ledger_close(self)
+
+    def handle_close(self) -> None:
+        closed["library"] += 1
+        real_handle_close(self)
+
+    monkeypatch.setattr(LedgerCls, "close", ledger_close)
+    monkeypatch.setattr(cycle_mod._LibraryHandle, "close", handle_close)
+
+    def boom(*args, **kwargs):
+        report = kwargs.get("report", args[-1] if args else None)
+        if getattr(report, "source_errors", None) is not None and hasattr(report, "source_errors"):
+            report.source_errors.append(
+                {"source": "marker", "playlist": None, "status": "source_error", "error": "Marker"}
+            )
+        raise RuntimeError("collect failed")
+
+    monkeypatch.setattr(cycle_mod, "_collect_groups", boom)
+    row = _track("tidal", "1001", "Track One", isrc="XX0000000001")
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    pacing = _ClockRng()
+    report = run_cycle(
+        _wall(2026, 10, 6, 12),
+        settings=_cfg(),
+        sources=[source],
+        sink=_Sink(),
+        downloads=_Downloads(),
+        clock=pacing.clock,
+        rng=pacing,
+        sleep=pacing.sleep,
+        pacer=TidalApiPacer(delay_min=0, delay_max=0, sleeper=pacing.sleep, clock=pacing.clock),
+        auth_state=lambda: "credentials_ready",
+        download_path_ready=lambda _path: True,
+    )
+    assert report.halted_reason == "internal_error"
+    assert report.source_errors == [
+        {"source": "marker", "playlist": None, "status": "source_error", "error": "Marker"}
+    ]
+    assert "collect failed" not in json.dumps(report.to_dict())
+    assert "playlist sync cycle failed" in caplog.text
+    assert closed == {"ledger": 1, "library": 1}

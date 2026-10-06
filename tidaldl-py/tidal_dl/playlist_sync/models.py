@@ -230,6 +230,7 @@ class CycleReport:
     pending_plex: list[dict[str, Any]] = field(default_factory=list)
     plex_errors: list[dict[str, Any]] = field(default_factory=list)
     removed_in_plex: list[dict[str, Any]] = field(default_factory=list)
+    source_errors: list[dict[str, Any]] = field(default_factory=list)
     halted_reason: str | None = None
     playlists: list[PlaylistReport] = field(default_factory=list)
 
@@ -245,6 +246,7 @@ class CycleReport:
             "pending_plex": self.pending_plex,
             "plex_errors": self.plex_errors,
             "removed_in_plex": self.removed_in_plex,
+            "source_errors": self.source_errors,
             "halted_reason": self.halted_reason,
             "playlists": [playlist.to_dict() for playlist in self.playlists],
         }
