@@ -18,7 +18,7 @@ import threading
 import time
 from base64 import b64decode
 from collections import Counter, defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -34,6 +34,7 @@ from tidal_dl.helper.library_db.utils import (
     canonical_library_path,
     library_path_forms,
     local_quality_label,
+    sqlite_int64,
 )
 from tidal_dl.helper.library_scanner import (
     drop_skipped_scan_paths,
@@ -1315,19 +1316,67 @@ def _scan_directories() -> list[Path]:
 def _file_identity_fields(file_path: Path, *, allowed_dirs: list[str]) -> dict:
     from tidal_dl.gui.security import validate_audio_path
 
-    validated = validate_audio_path(str(file_path), allowed_dirs)
-    if validated is None:
-        return {}
     try:
+        validated = validate_audio_path(str(file_path), allowed_dirs)
+        if validated is None:
+            return {}
         st = validated.stat()
+        return {
+            "file_size": st.st_size,
+            "file_mtime": int(st.st_mtime),
+            "file_inode": sqlite_int64(st.st_ino),
+            "file_device": sqlite_int64(st.st_dev),
+        }
     except OSError:
         return {}
-    return {
-        "file_size": st.st_size,
-        "file_mtime": int(st.st_mtime),
-        "file_inode": st.st_ino,
-        "file_device": st.st_dev,
-    }
+    except (OverflowError, ValueError) as exc:
+        print(f"[library] Skipping file: {type(exc).__name__}")
+        return {}
+
+
+def _backfill_file_identity(
+    db: LibraryDB,
+    disk_paths: set[str] | None,
+    scan_dirs: list[Path],
+) -> int:
+    """Stat live rows written before file identity existed.
+
+    ``disk_paths`` limits the update to files the walk just saw. ``None`` is
+    the signature fast path, which never walks files: stat each NULL row that
+    is still a regular file. One pass per legacy row.
+    """
+    assert db._conn
+    rows = db._conn.execute(
+        "SELECT path FROM scanned WHERE file_size IS NULL AND missing_since IS NULL"
+    ).fetchall()
+    db.commit()
+    allowed = [str(directory) for directory in scan_dirs]
+    updates: list[tuple] = []
+    for row in rows:
+        path = row["path"]
+        if path_has_skipped_scan_dir(path):
+            continue
+        if disk_paths is not None and canonical_library_path(path) not in disk_paths:
+            continue
+        try:
+            if disk_paths is None and not Path(path).is_file():
+                continue
+            fields = _file_identity_fields(Path(path), allowed_dirs=allowed)
+        except (OSError, OverflowError, ValueError) as exc:
+            print(f"[library] Skipping file: {type(exc).__name__}")
+            continue
+        if not fields or fields.get("file_size") is None:
+            continue
+        updates.append((
+            fields["file_size"],
+            fields["file_mtime"],
+            fields["file_inode"],
+            fields["file_device"],
+            path,
+        ))
+    if not updates:
+        return 0
+    return db.backfill_file_identity(updates)
 
 
 def _new_reconcile_progress(**overrides) -> dict:
@@ -1393,8 +1442,8 @@ def _index_reconciled_file(db: LibraryDB, file_path: Path, identity, meta: dict 
         art_available=_has_local_art(file_path),
         file_size=identity.size,
         file_mtime=identity.mtime,
-        file_inode=identity.inode,
-        file_device=identity.device,
+        file_inode=sqlite_int64(identity.inode),
+        file_device=sqlite_int64(identity.device),
     )
 
 
@@ -1463,8 +1512,8 @@ def _migrate_moved_scan_paths(
                 path=row["path"],
                 size=row.get("file_size"),
                 mtime=row.get("file_mtime"),
-                inode=row.get("file_inode"),
-                device=row.get("file_device"),
+                inode=sqlite_int64(row.get("file_inode")),
+                device=sqlite_int64(row.get("file_device")),
                 duration=row.get("duration"),
                 codec=row.get("codec"),
                 title=row.get("title"),
@@ -1479,10 +1528,13 @@ def _migrate_moved_scan_paths(
         file_path = Path(path)
         try:
             st = file_path.stat()
+            meta = _read_metadata(file_path, scan_dirs)
+            identity = identity_from_stat(file_path, st, meta)
         except OSError:
             continue
-        meta = _read_metadata(file_path, scan_dirs)
-        identity = identity_from_stat(file_path, st, meta)
+        except (OverflowError, ValueError) as exc:
+            print(f"[library] Skipping file: {type(exc).__name__}")
+            continue
         appeared.append(identity)
         appeared_by_path[identity.path] = identity
 
@@ -1515,6 +1567,22 @@ def request_path_reconcile(*, force: bool = False) -> dict:
     return {"status": "started"}
 
 
+_UNREADABLE_ROOT_ERROR = "Library folder is not readable — library kept"
+
+
+def _unreadable_roots(scan_dirs: list[Path], unreadable: Iterable[str]) -> list[Path]:
+    """Configured roots that exist but could not be listed."""
+    from tidal_dl.helper.library_reconcile import canon_path
+
+    bad = {canon_path(path) for path in unreadable}
+    return [root for root in scan_dirs if canon_path(root) in bad]
+
+
+def _under_any_dir(path: str, directories: set[str]) -> bool:
+    canon = canonical_library_path(path)
+    return any(canon.startswith(directory.rstrip("/") + "/") for directory in directories)
+
+
 def _background_path_reconcile() -> None:
     global _reconcile_running, _reconcile_last_at
     db = None
@@ -1526,18 +1594,21 @@ def _background_path_reconcile() -> None:
         if scan_dirs:
             _migrate_volume_prefixes(db, scan_dirs)
         result = _run_path_reconcile(db, scan_dirs, on_progress=_update_reconcile_progress)
+        unreadable_roots = _unreadable_roots(scan_dirs, result.skipped_dirs)
         if not result.unchanged:
             dropped = drop_skipped_scan_paths(db)
             if dropped:
                 print(f"[library] Dropped {dropped} rows under skipped directories")
+        if unreadable_roots:
+            print("[library] Library folder is not readable — skipping reconcile to preserve cache")
         _update_reconcile_progress(
-            phase="done",
+            phase="error" if unreadable_roots else "done",
             done=True,
             migrated=len(result.migrations),
             indexed=len(result.indexed),
             missing=len(result.marked_missing),
             directory_moves=len(result.directory_moves),
-            error=None,
+            error=_UNREADABLE_ROOT_ERROR if unreadable_roots else None,
         )
         _remember_playback_migrations(result.migrations)
         if not result.unchanged:
@@ -1684,10 +1755,14 @@ def _reconcile_library_rows(db: LibraryDB, *, scan_dirs: list[Path]) -> int:
     if total:
         _update_scan_progress(phase="repairing", scanned=0, total=total, done=False)
     for row in eligible:
-        file_path = Path(row["path"])
-        if not file_path.is_file():
+        try:
+            file_path = Path(row["path"])
+            if not file_path.is_file():
+                continue
+            meta = _read_metadata(file_path, scan_dirs)
+        except (OSError, OverflowError, ValueError) as exc:
+            print(f"[library] Skipping file: {type(exc).__name__}")
             continue
-        meta = _read_metadata(file_path, scan_dirs)
         if meta:
             pending.append({
                 "path": row["path"],
@@ -1778,7 +1853,8 @@ def _background_scan(rescan: bool) -> None:
             _update_scan_progress(phase="done", scanned=0, total=0, done=True, error=None)
             return
 
-        known = set() if rescan else {canonical_library_path(path) for path in db.known_paths()}
+        prior_known = {canonical_library_path(path) for path in db.known_paths()}
+        known = set() if rescan else set(prior_known)
         db.commit()
 
         # Per-directory signatures replace the root-only scan_fingerprint skip.
@@ -1786,6 +1862,11 @@ def _background_scan(rescan: bool) -> None:
         if not rescan and _dir_signatures_unchanged(db, scan_dirs):
             print("[library] Directory signatures unchanged — skipping walk")
             db.stamp_complete_identity_rows()
+            # This return never reaches the walk backfill. Fill NULL identity
+            # here so a later sync still upgrades legacy rows.
+            backfilled = _backfill_file_identity(db, None, scan_dirs)
+            if backfilled:
+                print(f"[library] Backfilled file identity for {backfilled} rows")
             dropped = drop_skipped_scan_paths(db)
             if dropped:
                 print(f"[library] Dropped {dropped} rows under skipped directories")
@@ -1796,26 +1877,49 @@ def _background_scan(rescan: bool) -> None:
 
         _update_scan_progress(phase="discovering", scanned=0, total=0, done=False, error=None)
         disk_paths: set[str] = set()
+        walk_errors: set[str] = set()
+
+        def _on_walk_error(exc: OSError) -> None:
+            # os.walk() drops unlistable directories by default. An unreadable
+            # album must not look like a deleted album.
+            if exc.filename:
+                walk_errors.add(canonical_library_path(os.path.normpath(str(exc.filename))))
 
         # Phase 1: Walk filesystem — no DB writes. Skip trash trees without descent.
         for scan_dir in scan_dirs:
-            for walk_root, dirs, files in os.walk(scan_dir):
+            for walk_root, dirs, files in os.walk(scan_dir, onerror=_on_walk_error):
                 dirs[:] = [name for name in dirs if not is_skipped_scan_dir(name)]
                 for fname in files:
                     f = Path(walk_root) / fname
-                    if path_has_skipped_scan_dir(f):
+                    try:
+                        if path_has_skipped_scan_dir(f):
+                            continue
+                        if f.is_symlink():  # symlink → arbitrary target recorded as trusted path (DB poisoning)
+                            continue
+                        if f.suffix.lower() not in _AUDIO_EXTENSIONS:
+                            continue
+                        disk_paths.add(canonical_library_path(str(f)))
+                    except (OSError, OverflowError, ValueError) as exc:
+                        print(f"[library] Skipping file: {type(exc).__name__}")
                         continue
-                    if f.is_symlink():  # symlink → arbitrary target recorded as trusted path (DB poisoning)
-                        continue
-                    if f.suffix.lower() not in _AUDIO_EXTENSIONS:
-                        continue
-                    disk_paths.add(canonical_library_path(str(f)))
                     _update_scan_progress(
                         phase="discovering",
                         scanned=len(disk_paths),
                         total=0,
                         done=False,
                     )
+
+        unreadable_roots = [
+            root for root in scan_dirs
+            if canonical_library_path(os.path.normpath(str(root))) in walk_errors
+        ]
+        if unreadable_roots:
+            print(
+                f"[library] {len(unreadable_roots)} library folder(s) not readable"
+                " — skipping scan to preserve cache"
+            )
+            _update_scan_progress(phase="error", done=True, error=_UNREADABLE_ROOT_ERROR)
+            return
 
         # Phase 2: Read metadata + waveform only for NEW files (the diff)
         from tidal_dl.helper.waveform import extract_both, peaks_to_json
@@ -1835,11 +1939,15 @@ def _background_scan(rescan: bool) -> None:
             done=False,
         )
         for path_str in new_paths:
-            file_path = Path(path_str)
-            art_available = _has_local_art(file_path)
-            meta = _read_metadata(file_path, scan_dirs)
-            allowed = [str(directory) for directory in scan_dirs]
-            identity_fields = _file_identity_fields(file_path, allowed_dirs=allowed)
+            try:
+                file_path = Path(path_str)
+                art_available = _has_local_art(file_path)
+                meta = _read_metadata(file_path, scan_dirs)
+                allowed = [str(directory) for directory in scan_dirs]
+                identity_fields = _file_identity_fields(file_path, allowed_dirs=allowed)
+            except (OSError, OverflowError, ValueError) as exc:
+                print(f"[library] Skipping file: {type(exc).__name__}")
+                continue
             if meta:
                 waveform_json = None
                 hires_json = None
@@ -1895,6 +2003,10 @@ def _background_scan(rescan: bool) -> None:
                 done=False,
             )
         _flush_scan_records(db, pending)
+        if not rescan:
+            backfilled = _backfill_file_identity(db, disk_paths, scan_dirs)
+            if backfilled:
+                print(f"[library] Backfilled file identity for {backfilled} rows")
 
         # Cheap leftover repair after discovery so first progress is the walk,
         # not a multi-minute NAS mutagen pass over already-tagged rows.
@@ -1910,12 +2022,14 @@ def _background_scan(rescan: bool) -> None:
         dropped = drop_skipped_scan_paths(db)
         if dropped:
             print(f"[library] Dropped {dropped} rows under skipped directories")
-        stale = known - disk_paths
+        prune_base = prior_known if rescan else known
+        stale = prune_base - disk_paths
         skipped_stale = {path for path in stale if path_has_skipped_scan_dir(path)}
-        prune = stale - skipped_stale
-        if len(prune) > 0.5 * len(known) and len(known) > 100:
+        unreadable_stale = {path for path in stale if _under_any_dir(path, walk_errors)}
+        prune = stale - skipped_stale - unreadable_stale
+        if len(prune) > 0.5 * len(prune_base) and len(prune_base) > 100:
             print(
-                f"[library] Skipping prune: {len(prune)}/{len(known)} paths would be removed"
+                f"[library] Skipping prune: {len(prune)}/{len(prune_base)} paths would be removed"
                 " — possible volume remount"
             )
         elif prune:
