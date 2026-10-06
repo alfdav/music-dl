@@ -253,6 +253,22 @@ def test_disabled_cycle_does_no_work(tmp_path: Path):
     assert report.to_dict()["halted_reason"] == "disabled"
 
 
+def test_settings_allowlist_loads_from_json():
+    raw = {"playlist_sync_allowlist": ["Playlist A", "Playlist B", 3, None]}
+    loaded = ModelSettings.from_dict(raw)
+    assert loaded.playlist_sync_allowlist == ["Playlist A", "Playlist B"]
+    parsed = ModelSettings.from_json(json.dumps({"playlist_sync_allowlist": ["Playlist A", "Playlist B"]}))
+    assert parsed.playlist_sync_allowlist == ["Playlist A", "Playlist B"]
+    fallback = ModelSettings.from_dict({"playlist_sync_allowlist": "Playlist A", "playlist_sync_max_per_cycle": "7"})
+    assert fallback.playlist_sync_allowlist == []
+    assert fallback.playlist_sync_max_per_cycle == 7
+    config = load_config(loaded)
+    assert config.allowlist == ("Playlist A", "Playlist B")
+    assert name_allowed(" playlist a ", config.allowlist)
+    assert name_allowed("Playlist B", config.allowlist)
+    assert not name_allowed("Playlist C", config.allowlist)
+
+
 def test_allowlist_comes_from_settings(tmp_path: Path):
     tidal_a = _track("tidal", "1001", "Example Song", isrc="XX0000000001")
     tidal_b = _track("tidal", "1002", "Other Song", isrc="XX0000000002", playlist_name="Playlist B")
@@ -490,6 +506,52 @@ def test_unobtainable_and_failed_retry_once_per_day(tmp_path: Path):
         tag_reader=_tags_for([failed]),
     )
     assert fail_dl.calls == [[1005], [1005]]
+
+
+def test_cache_drops_tracks_removed_from_the_playlist(tmp_path: Path):
+    first = _track("tidal", "1001", "Example Song", isrc="XX0000000001")
+    second = _track("tidal", "1002", "Second Song", isrc="XX0000000002")
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [first, second])])
+    downloads = _Downloads()
+    sink = _Sink()
+    ledger = Ledger(tmp_path / "playlist_sync.db")
+    _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=downloads,
+        ledger=ledger,
+        tag_reader=_tags_for([first, second]),
+    )
+    assert [call[0] for call in downloads.calls] == [1001, 1002]
+
+    source.set_tracks("pl-a", [first], "2026-01-02")
+    refreshed = _Downloads()
+    report, _, _ = _run(
+        tmp_path,
+        source,
+        sink=_Sink(),
+        downloads=refreshed,
+        ledger=ledger,
+        tag_reader=_tags_for([first, second]),
+    )
+    assert source.track_calls == ["pl-a", "pl-a"]
+    assert [call[0] for call in refreshed.calls] == [1001]
+    assert report.playlists[0].tidal_count == 1
+
+    cached = _Downloads()
+    report, _, _ = _run(
+        tmp_path,
+        source,
+        sink=_Sink(),
+        downloads=cached,
+        ledger=ledger,
+        tag_reader=_tags_for([first, second]),
+    )
+    assert source.track_calls == ["pl-a", "pl-a"]
+    assert [call[0] for call in cached.calls] == [1001]
+    assert report.playlists[0].tidal_count == 1
+    assert [item["source_track"]["title"] for item in report.playlists[0].tracks] == ["Example Song"]
 
 
 def test_only_changed_playlists_are_fetched(tmp_path: Path):
@@ -764,6 +826,54 @@ def test_post_download_mismatch_is_not_appended_or_deleted(tmp_path: Path, monke
     assert target.read_bytes() == b"keep"
 
 
+def test_download_mismatch_is_not_queued_again(tmp_path: Path):
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001")
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    target = tmp_path / "1001.flac"
+    target.write_bytes(b"keep")
+    ledger = Ledger(tmp_path / "playlist_sync.db")
+
+    def reader(_path: str) -> dict:
+        return {
+            "title": "Example Song",
+            "artist": OTHER,
+            "album": "",
+            "duration": 180,
+            "isrc": "XX0000000001",
+            "version": "",
+        }
+
+    first = _Downloads({1001: DownloadResult(status="completed", path=str(target))})
+    report, _, _ = _run(tmp_path, source, downloads=first, ledger=ledger, tag_reader=reader)
+    assert first.calls == [[1001]]
+    assert report.download_mismatch[0]["status"] == "download_mismatch"
+    assert report.needs_review[0]["action"] == "review"
+    stored = ledger.get_track("tidal", "1001", normalize_playlist_name("Playlist A"))
+    assert stored is not None
+    assert stored["status"] == "download_mismatch"
+    assert stored["last_failure_day"] == "2026-10-06"
+
+    same_day = _Downloads({1001: DownloadResult(status="completed", path=str(target))})
+    report, _, _ = _run(tmp_path, source, downloads=same_day, ledger=ledger, tag_reader=reader)
+    assert same_day.calls == []
+    assert report.needs_review[0]["action"] == "review"
+    assert report.needs_review[0]["status"] == "download_mismatch"
+    assert report.playlists[0].to_download == 0
+
+    next_day = _Downloads({1001: DownloadResult(status="completed", path=str(target))})
+    report, _, _ = _run(
+        tmp_path,
+        source,
+        downloads=next_day,
+        ledger=ledger,
+        tag_reader=reader,
+        now=_wall(2026, 10, 7, 12),
+    )
+    assert next_day.calls == []
+    assert report.needs_review[0]["status"] == "download_mismatch"
+    assert report.playlists[0].to_download == 0
+
+
 def test_package_never_references_bulk_sync_or_tokens():
     root = Path(__file__).resolve().parents[1] / "tidal_dl" / "playlist_sync"
     text = "\n".join(path.read_text(encoding="utf-8") for path in root.rglob("*.py"))
@@ -854,6 +964,91 @@ def test_job_service_downloader_queues_one_track():
     timed_out = waiting.wait_for(1003)
     assert timed_out.status == "failed"
     assert timed_out.error == "timeout"
+
+
+def test_real_job_status_uses_a_library_file_when_history_has_no_path(tmp_path: Path):
+    audio = tmp_path / "example.flac"
+    audio.write_bytes(b"audio")
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+
+    class Service:
+        def __init__(self) -> None:
+            self.calls: list[list[int]] = []
+
+        def enqueue_download(self, track_ids: list[int]) -> dict:
+            self.calls.append(list(track_ids))
+            return {"status": "queued", "count": len(track_ids)}
+
+        def job_status_for_track(self, track_id: int) -> dict:
+            return {
+                "job_id": str(track_id),
+                "status": "done",
+                "progress": 100.0,
+                "title": "Example Song",
+                "artist": ARTIST,
+                "started_at": 1.0,
+                "finished_at": 2.0,
+                "error": None,
+            }
+
+        def history(self, _limit: int = 50) -> dict:
+            return {
+                "downloads": [
+                    {
+                        "track_id": 1001,
+                        "name": "Example Song",
+                        "artist": ARTIST,
+                        "album": None,
+                        "status": "done",
+                        "error": None,
+                        "started_at": 1.0,
+                        "finished_at": 2.0,
+                        "cover_url": None,
+                        "quality": None,
+                    }
+                ]
+            }
+
+    service = Service()
+    client = JobServiceDownloader(service, sleep=lambda _seconds: None)
+    bare = client.wait_for(1001)
+    assert bare.status == "completed"
+    assert bare.path is None
+
+    missing, _, _ = _run(
+        tmp_path / "missing",
+        source,
+        downloads=JobServiceDownloader(Service(), sleep=lambda _seconds: None),
+        library=lambda _item: [],
+    )
+    assert missing.download_mismatch
+    assert "downloaded_file_not_found" in missing.download_mismatch[0]["reasons"]
+
+    lookups = {"n": 0}
+
+    def library(_track: Track) -> list[Candidate]:
+        lookups["n"] += 1
+        if lookups["n"] == 1:
+            return []
+        return [_candidate("Example Song", isrc="XX0000000001", ident="row-1", path=str(audio))]
+
+    def reader(path: str) -> dict:
+        assert path == str(audio)
+        return {"title": "Example Song", "artist": ARTIST, "duration": 180, "isrc": "XX0000000001"}
+
+    sink = _Sink()
+    report, _, _ = _run(
+        tmp_path / "found",
+        source,
+        sink=sink,
+        downloads=client,
+        library=library,
+        tag_reader=reader,
+    )
+    assert service.calls == [[1001]]
+    assert report.download_mismatch == []
+    assert sink.appends == [("Playlist A", ["1001"])]
 
 
 def test_library_lookup_uses_isrc_rows():

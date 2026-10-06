@@ -71,9 +71,15 @@ class Ledger:
                     plex_rating_key TEXT,
                     available INTEGER NOT NULL DEFAULT 1,
                     version TEXT NOT NULL DEFAULT '',
+                    on_playlist INTEGER NOT NULL DEFAULT 1,
                     PRIMARY KEY (source, source_track_id, name_norm)
                 )"""
             )
+            columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(tracks)")}
+            if "on_playlist" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN on_playlist INTEGER NOT NULL DEFAULT 1"
+                )
             self._conn.execute(
                 """CREATE TABLE IF NOT EXISTS daily_downloads (
                     day TEXT PRIMARY KEY,
@@ -123,11 +129,28 @@ class Ledger:
 
     def tracks_for(self, source: str, name_norm: str) -> list[Track]:
         rows = self._conn.execute(
-            """SELECT * FROM tracks WHERE source = ? AND name_norm = ?
+            """SELECT * FROM tracks WHERE source = ? AND name_norm = ? AND on_playlist = 1
                ORDER BY first_seen_at, source_track_id""",
             (source, name_norm),
         ).fetchall()
         return [_track_from_row(row) for row in rows]
+
+    def retain_membership(self, source: str, name_norm: str, present_ids: set[str]) -> None:
+        """Mark ledger rows that are no longer on this source playlist."""
+
+        def run() -> None:
+            self._conn.execute(
+                "UPDATE tracks SET on_playlist = 0 WHERE source = ? AND name_norm = ?",
+                (source, name_norm),
+            )
+            for track_id in present_ids:
+                self._conn.execute(
+                    """UPDATE tracks SET on_playlist = 1
+                       WHERE source = ? AND name_norm = ? AND source_track_id = ?""",
+                    (source, name_norm, track_id),
+                )
+
+        self._write(run)
 
     def remember_track(self, track: Track, name_norm: str, *, seen_at: str) -> None:
         """Insert a first sighting or refresh metadata without dropping status."""
@@ -144,15 +167,15 @@ class Ledger:
                     """INSERT INTO tracks (
                         source, source_track_id, name_norm, isrc, title, artist, album,
                         duration, first_seen_at, status, last_failure_day, plex_rating_key,
-                        available, version
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'seen', NULL, NULL, ?, ?)""",
+                        available, version, on_playlist
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'seen', NULL, NULL, ?, ?, 1)""",
                     _track_values(track, name_norm, seen_at),
                 )
                 return
             self._conn.execute(
                 """UPDATE tracks
                    SET isrc = ?, title = ?, artist = ?, album = ?, duration = ?,
-                       available = ?, version = ?
+                       available = ?, version = ?, on_playlist = 1
                    WHERE source = ? AND source_track_id = ? AND name_norm = ?""",
                 (
                     track.isrc,

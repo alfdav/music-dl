@@ -2,7 +2,7 @@ import dataclasses
 import enum
 import json
 from dataclasses import dataclass, field
-from typing import Any, Self, cast
+from typing import Any, Self, cast, get_args, get_origin
 
 from tidalapi.media import Quality
 
@@ -33,6 +33,17 @@ def _coerce_field(field_type: type, value: Any, current: Any) -> Any:
         return int(value)
     if isinstance(current, float) and not isinstance(value, bool):
         return float(value)
+    origin = get_origin(field_type)
+    if origin is list:
+        if not isinstance(value, list):
+            raise TypeError("expected a list")
+        args = get_args(field_type)
+        item_type = args[0] if args else Any
+        if item_type is str:
+            return [item for item in value if isinstance(item, str)]
+        if item_type is Any:
+            return list(value)
+        return [item for item in value if isinstance(item, item_type)]
     if field_type is not Any and not isinstance(value, field_type):
         return field_type(value)
     return value

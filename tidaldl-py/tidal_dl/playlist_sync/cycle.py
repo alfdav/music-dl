@@ -10,7 +10,7 @@ from typing import Any
 
 from tidal_dl.download.api_pacing import TidalApiPacer
 from tidal_dl.playlist_sync.config import PlaylistSyncConfig, load_config, name_allowed
-from tidal_dl.playlist_sync.downloads import DownloadClient, service_downloader
+from tidal_dl.playlist_sync.downloads import DownloadClient, existing_library_file, service_downloader
 from tidal_dl.playlist_sync.governor import Governor, status_code_of
 from tidal_dl.playlist_sync.ledger import Ledger, default_ledger_path
 from tidal_dl.playlist_sync.matcher import isrc_key, normalize_playlist_name, same_recording
@@ -294,9 +294,7 @@ def _load_tracks(
     stamp = playlist.last_updated or ""
     seen = work.ledger.get_playlist(work_source.name, playlist.source_playlist_id)
     if seen is not None and seen["last_updated_seen"] == stamp:
-        stored = work.ledger.tracks_for(work_source.name, name_norm)
-        if stored:
-            return stored
+        return work.ledger.tracks_for(work_source.name, name_norm)
     try:
         tracks = list(work_source.list_tracks(playlist))
     except Exception as exc:
@@ -308,6 +306,7 @@ def _load_tracks(
     work.ledger.upsert_playlist(work_source.name, playlist.source_playlist_id, name_norm, stamp)
     for track in tracks:
         work.ledger.remember_track(track, name_norm, seen_at=work.seen_at)
+    work.ledger.retain_membership(work_source.name, name_norm, {track.source_track_id for track in tracks})
     return tracks
 
 
@@ -433,6 +432,21 @@ def _consider(
                 return
 
     row = work.ledger.get_track(track.source, track.source_track_id, name_norm)
+    if row and row["status"] == "download_mismatch":
+        union.append(track)
+        _keep(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            "review",
+            "review",
+            "download_mismatch",
+            bucket="needs_review",
+            notes=notes,
+        )
+        return
     if row and row["last_failure_day"] == work.day and row["status"] == "unobtainable":
         union.append(track)
         _keep(
@@ -573,6 +587,9 @@ def _run_download(
 
     def once() -> DownloadResult:
         client = work.client()
+        bind = getattr(client, "bind_lookup", None)
+        if callable(bind):
+            bind(track, work.library, work.file_exists)
         client.enqueue_download([download_id])
         return client.wait_for(download_id)
 
@@ -615,9 +632,17 @@ def _run_download(
     entry = _entry(track, "review", mismatch.confidence, mismatch_candidate, mismatch, notes=notes)
     entry["status"] = "download_mismatch"
     report.tracks.append(entry)
+    report.needs_review.append(entry)
     work.report.download_mismatch.append(entry)
+    work.report.needs_review.append(entry)
     placed.append(_Placed(track, "review", entry))
-    work.ledger.set_status(track, name_norm, "download_mismatch", seen_at=work.seen_at)
+    work.ledger.set_status(
+        track,
+        name_norm,
+        "download_mismatch",
+        seen_at=work.seen_at,
+        last_failure_day=work.day,
+    )
 
 
 def _post_download(
@@ -643,13 +668,7 @@ def _post_download(
 
 def _existing_library_path(work: _Work, track: Track) -> str | None:
     """NFC path of an ISRC library row whose file is still on disk."""
-    if work.library is None or not track.isrc:
-        return None
-    for candidate in work.library(track) or []:
-        path = nfc_path(candidate.path)
-        if path and work.file_exists(path):
-            return path
-    return None
+    return existing_library_file(work.library, track, work.file_exists)
 
 
 def _downloaded_file_not_found() -> tuple[Candidate, VerifyResult]:
