@@ -123,13 +123,17 @@ class PlexWriterSink:
         if not resolved:
             return AppendResult(status=failure or "pending_plex")
 
-        written = self._write_keys(name, match, [key for _track, key, _path in resolved])
+        written, removed = self._write_keys(name, match, [key for _track, key, _path in resolved])
+        removed_keys = set(removed)
         for track, key, mapped in resolved:
+            if key in removed_keys:
+                continue
             self._remember(track, name, key, mapped)
-        keys = [key for _track, key, _path in resolved]
         if written:
             return AppendResult(status="added", rating_keys=written)
-        return AppendResult(status="already_present", rating_keys=keys)
+        if removed:
+            return AppendResult(status="removed_in_plex", rating_keys=removed)
+        return AppendResult(status="already_present", rating_keys=[key for _track, key, _path in resolved])
 
     def _named(self, name: str) -> dict[str, Any] | None:
         target = normalize_playlist_name(name)
@@ -176,26 +180,53 @@ class PlexWriterSink:
             return found
         return _match_path(self._client.recently_added_tracks(), server_path)
 
-    def _write_keys(self, name: str, match: dict[str, Any] | None, keys: list[str]) -> list[str]:
+    def _write_keys(
+        self,
+        name: str,
+        match: dict[str, Any] | None,
+        keys: list[str],
+    ) -> tuple[list[str], list[str]]:
+        """Return keys written, then keys a user removed after sync added them.
+
+        A recorded key that is no longer on the playlist is not written back.
+        If the playlist itself is gone, recorded keys do not recreate it.
+        """
         ordered = _dedupe(keys)
         if not ordered:
-            return []
+            return [], []
+        name_norm = normalize_playlist_name(name)
+        recorded = self._ledger.plex_added_keys(name_norm)
         if match is None:
-            playlist_key = self._client.create_playlist(name, ordered[0])
-            rest = [key for key in ordered[1:] if key != ordered[0]]
+            removed = [key for key in ordered if key in recorded]
+            fresh = [key for key in ordered if key not in recorded]
+            if not fresh:
+                return [], removed
+            playlist_key = self._client.create_playlist(name, fresh[0])
+            written = [fresh[0]]
+            self._note_added(name_norm, written)
+            rest = [key for key in fresh[1:] if key != fresh[0]]
             if rest:
                 self._client.add_to_playlist(playlist_key, rest)
-            return ordered
+                self._note_added(name_norm, rest)
+                written.extend(rest)
+            return written, removed
         current = {
             str(row.get("ratingKey"))
             for row in self._client.playlist_items(match["rating_key"])
             if row.get("ratingKey") is not None and str(row.get("ratingKey")) != ""
         }
-        fresh = [key for key in ordered if key not in current]
+        removed = [key for key in ordered if key in recorded and key not in current]
+        fresh = [key for key in ordered if key not in current and key not in recorded]
         if not fresh:
-            return []
+            return [], removed
         self._client.add_to_playlist(match["rating_key"], fresh)
-        return fresh
+        self._note_added(name_norm, fresh)
+        return fresh, removed
+
+    def _note_added(self, name_norm: str, keys: list[str]) -> None:
+        stamp = _stamp()
+        for key in keys:
+            self._ledger.remember_plex_added(name_norm, key, at=stamp)
 
     def _remember(self, track: Track, playlist_name: str, rating_key: str, server_path: str | None) -> None:
         if server_path:

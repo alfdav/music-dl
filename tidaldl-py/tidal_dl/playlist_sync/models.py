@@ -197,6 +197,7 @@ class PlaylistReport:
     unmatched: int = 0
     unobtainable: int = 0
     already_local: int = 0
+    removed_in_plex: int = 0
     needs_review: list[dict[str, Any]] = field(default_factory=list)
     tracks: list[dict[str, Any]] = field(default_factory=list)
 
@@ -211,6 +212,7 @@ class PlaylistReport:
             "unmatched": self.unmatched,
             "unobtainable": self.unobtainable,
             "already_local": self.already_local,
+            "removed_in_plex": self.removed_in_plex,
             "needs_review": self.needs_review,
             "tracks": self.tracks,
         }
@@ -227,6 +229,7 @@ class CycleReport:
     download_mismatch: list[dict[str, Any]] = field(default_factory=list)
     pending_plex: list[dict[str, Any]] = field(default_factory=list)
     plex_errors: list[dict[str, Any]] = field(default_factory=list)
+    removed_in_plex: list[dict[str, Any]] = field(default_factory=list)
     halted_reason: str | None = None
     playlists: list[PlaylistReport] = field(default_factory=list)
 
@@ -241,6 +244,7 @@ class CycleReport:
             "download_mismatch": self.download_mismatch,
             "pending_plex": self.pending_plex,
             "plex_errors": self.plex_errors,
+            "removed_in_plex": self.removed_in_plex,
             "halted_reason": self.halted_reason,
             "playlists": [playlist.to_dict() for playlist in self.playlists],
         }

@@ -367,6 +367,9 @@ def _consider(
     if plex_state == "confirmed":
         _keep(work, report, placed, track, name_norm, "skip_present", "confirmed", "seen", plex_candidate, plex_result)
         return
+    if _sync_added_then_removed(work, track, name_norm, plex_tracks):
+        _note_removed(work, report, placed, track)
+        return
     if plex_state == "review":
         _keep(
             work,
@@ -417,6 +420,7 @@ def _consider(
                 track,
                 name_norm,
                 result,
+                report=report,
                 local_path=local_path,
                 pending_status="matched_local",
             )
@@ -469,6 +473,7 @@ def _consider(
                         track,
                         name_norm,
                         result,
+                        report=report,
                         local_path=None,
                         pending_status="matched_local",
                     )
@@ -693,6 +698,7 @@ def _run_download(
             track,
             name_norm,
             result_append,
+            report=report,
             local_path=file_path or None,
             pending_status="downloaded",
         )
@@ -987,6 +993,40 @@ def _drop_entry(bucket: list[dict[str, Any]], entry: dict[str, Any]) -> None:
             return
 
 
+def _sync_added_then_removed(
+    work: _Work,
+    track: Track,
+    name_norm: str,
+    plex_tracks: list[Track],
+) -> bool:
+    """True when sync added this rating key and the playlist no longer has it."""
+    row = work.ledger.get_track(track.source, track.source_track_id, name_norm)
+    if row is None:
+        return False
+    key = row.get("plex_rating_key")
+    if key is None or str(key) == "":
+        return False
+    rating_key = str(key)
+    if rating_key not in work.ledger.plex_added_keys(name_norm):
+        return False
+    present = {item.source_track_id for item in plex_tracks}
+    return rating_key not in present
+
+
+def _note_removed(
+    work: _Work,
+    report: PlaylistReport,
+    placed: list[_Placed],
+    track: Track,
+) -> None:
+    entry = _entry(track, "skip_removed", "confirmed", None, None, notes=("removed_in_plex",))
+    entry["status"] = "removed_in_plex"
+    report.tracks.append(entry)
+    report.removed_in_plex += 1
+    work.report.removed_in_plex.append(entry)
+    placed.append(_Placed(track, "skip_removed", entry))
+
+
 def _finish_append(
     work: _Work,
     entry: dict[str, Any],
@@ -994,6 +1034,7 @@ def _finish_append(
     name_norm: str,
     result: Any,
     *,
+    report: PlaylistReport,
     local_path: str | None,
     pending_status: str,
 ) -> None:
@@ -1010,6 +1051,15 @@ def _finish_append(
         )
         return
     _drop_entry(work.report.added, entry)
+    if status == "removed_in_plex":
+        entry["action"] = "skip_removed"
+        entry["status"] = "removed_in_plex"
+        entry["reasons"] = ["removed_in_plex"]
+        report.removed_in_plex += 1
+        work.report.removed_in_plex.append(entry)
+        if rating:
+            work.ledger.set_plex_rating_key(track, name_norm, rating)
+        return
     if status == "pending_plex":
         entry["status"] = "pending_plex"
         work.report.pending_plex.append(entry)
@@ -1086,6 +1136,7 @@ def _replay_append(
         track,
         name_norm,
         result,
+        report=report,
         local_path=local_path,
         pending_status=pending_status,
     )
