@@ -1086,6 +1086,24 @@ def _finish_append(
         )
 
 
+def _file_is_missing(work: _Work, local_path: str) -> bool:
+    return not local_path or not work.file_exists(local_path)
+
+
+def _note_file_missing(
+    work: _Work,
+    report: PlaylistReport,
+    placed: list[_Placed],
+    track: Track,
+) -> None:
+    entry = _entry(track, "review", "review", None, None, notes=("file_missing",))
+    entry["status"] = "needs_review"
+    report.tracks.append(entry)
+    report.needs_review.append(entry)
+    work.report.needs_review.append(entry)
+    placed.append(_Placed(track, "review", entry))
+
+
 def _retry_saved_file(
     work: _Work,
     group: _Group,
@@ -1096,7 +1114,7 @@ def _retry_saved_file(
     name_norm: str,
     row: dict[str, Any],
 ) -> bool:
-    """Retry a saved file into Plex. A downloaded row is never queued again."""
+    """Retry a saved file into Plex. A missing download is reviewed, not queued."""
     status = str(row["status"])
     local_path = str(row.get("local_path") or "")
     if status == "downloaded":
@@ -1120,10 +1138,13 @@ def _replay_append(
     local_path: str,
     pending_status: str,
 ) -> None:
+    if _file_is_missing(work, local_path):
+        _note_file_missing(work, report, placed, track)
+        return
     entry = _entry(track, "append", "confirmed", None, None)
     report.tracks.append(entry)
     placed.append(_Placed(track, "append", entry))
-    if work.cfg.dry_run or not local_path or not work.file_exists(local_path):
+    if work.cfg.dry_run:
         entry["status"] = "pending_plex"
         work.report.pending_plex.append(entry)
         return
