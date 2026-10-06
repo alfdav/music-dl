@@ -261,9 +261,23 @@ def _collect_groups(
     return groups
 
 
+def _is_plex_error(exc: BaseException) -> bool:
+    # Lazy so cycle.py does not import the Plex client while the package loads.
+    from tidal_dl.playlist_sync.plex_client import PlexError
+
+    return isinstance(exc, PlexError)
+
+
 def _sync_group(work: _Work, group: _Group) -> None:
+    try:
+        listed = work.sink.list_tracks(group.name)
+    except Exception as exc:
+        if not _is_plex_error(exc):
+            raise
+        work.governor.halt("plex_unavailable")
+        return
     plex_tracks = [
-        coerce_track(item, source="plex", playlist_name=group.name) for item in work.sink.list_tracks(group.name)
+        coerce_track(item, source="plex", playlist_name=group.name) for item in listed
     ]
     tidal_tracks = _load_tracks(work, work_source=group.tidal_source, playlist=group.tidal, name=group.name)
     if work.governor.halted_reason:
@@ -425,6 +439,8 @@ def _consider(
 
     if local_state == "none":
         plex_hit = _plex_library(work, track)
+        if work.governor.halted_reason:
+            return
         if plex_hit is not None:
             plex_state, plex_track, plex_choice, plex_verified = plex_hit
             if plex_state == "confirmed" and plex_track is not None:
@@ -801,7 +817,13 @@ def _plex_library(
     finder = getattr(work.sink, "find", None)
     if finder is None:
         return None
-    found = list(finder(track) or [])
+    try:
+        found = list(finder(track) or [])
+    except Exception as exc:
+        if not _is_plex_error(exc):
+            raise
+        work.governor.halt("plex_unavailable")
+        return None
     if not found:
         return None
     state, candidate, result = _judge(track, [candidate_from_track(item) for item in found])
