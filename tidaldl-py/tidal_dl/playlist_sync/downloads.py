@@ -31,15 +31,6 @@ def _http_from_error(error: object) -> int | None:
     return None
 
 
-def _stored_path(row: dict[str, Any]) -> str | None:
-    """Return a path the row actually stores. Missing keys stay empty."""
-    for key in ("new_path", "path"):
-        value = row.get(key)
-        if isinstance(value, str) and value.strip():
-            return nfc_path(value)
-    return None
-
-
 def existing_library_file(
     library: Any,
     track: Any,
@@ -104,7 +95,7 @@ class JobServiceDownloader:
             if isinstance(row, dict):
                 status = str(row.get("status") or "")
                 if status in _DONE:
-                    return DownloadResult(status="completed", path=self._completed_path(track_id, row))
+                    return DownloadResult(status="completed", path=self._library_path())
                 if status in _FAILED:
                     return DownloadResult(
                         status="failed",
@@ -115,32 +106,9 @@ class JobServiceDownloader:
                 return DownloadResult(status="failed", error="timeout")
             self._sleep(0.05)
 
-    def _completed_path(self, track_id: int, row: dict[str, Any]) -> str | None:
-        stored = _stored_path(row) or self._history_path(track_id)
-        if stored and self._file_exists(stored):
-            return stored
-        if self._lookup_track is None:
-            return None
+    def _library_path(self) -> str | None:
+        """The indexed file for this ISRC. Job status does not carry a path."""
         return existing_library_file(self._library, self._lookup_track, self._file_exists)
-
-    def _history_path(self, track_id: int) -> str | None:
-        history = getattr(self._service, "history", None)
-        if not callable(history):
-            return None
-        payload = history()
-        rows = payload.get("downloads") if isinstance(payload, dict) else payload
-        if not isinstance(rows, list):
-            return None
-        for item in rows:
-            if not isinstance(item, dict):
-                continue
-            recorded = item.get("track_id")
-            if recorded != track_id and str(recorded) != str(track_id):
-                continue
-            found = _stored_path(item)
-            if found:
-                return found
-        return None
 
 
 def service_downloader() -> JobServiceDownloader:

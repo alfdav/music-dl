@@ -163,6 +163,8 @@ def run_cycle(
     if not ready(cfg.download_base_path):
         return CycleReport(halted_reason="download_path_unavailable")
 
+    # Callers inject a fake. Otherwise each track gets one short library read.
+    lookup = library if library is not None else _library_from_db
     work = _Work(
         cfg=cfg,
         ledger=store,
@@ -170,7 +172,7 @@ def run_cycle(
         governor=governor,
         day=day,
         seen_at=moment.isoformat(),
-        library=library,
+        library=lookup,
         search=search,
         tag_reader=tag_reader or read_audio_tags,
         downloads=downloads,
@@ -881,6 +883,29 @@ def _as_int(value: object) -> int | None:
         return int(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def open_library_db() -> Any:
+    """Open library.db for one read. The caller closes it."""
+    from pathlib import Path
+
+    from tidal_dl.helper.library_db import LibraryDB
+    from tidal_dl.helper.path import path_config_base
+
+    database = LibraryDB(Path(path_config_base()) / "library.db")
+    database.open()
+    return database
+
+
+def _library_from_db(track: Track) -> list[Candidate]:
+    """ISRC rows from library.db. The connection is closed before the caller continues."""
+    if not track.isrc:
+        return []
+    database = open_library_db()
+    try:
+        return library_candidates(database, track)
+    finally:
+        database.close()
 
 
 def library_candidates(db: Any, track: Track) -> list[Candidate]:

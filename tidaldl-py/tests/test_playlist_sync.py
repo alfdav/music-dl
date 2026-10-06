@@ -966,7 +966,7 @@ def test_job_service_downloader_queues_one_track():
     assert timed_out.error == "timeout"
 
 
-def test_real_job_status_uses_a_library_file_when_history_has_no_path(tmp_path: Path):
+def test_real_job_status_resolves_the_file_from_the_library(tmp_path: Path):
     audio = tmp_path / "example.flac"
     audio.write_bytes(b"audio")
     row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
@@ -990,24 +990,6 @@ def test_real_job_status_uses_a_library_file_when_history_has_no_path(tmp_path: 
                 "started_at": 1.0,
                 "finished_at": 2.0,
                 "error": None,
-            }
-
-        def history(self, _limit: int = 50) -> dict:
-            return {
-                "downloads": [
-                    {
-                        "track_id": 1001,
-                        "name": "Example Song",
-                        "artist": ARTIST,
-                        "album": None,
-                        "status": "done",
-                        "error": None,
-                        "started_at": 1.0,
-                        "finished_at": 2.0,
-                        "cover_url": None,
-                        "quality": None,
-                    }
-                ]
             }
 
     service = Service()
@@ -1049,6 +1031,56 @@ def test_real_job_status_uses_a_library_file_when_history_has_no_path(tmp_path: 
     assert service.calls == [[1001]]
     assert report.download_mismatch == []
     assert sink.appends == [("Playlist A", ["1001"])]
+
+
+def test_omitted_library_reads_the_library_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    audio = tmp_path / "example.flac"
+    audio.write_bytes(b"audio")
+    events: list[object] = []
+
+    class FakeDB:
+        def tracks_by_isrc(self, isrc: str) -> list[dict]:
+            events.append(("lookup", isrc))
+            return [
+                {
+                    "path": str(audio),
+                    "title": "Example Song",
+                    "artist": ARTIST,
+                    "duration": 180,
+                    "isrc": isrc,
+                }
+            ]
+
+        def close(self) -> None:
+            events.append("close")
+
+    def opener() -> FakeDB:
+        events.append("open")
+        return FakeDB()
+
+    monkeypatch.setattr("tidal_dl.playlist_sync.cycle.open_library_db", opener)
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    pacing = _ClockRng()
+    downloads = _Downloads()
+    report = run_cycle(
+        _wall(2026, 10, 6, 12),
+        settings=_cfg(dry_run=True),
+        sources=[source],
+        sink=_Sink(),
+        ledger=Ledger(tmp_path / "playlist_sync.db"),
+        downloads=downloads,
+        clock=pacing.clock,
+        rng=pacing,
+        sleep=pacing.sleep,
+        pacer=TidalApiPacer(delay_min=0, delay_max=0, sleeper=pacing.sleep, clock=pacing.clock),
+        auth_state=lambda: "credentials_ready",
+        download_path_ready=lambda _path: True,
+    )
+    assert events == ["open", ("lookup", "XX0000000001"), "close"]
+    assert report.playlists[0].already_local == 1
+    assert report.playlists[0].to_download == 0
+    assert downloads.calls == []
 
 
 def test_library_lookup_uses_isrc_rows():
