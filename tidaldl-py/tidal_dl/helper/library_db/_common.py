@@ -18,6 +18,7 @@ from tidal_dl.helper.library_db.utils import (
     fold_search_text,
     library_path_forms,
     library_path_lookup_keys,
+    sqlite_int64,
 )
 
 __all__ = [
@@ -34,5 +35,6 @@ __all__ = [
     "library_path_lookup_keys",
     "pathlib",
     "sqlite3",
+    "sqlite_int64",
     "time",
 ]

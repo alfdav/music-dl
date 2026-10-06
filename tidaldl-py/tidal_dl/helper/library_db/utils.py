@@ -13,6 +13,33 @@ _SQLITE_CORRUPTION_MESSAGES = (
     "database disk image is malformed",
 )
 
+# SQLite INTEGER is signed int64. Filesystem ids are unsigned 64-bit.
+_SQLITE_INT64_MOD = 1 << 64
+_SQLITE_INT64_SIGN = 1 << 63
+
+
+def sqlite_int64(n: int | None) -> int | None:
+    """Fold a filesystem id into SQLite's signed 64-bit INTEGER.
+
+    macOS SMB shares can report ``st_ino`` >= 2**63. Those values are stored
+    as two's complement (``n - 2**64``). Numbers already in
+    ``[-2**63, 2**63)`` are returned unchanged, so the conversion is
+    idempotent and a stored id compares equal to a freshly stat'd one.
+
+    Integers outside a single 64-bit window are folded modulo 2**64 (the low
+    64 bits) and then reinterpreted. ``None`` and non-integers become
+    ``None``. This function never raises.
+    """
+    if n is None or isinstance(n, bool) or not isinstance(n, int):
+        return None
+    try:
+        unsigned = n % _SQLITE_INT64_MOD
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    if unsigned >= _SQLITE_INT64_SIGN:
+        return unsigned - _SQLITE_INT64_MOD
+    return unsigned
+
 
 def canonical_library_path(path: str) -> str:
     """NFC comparison key. Not the path to open or store."""
