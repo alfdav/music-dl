@@ -19,9 +19,9 @@ from tidal_dl.playlist_sync.unicode_norm import apply_prefix_map, nfc_path
 class PlexWriterSink:
     """Find or create one playlist and append rating keys at the end.
 
-    ``dry_run`` refuses create, add, and scan. One scan timeout in this
-    instance makes later lookups check once and return, so a cycle cannot
-    block for several full waits.
+    ``dry_run`` refuses create, add, and scan. After one scan times out,
+    a later file still gets one folder scan and one lookup, and this
+    instance does not wait again.
     """
 
     def __init__(
@@ -148,9 +148,11 @@ class PlexWriterSink:
 
     def _resolve_file(self, title: str, server_path: str) -> str | None:
         found = self._rating_for_path(title, server_path)
-        if found is not None or self._gave_up:
+        if found is not None:
             return found
         self._client.scan_path(_folder(server_path))
+        if self._gave_up:
+            return self._rating_for_path(title, server_path)
         deadline = self._clock() + self._scan_timeout_sec
         while True:
             found = self._rating_for_path(title, server_path)
