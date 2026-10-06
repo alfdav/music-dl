@@ -137,7 +137,7 @@ class _Sink:
     def list_tracks(self, name: str) -> list[Track]:
         return list(self.rows)
 
-    def append(self, name: str, tracks: list[Track]) -> None:
+    def append(self, name: str, tracks: list[Track], paths: list[str | None] | None = None) -> None:
         self.appends.append((name, [track.source_track_id for track in tracks]))
         self.rows.extend(tracks)
 
@@ -596,7 +596,7 @@ def test_dry_run_reports_without_queue_or_append(tmp_path: Path):
             raise AssertionError("dry run queued a download")
 
     class ExplodingSink(_Sink):
-        def append(self, name: str, tracks: list[Track]) -> None:
+        def append(self, name: str, tracks: list[Track], paths: list[str | None] | None = None) -> None:
             raise AssertionError("dry run appended")
 
     report, _, _ = _run(
