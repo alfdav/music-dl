@@ -6,7 +6,7 @@ import inspect
 import logging
 import os
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -72,6 +72,7 @@ class _Work:
     path_prefixes: Mapping[str, str] = field(default_factory=dict)
     file_exists: Callable[[str], bool] = os.path.exists
     report: CycleReport = field(default_factory=CycleReport)
+    recording_downloads: set[str] = field(default_factory=set)
     _downloads_ready: DownloadClient | None = None
 
     def client(self) -> DownloadClient:
@@ -456,15 +457,30 @@ def _consider(
 ) -> None:
     name_norm = normalize_playlist_name(group.name)
     plex_state, plex_candidate, plex_result = _best(track, [candidate_from_track(item) for item in plex_tracks])
+    same_isrc_review = False
     if plex_state == "none" and _same_isrc_on_plex(track, plex_tracks):
         plex_state = "review"
+        same_isrc_review = True
     if plex_state == "confirmed":
-        _keep(work, report, placed, track, name_norm, "skip_present", "confirmed", "seen", plex_candidate, plex_result)
+        _keep(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            "skip_present",
+            "confirmed",
+            "seen",
+            plex_candidate,
+            plex_result,
+            candidate_source="plex_playlist",
+        )
         return
     if _sync_added_then_removed(work, track, name_norm, plex_tracks):
         _note_removed(work, report, placed, track)
         return
     if plex_state == "review":
+        plex_notes = ("same_isrc_in_plex_playlist",) if same_isrc_review else ()
         _keep(
             work,
             report,
@@ -477,12 +493,23 @@ def _consider(
             plex_candidate,
             plex_result,
             bucket="needs_review",
+            notes=plex_notes,
+            candidate_source="plex_playlist",
         )
         return
 
     prior = _prior(placed, track)
     if prior is not None:
-        entry = _entry(track, prior.action, prior.entry["confidence"], None, None)
+        report.duplicates_in_source += 1
+        entry = _entry(
+            track,
+            prior.action,
+            prior.entry["confidence"],
+            None,
+            None,
+            notes=("duplicate_in_source",),
+        )
+        entry["status"] = "duplicate_in_source"
         report.tracks.append(entry)
         placed.append(_Placed(track, prior.action, entry))
         return
@@ -504,6 +531,7 @@ def _consider(
             local_result,
             bucket="added",
             already_local=True,
+            candidate_source="local_library",
         )
         if not work.cfg.dry_run:
             local_path = local_candidate.path if local_candidate is not None else None
@@ -533,6 +561,7 @@ def _consider(
             local_candidate,
             local_result,
             bucket="needs_review",
+            candidate_source="local_library",
         )
         return
 
@@ -558,6 +587,7 @@ def _consider(
                     bucket="added",
                     already_local=True,
                     notes=notes,
+                    candidate_source="plex_library",
                 )
                 if not work.cfg.dry_run:
                     result = _sink_append(work, group.name, [plex_track], [None])
@@ -587,6 +617,7 @@ def _consider(
                     plex_verified,
                     bucket="needs_review",
                     notes=notes,
+                    candidate_source="plex_library",
                 )
                 return
 
@@ -605,7 +636,7 @@ def _consider(
             "review",
             "download_mismatch",
             bucket="needs_review",
-            notes=notes,
+            notes=(*notes, "download_mismatch"),
         )
         return
     if row and row["last_failure_day"] == work.day and row["status"] == "unobtainable":
@@ -665,6 +696,7 @@ def _consider(
             choice_result,
             bucket="needs_review",
             notes=notes,
+            candidate_source="tidal_search" if track.source.casefold() == "apple" else None,
         )
         return
     if choice == "unmatched" or download_id is None:
@@ -684,8 +716,19 @@ def _consider(
         return
 
     union.append(track)
+    dl_source = "tidal_search" if track.source.casefold() == "apple" else None
     if work.cfg.dry_run:
-        _plan_download(work, report, placed, track, name_norm, choice_candidate, choice_result, notes=notes)
+        _plan_download(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            choice_candidate,
+            choice_result,
+            notes=notes,
+            candidate_source=dl_source,
+        )
         return
     _run_download(
         work,
@@ -698,11 +741,49 @@ def _consider(
         choice_candidate,
         choice_result,
         notes=notes,
+        candidate_source=dl_source,
     )
 
 
 def _deferred_by_cap(work: _Work) -> bool:
     return work.governor.halted_reason is None and not work.governor.can_download()
+
+
+def _recording_key(track: Track) -> str:
+    code = isrc_key(track.isrc)
+    if code:
+        return code
+    return f"{track.source}:{track.source_track_id}"
+
+
+def _skip_duplicate_download(
+    work: _Work,
+    report: PlaylistReport,
+    placed: list[_Placed],
+    track: Track,
+    candidate: Candidate | None,
+    result: VerifyResult | None,
+    notes: tuple[str, ...],
+    *,
+    candidate_source: str | None,
+) -> bool:
+    key = _recording_key(track)
+    if key not in work.recording_downloads:
+        return False
+    entry = _entry(
+        track,
+        "download",
+        "confirmed",
+        candidate,
+        result,
+        notes=(*notes, "downloaded_this_cycle"),
+        candidate_source=candidate_source,
+    )
+    entry["status"] = "deferred_duplicate"
+    report.tracks.append(entry)
+    work.report.skipped.append(entry)
+    placed.append(_Placed(track, "download", entry))
+    return True
 
 
 def _plan_download(
@@ -714,9 +795,23 @@ def _plan_download(
     candidate: Candidate | None,
     result: VerifyResult | None,
     notes: tuple[str, ...] = (),
+    *,
+    candidate_source: str | None = None,
 ) -> None:
+    if _skip_duplicate_download(
+        work, report, placed, track, candidate, result, notes, candidate_source=candidate_source
+    ):
+        return
     if not work.governor.can_download():
-        entry = _entry(track, "download", "confirmed", candidate, result, notes=notes)
+        entry = _entry(
+            track,
+            "download",
+            "confirmed",
+            candidate,
+            result,
+            notes=notes,
+            candidate_source=candidate_source,
+        )
         entry["status"] = "deferred_cap" if _deferred_by_cap(work) else "skipped"
         if entry["status"] == "deferred_cap":
             report.to_download += 1
@@ -724,9 +819,18 @@ def _plan_download(
         work.report.skipped.append(entry)
         placed.append(_Placed(track, "download", entry))
         return
+    work.recording_downloads.add(_recording_key(track))
     work.governor.cycle_count += 1
     report.to_download += 1
-    entry = _entry(track, "download", "confirmed", candidate, result, notes=notes)
+    entry = _entry(
+        track,
+        "download",
+        "confirmed",
+        candidate,
+        result,
+        notes=notes,
+        candidate_source=candidate_source,
+    )
     report.tracks.append(entry)
     placed.append(_Placed(track, "download", entry))
     work.ledger.set_status(track, name_norm, "seen", seen_at=work.seen_at)
@@ -743,7 +847,14 @@ def _run_download(
     candidate: Candidate | None,
     result: VerifyResult | None,
     notes: tuple[str, ...] = (),
+    *,
+    candidate_source: str | None = None,
 ) -> None:
+    if _skip_duplicate_download(
+        work, report, placed, track, candidate, result, notes, candidate_source=candidate_source
+    ):
+        return
+    work.recording_downloads.add(_recording_key(track))
     work.ledger.set_status(track, name_norm, "queued", seen_at=work.seen_at)
 
     def once() -> DownloadResult:
@@ -756,7 +867,15 @@ def _run_download(
 
     outcome = work.governor.download(once)
     if outcome is None:
-        entry = _entry(track, "download", "confirmed", candidate, result, notes=notes)
+        entry = _entry(
+            track,
+            "download",
+            "confirmed",
+            candidate,
+            result,
+            notes=notes,
+            candidate_source=candidate_source,
+        )
         entry["status"] = "deferred_cap" if _deferred_by_cap(work) else "skipped"
         if entry["status"] == "deferred_cap":
             report.to_download += 1
@@ -768,7 +887,15 @@ def _run_download(
 
     report.to_download += 1
     if outcome.http_status in (401, 429) or outcome.status != "completed":
-        entry = _entry(track, "download", "reject", candidate, result, notes=notes)
+        entry = _entry(
+            track,
+            "download",
+            "reject",
+            candidate,
+            result,
+            notes=notes,
+            candidate_source=candidate_source,
+        )
         entry["status"] = "failed"
         report.tracks.append(entry)
         work.report.skipped.append(entry)
@@ -778,7 +905,15 @@ def _run_download(
 
     checked, file_path = _post_download(work, track, outcome)
     if checked is None:
-        entry = _entry(track, "append", "confirmed", candidate, result, notes=notes)
+        entry = _entry(
+            track,
+            "append",
+            "confirmed",
+            candidate,
+            result,
+            notes=notes,
+            candidate_source=candidate_source,
+        )
         entry["status"] = "added"
         report.tracks.append(entry)
         work.report.downloaded.append(entry)
@@ -799,7 +934,15 @@ def _run_download(
         return
 
     mismatch_candidate, mismatch = checked
-    entry = _entry(track, "review", mismatch.confidence, mismatch_candidate, mismatch, notes=notes)
+    entry = _entry(
+        track,
+        "review",
+        mismatch.confidence,
+        mismatch_candidate,
+        mismatch,
+        notes=notes,
+        candidate_source="downloaded_file",
+    )
     entry["status"] = "download_mismatch"
     report.tracks.append(entry)
     report.needs_review.append(entry)
@@ -883,6 +1026,8 @@ def _apple_choice(
             borderline.append((candidate, result))
     if len(passing) > 1 or borderline:
         candidate, result = (passing or borderline)[0]
+        if len(passing) > 1:
+            result = replace(result, reasons=(*result.reasons, "multiple_search_matches"))
         return None, candidate, result, "review"
     if len(passing) == 1:
         candidate, result = passing[0]
@@ -950,7 +1095,10 @@ def _judge(
             review.append((candidate, result))
     if len(confirmed) > 1 or review:
         pair = confirmed[0] if confirmed else review[0]
-        return "review", pair[0], pair[1]
+        candidate, result = pair
+        if len(confirmed) > 1:
+            result = replace(result, reasons=(*result.reasons, "multiple_plex_matches"))
+        return "review", candidate, result
     if len(confirmed) == 1:
         return "confirmed", confirmed[0][0], confirmed[0][1]
     return "none", None, None
@@ -1002,8 +1150,17 @@ def _keep(
     already_local: bool = False,
     last_failure_day: str | None = None,
     notes: tuple[str, ...] = (),
+    candidate_source: str | None = None,
 ) -> dict[str, Any]:
-    entry = _entry(track, action, confidence, candidate, result, notes=notes)
+    entry = _entry(
+        track,
+        action,
+        confidence,
+        candidate,
+        result,
+        notes=notes,
+        candidate_source=candidate_source,
+    )
     if status:
         entry["status"] = status
     report.tracks.append(entry)
@@ -1264,6 +1421,8 @@ def _entry(
     candidate: Candidate | None,
     result: VerifyResult | None,
     notes: tuple[str, ...] = (),
+    *,
+    candidate_source: str | None = None,
 ) -> dict[str, Any]:
     reasons = [] if result is None else list(result.reasons)
     reasons.extend(notes)
@@ -1275,6 +1434,7 @@ def _entry(
         "confidence": confidence,
         "action": action,
         "reasons": reasons,
+        "candidate_source": candidate_source,
     }
 
 

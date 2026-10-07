@@ -198,6 +198,7 @@ class PlaylistReport:
     unobtainable: int = 0
     already_local: int = 0
     removed_in_plex: int = 0
+    duplicates_in_source: int = 0
     needs_review: list[dict[str, Any]] = field(default_factory=list)
     tracks: list[dict[str, Any]] = field(default_factory=list)
 
@@ -213,6 +214,7 @@ class PlaylistReport:
             "unobtainable": self.unobtainable,
             "already_local": self.already_local,
             "removed_in_plex": self.removed_in_plex,
+            "duplicates_in_source": self.duplicates_in_source,
             "needs_review": self.needs_review,
             "tracks": self.tracks,
         }
