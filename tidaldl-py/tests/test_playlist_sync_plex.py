@@ -1490,7 +1490,7 @@ def test_copy_already_on_the_playlist_wins_over_another_local_copy(tmp_path: Pat
     assert not any(call["method"] == "PUT" for call in session.calls)
 
 
-def test_doubtful_row_is_settled_by_the_local_copy_path(tmp_path: Path):
+def test_file_already_on_the_playlist_is_present_whatever_its_tags_say(tmp_path: Path):
     from tidal_dl.playlist_sync.models import Candidate
 
     server, session, ledger, _client, sink, _clock = _stack(tmp_path)
