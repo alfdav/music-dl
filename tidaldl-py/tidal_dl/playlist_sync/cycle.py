@@ -17,6 +17,7 @@ from tidal_dl.playlist_sync.governor import Governor, status_code_of
 from tidal_dl.playlist_sync.ledger import Ledger, default_ledger_path
 from tidal_dl.playlist_sync.matcher import (
     artist_unknown,
+    has_live_tag,
     isrc_key,
     lead_artist,
     loose_title,
@@ -39,7 +40,7 @@ from tidal_dl.playlist_sync.mount import download_path_available
 from tidal_dl.playlist_sync.sink import PlexSink
 from tidal_dl.playlist_sync.source import Source
 from tidal_dl.playlist_sync.tags import read_audio_tags
-from tidal_dl.playlist_sync.unicode_norm import apply_prefix_map, nfc_path
+from tidal_dl.playlist_sync.unicode_norm import apply_prefix_map, filesystem_spellings, nfc_path
 from tidal_dl.playlist_sync.verify import verify
 
 LibraryLookup = Callable[[Track], list[Candidate]]
@@ -78,6 +79,7 @@ class _Work:
     downloads: DownloadClient | None
     path_prefixes: Mapping[str, str] = field(default_factory=dict)
     file_exists: Callable[[str], bool] = os.path.exists
+    isrc_by_path: dict[str, str] = field(default_factory=dict)
     report: CycleReport = field(default_factory=CycleReport)
     recording_downloads: set[str] = field(default_factory=set)
     _downloads_ready: DownloadClient | None = None
@@ -507,7 +509,7 @@ def _consider(
         )
         return
 
-    on_list, row = _playlist_has_song(track, plex_tracks)
+    on_list, row, song_notes = _playlist_has_song(work, track, plex_tracks)
     if on_list == "present" and row is not None:
         _keep(
             work,
@@ -520,7 +522,24 @@ def _consider(
             "seen",
             candidate_from_track(row),
             None,
-            notes=("present_by_title_length",),
+            notes=song_notes,
+            candidate_source="plex_playlist",
+        )
+        return
+    if on_list == "review":
+        _keep(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            "review",
+            "review",
+            "needs_review",
+            candidate_from_track(row) if row is not None else None,
+            None,
+            bucket="needs_review",
+            notes=song_notes,
             candidate_source="plex_playlist",
         )
         return
@@ -557,6 +576,21 @@ def _consider(
             None,
             bucket="needs_review",
             notes=("possible_playlist_duplicate",),
+            candidate_source="plex_playlist",
+        )
+        return
+
+    if _ledger_key_on_playlist(work, track, name_norm, plex_tracks):
+        _keep(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            "skip_present",
+            "confirmed",
+            "seen",
+            notes=("present_by_ledger_key",),
             candidate_source="plex_playlist",
         )
         return
@@ -1045,23 +1079,26 @@ def _post_download(
     outcome: DownloadResult,
 ) -> tuple[tuple[Candidate, VerifyResult] | None, str]:
     looked_up = apply_prefix_map(outcome.path or "", work.path_prefixes)
-    if not looked_up:
-        looked_up = _existing_library_path(work, track) or ""
-    if not looked_up:
+    opened = _path_opens(work, looked_up) if looked_up else ""
+    if not opened:
+        opened = looked_up
+    if not opened:
+        opened = _existing_library_path(work, track) or ""
+    if not opened:
         return _downloaded_file_not_found(), ""
-    tags = work.tag_reader(looked_up)
+    tags = work.tag_reader(opened)
     if not tags:
-        empty = Candidate(id=looked_up, title="", artist="", duration=None, isrc=None)
-        return (empty, verify(track, empty)), looked_up
-    candidate = candidate_from_mapping({**tags, "id": looked_up, "path": looked_up})
+        empty = Candidate(id=opened, title="", artist="", duration=None, isrc=None)
+        return (empty, verify(track, empty)), opened
+    candidate = candidate_from_mapping({**tags, "id": opened, "path": opened})
     result = verify(track, candidate)
     if result.confidence == "confirmed":
-        return None, looked_up
-    return (candidate, result), looked_up
+        return None, opened
+    return (candidate, result), opened
 
 
 def _existing_library_path(work: _Work, track: Track) -> str | None:
-    """NFC path of an ISRC library row whose file is still on disk."""
+    """On-disk path of an ISRC library row whose file is still on disk."""
     return existing_library_file(work.library, track, work.file_exists)
 
 
@@ -1133,10 +1170,13 @@ def _local(
     stale = False
     live: list[Candidate] = []
     for candidate in work.library(track) or []:
-        path = nfc_path(candidate.path)
-        if not path or not work.file_exists(path):
+        spellings = [item for item in filesystem_spellings(candidate.path) if item]
+        live_path = next((item for item in spellings if work.file_exists(item)), "")
+        if not live_path:
             stale = True
             continue
+        if live_path != candidate.path:
+            candidate = replace(candidate, path=live_path)
         live.append(candidate)
     state, chosen, result = _best(track, live)
     if state == "confirmed" and len(live) > 1:
@@ -1170,24 +1210,116 @@ _LENGTH_SAME_SEC = 3.0
 _LENGTH_DOUBT_SEC = 5.0
 
 
-def _playlist_has_song(track: Track, plex_tracks: Sequence[Track]) -> tuple[str, Track | None]:
+def _path_opens(work: _Work, path: str) -> str:
+    """Spelling that opens, or empty. NFC stays the key for maps and the ledger."""
+    for spelling in filesystem_spellings(path):
+        if spelling and work.file_exists(spelling):
+            return spelling
+    return ""
+
+
+def _mapped_local_path(work: _Work, server_path: str) -> str:
+    """Plex server path to the local path. Comparisons stay on NFC."""
+    if not server_path:
+        return ""
+    server = str(getattr(work.cfg, "plex_server_prefix", "") or "")
+    local = str(getattr(work.cfg, "plex_local_prefix", "") or "")
+    if server and local:
+        return apply_prefix_map(nfc_path(server_path), {server: local})
+    return nfc_path(server_path)
+
+
+def _row_isrc(work: _Work, row: Track) -> str:
+    """ISRC on the row, or from its audio tags. Cached per NFC path for the cycle."""
+    direct = isrc_key(row.isrc)
+    if direct:
+        return direct
+    local = _mapped_local_path(work, row.path)
+    if not local:
+        return ""
+    key = nfc_path(local)
+    if key in work.isrc_by_path:
+        return work.isrc_by_path[key]
+    opened = _path_opens(work, local)
+    found = ""
+    if opened:
+        try:
+            tags = work.tag_reader(opened)
+        except Exception:  # noqa: BLE001 — a bad tag read is a missing ISRC, not a cycle stop
+            tags = None
+        if isinstance(tags, dict):
+            found = isrc_key(None if tags.get("isrc") is None else str(tags.get("isrc")))
+    work.isrc_by_path[key] = found
+    return found
+
+
+def _artist_decoration_note(artist: str) -> str:
+    """Report hint only. Never used to skip or confirm a row."""
+    text = artist or ""
+    if "●" in text or "4.40" in text or "440" in text:
+        return "artist_decoration"
+    return ""
+
+
+def _isrc_notes(row: Track, note: str) -> tuple[str, ...]:
+    extra = _artist_decoration_note(row.artist)
+    if extra:
+        return (note, extra)
+    return (note,)
+
+
+def _ledger_key_on_playlist(
+    work: _Work,
+    track: Track,
+    name_norm: str,
+    plex_tracks: Sequence[Track],
+) -> bool:
+    """True when this source row's saved rating key is still on the playlist."""
+    row = work.ledger.get_track(track.source, track.source_track_id, name_norm)
+    if row is None:
+        return False
+    key = row.get("plex_rating_key")
+    if key is None or str(key) == "":
+        return False
+    present = {item.source_track_id for item in plex_tracks if item.source_track_id}
+    return str(key) in present
+
+
+def _playlist_has_song(
+    work: _Work,
+    track: Track,
+    plex_tracks: Sequence[Track],
+) -> tuple[str, Track | None, tuple[str, ...]]:
     """Is this song already on the playlist as another file?
 
-    Many songs share a title, so a row by a different known lead artist is
-    another song and never counts. Same loose title, the same known lead
-    artist, and lengths within 3 s is "present". Same loose title with an
-    unknown artist on either side (compilation or empty tags), a missing
-    length, or a length 3-5 s off is "doubt": the caller skips the add and
-    sends the row to review.
+    Same ISRC and lengths within 3 s is present, whatever the artist spelling
+    or title. Same ISRC with lengths more than 3 s apart, or with a length
+    missing, is review and never an add. A different known ISRC does not skip
+    the title rules: the same loose title, lead artist, and length is review,
+    not present. A live tag on exactly one side ("live", "en vivo", "ao vivo")
+    is another recording. With no ISRC to compare, a different known lead
+    artist is another song.
     """
+    source_isrc = isrc_key(track.isrc)
+    isrc_review: Track | None = None
+    isrc_unknown: Track | None = None
+    same_title_other_isrc: Track | None = None
     title = loose_title(track.title)
-    if not title:
-        return "none", None
     source_known = not artist_unknown(track.artist)
-    lead = lead_artist(track.artist)
+    lead = lead_artist(track.artist) if title else ""
     doubt: Track | None = None
     for row in plex_tracks:
-        if loose_title(row.title) != title:
+        row_isrc = _row_isrc(work, row) if source_isrc else ""
+        if source_isrc and row_isrc and row_isrc == source_isrc:
+            if track.duration is None or row.duration is None:
+                isrc_unknown = isrc_unknown or row
+                continue
+            delta = abs(float(track.duration) - float(row.duration))
+            if delta <= _LENGTH_SAME_SEC:
+                return "present", row, _isrc_notes(row, "present_by_isrc")
+            isrc_review = isrc_review or row
+            continue
+        if not title or loose_title(row.title) != title:
             continue
         known = source_known and not artist_unknown(row.artist)
         if known and lead_artist(row.artist) != lead:
@@ -1201,10 +1333,23 @@ def _playlist_has_song(track: Track, plex_tracks: Sequence[Track]) -> tuple[str,
         if delta > _LENGTH_SAME_SEC or not known:
             doubt = doubt or row
             continue
-        return "present", row
+        if source_isrc and row_isrc and row_isrc != source_isrc:
+            # Same loose title and lead, length within 3 s, but not the same code.
+            # Only a live tag on exactly one side is another recording.
+            if has_live_tag(track.title) != has_live_tag(row.title):
+                continue
+            same_title_other_isrc = same_title_other_isrc or row
+            continue
+        return "present", row, ("present_by_title_length",)
+    if isrc_review is not None:
+        return "review", isrc_review, _isrc_notes(isrc_review, "isrc_length_mismatch")
+    if isrc_unknown is not None:
+        return "review", isrc_unknown, _isrc_notes(isrc_unknown, "isrc_length_unknown")
+    if same_title_other_isrc is not None:
+        return "review", same_title_other_isrc, ("possible_playlist_duplicate",)
     if doubt is not None:
-        return "doubt", doubt
-    return "none", None
+        return "doubt", doubt, ()
+    return "none", None, ()
 
 
 def _plex_library(
@@ -1492,7 +1637,7 @@ def _finish_append(
 
 
 def _file_is_missing(work: _Work, local_path: str) -> bool:
-    return not local_path or not work.file_exists(local_path)
+    return _path_opens(work, local_path) == ""
 
 
 def _note_file_missing(
@@ -1522,13 +1667,14 @@ def _retry_saved_file(
     """Retry a saved file into Plex. A missing download is reviewed, not queued."""
     status = str(row["status"])
     local_path = str(row.get("local_path") or "")
+    opened = _path_opens(work, local_path) if local_path else ""
     if status == "downloaded":
         union.append(track)
-        _replay_append(work, group, report, placed, track, name_norm, local_path, "downloaded")
+        _replay_append(work, group, report, placed, track, name_norm, opened or local_path, "downloaded")
         return True
-    if status == "matched_local" and local_path and work.file_exists(local_path):
+    if status == "matched_local" and opened:
         union.append(track)
-        _replay_append(work, group, report, placed, track, name_norm, local_path, "matched_local")
+        _replay_append(work, group, report, placed, track, name_norm, opened, "matched_local")
         return True
     return False
 

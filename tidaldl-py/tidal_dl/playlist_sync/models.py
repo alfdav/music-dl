@@ -42,6 +42,7 @@ class Track:
     version: str = ""
     playlist_name: str = ""
     source_playlist_id: str = ""
+    path: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "title", nfc(self.title))
@@ -76,7 +77,6 @@ class Candidate:
         object.__setattr__(self, "artist", nfc(self.artist))
         object.__setattr__(self, "album", nfc(self.album))
         object.__setattr__(self, "version", nfc(self.version))
-        object.__setattr__(self, "path", nfc(self.path))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -132,6 +132,7 @@ def coerce_track(item: Track | dict[str, Any], *, source: str, playlist_name: st
             version=item.version,
             playlist_name=playlist_name,
             source_playlist_id=item.source_playlist_id,
+            path=item.path,
         )
     raw_id = item.get("source_track_id", item.get("id", ""))
     isrc = item.get("isrc")
@@ -147,6 +148,7 @@ def coerce_track(item: Track | dict[str, Any], *, source: str, playlist_name: st
         version=str(item.get("version") or ""),
         playlist_name=str(item.get("playlist_name") or playlist_name),
         source_playlist_id=str(item.get("source_playlist_id") or ""),
+        path=str(item.get("path") or ""),
     )
 
 

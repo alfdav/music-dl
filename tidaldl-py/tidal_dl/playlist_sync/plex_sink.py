@@ -290,6 +290,7 @@ def build_plex_sink(
 def track_from_metadata(row: dict[str, Any]) -> Track:
     original = str(row.get("originalTitle") or "").strip()
     artist = original or str(row.get("grandparentTitle") or "")
+    paths = file_paths(row)
     return Track(
         source="plex",
         source_track_id=str(row.get("ratingKey") or ""),
@@ -297,6 +298,7 @@ def track_from_metadata(row: dict[str, Any]) -> Track:
         artist=artist,
         album=str(row.get("parentTitle") or ""),
         duration=_seconds(row.get("duration")),
+        path=paths[0] if paths else "",
     )
 
 
