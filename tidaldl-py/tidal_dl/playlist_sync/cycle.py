@@ -579,6 +579,24 @@ def _consider(
 
     local_state, local_candidate, local_result, stale = _local(work, track, plex_tracks)
     notes = ("stale_library_row",) if stale else ()
+    on_keys = {item.source_track_id for item in plex_tracks if item.source_track_id}
+    if local_state == "confirmed" and _copy_on_playlist(work, local_candidate, on_keys):
+        # The confirmed file is already on the playlist, whatever its tags say.
+        _keep(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            "skip_present",
+            "confirmed",
+            "seen",
+            local_candidate,
+            local_result,
+            notes=("present_by_path",),
+            candidate_source="plex_playlist",
+        )
+        return
     if local_state == "confirmed":
         union.append(track)
         entry = _keep(
@@ -1155,18 +1173,24 @@ _LENGTH_DOUBT_SEC = 5.0
 def _playlist_has_song(track: Track, plex_tracks: Sequence[Track]) -> tuple[str, Track | None]:
     """Is this song already on the playlist as another file?
 
-    Same loose title, length within 3 s, and the same lead artist (or an
-    unknown artist on either side) is "present". A loose title match with a
-    missing length, a length 3-5 s off, or a different known lead artist is
-    "doubt": the caller skips the add and sends the row to review.
+    Many songs share a title, so a row by a different known lead artist is
+    another song and never counts. Same loose title, the same known lead
+    artist, and lengths within 3 s is "present". Same loose title with an
+    unknown artist on either side (compilation or empty tags), a missing
+    length, or a length 3-5 s off is "doubt": the caller skips the add and
+    sends the row to review.
     """
     title = loose_title(track.title)
     if not title:
         return "none", None
+    source_known = not artist_unknown(track.artist)
     lead = lead_artist(track.artist)
     doubt: Track | None = None
     for row in plex_tracks:
         if loose_title(row.title) != title:
+            continue
+        known = source_known and not artist_unknown(row.artist)
+        if known and lead_artist(row.artist) != lead:
             continue
         if track.duration is None or row.duration is None:
             doubt = doubt or row
@@ -1174,12 +1198,10 @@ def _playlist_has_song(track: Track, plex_tracks: Sequence[Track]) -> tuple[str,
         delta = abs(float(track.duration) - float(row.duration))
         if delta > _LENGTH_DOUBT_SEC:
             continue
-        if delta > _LENGTH_SAME_SEC:
+        if delta > _LENGTH_SAME_SEC or not known:
             doubt = doubt or row
             continue
-        if artist_unknown(track.artist) or artist_unknown(row.artist) or lead_artist(row.artist) == lead:
-            return "present", row
-        doubt = doubt or row
+        return "present", row
     if doubt is not None:
         return "doubt", doubt
     return "none", None

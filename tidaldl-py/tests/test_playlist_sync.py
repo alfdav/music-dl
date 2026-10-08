@@ -2356,13 +2356,26 @@ def test_row_without_the_live_tag_is_already_on_the_playlist(tmp_path: Path):
     assert "present_by_title_length" in entries[0]["reasons"]
 
 
-def test_compilation_artist_row_matches_by_title_and_length(tmp_path: Path):
+def test_compilation_artist_row_goes_to_review_not_present(tmp_path: Path):
     title = "Example Song (Translated Title) (feat. Guest Artist)"
     source = _track("tidal", "1202", title, artist=f"{ARTIST}, {OTHER}", duration=260, isrc="XX0000000202")
     local = _candidate(title, artist=ARTIST, duration=260, isrc="XX0000000202", path="/m/b.flac")
-    _report, sink, entries = _on_playlist_case(tmp_path, source, _plex_row(title, "Various Artists", 261.0), local)
+    report, sink, entries = _on_playlist_case(tmp_path, source, _plex_row(title, "Various Artists", 261.0), local)
     assert sink.appends == []
-    assert entries[0]["action"] == "skip_present"
+    assert report.added == []
+    assert entries[0]["status"] == "needs_review"
+    assert "possible_playlist_duplicate" in entries[0]["reasons"]
+
+
+def test_both_artists_unknown_with_the_same_length_goes_to_review(tmp_path: Path):
+    source = _track("tidal", "1207", "Example Song", artist="Various Artists", duration=250, isrc="XX0000000207")
+    local = _candidate("Example Song", artist="Various Artists", duration=250, isrc="XX0000000207", path="/m/g.flac")
+    report, sink, entries = _on_playlist_case(tmp_path, source, _plex_row("Example Song", "", 251.0), local)
+    assert sink.appends == []
+    assert report.added == []
+    assert entries[0]["action"] != "skip_present"
+    assert entries[0]["status"] == "needs_review"
+    assert "possible_playlist_duplicate" in entries[0]["reasons"]
 
 
 def test_accent_and_case_differences_still_match_the_playlist_row(tmp_path: Path):
@@ -2373,14 +2386,18 @@ def test_accent_and_case_differences_still_match_the_playlist_row(tmp_path: Path
     assert entries[0]["action"] == "skip_present"
 
 
-def test_same_title_and_length_with_another_known_lead_artist_goes_to_review(tmp_path: Path):
-    source = _track("tidal", "1204", "Example Song", artist=ARTIST, duration=222, isrc="XX0000000204")
-    local = _candidate("Example Song", artist=ARTIST, duration=222, isrc="XX0000000204", path="/m/d.flac")
-    report, sink, entries = _on_playlist_case(tmp_path, source, _plex_row("Example Song", OTHER, 222.0), local)
-    assert sink.appends == []
-    assert report.added == []
-    assert entries[0]["status"] == "needs_review"
-    assert "possible_playlist_duplicate" in entries[0]["reasons"]
+def test_same_title_by_another_artist_is_not_a_duplicate(tmp_path: Path):
+    # Many songs share a title. Same length, missing length, or a few seconds
+    # off: a different known lead artist is another song.
+    for n, row_length in enumerate((222.0, None, 226.0)):
+        case = tmp_path / str(n)
+        case.mkdir()
+        source = _track("tidal", "1204", "Example Song", artist=ARTIST, duration=222, isrc="XX0000000204")
+        local = _candidate("Example Song", artist=ARTIST, duration=222, isrc="XX0000000204", path="/m/d.flac")
+        _report, sink, entries = _on_playlist_case(case, source, _plex_row("Example Song", OTHER, row_length), local)
+        assert [ids for _name, ids in sink.appends] == [["1204"]], row_length
+        assert "possible_playlist_duplicate" not in entries[0]["reasons"]
+        assert entries[0]["action"] != "skip_present"
 
 
 def test_playlist_row_without_a_length_goes_to_review(tmp_path: Path):
