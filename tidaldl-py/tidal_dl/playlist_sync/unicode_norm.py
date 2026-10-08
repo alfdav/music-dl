@@ -37,6 +37,12 @@ def filesystem_spellings(path: str | os.PathLike[str] | None) -> tuple[str, ...]
     return tuple(found)
 
 
+def nfd_path(path: str | os.PathLike[str] | None) -> str:
+    if path is None:
+        return ""
+    return unicodedata.normalize("NFD", os.fspath(path))
+
+
 def apply_prefix_map(path: str, prefixes: Mapping[str, str]) -> str:
     """Rewrite *path* with the longest prefix. Keys and values are NFC first."""
     text = nfc_path(path)

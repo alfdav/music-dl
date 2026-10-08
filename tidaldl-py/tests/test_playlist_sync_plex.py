@@ -61,11 +61,21 @@ class Clock:
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, payload: dict) -> None:
+    """``payload=None`` is an empty body, as real Plex sends for a folder scan."""
+
+    def __init__(self, status_code: int, payload: dict | None, body: bytes | None = None) -> None:
         self.status_code = status_code
         self._payload = payload
+        if body is not None:
+            self.content = body
+        elif payload is None:
+            self.content = b""
+        else:
+            self.content = json.dumps(payload).encode()
 
     def json(self) -> dict:
+        if self._payload is None:
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
         return self._payload
 
 
@@ -204,11 +214,18 @@ class FakePlexServer:
                 parent = file_path.rsplit("/", 1)[0] if "/" in file_path else ""
                 if parent == prefix:
                     pending["scanned"] = True
-            return 200, {"MediaContainer": {"size": 0}}
+            return 200, None
         if method == "GET" and path == f"/library/sections/{SECTION}/all":
             if params.get("sort") == "addedAt:desc":
                 limit = int(headers.get("X-Plex-Container-Size") or 100)
                 rows = sorted(self.visible(), key=lambda row: int(row.get("addedAt") or 0), reverse=True)[:limit]
+            elif "file" in params:
+                wanted_file = str(params.get("file") or "")
+                rows = [
+                    row
+                    for row in self.visible()
+                    if any(part.get("file") == wanted_file for media in row.get("Media", []) for part in media.get("Part", []))
+                ]
             else:
                 self.note_search()
                 wanted = str(params.get("title") or "").casefold()
@@ -275,7 +292,7 @@ class FakeSession:
         self.calls.append(call)
         code = self.server.take_failure(call["method"], parsed.path)
         if code is not None:
-            return FakeResponse(code, {"MediaContainer": {}})
+            return FakeResponse(code, None, body=f"<html><title>{code}</title>token={TOKEN}</html>".encode())
         status, payload = self.server.dispatch(call["method"], parsed.path, call["params"], call["headers"])
         return FakeResponse(status, payload)
 
@@ -800,13 +817,18 @@ def test_token_never_leaks(tmp_path: Path, caplog: pytest.LogCaptureFixture):
     server.failures.append(("POST", "/playlists", 500))
     failed = sink.append("Playlist B", [_plex_track("5001", "Example Song")])
     assert failed.status == "failed"
-    assert failed.detail == "500"
+    assert failed.detail.startswith("PlexError: 500 POST /playlists")
+    assert "during=create playlist" in failed.detail
+    assert TOKEN not in failed.detail
+    assert "<redacted>" in failed.detail
 
     server.failures.append(("PUT", "/playlists/7001/items", 401))
     server.add_playlist("Playlist C", smart="0", items=[], rating_key="7001")
     denied = sink.append("Playlist C", [_plex_track("5002", "Other Song", artist=OTHER)])
     assert denied.status == "failed"
-    assert denied.detail == "401"
+    assert denied.detail.startswith("PlexError: 401 PUT /playlists/7001/items")
+    assert "during=add keys=5002 playlist=7001" in denied.detail
+    assert TOKEN not in denied.detail
 
     server.failures.append(("GET", "/library/sections/1/all", 401))
     with pytest.raises(PlexError) as caught:
@@ -1355,3 +1377,85 @@ def test_missing_downloaded_file_is_reviewed_once_per_cycle(tmp_path: Path):
     assert again.needs_review[0]["reasons"] == ["file_missing"]
     assert again.playlists[0].needs_review[0]["status"] == "needs_review"
     assert store.get_track("tidal", "1001", name)["status"] == "downloaded"
+
+
+def test_folder_scan_with_an_empty_body_is_not_a_failure(tmp_path: Path):
+    server, _session, _ledger, _client, sink, _clock = _stack(tmp_path)
+    server.add_track(
+        rating_key="5001",
+        title="Example Song",
+        artist=ARTIST,
+        file_path=_server("Example Song"),
+        visible=False,
+        appear_after=1,
+    )
+    track = _track("tidal", "1001", "Example Song", duration=180)
+    result = sink.append("Playlist A", [track], paths=[_local("Example Song")])
+    assert result.status == "added"
+    assert result.rating_keys == ["5001"]
+    assert server.scanned_folders == [f"{SERVER}/Example Artist"]
+
+
+def test_file_lookup_finds_a_track_whose_plex_title_differs(tmp_path: Path):
+    server, session, _ledger, _client, sink, clock = _stack(tmp_path)
+    server.add_track(
+        rating_key="5001",
+        title="Example Song",
+        artist=ARTIST,
+        file_path=_server("Example Song (Live)"),
+    )
+    track = _track("tidal", "1001", "Example Song (Live) (feat. Other Artist)", duration=180)
+    result = sink.append("Playlist A", [track], paths=[_local("Example Song (Live)")])
+    assert result.status == "added"
+    assert result.rating_keys == ["5001"]
+    assert server.scanned_folders == []
+    assert clock.sleeps == []
+    lookups = [call for call in session.calls if call["params"].get("file")]
+    assert lookups and lookups[0]["params"]["file"] == _server("Example Song (Live)")
+
+
+def test_file_lookup_tries_the_decomposed_path(tmp_path: Path):
+    server, _session, _ledger, _client, sink, _clock = _stack(tmp_path)
+    composed = "Canci\u00f3n"
+    decomposed = unicodedata.normalize("NFD", composed)
+    server.add_track(rating_key="5001", title="Other Title", artist=ARTIST, file_path=_server(decomposed))
+    track = _track("tidal", "1001", composed, duration=180)
+    result = sink.append("Playlist A", [track], paths=[_local(composed)])
+    assert result.status == "added"
+    assert result.rating_keys == ["5001"]
+    assert server.scanned_folders == []
+
+
+def test_plex_error_detail_reaches_the_cycle_report(tmp_path: Path):
+    server, _session, ledger, _client, sink, _clock = _stack(tmp_path)
+    server.add_track(rating_key="5001", title="Example Song", artist=ARTIST, file_path=_server("Example Song"))
+    server.add_playlist("Playlist A", smart="0", items=[], rating_key="4001")
+    server.failures.append(("PUT", "/playlists/4001/items", 500))
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+
+    def library(track: Track):
+        from tidal_dl.playlist_sync.models import Candidate
+
+        return [Candidate(id="row-1", title="Example Song", artist=ARTIST, duration=180, isrc="XX0000000001", path=_local("Example Song"))]
+
+    report, _store, _pacing = _run(
+        tmp_path, source, sink=sink, downloads=_Downloads(), ledger=ledger, library=library, file_exists=_exists
+    )
+    assert [item["status"] for item in report.plex_errors] == ["failed"]
+    detail = report.plex_errors[0]["detail"]
+    assert detail.startswith("PlexError: 500 PUT /playlists/4001/items")
+    assert TOKEN not in json.dumps(report.to_dict(), default=str)
+
+
+def test_non_json_body_names_the_reason():
+    class OddSession:
+        def request(self, *_args, **_kwargs):
+            return FakeResponse(200, None, body=b"<html>not json</html>")
+
+    client = PlexClient(URL, PlexToken(TOKEN), SECTION, session=OddSession())
+    with pytest.raises(PlexError) as caught:
+        client.search_tracks("Example Song")
+    assert caught.value.reason == "non_json_body"
+    assert "not json" in caught.value.body
+    assert TOKEN not in caught.value.describe()

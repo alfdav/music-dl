@@ -13,7 +13,7 @@ from tidal_dl.playlist_sync.models import AppendResult, Track
 from tidal_dl.playlist_sync.plex_client import PlexClient, PlexError, file_paths
 from tidal_dl.playlist_sync.plex_token import resolve_plex_token
 from tidal_dl.playlist_sync.sink import NullPlexSink, PlexSink
-from tidal_dl.playlist_sync.unicode_norm import apply_prefix_map, nfc_path
+from tidal_dl.playlist_sync.unicode_norm import apply_prefix_map, nfc_path, nfd_path
 
 
 class PlexWriterSink:
@@ -47,6 +47,7 @@ class PlexWriterSink:
         self._sleep = sleep or time.sleep
         self._dry_run = dry_run
         self._gave_up = False
+        self._step = ""
 
     def __repr__(self) -> str:
         return f"PlexWriterSink(section={self._client.section_id})"
@@ -78,10 +79,14 @@ class PlexWriterSink:
     ) -> AppendResult:
         if self._dry_run:
             return AppendResult(status="dry_run")
+        self._step = ""
         try:
             return self._append_tracks(name, tracks, paths)
         except PlexError as exc:
-            return AppendResult(status="failed", detail=str(exc.status_code))
+            detail = exc.describe()
+            if self._step:
+                detail = f"{detail} during={self._step}"
+            return AppendResult(status="failed", detail=detail[:500])
 
     def _append_tracks(
         self,
@@ -151,10 +156,13 @@ class PlexWriterSink:
         return apply_prefix_map(local, {self._local_prefix: self._server_prefix})
 
     def _resolve_file(self, title: str, server_path: str) -> str | None:
+        self._step = f"lookup path={server_path}"
         found = self._rating_for_path(title, server_path)
         if found is not None:
             return found
+        self._step = f"scan folder={_folder(server_path)}"
         self._client.scan_path(_folder(server_path))
+        self._step = f"lookup after scan path={server_path}"
         if self._gave_up:
             return self._rating_for_path(title, server_path)
         deadline = self._clock() + self._scan_timeout_sec
@@ -175,6 +183,13 @@ class PlexWriterSink:
         cached = self._ledger.get_plex_rating_key(server_path)
         if cached:
             return cached
+        # The file path is exact. Plex titles often differ from the source title
+        # (curly quotes, accents, "(Live)" or "(Remastered)" dropped), so a title
+        # search alone misses files Plex already has.
+        for form in _path_forms(server_path):
+            found = _match_path(self._client.tracks_by_file(form), server_path)
+            if found:
+                return found
         found = _match_path(self._client.search_tracks(title), server_path)
         if found:
             return found
@@ -201,6 +216,7 @@ class PlexWriterSink:
             fresh = [key for key in ordered if key not in recorded]
             if not fresh:
                 return [], removed
+            self._step = f"create playlist first_key={fresh[0]}"
             playlist_key = self._client.create_playlist(name, fresh[0])
             written = [fresh[0]]
             self._note_added(name_norm, written)
@@ -219,6 +235,7 @@ class PlexWriterSink:
         fresh = [key for key in ordered if key not in current and key not in recorded]
         if not fresh:
             return [], removed
+        self._step = f"add keys={','.join(fresh)} playlist={match['rating_key']}"
         self._client.add_to_playlist(match["rating_key"], fresh)
         self._note_added(name_norm, fresh)
         return fresh, removed
@@ -315,6 +332,15 @@ def _match_path(rows: list[dict[str, Any]], server_path: str) -> str | None:
         if key is not None and str(key) != "":
             return str(key)
     return None
+
+
+def _path_forms(server_path: str) -> list[str]:
+    """NFC first, then NFD when it differs. Plex stores whatever bytes the scanner saw."""
+    forms = [nfc_path(server_path)]
+    decomposed = nfd_path(server_path)
+    if decomposed not in forms:
+        forms.append(decomposed)
+    return forms
 
 
 def _dedupe(keys: list[str]) -> list[str]:
