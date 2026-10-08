@@ -461,6 +461,8 @@ def _consider(
     if plex_state == "none" and _same_isrc_on_plex(track, plex_tracks):
         plex_state = "review"
         same_isrc_review = True
+    elif plex_state == "review" and plex_result is not None and "isrc_title_mismatch" in plex_result.reasons:
+        same_isrc_review = True
     if plex_state == "confirmed":
         _keep(
             work,

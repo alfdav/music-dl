@@ -2281,3 +2281,46 @@ def test_same_recording_across_playlists_downloads_once_per_cycle(tmp_path: Path
     deferred = [item for item in report.skipped if item.get("status") == "deferred_duplicate"]
     assert len(deferred) == 1
     assert deferred[0]["reasons"] == ["downloaded_this_cycle"]
+
+
+def test_isrc_match_with_comma_artist_list_confirms_on_lead_artist():
+    source = _track("tidal", "1101", "Example Song", artist=f"{ARTIST}, {OTHER}", isrc="XX0000000101")
+    lead_only = verify(source, _candidate("Example Song", artist=ARTIST, isrc="XX0000000101"))
+    assert lead_only.confidence == "confirmed"
+    assert lead_only.artist_ok is True
+    joined = verify(source, _candidate("Example Song", artist=f"{ARTIST} & {OTHER}", isrc="XX0000000101"))
+    assert joined.confidence == "confirmed"
+    accented = _track("tidal", "1102", "Example Song", artist=f"Ex\u00e1mple Artist, {OTHER}", isrc="XX0000000102")
+    assert verify(accented, _candidate("Example Song", artist=ARTIST, isrc="XX0000000102")).confidence == "confirmed"
+
+
+def test_comma_lead_artist_needs_an_isrc_match():
+    source = _track("apple", "a101", "Example Song", artist=f"{ARTIST}, {OTHER}", isrc=None)
+    result = verify(source, _candidate("Example Song", artist=ARTIST, isrc=None))
+    assert result.confidence == "reject"
+    assert result.reasons == ("artist_mismatch",)
+
+
+def test_isrc_match_with_a_title_difference_stays_in_review():
+    for title in ("Example Song (Live)", "Example Song (En Vivo)"):
+        source = _track("tidal", "1103", title, artist=f"{ARTIST}, {OTHER}", isrc="XX0000000103")
+        result = verify(source, _candidate("Example Song", artist=ARTIST, isrc="XX0000000103"))
+        assert result.confidence == "review", title
+        assert result.reasons == ("isrc_title_mismatch",)
+        assert result.artist_ok is True
+        assert result.title_ok is False
+
+
+def test_isrc_match_needs_the_same_lead_artist():
+    cases = [
+        (f"{OTHER}, {ARTIST}", ARTIST),
+        (ARTIST, f"{OTHER}, {ARTIST}"),
+        (f"{ARTIST} 4.40", ARTIST),
+        (f"The {ARTIST}", ARTIST),
+        (ARTIST, "Someone Else"),
+    ]
+    for source_artist, candidate_artist in cases:
+        source = _track("tidal", "1104", "Example Song", artist=source_artist, isrc="XX0000000104")
+        result = verify(source, _candidate("Example Song", artist=candidate_artist, isrc="XX0000000104"))
+        assert result.confidence == "review", (source_artist, candidate_artist)
+        assert result.reasons == ("isrc_artist_mismatch",)
