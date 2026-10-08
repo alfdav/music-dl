@@ -15,7 +15,14 @@ from tidal_dl.playlist_sync.config import PlaylistSyncConfig, load_config, name_
 from tidal_dl.playlist_sync.downloads import DownloadClient, existing_library_file, service_downloader
 from tidal_dl.playlist_sync.governor import Governor, status_code_of
 from tidal_dl.playlist_sync.ledger import Ledger, default_ledger_path
-from tidal_dl.playlist_sync.matcher import isrc_key, normalize_playlist_name, same_recording
+from tidal_dl.playlist_sync.matcher import (
+    artist_unknown,
+    isrc_key,
+    lead_artist,
+    loose_title,
+    normalize_playlist_name,
+    same_recording,
+)
 from tidal_dl.playlist_sync.models import (
     Candidate,
     CycleReport,
@@ -500,6 +507,60 @@ def _consider(
         )
         return
 
+    on_list, row = _playlist_has_song(track, plex_tracks)
+    if on_list == "present" and row is not None:
+        _keep(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            "skip_present",
+            "confirmed",
+            "seen",
+            candidate_from_track(row),
+            None,
+            notes=("present_by_title_length",),
+            candidate_source="plex_playlist",
+        )
+        return
+    if on_list == "doubt":
+        # A confirmed local copy that is itself on the playlist settles it.
+        keys = {item.source_track_id for item in plex_tracks if item.source_track_id}
+        state, copy, _checked, _stale = _local(work, track, plex_tracks)
+        if state == "confirmed" and _copy_on_playlist(work, copy, keys):
+            _keep(
+                work,
+                report,
+                placed,
+                track,
+                name_norm,
+                "skip_present",
+                "confirmed",
+                "seen",
+                copy,
+                None,
+                notes=("present_by_path",),
+                candidate_source="plex_playlist",
+            )
+            return
+        _keep(
+            work,
+            report,
+            placed,
+            track,
+            name_norm,
+            "review",
+            "review",
+            "needs_review",
+            candidate_from_track(row) if row is not None else None,
+            None,
+            bucket="needs_review",
+            notes=("possible_playlist_duplicate",),
+            candidate_source="plex_playlist",
+        )
+        return
+
     prior = _prior(placed, track)
     if prior is not None:
         report.duplicates_in_source += 1
@@ -516,7 +577,7 @@ def _consider(
         placed.append(_Placed(track, prior.action, entry))
         return
 
-    local_state, local_candidate, local_result, stale = _local(work, track)
+    local_state, local_candidate, local_result, stale = _local(work, track, plex_tracks)
     notes = ("stale_library_row",) if stale else ()
     if local_state == "confirmed":
         union.append(track)
@@ -1040,8 +1101,15 @@ def _apple_choice(
     return None, None, None, "unmatched"
 
 
-def _local(work: _Work, track: Track) -> tuple[str, Candidate | None, VerifyResult | None, bool]:
-    """Return match state plus whether every library row pointed at a missing file."""
+def _local(
+    work: _Work,
+    track: Track,
+    plex_tracks: Sequence[Track] = (),
+) -> tuple[str, Candidate | None, VerifyResult | None, bool]:
+    """Return match state plus whether every library row pointed at a missing file.
+
+    When several local copies confirm, the copy already on the playlist wins.
+    """
     if work.library is None:
         return "none", None, None, False
     stale = False
@@ -1053,9 +1121,68 @@ def _local(work: _Work, track: Track) -> tuple[str, Candidate | None, VerifyResu
             continue
         live.append(candidate)
     state, chosen, result = _best(track, live)
+    if state == "confirmed" and len(live) > 1:
+        keys = {item.source_track_id for item in plex_tracks if item.source_track_id}
+        if keys and not _copy_on_playlist(work, chosen, keys):
+            for candidate in live:
+                if candidate is chosen or not _copy_on_playlist(work, candidate, keys):
+                    continue
+                checked = verify(track, candidate)
+                if checked.confidence == "confirmed":
+                    return "confirmed", candidate, checked, False
     if state != "none":
         return state, chosen, result, False
     return "none", None, None, stale
+
+
+def _copy_on_playlist(work: _Work, candidate: Candidate | None, keys: set[str]) -> bool:
+    """True when this local file is a Plex item already on the playlist."""
+    if candidate is None or not candidate.path:
+        return False
+    local = str(getattr(work.cfg, "plex_local_prefix", "") or "")
+    server = str(getattr(work.cfg, "plex_server_prefix", "") or "")
+    if not local or not server:
+        return False
+    mapped = apply_prefix_map(nfc_path(candidate.path), {local: server})
+    key = work.ledger.get_plex_rating_key(mapped)
+    return key is not None and key in keys
+
+
+_LENGTH_SAME_SEC = 3.0
+_LENGTH_DOUBT_SEC = 5.0
+
+
+def _playlist_has_song(track: Track, plex_tracks: Sequence[Track]) -> tuple[str, Track | None]:
+    """Is this song already on the playlist as another file?
+
+    Same loose title, length within 3 s, and the same lead artist (or an
+    unknown artist on either side) is "present". A loose title match with a
+    missing length, a length 3-5 s off, or a different known lead artist is
+    "doubt": the caller skips the add and sends the row to review.
+    """
+    title = loose_title(track.title)
+    if not title:
+        return "none", None
+    lead = lead_artist(track.artist)
+    doubt: Track | None = None
+    for row in plex_tracks:
+        if loose_title(row.title) != title:
+            continue
+        if track.duration is None or row.duration is None:
+            doubt = doubt or row
+            continue
+        delta = abs(float(track.duration) - float(row.duration))
+        if delta > _LENGTH_DOUBT_SEC:
+            continue
+        if delta > _LENGTH_SAME_SEC:
+            doubt = doubt or row
+            continue
+        if artist_unknown(track.artist) or artist_unknown(row.artist) or lead_artist(row.artist) == lead:
+            return "present", row
+        doubt = doubt or row
+    if doubt is not None:
+        return "doubt", doubt
+    return "none", None
 
 
 def _plex_library(

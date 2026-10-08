@@ -2324,3 +2324,75 @@ def test_isrc_match_needs_the_same_lead_artist():
         result = verify(source, _candidate("Example Song", artist=candidate_artist, isrc="XX0000000104"))
         assert result.confidence == "review", (source_artist, candidate_artist)
         assert result.reasons == ("isrc_artist_mismatch",)
+
+
+def _on_playlist_case(tmp_path: Path, source_track: Track, plex_row: Track, local: Candidate):
+    sink = _Sink([plex_row])
+    downloads = _Downloads()
+    report, _store, _pacing = _run(
+        tmp_path,
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [source_track])]),
+        sink=sink,
+        downloads=downloads,
+        library=lambda _track: [local],
+        file_exists=lambda _path: True,
+    )
+    assert downloads.calls == []
+    entries = [entry for playlist in report.playlists for entry in playlist.tracks]
+    return report, sink, entries
+
+
+def _plex_row(title: str, artist: str, duration: float | None, ident: str = "p1") -> Track:
+    return Track(source="plex", source_track_id=ident, title=title, artist=artist, album="", duration=duration)
+
+
+def test_row_without_the_live_tag_is_already_on_the_playlist(tmp_path: Path):
+    source = _track("tidal", "1201", "Example Song (Live)", artist=f"{ARTIST}, {OTHER}", duration=300, isrc="XX0000000201")
+    local = _candidate("Example Song (Live)", artist=f"{ARTIST}, {OTHER}", duration=300, isrc="XX0000000201", path="/m/a.flac")
+    report, sink, entries = _on_playlist_case(tmp_path, source, _plex_row("Example Song", ARTIST, 300.5), local)
+    assert sink.appends == []
+    assert report.added == []
+    assert entries[0]["action"] == "skip_present"
+    assert "present_by_title_length" in entries[0]["reasons"]
+
+
+def test_compilation_artist_row_matches_by_title_and_length(tmp_path: Path):
+    title = "Example Song (Translated Title) (feat. Guest Artist)"
+    source = _track("tidal", "1202", title, artist=f"{ARTIST}, {OTHER}", duration=260, isrc="XX0000000202")
+    local = _candidate(title, artist=ARTIST, duration=260, isrc="XX0000000202", path="/m/b.flac")
+    _report, sink, entries = _on_playlist_case(tmp_path, source, _plex_row(title, "Various Artists", 261.0), local)
+    assert sink.appends == []
+    assert entries[0]["action"] == "skip_present"
+
+
+def test_accent_and_case_differences_still_match_the_playlist_row(tmp_path: Path):
+    source = _track("tidal", "1203", "Canci\u00f3n Grande", artist=f"{ARTIST}, {OTHER}", duration=240, isrc="XX0000000203")
+    local = _candidate("Canci\u00f3n Grande", artist=ARTIST, duration=240, isrc="XX0000000203", path="/m/c.flac")
+    _report, sink, entries = _on_playlist_case(tmp_path, source, _plex_row("Cancion grande", ARTIST, 241.5), local)
+    assert sink.appends == []
+    assert entries[0]["action"] == "skip_present"
+
+
+def test_same_title_and_length_with_another_known_lead_artist_goes_to_review(tmp_path: Path):
+    source = _track("tidal", "1204", "Example Song", artist=ARTIST, duration=222, isrc="XX0000000204")
+    local = _candidate("Example Song", artist=ARTIST, duration=222, isrc="XX0000000204", path="/m/d.flac")
+    report, sink, entries = _on_playlist_case(tmp_path, source, _plex_row("Example Song", OTHER, 222.0), local)
+    assert sink.appends == []
+    assert report.added == []
+    assert entries[0]["status"] == "needs_review"
+    assert "possible_playlist_duplicate" in entries[0]["reasons"]
+
+
+def test_playlist_row_without_a_length_goes_to_review(tmp_path: Path):
+    source = _track("tidal", "1205", "Example Song (Live)", artist=f"{ARTIST}, {OTHER}", duration=200, isrc="XX0000000205")
+    local = _candidate("Example Song (Live)", artist=ARTIST, duration=200, isrc="XX0000000205", path="/m/e.flac")
+    _report, sink, entries = _on_playlist_case(tmp_path, source, _plex_row("Example Song", ARTIST, None), local)
+    assert sink.appends == []
+    assert "possible_playlist_duplicate" in entries[0]["reasons"]
+
+
+def test_same_title_with_a_different_length_is_another_recording(tmp_path: Path):
+    source = _track("tidal", "1206", "Example Song", artist=ARTIST, duration=300, isrc="XX0000000206")
+    local = _candidate("Example Song", artist=ARTIST, duration=300, isrc="XX0000000206", path="/m/f.flac")
+    _report, sink, _entries = _on_playlist_case(tmp_path, source, _plex_row("Example Song", ARTIST, 330.0), local)
+    assert [ids for _name, ids in sink.appends] == [["1206"]]
