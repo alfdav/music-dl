@@ -17,6 +17,9 @@ _FEAT_TAIL = re.compile(
     re.IGNORECASE,
 )
 _PRIMARY_SPLIT = re.compile(r"\s+(?:with|&|x)\s+", re.IGNORECASE)
+# Sources often join credited artists with commas ("Lead, Guest"). The lead
+# artist is whatever comes before the first comma, "with", "&", or "x".
+_LEAD_SPLIT = re.compile(r"\s*,\s*|\s+(?:with|&|x)\s+", re.IGNORECASE)
 _PUNCT = re.compile(r"[^\w\s]", re.UNICODE)
 _SPACES = re.compile(r"\s+")
 _SAFE_PHRASE = r"""
@@ -67,6 +70,16 @@ def normalize_artist(artist: str) -> str:
     text = _FEAT_PAREN.sub(" ", text)
     text = _FEAT_TAIL.sub(" ", text)
     text = _PRIMARY_SPLIT.split(text, maxsplit=1)[0]
+    text = _PUNCT.sub(" ", text)
+    return _collapse(text)
+
+
+def lead_artist(artist: str) -> str:
+    """Normalised lead artist. Like normalize_artist, but a comma also ends the lead."""
+    text = strip_accents(nfc(artist)).casefold()
+    text = _FEAT_PAREN.sub(" ", text)
+    text = _FEAT_TAIL.sub(" ", text)
+    text = _LEAD_SPLIT.split(text, maxsplit=1)[0]
     text = _PUNCT.sub(" ", text)
     return _collapse(text)
 
