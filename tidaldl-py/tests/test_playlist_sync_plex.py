@@ -1459,3 +1459,56 @@ def test_non_json_body_names_the_reason():
     assert caught.value.reason == "non_json_body"
     assert "not json" in caught.value.body
     assert TOKEN not in caught.value.describe()
+
+
+def _prefixed_cfg():
+    return _cfg(plex_local_prefix=LOCAL, plex_server_prefix=SERVER)
+
+
+def test_copy_already_on_the_playlist_wins_over_another_local_copy(tmp_path: Path):
+    from tidal_dl.playlist_sync.models import Candidate
+
+    server, session, ledger, _client, sink, _clock = _stack(tmp_path)
+    server.add_track(rating_key="5001", title="Example Song", artist=ARTIST, file_path=_server("Copy A"))
+    server.add_track(rating_key="5002", title="Tagged Differently", artist=ARTIST, file_path=_server("Copy B"))
+    server.add_playlist("Playlist A", smart="0", items=["5002"], rating_key="4001")
+    row = _track("tidal", "1301", "Example Song", isrc="XX0000000301", duration=180)
+    copies = [
+        Candidate(id="a", title="Example Song", artist=ARTIST, duration=180, isrc="XX0000000301", path=_local("Copy A")),
+        Candidate(id="b", title="Example Song", artist=ARTIST, duration=180, isrc="XX0000000301", path=_local("Copy B")),
+    ]
+    _run(
+        tmp_path,
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])]),
+        sink=sink,
+        ledger=ledger,
+        library=lambda _track: list(copies),
+        file_exists=_exists,
+        settings=_prefixed_cfg(),
+    )
+    assert server.playlists[0]["items"] == ["5002"]
+    assert not any(call["method"] == "PUT" for call in session.calls)
+
+
+def test_doubtful_row_is_settled_by_the_local_copy_path(tmp_path: Path):
+    from tidal_dl.playlist_sync.models import Candidate
+
+    server, session, ledger, _client, sink, _clock = _stack(tmp_path)
+    server.add_track(rating_key="5001", title="Example Song", artist=OTHER, file_path=_server("Example Song"))
+    server.add_playlist("Playlist A", smart="0", items=["5001"], rating_key="4001")
+    row = _track("tidal", "1302", "Example Song", isrc="XX0000000302", duration=180)
+    local = Candidate(id="a", title="Example Song", artist=ARTIST, duration=180, isrc="XX0000000302", path=_local("Example Song"))
+    report, _store, _pacing = _run(
+        tmp_path,
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])]),
+        sink=sink,
+        ledger=ledger,
+        library=lambda _track: [local],
+        file_exists=_exists,
+        settings=_prefixed_cfg(),
+    )
+    entry = report.playlists[0].tracks[0]
+    assert entry["action"] == "skip_present"
+    assert "present_by_path" in entry["reasons"]
+    assert server.playlists[0]["items"] == ["5001"]
+    assert not any(call["method"] == "PUT" for call in session.calls)

@@ -93,6 +93,32 @@ def normalize_title(title: str) -> str:
     return _collapse(text)
 
 
+_LOOSE_PAREN = re.compile(
+    r"\s*[([][^)\]]*\b(?:live|en vivo|ao vivo|remaster(?:ed)?|feat(?:uring)?|ft|with)\b[^)\]]*[)\]]",
+    re.IGNORECASE,
+)
+_LOOSE_DASH = re.compile(r"\s+-\s+[^-]*\b(?:live|en vivo|ao vivo|remaster(?:ed)?)\b.*$", re.IGNORECASE)
+_UNKNOWN_ARTISTS = frozenset({"", "various artists", "various", "varios artistas", "va"})
+
+
+def loose_title(title: str) -> str:
+    """Title for the "already on the playlist" check only.
+
+    Also drops "(Live)", "(En Vivo)", "(feat. ...)" and remaster tags, so a row
+    tagged without them still counts as the same song. Never used to confirm a
+    download or an append.
+    """
+    text = strip_accents(nfc(title)).casefold()
+    text = _LOOSE_PAREN.sub(" ", text)
+    text = _LOOSE_DASH.sub(" ", text)
+    return normalize_title(text)
+
+
+def artist_unknown(artist: str) -> bool:
+    """True for an empty or compilation artist such as "Various Artists"."""
+    return normalize_artist(artist) in _UNKNOWN_ARTISTS
+
+
 def normalize_playlist_name(name: str) -> str:
     return _collapse(strip_accents(nfc(name)).casefold())
 
