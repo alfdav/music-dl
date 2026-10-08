@@ -98,6 +98,11 @@ _LOOSE_PAREN = re.compile(
     re.IGNORECASE,
 )
 _LOOSE_DASH = re.compile(r"\s+-\s+[^-]*\b(?:live|en vivo|ao vivo|remaster(?:ed)?)\b.*$", re.IGNORECASE)
+_LIVE_PAREN = re.compile(
+    r"\s*[([][^)\]]*\b(?:live|en vivo|ao vivo)\b[^)\]]*[)\]]",
+    re.IGNORECASE,
+)
+_LIVE_DASH = re.compile(r"\s+-\s+[^-]*\b(?:live|en vivo|ao vivo)\b.*$", re.IGNORECASE)
 _UNKNOWN_ARTISTS = frozenset({"", "various artists", "various", "varios artistas", "va"})
 
 
@@ -112,6 +117,16 @@ def loose_title(title: str) -> str:
     text = _LOOSE_PAREN.sub(" ", text)
     text = _LOOSE_DASH.sub(" ", text)
     return normalize_title(text)
+
+
+def has_live_tag(title: str) -> bool:
+    """True for a live marker in parentheses, brackets, or a dash tail.
+
+    Same shapes as the live part of ``loose_title``. A feat or remaster tag
+    is not a live marker.
+    """
+    text = strip_accents(nfc(title)).casefold()
+    return _LIVE_PAREN.search(text) is not None or _LIVE_DASH.search(text) is not None
 
 
 def artist_unknown(artist: str) -> bool:
