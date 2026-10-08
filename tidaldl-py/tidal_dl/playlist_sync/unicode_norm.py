@@ -17,6 +17,12 @@ def nfc_path(path: str | os.PathLike[str] | None) -> str:
     return unicodedata.normalize("NFC", os.fspath(path))
 
 
+def nfd_path(path: str | os.PathLike[str] | None) -> str:
+    if path is None:
+        return ""
+    return unicodedata.normalize("NFD", os.fspath(path))
+
+
 def apply_prefix_map(path: str, prefixes: Mapping[str, str]) -> str:
     """Rewrite *path* with the longest prefix. Keys and values are NFC first."""
     text = nfc_path(path)

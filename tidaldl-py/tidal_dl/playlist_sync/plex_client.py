@@ -19,13 +19,29 @@ _CLIENT_ID = "music-dl"
 
 
 class PlexError(Exception):
-    """A Plex call failed. The message is status, method, and path. No query, no headers."""
+    """A Plex call failed. The message is status, method, and path. No query, no headers.
 
-    def __init__(self, status_code: int, method: str, path: str) -> None:
+    ``reason`` names what went wrong when the status alone does not (a transport
+    error class, or a body that was not JSON). ``body`` is a short, token-free
+    excerpt of the response body.
+    """
+
+    def __init__(self, status_code: int, method: str, path: str, *, reason: str = "", body: str = "") -> None:
         self.status_code = int(status_code)
         self.method = method.upper()
         self.path = _path_only(path)
+        self.reason = reason
+        self.body = body
         super().__init__(f"{self.status_code} {self.method} {self.path}")
+
+    def describe(self) -> str:
+        """One line for reports: status, method, path, reason, body excerpt."""
+        parts = [f"{type(self).__name__}: {self}"]
+        if self.reason:
+            parts.append(f"reason={self.reason}")
+        if self.body:
+            parts.append(f"body={self.body!r}")
+        return " ".join(parts)
 
 
 class PlexWriteBlocked(PlexError):
@@ -151,6 +167,19 @@ class PlexClient:
         self._block_write("GET", path)
         self._request("GET", path, params={"path": server_folder}, write=True)
 
+    def tracks_by_file(self, server_path: str) -> list[dict[str, Any]]:
+        """Tracks whose media file is this server path. Callers still compare paths exactly."""
+        payload = self._request(
+            "GET",
+            f"/library/sections/{self._section_id}/all",
+            params={"type": "10", "file": server_path},
+            extra_headers={
+                "X-Plex-Container-Start": "0",
+                "X-Plex-Container-Size": "20",
+            },
+        )
+        return _metadata(_container(payload))
+
     def search_tracks(self, title: str) -> list[dict[str, Any]]:
         payload = self._request(
             "GET",
@@ -210,15 +239,31 @@ class PlexClient:
                 headers=headers,
                 timeout=self._timeout,
             )
-        except Exception:  # noqa: BLE001 — transport errors must not carry headers or the token
-            raise PlexError(0, verb, safe_path) from None
+        except Exception as exc:  # noqa: BLE001 — transport errors must not carry headers or the token
+            raise PlexError(0, verb, safe_path, reason=type(exc).__name__) from None
         status = int(getattr(response, "status_code", 0) or 0)
         if status >= 400 or status < 200:
-            raise PlexError(status, verb, safe_path)
+            raise PlexError(status, verb, safe_path, body=self._excerpt(response))
+        raw = getattr(response, "content", None)
+        if isinstance(raw, (bytes, bytearray)) and not raw.strip():
+            # Plex answers some calls (a folder scan, for one) with 200 and no body.
+            return {}
         try:
             return response.json()
         except Exception:  # noqa: BLE001 — a bad body is a PlexError, never the raw payload
-            raise PlexError(status, verb, safe_path) from None
+            raise PlexError(status, verb, safe_path, reason="non_json_body", body=self._excerpt(response)) from None
+
+    def _excerpt(self, response: Any, limit: int = 160) -> str:
+        """A short body excerpt with the token removed and whitespace folded."""
+        try:
+            raw = getattr(response, "content", b"") or b""
+            text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+        except Exception:  # noqa: BLE001
+            return ""
+        secret = str(self._token.reveal() or "")
+        if secret:
+            text = text.replace(secret, "<redacted>")
+        return " ".join(text.split())[:limit]
 
     def _session_or_new(self) -> Any:
         if self._session is not None:

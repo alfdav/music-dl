@@ -1326,6 +1326,9 @@ def _finish_append(
         entry["status"] = "dry_run"
         return
     entry["status"] = status
+    detail = str(getattr(result, "detail", "") or "")
+    if detail:
+        entry["detail"] = detail
     work.report.plex_errors.append(entry)
     if status in _PLEX_ERRORS:
         work.ledger.set_status(
