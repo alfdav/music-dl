@@ -76,7 +76,6 @@ class Candidate:
         object.__setattr__(self, "artist", nfc(self.artist))
         object.__setattr__(self, "album", nfc(self.album))
         object.__setattr__(self, "version", nfc(self.version))
-        object.__setattr__(self, "path", nfc(self.path))
 
     def to_dict(self) -> dict[str, Any]:
         return {

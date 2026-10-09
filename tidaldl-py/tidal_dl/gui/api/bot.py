@@ -122,9 +122,7 @@ def _lookup_local_metadata(path: str) -> dict[str, Any]:
     db = LibraryDB(Path(path_config_base()) / "library.db")
     try:
         db.open()
-        row = db._conn.execute(
-            "SELECT title, artist, duration FROM scanned WHERE path = ?", (path,)
-        ).fetchone()
+        row = db.get(path)
     except Exception:
         row = None
     finally:

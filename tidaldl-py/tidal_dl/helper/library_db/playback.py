@@ -27,7 +27,11 @@ class PlaybackMixin:
         """Insert a play event for activity charts."""
         assert self._conn
         ts = played_at if played_at is not None else int(time.time())
-        event_path = canonical_library_path(path) if path else path
+        event_path = path
+        if path:
+            row = self.get(path)
+            if row and row.get("path"):
+                event_path = row["path"]
         self._conn.execute(
             "INSERT INTO play_events (path, artist, genre, duration, played_at) VALUES (?, ?, ?, ?, ?)",
             (event_path, artist, genre, duration, ts),

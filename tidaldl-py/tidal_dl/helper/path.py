@@ -702,7 +702,7 @@ def resolve_live_library_path(path: str | pathlib.Path | None) -> str | None:
     raw = str(path)
     nfc = unicodedata.normalize("NFC", raw)
     seen: set[str] = set()
-    for form in (nfc, unicodedata.normalize("NFD", nfc), raw):
+    for form in (raw, nfc, unicodedata.normalize("NFD", nfc)):
         if form in seen:
             continue
         seen.add(form)

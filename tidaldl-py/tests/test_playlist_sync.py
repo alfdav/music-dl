@@ -1426,6 +1426,11 @@ def test_nfd_and_nfc_playlist_title_and_path_match(tmp_path: Path):
 
 
 def test_stale_library_row_is_not_present_unless_plex_confirms(tmp_path: Path):
+    """A library row is probed at its stored spelling before the NFC form.
+
+    The row below is already NFD. Neither spelling exists, so the file is
+    stale and the track is still downloaded.
+    """
     row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
     source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
     missing = unicodedata.normalize("NFD", f"/music/{SONG_NFC}.flac")
@@ -1449,7 +1454,7 @@ def test_stale_library_row_is_not_present_unless_plex_confirms(tmp_path: Path):
         tag_reader=_tags_for([row]),
         file_exists=exists,
     )
-    assert looked == [nfc_path(missing)]
+    assert looked == [missing, nfc_path(missing)]
     assert downloads.calls == [[1001]]
     assert report.playlists[0].to_download == 1
     assert report.playlists[0].already_local == 0

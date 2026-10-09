@@ -92,21 +92,26 @@ def test_reconcile_reports_total_0_when_share_not_mounted(library_scan_env, monk
 
 
 def test_nfd_disk_names_match_nfc_rows_in_normal_scan(library_scan_env):
+    """An NFD file matches its NFC row, then the row keeps the on-disk spelling."""
     lib, root, tmp_path = library_scan_env
     nfc_album = unicodedata.normalize("NFC", "Café Album")
     nfd_album = unicodedata.normalize("NFD", nfc_album)
+    on_disk_paths: list[str] = []
     db = open_db(tmp_path)
     for index in range(1, 4):
         name = f"0{index} Canción {index}.wav"
-        DURATIONS[unicodedata.normalize("NFD", name)] = 10 + index
-        on_disk = root / "Artista" / nfd_album / unicodedata.normalize("NFD", name)
+        nfd_name = unicodedata.normalize("NFD", name)
+        DURATIONS[nfd_name] = 10 + index
+        on_disk = root / "Artista" / nfd_album / nfd_name
         write_wav(on_disk, 10 + index)
+        on_disk_paths.append(str(on_disk))
+        nfc_path = str(root / "Artista" / nfc_album / unicodedata.normalize("NFC", name))
         db.record(
-            str(on_disk),
+            nfc_path,
             status="tagged",
             artist=on_disk.parts[-3],
-            title=on_disk.stem,
-            album=on_disk.parts[-2],
+            title=Path(nfd_name).stem,
+            album=nfc_album,
             duration=10 + index,
             quality="WAV",
             fmt="WAV",
@@ -118,9 +123,9 @@ def test_nfd_disk_names_match_nfc_rows_in_normal_scan(library_scan_env):
     lib._scan_running = True
     lib._background_scan(False)
     rows = rows_by_path(tmp_path)
-    assert len(rows) == 3
+    assert set(rows) == set(on_disk_paths)
     assert all(row["missing_since"] is None for row in rows.values())
-    assert all(path == unicodedata.normalize("NFC", path) for path in rows)
+    assert all(Path(path).exists() for path in rows)
 
 
 def test_normal_scan_indexes_compatibility_character_folder(library_scan_env):
@@ -464,21 +469,31 @@ def test_reconcile_unlistable_root_writes_nothing(library_scan_env, monkeypatch,
 
 
 def test_linux_nfd_named_new_file_is_stored_under_nfc_path(library_scan_env, monkeypatch):
-    """Byte-exact filesystems keep the NFC spelling the walk folded to.
+    """The row stores the on-disk walk string and the metadata read from it.
 
-    macOS lookups are normalization-insensitive, so this only describes a
-    Linux walk that opens the folded string.
+    The canonical key stays NFC for matching. On a byte-exact filesystem that
+    string is the NFD name ``os.walk`` returned, and that path is what opens.
     """
     import tidal_dl.gui.api.library as lib_mod
 
     lib, root, tmp_path = library_scan_env
     nfd = "Cafe\u0301"
-    write_wav(root / "Artist" / nfd / "01 Song.wav", 5)
+    on_disk = root / "Artist" / nfd / "01 Song.wav"
+    write_wav(on_disk, 5)
     monkeypatch.setattr(lib_mod, "_read_metadata", fake_metadata)
     lib._scan_running = True
     lib._background_scan(False)
-    (path,) = rows_by_path(tmp_path)
+    rows = rows_by_path(tmp_path)
+    assert len(rows) == 1
+    (path, row) = next(iter(rows.items()))
+    assert path == str(on_disk)
+    assert Path(path).exists()
     db = open_db(tmp_path)
-    status = db.get(path)["status"]
+    stored = db.get(path)
     db.close()
-    assert not Path(path).exists() and status == "unreadable"
+    assert stored["status"] != "unreadable"
+    assert stored["artist"] == "Artist"
+    assert stored["album"] == nfd
+    assert stored["title"] == "01 Song"
+    assert stored["file_inode"] is not None
+    assert row["file_inode"] is not None

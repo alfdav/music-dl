@@ -2,9 +2,21 @@
 
 import hashlib
 import json
-import unicodedata
+import os
 
 from tidal_dl.helper.library_db._common import *
+
+_IDENTITY_FIELDS = (
+    "file_size",
+    "file_mtime",
+    "file_inode",
+    "file_device",
+    "duration",
+    "codec",
+    "title",
+    "artist",
+    "album",
+)
 
 
 class ScannedMixin:
@@ -113,10 +125,11 @@ class ScannedMixin:
     def is_known(self, path: str) -> bool:
         """Return True if *path* has already been scanned."""
         assert self._conn
-        nfc = canonical_library_path(path)
-        nfd = unicodedata.normalize("NFD", nfc)
+        keys = library_path_lookup_keys(path)
+        placeholders = ", ".join("?" * len(keys))
         row = self._conn.execute(
-            "SELECT 1 FROM scanned WHERE path IN (?, ?) LIMIT 1", (nfc, nfd)
+            f"SELECT 1 FROM scanned WHERE path IN ({placeholders}) LIMIT 1",
+            keys,
         ).fetchone()
         return row is not None
 
@@ -194,19 +207,16 @@ class ScannedMixin:
         ]
 
     def get(self, path: str) -> dict | None:
-        """Return full cached metadata for a single path, or None."""
+        """Return full cached metadata for a single path, or None.
+
+        The exact string is tried first, then the NFC and NFD spellings.
+        """
         assert self._conn
-        nfc = canonical_library_path(path)
-        row = self._conn.execute("SELECT * FROM scanned WHERE path = ?", (nfc,)).fetchone()
-        if not row:
-            nfd = unicodedata.normalize("NFD", nfc)
-            if nfd != nfc:
-                row = self._conn.execute(
-                    "SELECT * FROM scanned WHERE path = ?", (nfd,)
-                ).fetchone()
-        if not row:
-            return None
-        return dict(row)
+        for key in library_path_lookup_keys(path):
+            row = self._conn.execute("SELECT * FROM scanned WHERE path = ?", (key,)).fetchone()
+            if row:
+                return dict(row)
+        return None
 
     def tracks_by_isrc(self, isrc: str, *, include_missing: bool = False) -> list[dict]:
         """Return all scanned rows for one ISRC."""
@@ -408,7 +418,7 @@ class ScannedMixin:
         assert self._conn
         file_inode = sqlite_int64(file_inode)
         file_device = sqlite_int64(file_device)
-        path = self._adopt_canonical_path(path)
+        path = self._adopt_stored_path(path)
         now = time.time()
         self._conn.execute(
             """INSERT INTO scanned (path, isrc, status, artist, title, album,
@@ -491,12 +501,17 @@ class ScannedMixin:
     def remove(self, path: str) -> None:
         """Remove a path from the ledger (e.g. file deleted)."""
         assert self._conn
-        nfc = canonical_library_path(path)
-        nfd = unicodedata.normalize("NFD", nfc)
-        self._conn.execute("DELETE FROM scanned WHERE path IN (?, ?)", (nfc, nfd))
+        keys = library_path_lookup_keys(path)
+        placeholders = ", ".join("?" * len(keys))
+        self._conn.execute(f"DELETE FROM scanned WHERE path IN ({placeholders})", keys)
 
     def collapse_unicode_path_twins(self) -> int:
-        """Keep one scanned row per NFC path. Same-inode macOS twins are NFC-equal."""
+        """Collapse genuine twin rows. A single stored spelling is left alone.
+
+        When exactly one twin is on disk, that spelling is kept. When both
+        exist, or neither does, the NFC spelling is kept if it is one of the
+        stored paths. This does not rename files.
+        """
         assert self._conn
         paths = [row["path"] for row in self._conn.execute("SELECT path FROM scanned")]
         groups: dict[str, list[str]] = {}
@@ -506,39 +521,43 @@ class ScannedMixin:
         removed = 0
         for nfc, members in groups.items():
             unique = list(dict.fromkeys(members))
-            if len(unique) == 1 and unique[0] == nfc:
-                continue
             if len(unique) == 1:
-                self._rekey_library_path(unique[0], nfc)
                 continue
-            if nfc not in unique:
-                self._rekey_library_path(unique[0], nfc)
-                unique[0] = nfc
+            keeper = self._twin_keeper(unique, nfc)
             for other in unique:
-                if other == nfc:
+                if other == keeper:
                     continue
-                self._merge_library_path(other, nfc)
+                self._merge_library_path(other, keeper)
                 removed += 1
         return removed
 
-    def _adopt_canonical_path(self, path: str) -> str:
-        nfc = canonical_library_path(path)
-        nfd = unicodedata.normalize("NFD", nfc)
-        if nfd == nfc:
+    def _twin_keeper(self, unique: list[str], nfc: str) -> str:
+        present = [path for path in unique if os.path.isfile(path)]
+        if len(present) == 1:
+            return present[0]
+        if nfc in unique:
             return nfc
-        nfd_row = self._conn.execute(
-            "SELECT 1 FROM scanned WHERE path = ?", (nfd,)
-        ).fetchone()
-        if not nfd_row:
-            return nfc
-        nfc_row = self._conn.execute(
-            "SELECT 1 FROM scanned WHERE path = ?", (nfc,)
-        ).fetchone()
-        if nfc_row:
-            self._merge_library_path(nfd, nfc)
-        else:
-            self._rekey_library_path(nfd, nfc)
-        return nfc
+        return unique[0]
+
+    def _adopt_stored_path(self, path: str) -> str:
+        """Fold any other spelling onto the path the caller gave."""
+        nfc, nfd = library_path_forms(path)
+        for other in (nfc, nfd):
+            if other == path:
+                continue
+            other_row = self._conn.execute(
+                "SELECT 1 FROM scanned WHERE path = ?", (other,)
+            ).fetchone()
+            if not other_row:
+                continue
+            occupant = self._conn.execute(
+                "SELECT 1 FROM scanned WHERE path = ?", (path,)
+            ).fetchone()
+            if occupant:
+                self._merge_library_path(other, path)
+            else:
+                self._rekey_library_path(other, path)
+        return path
 
     def _rekey_library_path(self, old: str, new: str) -> None:
         if old == new:
@@ -577,6 +596,80 @@ class ScannedMixin:
             return
         self._conn.execute("UPDATE favorites SET path = ? WHERE path = ?", (new, old))
 
+    def _apply_identity(
+        self,
+        path: str,
+        *,
+        file_size: int | None = None,
+        file_mtime: int | None = None,
+        file_inode: int | None = None,
+        file_device: int | None = None,
+        duration: int | None = None,
+        codec: str | None = None,
+        title: str | None = None,
+        artist: str | None = None,
+        album: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            """UPDATE scanned SET
+                   file_size = COALESCE(?, file_size),
+                   file_mtime = COALESCE(?, file_mtime),
+                   file_inode = COALESCE(?, file_inode),
+                   file_device = COALESCE(?, file_device),
+                   duration = COALESCE(?, duration),
+                   codec = COALESCE(?, codec),
+                   title = COALESCE(?, title),
+                   artist = COALESCE(?, artist),
+                   album = COALESCE(?, album),
+                   missing_since = NULL
+               WHERE path = ?""",
+            (
+                file_size, file_mtime, file_inode, file_device,
+                duration, codec, title, artist, album, path,
+            ),
+        )
+
+    def _identity_supplied(self, fields: dict) -> bool:
+        return any(fields.get(name) is not None for name in _IDENTITY_FIELDS)
+
+    def _retarget_same_key(self, old_stored: str, target: str, **fields) -> bool:
+        """Rewrite one canonical row onto *target* without treating it as a move."""
+        if old_stored == target and not self._identity_supplied(fields):
+            return True
+        occupant = self._conn.execute(
+            "SELECT path FROM scanned WHERE path = ?", (target,)
+        ).fetchone()
+        if occupant is not None and occupant["path"] != old_stored:
+            self._merge_library_path(old_stored, target)
+        elif old_stored != target:
+            self._rekey_library_path(old_stored, target)
+        self._apply_identity(target, **fields)
+        return True
+
+    def align_stored_paths(self, on_disk_by_key: dict[str, str], identities: dict[str, dict], key_of) -> int:
+        """Point stored rows at the listed on-disk spelling and fill empty identity.
+
+        *on_disk_by_key* maps the caller's comparison key to a path the walk
+        returned. Filesystem reads stay with the caller; this method only
+        writes rows.
+        """
+        assert self._conn
+        rows = list(self._conn.execute("SELECT path, file_size, file_inode FROM scanned"))
+        changed = 0
+        with self.write_transaction():
+            for row in rows:
+                actual = on_disk_by_key.get(key_of(row["path"]))
+                if not actual:
+                    continue
+                needs_path = row["path"] != actual
+                needs_identity = row["file_size"] is None or row["file_inode"] is None
+                if not needs_path and not needs_identity:
+                    continue
+                fields = {name: (identities.get(actual) or {}).get(name) for name in _IDENTITY_FIELDS}
+                if self.migrate_path(row["path"], actual, **fields):
+                    changed += 1
+        return changed
+
     def migrate_path(
         self,
         old_path: str,
@@ -593,50 +686,56 @@ class ScannedMixin:
         album: str | None = None,
         merge: bool = False,
     ) -> bool:
-        """Move a scanned row and its path-keyed user data to *new_path*."""
+        """Move a scanned row and its path-keyed user data to the exact *new_path*.
+
+        Same-canonical spelling changes stay on this row. An unchanged path
+        with no identity fields does not write. Distinct paths still refuse a
+        favorite collision unless *merge* is set.
+        """
         assert self._conn
         file_inode = sqlite_int64(file_inode)
         file_device = sqlite_int64(file_device)
+        target = new_path
+        fields = {
+            "file_size": file_size,
+            "file_mtime": file_mtime,
+            "file_inode": file_inode,
+            "file_device": file_device,
+            "duration": duration,
+            "codec": codec,
+            "title": title,
+            "artist": artist,
+            "album": album,
+        }
         old_nfc, old_nfd = library_path_forms(old_path)
         new_nfc, new_nfd = library_path_forms(new_path)
-        if old_nfc == new_nfc:
-            return True
         old_row = self.get(old_path)
         if old_row is None:
             return False
         old_stored = old_row["path"]
-        existing_new = self.get(new_nfc)
+        if old_nfc == new_nfc:
+            return self._retarget_same_key(old_stored, target, **fields)
+        existing_new = self.get(target)
         if existing_new is not None and existing_new["path"] != old_stored:
             if not merge:
                 return False
             keep = existing_new["path"]
             self._merge_library_path(old_stored, keep)
-            self._conn.execute(
-                """UPDATE scanned SET
-                       file_size = COALESCE(?, file_size),
-                       file_mtime = COALESCE(?, file_mtime),
-                       file_inode = COALESCE(?, file_inode),
-                       file_device = COALESCE(?, file_device),
-                       duration = COALESCE(?, duration),
-                       codec = COALESCE(?, codec),
-                       title = COALESCE(?, title),
-                       artist = COALESCE(?, artist),
-                       album = COALESCE(?, album),
-                       missing_since = NULL
-                   WHERE path = ?""",
-                (
-                    file_size, file_mtime, file_inode, file_device,
-                    duration, codec, title, artist, album, keep,
-                ),
-            )
+            if keep != target:
+                self._rekey_library_path(keep, target)
+                keep = target
+            self._apply_identity(keep, **fields)
             return True
+        dest_keys = tuple(dict.fromkeys((target, new_nfc, new_nfd)))
+        placeholders = ", ".join("?" * len(dest_keys))
         favorite_collision = self._conn.execute(
-            "SELECT 1 FROM favorites WHERE path IN (?, ?)", (new_nfc, new_nfd)
+            f"SELECT 1 FROM favorites WHERE path IN ({placeholders})",
+            dest_keys,
         ).fetchone()
         if favorite_collision and not merge:
             return False
         if favorite_collision and merge:
-            self._rewrite_favorite_path(old_stored, new_nfc)
+            self._rewrite_favorite_path(old_stored, target)
         cursor = self._conn.execute(
             """UPDATE scanned SET
                    path = ?,
@@ -652,19 +751,21 @@ class ScannedMixin:
                    missing_since = NULL
                WHERE path = ?""",
             (
-                new_nfc, file_size, file_mtime, file_inode, file_device,
+                target, file_size, file_mtime, file_inode, file_device,
                 duration, codec, title, artist, album, old_stored,
             ),
         )
         if cursor.rowcount != 1:
             return False
+        old_keys = tuple(dict.fromkeys((old_stored, old_nfc, old_nfd)))
+        old_placeholders = ", ".join("?" * len(old_keys))
         self._conn.execute(
-            "UPDATE favorites SET path = ? WHERE path IN (?, ?)",
-            (new_nfc, old_stored, old_nfd),
+            f"UPDATE favorites SET path = ? WHERE path IN ({old_placeholders})",
+            (target, *old_keys),
         )
         self._conn.execute(
-            "UPDATE play_events SET path = ? WHERE path IN (?, ?)",
-            (new_nfc, old_stored, old_nfd),
+            f"UPDATE play_events SET path = ? WHERE path IN ({old_placeholders})",
+            (target, *old_keys),
         )
         return True
 
@@ -690,18 +791,20 @@ class ScannedMixin:
     def mark_missing(self, path: str, *, since: int | None = None) -> None:
         assert self._conn
         ts = int(since if since is not None else time.time())
-        nfc, nfd = library_path_forms(path)
+        keys = library_path_lookup_keys(path)
+        placeholders = ", ".join("?" * len(keys))
         self._conn.execute(
-            "UPDATE scanned SET missing_since = ? WHERE path IN (?, ?) AND missing_since IS NULL",
-            (ts, nfc, nfd),
+            f"UPDATE scanned SET missing_since = ? WHERE path IN ({placeholders}) AND missing_since IS NULL",
+            (ts, *keys),
         )
 
     def clear_missing(self, path: str) -> None:
         assert self._conn
-        nfc, nfd = library_path_forms(path)
+        keys = library_path_lookup_keys(path)
+        placeholders = ", ".join("?" * len(keys))
         self._conn.execute(
-            "UPDATE scanned SET missing_since = NULL WHERE path IN (?, ?)",
-            (nfc, nfd),
+            f"UPDATE scanned SET missing_since = NULL WHERE path IN ({placeholders})",
+            keys,
         )
 
     def missing_rows(self) -> list[dict]:
