@@ -19,7 +19,7 @@ from tidal_dl.playlist_sync.cycle import library_candidates, run_cycle
 from tidal_dl.playlist_sync.downloads import JobServiceDownloader
 from tidal_dl.playlist_sync.ledger import Ledger, default_ledger_path
 from tidal_dl.playlist_sync.matcher import normalize_playlist_name, normalize_title, same_recording
-from tidal_dl.playlist_sync.models import Candidate, DownloadResult, PlaylistRef, Track
+from tidal_dl.playlist_sync.models import AppendResult, Candidate, DownloadResult, PlaylistRef, Track
 from tidal_dl.playlist_sync.mount import download_path_available
 from tidal_dl.playlist_sync.unicode_norm import apply_prefix_map, nfc_path
 from tidal_dl.playlist_sync.verify import markers_in, verify
@@ -137,7 +137,7 @@ class _Sink:
     def list_tracks(self, name: str) -> list[Track]:
         return list(self.rows)
 
-    def append(self, name: str, tracks: list[Track]) -> None:
+    def append(self, name: str, tracks: list[Track], paths: list[str | None] | None = None) -> None:
         self.appends.append((name, [track.source_track_id for track in tracks]))
         self.rows.extend(tracks)
 
@@ -596,7 +596,7 @@ def test_dry_run_reports_without_queue_or_append(tmp_path: Path):
             raise AssertionError("dry run queued a download")
 
     class ExplodingSink(_Sink):
-        def append(self, name: str, tracks: list[Track]) -> None:
+        def append(self, name: str, tracks: list[Track], paths: list[str | None] | None = None) -> None:
             raise AssertionError("dry run appended")
 
     report, _, _ = _run(
@@ -1205,14 +1205,20 @@ def test_library_db_closes_when_the_cycle_stops(tmp_path: Path, monkeypatch: pyt
         _track("tidal", "1002", "Second Song", isrc="XX0000000002", duration=180),
     ]
     source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
-    with pytest.raises(RuntimeError, match="lookup failed"):
-        _cycle_with_default_library(tmp_path / "raise", source)
+    # A lookup error is isolated per track. The library handle still closes.
+    raised = _cycle_with_default_library(tmp_path / "raise", source)
+    assert raised.halted_reason is None
     assert events == [
         "open",
         ("lookup", "XX0000000001"),
         ("lookup", "XX0000000002"),
         "close",
     ]
+    assert raised.playlists[0].already_local == 1
+    failed = raised.needs_review[0]
+    assert "track_error" in failed["reasons"]
+    assert failed["error"] == "RuntimeError"
+    assert "lookup failed" not in json.dumps(raised.to_dict())
 
     events.clear()
 
@@ -1449,7 +1455,7 @@ def test_stale_library_row_is_not_present_unless_plex_confirms(tmp_path: Path):
         tag_reader=_tags_for([row]),
         file_exists=exists,
     )
-    assert looked == [nfc_path(missing)]
+    assert looked == [missing, nfc_path(missing), "/music/1001.flac"]
     assert downloads.calls == [[1001]]
     assert report.playlists[0].to_download == 1
     assert report.playlists[0].already_local == 0
@@ -1572,3 +1578,1194 @@ def test_completed_download_without_a_path_needs_an_existing_library_file(
     )
     assert report.download_mismatch == []
     assert found.appends == [("Playlist A", ["1001"])]
+
+
+def test_old_style_sink_append_without_paths_still_succeeds(tmp_path: Path):
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    audio = tmp_path / "example.flac"
+    audio.write_bytes(b"audio")
+
+    class OldSink:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, list[str]]] = []
+
+        def list_tracks(self, name: str) -> list[Track]:
+            return []
+
+        def append(self, name: str, tracks: list[Track]):
+            self.calls.append((name, [item.source_track_id for item in tracks]))
+
+        def find(self, track: Track) -> list[Track]:
+            return []
+
+    sink = OldSink()
+
+    def library(_item: Track) -> list[Candidate]:
+        return [_candidate("Example Song", isrc="XX0000000001", ident="row-1", path=str(audio))]
+
+    report, store, _pacing = _run(tmp_path, source, sink=sink, library=library)
+    assert sink.calls == [("Playlist A", ["1001"])]
+    assert report.added
+    assert report.plex_errors == []
+    stored = store.get_track("tidal", "1001", normalize_playlist_name("Playlist A"))
+    assert stored is not None
+    assert stored["status"] == "added"
+
+
+def test_paths_typeerror_after_a_write_is_not_retried(tmp_path: Path):
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    audio = tmp_path / "example.flac"
+    audio.write_bytes(b"audio")
+
+    class PartialSink:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def list_tracks(self, name: str) -> list[Track]:
+            return []
+
+        def find(self, track: Track) -> list[Track]:
+            return []
+
+        def append(self, name: str, tracks: list[Track], paths: list[str | None] | None = None) -> None:
+            self.calls += 1
+            raise TypeError("paths already written")
+
+    sink = PartialSink()
+
+    def library(_item: Track) -> list[Candidate]:
+        return [_candidate("Example Song", isrc="XX0000000001", ident="row-1", path=str(audio))]
+
+    # Append is not retried. The error stays on this track and drops the partial added row.
+    report, store, _pacing = _run(tmp_path, source, sink=sink, library=library)
+    assert sink.calls == 1
+    assert report.halted_reason is None
+    assert report.added == []
+    assert report.playlists[0].already_local == 0
+    failed = report.needs_review[0]
+    assert "track_error" in failed["reasons"]
+    assert failed["error"] == "TypeError"
+    assert "paths already written" not in json.dumps(report.to_dict())
+    stored = store.get_track("tidal", "1001", normalize_playlist_name("Playlist A"))
+    assert stored is not None
+    assert stored["status"] != "needs_review"
+
+
+def _titles(entries: list[dict]) -> list[str]:
+    return [item["source_track"]["title"] for item in entries]
+
+
+def _local_library(fail_id: str | None = None, exc: Exception | None = None):
+    def library(track: Track) -> list[Candidate]:
+        if fail_id is not None and track.source_track_id == fail_id:
+            raise exc or RuntimeError("lookup failed")
+        return [
+            _candidate(
+                track.title,
+                isrc=track.isrc,
+                ident=track.source_track_id,
+                path=f"/music/{track.source_track_id}.flac",
+            )
+        ]
+
+    return library
+
+
+def test_one_failed_track_does_not_stop_the_cycle(tmp_path: Path):
+    class TrackLookupError(Exception):
+        pass
+
+    rows = [
+        _track("tidal", "1001", "Track One", isrc="XX0000000001"),
+        _track("tidal", "1002", "Track Two", isrc="XX0000000002"),
+        _track("tidal", "1003", "Track Three", isrc="XX0000000003"),
+        _track("tidal", "1004", "Track Four", isrc="XX0000000004"),
+        _track("tidal", "1005", "Track Five", isrc="XX0000000005"),
+    ]
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        library=_local_library("1002", TrackLookupError("hidden detail")),
+        file_exists=lambda _path: True,
+    )
+    assert report.halted_reason is None
+    assert _titles(report.added) == ["Track One", "Track Three", "Track Four", "Track Five"]
+    assert report.playlists[0].already_local == 4
+    assert len(report.playlists[0].tracks) == 5
+    failed = report.needs_review[0]
+    assert failed["source_track"]["title"] == "Track Two"
+    assert failed["status"] == "needs_review"
+    assert "track_error" in failed["reasons"]
+    assert failed["error"] == "TrackLookupError"
+    dumped = json.dumps(report.to_dict())
+    assert "hidden detail" not in dumped
+    assert "TrackLookupError" in dumped
+
+
+def test_tag_reader_error_rolls_queued_status_back_to_seen(tmp_path: Path):
+    class TagReadError(Exception):
+        pass
+
+    rows = [
+        _track("tidal", "1001", "Track One", isrc="XX0000000001"),
+        _track("tidal", "1002", "Track Two", isrc="XX0000000002"),
+    ]
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
+    downloads = _Downloads()
+
+    def reader(path: str) -> dict:
+        if path.endswith("/1001.flac"):
+            raise TagReadError("corrupt bytes")
+        return {"title": "Track Two", "artist": ARTIST, "duration": 180, "isrc": "XX0000000002"}
+
+    report, store, _pacing = _run(
+        tmp_path,
+        source,
+        downloads=downloads,
+        library=lambda _track: [],
+        tag_reader=reader,
+    )
+    assert report.halted_reason is None
+    assert downloads.calls == [[1001], [1002]]
+    assert _titles(report.added) == ["Track Two"]
+    assert report.playlists[0].to_download == 1
+    assert report.playlists[0].union_count == 1
+    failed = report.needs_review[0]
+    assert failed["source_track"]["title"] == "Track One"
+    assert "track_error" in failed["reasons"]
+    assert failed["error"] == "TagReadError"
+    assert "corrupt bytes" not in json.dumps(report.to_dict())
+    stored = store.get_track("tidal", "1001", normalize_playlist_name("Playlist A"))
+    assert stored is not None
+    assert stored["status"] == "seen"
+
+
+def test_search_error_continues_with_the_next_apple_track(tmp_path: Path):
+    class SearchError(Exception):
+        pass
+
+    rows = [
+        _track("apple", "a1", "Apple One", isrc="XX0000000011"),
+        _track("apple", "a2", "Apple Two", isrc="XX0000000012"),
+    ]
+    source = _Source("apple", [(_playlist("apple", "pl-a", "Playlist A", "2026-01-01"), rows)])
+
+    def search(track: Track) -> list[Candidate]:
+        if track.source_track_id == "a1":
+            raise SearchError("search unavailable")
+        return [_candidate(track.title, isrc=track.isrc, ident="2002", duration=180)]
+
+    def reader(path: str) -> dict:
+        assert path.endswith("/2002.flac")
+        return {"title": "Apple Two", "artist": ARTIST, "duration": 180, "isrc": "XX0000000012"}
+
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        library=lambda _track: [],
+        search=search,
+        tag_reader=reader,
+    )
+    assert report.halted_reason is None
+    assert _titles(report.added) == ["Apple Two"]
+    failed = report.needs_review[0]
+    assert failed["source_track"]["title"] == "Apple One"
+    assert "track_error" in failed["reasons"]
+    assert failed["error"] == "SearchError"
+    assert "search unavailable" not in json.dumps(report.to_dict())
+
+
+def test_sink_append_error_does_not_leave_a_stale_added_entry(tmp_path: Path):
+    class AppendError(Exception):
+        pass
+
+    class FlakySink(_Sink):
+        def append(self, name: str, tracks: list[Track], paths: list[str | None] | None = None) -> None:
+            if any(track.source_track_id == "1002" for track in tracks):
+                raise AppendError("append failed")
+            super().append(name, tracks, paths)
+
+    rows = [
+        _track("tidal", "1001", "Track One", isrc="XX0000000001"),
+        _track("tidal", "1002", "Track Two", isrc="XX0000000002"),
+        _track("tidal", "1003", "Track Three", isrc="XX0000000003"),
+    ]
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        sink=FlakySink(),
+        library=_local_library(),
+        file_exists=lambda _path: True,
+    )
+    assert report.halted_reason is None
+    assert _titles(report.added) == ["Track One", "Track Three"]
+    assert all(item["source_track"]["title"] != "Track Two" for item in report.added)
+    failed = report.needs_review[0]
+    assert failed["source_track"]["title"] == "Track Two"
+    assert failed["status"] == "needs_review"
+    assert "track_error" in failed["reasons"]
+    assert failed["error"] == "AppendError"
+    assert "append failed" not in json.dumps(report.to_dict())
+
+
+@pytest.mark.parametrize("code", [401, 429])
+def test_track_status_code_still_halts_the_cycle(tmp_path: Path, code: int):
+    class Coded(Exception):
+        def __init__(self, status_code: int) -> None:
+            self.status_code = status_code
+            super().__init__("rate or auth")
+
+    rows = [
+        _track("tidal", "1001", "Track One", isrc="XX0000000001"),
+        _track("tidal", "1002", "Track Two", isrc="XX0000000002"),
+    ]
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), rows)])
+    downloads = _Downloads()
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        downloads=downloads,
+        library=_local_library("1001", Coded(code)),
+        file_exists=lambda _path: True,
+    )
+    assert report.halted_reason == str(code)
+    assert downloads.calls == []
+    assert _titles(report.added) == []
+
+
+def test_playlist_list_error_records_source_error_and_continues(tmp_path: Path):
+    class BrokenSource:
+        name = "apple"
+
+        def list_playlists(self) -> list[PlaylistRef]:
+            raise ValueError("list failed")
+
+        def list_tracks(self, playlist: PlaylistRef) -> list[Track]:
+            raise AssertionError("list_tracks called")
+
+    row = _track("tidal", "1001", "Track One", isrc="XX0000000001")
+    tidal = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    report, _store, _pacing = _run(
+        tmp_path,
+        [BrokenSource(), tidal],
+        library=_local_library(),
+        file_exists=lambda _path: True,
+    )
+    assert report.halted_reason is None
+    assert report.source_errors == [
+        {"source": "apple", "playlist": None, "status": "source_error", "error": "ValueError"}
+    ]
+    assert report.to_dict()["source_errors"] == report.source_errors
+    assert [item.name for item in report.playlists] == ["Playlist A"]
+    assert _titles(report.added) == ["Track One"]
+    assert "list failed" not in json.dumps(report.to_dict())
+
+
+def test_track_list_error_records_source_error_and_continues(tmp_path: Path):
+    class FlakySource(_Source):
+        def list_tracks(self, playlist: PlaylistRef) -> list[Track]:
+            self.track_calls.append(playlist.source_playlist_id)
+            if playlist.source_playlist_id == "pl-a":
+                raise OSError("unread")
+            return list(self._rows[playlist.source_playlist_id][1])
+
+    row_b = _track("tidal", "1002", "Track Two", isrc="XX0000000002", playlist_name="Playlist B")
+    source = FlakySource(
+        "tidal",
+        [
+            (_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [
+                _track("tidal", "1001", "Track One", isrc="XX0000000001"),
+            ]),
+            (_playlist("tidal", "pl-b", "Playlist B", "2026-01-01"), [row_b]),
+        ],
+    )
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        library=_local_library(),
+        file_exists=lambda _path: True,
+    )
+    assert report.halted_reason is None
+    assert report.source_errors == [
+        {"source": "tidal", "playlist": "Playlist A", "status": "source_error", "error": "OSError"}
+    ]
+    assert _titles(report.added) == ["Track Two"]
+    assert "unread" not in json.dumps(report.to_dict())
+
+
+def test_sink_list_error_skips_that_playlist(tmp_path: Path):
+    class SelectiveSink(_Sink):
+        def list_tracks(self, name: str) -> list[Track]:
+            if name == "Playlist A":
+                raise RuntimeError("list failed")
+            return []
+
+    row_b = _track("tidal", "1002", "Track Two", isrc="XX0000000002", playlist_name="Playlist B")
+    source = _Source(
+        "tidal",
+        [
+            (_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [
+                _track("tidal", "1001", "Track One", isrc="XX0000000001"),
+            ]),
+            (_playlist("tidal", "pl-b", "Playlist B", "2026-01-01"), [row_b]),
+        ],
+    )
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        sink=SelectiveSink(),
+        library=_local_library(),
+        file_exists=lambda _path: True,
+    )
+    assert report.halted_reason is None
+    assert report.source_errors == [
+        {"source": "plex", "playlist": "Playlist A", "status": "source_error", "error": "RuntimeError"}
+    ]
+    assert [item.name for item in report.playlists] == ["Playlist B"]
+    assert _titles(report.added) == ["Track Two"]
+    assert "list failed" not in json.dumps(report.to_dict())
+
+
+def test_internal_error_closes_owned_ledger_and_library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog):
+    from tidal_dl.playlist_sync import cycle as cycle_mod
+    from tidal_dl.playlist_sync.ledger import Ledger as LedgerCls
+
+    caplog.set_level("ERROR")
+    closed = {"ledger": 0, "library": 0}
+    real_ledger_close = LedgerCls.close
+    real_handle_close = cycle_mod._LibraryHandle.close
+
+    def ledger_close(self) -> None:
+        closed["ledger"] += 1
+        real_ledger_close(self)
+
+    def handle_close(self) -> None:
+        closed["library"] += 1
+        real_handle_close(self)
+
+    monkeypatch.setattr(LedgerCls, "close", ledger_close)
+    monkeypatch.setattr(cycle_mod._LibraryHandle, "close", handle_close)
+
+    def boom(*args, **kwargs):
+        report = kwargs.get("report", args[-1] if args else None)
+        if getattr(report, "source_errors", None) is not None and hasattr(report, "source_errors"):
+            report.source_errors.append(
+                {"source": "marker", "playlist": None, "status": "source_error", "error": "Marker"}
+            )
+        raise RuntimeError("collect failed")
+
+    monkeypatch.setattr(cycle_mod, "_collect_groups", boom)
+    row = _track("tidal", "1001", "Track One", isrc="XX0000000001")
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    pacing = _ClockRng()
+    report = run_cycle(
+        _wall(2026, 10, 6, 12),
+        settings=_cfg(),
+        sources=[source],
+        sink=_Sink(),
+        downloads=_Downloads(),
+        clock=pacing.clock,
+        rng=pacing,
+        sleep=pacing.sleep,
+        pacer=TidalApiPacer(delay_min=0, delay_max=0, sleeper=pacing.sleep, clock=pacing.clock),
+        auth_state=lambda: "credentials_ready",
+        download_path_ready=lambda _path: True,
+    )
+    assert report.halted_reason == "internal_error"
+    assert report.source_errors == [
+        {"source": "marker", "playlist": None, "status": "source_error", "error": "Marker"}
+    ]
+    assert "collect failed" not in json.dumps(report.to_dict())
+    assert "playlist sync cycle failed" in caplog.text
+    assert closed == {"ledger": 1, "library": 1}
+
+
+def _all_needs_review(report) -> list[dict]:
+    rows = list(report.needs_review)
+    for playlist in report.playlists:
+        rows.extend(playlist.needs_review)
+    return rows
+
+
+def _assert_needs_review_has_reason(entries: list[dict], code: str) -> None:
+    assert entries, f"expected needs_review entries for {code}"
+    for entry in entries:
+        assert entry.get("reasons"), entry
+    assert any(code in entry.get("reasons", []) for entry in entries), (code, entries)
+
+
+def test_needs_review_entries_always_carry_specific_reasons(tmp_path: Path):
+    apple = _track("apple", "a7", "Ambiguous Song", duration=230)
+    apple_source = _Source("apple", [(_playlist("apple", "ap-a", "Playlist A", "2026-01-01"), [apple])])
+
+    def search_ambiguous(_track: Track) -> list[Candidate]:
+        return [
+            _candidate("Ambiguous Song", duration=230, ident="2001", isrc="XX0000000011"),
+            _candidate("Ambiguous Song", duration=230, ident="2002", isrc="XX0000000012"),
+        ]
+
+    report, _, _ = _run(tmp_path / "multi-search", apple_source, search=search_ambiguous)
+    entries = _all_needs_review(report)
+    _assert_needs_review_has_reason(entries, "multiple_search_matches")
+    assert entries[0]["candidate_source"] == "tidal_search"
+
+    tidal = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    plex_pair = [
+        _track("plex", "p10", "Example Song", isrc="XX0000000001", duration=180),
+        _track("plex", "p11", "Example Song", isrc="XX0000000001", duration=180),
+    ]
+    plex_source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [tidal])])
+    report, _, _ = _run(
+        tmp_path / "multi-plex",
+        plex_source,
+        sink=_Sink(found=plex_pair),
+        library=lambda _item: [],
+    )
+    entries = _all_needs_review(report)
+    _assert_needs_review_has_reason(entries, "multiple_plex_matches")
+    assert entries[0]["candidate_source"] == "plex_library"
+
+    tidal_isrc = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    plex_other_title = _track("plex", "p9", "Different Title", isrc="XX0000000001", duration=180)
+    report, _, _ = _run(
+        tmp_path / "same-isrc",
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [tidal_isrc])]),
+        sink=_Sink([plex_other_title]),
+    )
+    entries = _all_needs_review(report)
+    _assert_needs_review_has_reason(entries, "same_isrc_in_plex_playlist")
+    assert entries[0]["candidate_source"] == "plex_playlist"
+
+    borderline = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    plex_border = _track("plex", "p8", "Example Song", isrc="XX0000000001", duration=184)
+    report, _, _ = _run(
+        tmp_path / "plex-border",
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [borderline])]),
+        sink=_Sink([plex_border]),
+    )
+    entries = _all_needs_review(report)
+    _assert_needs_review_has_reason(entries, "duration_borderline")
+    assert entries[0]["candidate_source"] == "plex_playlist"
+
+    local_row = _track("tidal", "1001", "Example Song", isrc="XX0000000001")
+    other_file = tmp_path / "other.flac"
+    other_file.write_bytes(b"x")
+
+    def library_mismatch(track: Track) -> list[Candidate]:
+        if track.isrc == "XX0000000001":
+            return [
+                _candidate(
+                    "Example Song",
+                    artist=OTHER,
+                    isrc="XX0000000001",
+                    ident="row-1",
+                    path=str(other_file),
+                )
+            ]
+        return []
+
+    report, _, _ = _run(
+        tmp_path / "local-review",
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [local_row])]),
+        library=library_mismatch,
+    )
+    entries = _all_needs_review(report)
+    _assert_needs_review_has_reason(entries, "isrc_artist_mismatch")
+    assert entries[0]["candidate_source"] == "local_library"
+
+    mismatch_row = _track("tidal", "1001", "Example Song", isrc="XX0000000001")
+    ledger = Ledger(tmp_path / "ledger-mismatch.db")
+    ledger.set_status(
+        mismatch_row,
+        normalize_playlist_name("Playlist A"),
+        "download_mismatch",
+        seen_at="2026-10-06T00:00:00+00:00",
+    )
+    report, _, _ = _run(
+        tmp_path / "ledger-mismatch",
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [mismatch_row])]),
+        ledger=ledger,
+    )
+    entries = _all_needs_review(report)
+    _assert_needs_review_has_reason(entries, "download_mismatch")
+
+    missing_row = _track("tidal", "1001", "Example Song", isrc="XX0000000001")
+    ledger_missing = Ledger(tmp_path / "ledger-missing.db")
+    ledger_missing.set_status(
+        missing_row,
+        normalize_playlist_name("Playlist A"),
+        "downloaded",
+        seen_at="2026-10-06T00:00:00+00:00",
+        local_path=str(tmp_path / "gone.flac"),
+    )
+    report, _, _ = _run(
+        tmp_path / "file-missing",
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [missing_row])]),
+        ledger=ledger_missing,
+        file_exists=lambda _path: False,
+    )
+    entries = _all_needs_review(report)
+    _assert_needs_review_has_reason(entries, "file_missing")
+
+    class TrackLookupError(Exception):
+        pass
+
+    report, _, _ = _run(
+        tmp_path / "track-error",
+        _Source(
+            "tidal",
+            [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [_track("tidal", "1001", "Track One")])],
+        ),
+        library=_local_library("1001", TrackLookupError("hidden")),
+        file_exists=lambda _path: True,
+    )
+    entries = _all_needs_review(report)
+    _assert_needs_review_has_reason(entries, "track_error")
+
+    tag_row = _track("tidal", "1001", "Example Song", isrc="XX0000000001")
+    target = tmp_path / "1001.flac"
+    target.write_bytes(b"keep")
+    report, _, _ = _run(
+        tmp_path / "post-download",
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [tag_row])]),
+        downloads=_Downloads({1001: DownloadResult(status="completed", path=str(target))}),
+        tag_reader=lambda _path: {
+            "title": "Example Song",
+            "artist": OTHER,
+            "duration": 180,
+            "isrc": "XX0000000001",
+        },
+    )
+    entries = _all_needs_review(report)
+    _assert_needs_review_has_reason(entries, "isrc_artist_mismatch")
+    assert report.download_mismatch[0]["candidate_source"] == "downloaded_file"
+
+
+def test_duplicate_in_source_downloads_and_appends_once(tmp_path: Path):
+    first = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    later = _track("tidal", "1002", "Example Song", isrc="XX0000000001", duration=181)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [first, later])])
+    sink = _Sink()
+    downloads = _Downloads({1001: DownloadResult(status="completed", path=str(tmp_path / "1001.flac"))})
+    report, _, _ = _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=downloads,
+        tag_reader=_tags_for([first]),
+    )
+    assert downloads.calls == [[1001]]
+    assert len(sink.appends) == 1
+    assert report.playlists[0].duplicates_in_source == 1
+    dup_entries = [item for item in report.playlists[0].tracks if item.get("status") == "duplicate_in_source"]
+    assert len(dup_entries) == 1
+    assert dup_entries[0]["reasons"] == ["duplicate_in_source"]
+
+
+def test_duplicate_in_source_after_local_match_appends_once(tmp_path: Path):
+    audio = tmp_path / "local.flac"
+    audio.write_bytes(b"local")
+    first = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    later = _track("tidal", "1002", "Example Song", isrc="XX0000000001", duration=181)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [first, later])])
+    sink = _Sink()
+
+    def library(track: Track) -> list[Candidate]:
+        if track.isrc == "XX0000000001":
+            return [_candidate("Example Song", isrc="XX0000000001", ident="row-1", path=str(audio))]
+        return []
+
+    downloads = _Downloads()
+    report, _, _ = _run(tmp_path, source, sink=sink, downloads=downloads, library=library)
+    assert downloads.calls == []
+    assert len(sink.appends) == 1
+    assert report.playlists[0].duplicates_in_source == 1
+
+
+def test_duplicate_recording_second_cycle_skips_when_plex_has_track(tmp_path: Path):
+    first = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    later = _track("tidal", "1002", "Example Song", isrc="XX0000000001", duration=181)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [first, later])])
+    sink = _Sink()
+    downloads = _Downloads({1001: DownloadResult(status="completed", path=str(tmp_path / "1001.flac"))})
+    ledger = Ledger(tmp_path / "playlist_sync.db")
+    _, _, _ = _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=downloads,
+        ledger=ledger,
+        tag_reader=_tags_for([first]),
+    )
+    assert downloads.calls == [[1001]]
+    assert len(sink.appends) == 1
+
+    downloads_again = _Downloads()
+    report2, _, _ = _run(tmp_path, source, sink=sink, downloads=downloads_again, ledger=ledger)
+    assert downloads_again.calls == []
+    assert len(sink.appends) == 1
+    assert report2.playlists[0].to_download == 0
+
+
+def test_duplicate_recording_pending_plex_replay_does_not_redownload(tmp_path: Path):
+    first = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    later = _track("tidal", "1002", "Example Song", isrc="XX0000000001", duration=181)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [first, later])])
+
+    class PendingSink(_Sink):
+        def append(self, name: str, tracks: list[Track], paths: list[str | None] | None = None):
+            return AppendResult(status="pending_plex")
+
+    sink = PendingSink()
+    downloads = _Downloads({1001: DownloadResult(status="completed", path=str(tmp_path / "1001.flac"))})
+    ledger = Ledger(tmp_path / "playlist_sync.db")
+    report, _, _ = _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=downloads,
+        ledger=ledger,
+        tag_reader=_tags_for([first]),
+    )
+    assert downloads.calls == [[1001]]
+    assert report.pending_plex
+
+    downloads_again = _Downloads()
+    report2, _, _ = _run(tmp_path, source, sink=sink, downloads=downloads_again, ledger=ledger)
+    assert downloads_again.calls == []
+    assert len([item for item in report2.pending_plex if item["source_track"]["title"] == "Example Song"]) <= 1
+
+
+class _PlaylistScopedSink:
+    def __init__(self) -> None:
+        self.appends: list[tuple[str, list[str]]] = []
+        self._plex: dict[str, list[Track]] = {}
+
+    def list_tracks(self, name: str) -> list[Track]:
+        return list(self._plex.get(normalize_playlist_name(name), []))
+
+    def append(self, name: str, tracks: list[Track], paths: list[str | None] | None = None) -> None:
+        self.appends.append((name, [track.source_track_id for track in tracks]))
+        key = normalize_playlist_name(name)
+        self._plex.setdefault(key, []).extend(tracks)
+
+    def find(self, track: Track) -> list[Track]:
+        return []
+
+
+def test_same_recording_across_playlists_downloads_once_per_cycle(tmp_path: Path):
+    shared_isrc = "XX0000000099"
+    row_a = _track("tidal", "1001", "Shared Song", isrc=shared_isrc, playlist_name="Playlist A")
+    row_b = _track("tidal", "1002", "Shared Song", isrc=shared_isrc, duration=181, playlist_name="Playlist B")
+    source = _Source(
+        "tidal",
+        [
+            (_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row_a]),
+            (_playlist("tidal", "pl-b", "Playlist B", "2026-01-01"), [row_b]),
+        ],
+    )
+    downloads = _Downloads({1001: DownloadResult(status="completed", path=str(tmp_path / "1001.flac"))})
+    report, _, _ = _run(
+        tmp_path,
+        source,
+        sink=_PlaylistScopedSink(),
+        downloads=downloads,
+        settings=_cfg(allowlist=("Playlist A", "Playlist B")),
+        tag_reader=_tags_for([row_a]),
+    )
+    assert sum(len(call) for call in downloads.calls) == 1
+    deferred = [item for item in report.skipped if item.get("status") == "deferred_duplicate"]
+    assert len(deferred) == 1
+    assert deferred[0]["reasons"] == ["downloaded_this_cycle"]
+
+
+def test_isrc_match_with_comma_artist_list_confirms_on_lead_artist():
+    source = _track("tidal", "1101", "Example Song", artist=f"{ARTIST}, {OTHER}", isrc="XX0000000101")
+    lead_only = verify(source, _candidate("Example Song", artist=ARTIST, isrc="XX0000000101"))
+    assert lead_only.confidence == "confirmed"
+    assert lead_only.artist_ok is True
+    joined = verify(source, _candidate("Example Song", artist=f"{ARTIST} & {OTHER}", isrc="XX0000000101"))
+    assert joined.confidence == "confirmed"
+    accented = _track("tidal", "1102", "Example Song", artist=f"Ex\u00e1mple Artist, {OTHER}", isrc="XX0000000102")
+    assert verify(accented, _candidate("Example Song", artist=ARTIST, isrc="XX0000000102")).confidence == "confirmed"
+
+
+def test_comma_lead_artist_needs_an_isrc_match():
+    source = _track("apple", "a101", "Example Song", artist=f"{ARTIST}, {OTHER}", isrc=None)
+    result = verify(source, _candidate("Example Song", artist=ARTIST, isrc=None))
+    assert result.confidence == "reject"
+    assert result.reasons == ("artist_mismatch",)
+
+
+def test_isrc_match_with_a_title_difference_stays_in_review():
+    for title in ("Example Song (Live)", "Example Song (En Vivo)"):
+        source = _track("tidal", "1103", title, artist=f"{ARTIST}, {OTHER}", isrc="XX0000000103")
+        result = verify(source, _candidate("Example Song", artist=ARTIST, isrc="XX0000000103"))
+        assert result.confidence == "review", title
+        assert result.reasons == ("isrc_title_mismatch",)
+        assert result.artist_ok is True
+        assert result.title_ok is False
+
+
+def test_isrc_match_needs_the_same_lead_artist():
+    cases = [
+        (f"{OTHER}, {ARTIST}", ARTIST),
+        (ARTIST, f"{OTHER}, {ARTIST}"),
+        (f"{ARTIST} 4.40", ARTIST),
+        (f"The {ARTIST}", ARTIST),
+        (ARTIST, "Someone Else"),
+    ]
+    for source_artist, candidate_artist in cases:
+        source = _track("tidal", "1104", "Example Song", artist=source_artist, isrc="XX0000000104")
+        result = verify(source, _candidate("Example Song", artist=candidate_artist, isrc="XX0000000104"))
+        assert result.confidence == "review", (source_artist, candidate_artist)
+        assert result.reasons == ("isrc_artist_mismatch",)
+
+
+def _on_playlist_case(tmp_path: Path, source_track: Track, plex_row: Track, local: Candidate):
+    sink = _Sink([plex_row])
+    downloads = _Downloads()
+    report, _store, _pacing = _run(
+        tmp_path,
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [source_track])]),
+        sink=sink,
+        downloads=downloads,
+        library=lambda _track: [local],
+        file_exists=lambda _path: True,
+    )
+    assert downloads.calls == []
+    entries = [entry for playlist in report.playlists for entry in playlist.tracks]
+    return report, sink, entries
+
+
+def _plex_row(
+    title: str,
+    artist: str,
+    duration: float | None,
+    ident: str = "p1",
+    path: str = "",
+    isrc: str | None = None,
+) -> Track:
+    return Track(
+        source="plex",
+        source_track_id=ident,
+        title=title,
+        artist=artist,
+        album="",
+        duration=duration,
+        path=path,
+        isrc=isrc,
+    )
+
+
+def test_row_without_the_live_tag_is_already_on_the_playlist(tmp_path: Path):
+    source = _track("tidal", "1201", "Example Song (Live)", artist=f"{ARTIST}, {OTHER}", duration=300, isrc="XX0000000201")
+    local = _candidate("Example Song (Live)", artist=f"{ARTIST}, {OTHER}", duration=300, isrc="XX0000000201", path="/m/a.flac")
+    report, sink, entries = _on_playlist_case(tmp_path, source, _plex_row("Example Song", ARTIST, 300.5), local)
+    assert sink.appends == []
+    assert report.added == []
+    assert entries[0]["action"] == "skip_present"
+    assert "present_by_title_length" in entries[0]["reasons"]
+
+
+def test_compilation_artist_row_goes_to_review_not_present(tmp_path: Path):
+    title = "Example Song (Translated Title) (feat. Guest Artist)"
+    source = _track("tidal", "1202", title, artist=f"{ARTIST}, {OTHER}", duration=260, isrc="XX0000000202")
+    local = _candidate(title, artist=ARTIST, duration=260, isrc="XX0000000202", path="/m/b.flac")
+    report, sink, entries = _on_playlist_case(tmp_path, source, _plex_row(title, "Various Artists", 261.0), local)
+    assert sink.appends == []
+    assert report.added == []
+    assert entries[0]["status"] == "needs_review"
+    assert "possible_playlist_duplicate" in entries[0]["reasons"]
+
+
+def test_both_artists_unknown_with_the_same_length_goes_to_review(tmp_path: Path):
+    source = _track("tidal", "1207", "Example Song", artist="Various Artists", duration=250, isrc="XX0000000207")
+    local = _candidate("Example Song", artist="Various Artists", duration=250, isrc="XX0000000207", path="/m/g.flac")
+    report, sink, entries = _on_playlist_case(tmp_path, source, _plex_row("Example Song", "", 251.0), local)
+    assert sink.appends == []
+    assert report.added == []
+    assert entries[0]["action"] != "skip_present"
+    assert entries[0]["status"] == "needs_review"
+    assert "possible_playlist_duplicate" in entries[0]["reasons"]
+
+
+def test_accent_and_case_differences_still_match_the_playlist_row(tmp_path: Path):
+    source = _track("tidal", "1203", "Canci\u00f3n Grande", artist=f"{ARTIST}, {OTHER}", duration=240, isrc="XX0000000203")
+    local = _candidate("Canci\u00f3n Grande", artist=ARTIST, duration=240, isrc="XX0000000203", path="/m/c.flac")
+    _report, sink, entries = _on_playlist_case(tmp_path, source, _plex_row("Cancion grande", ARTIST, 241.5), local)
+    assert sink.appends == []
+    assert entries[0]["action"] == "skip_present"
+
+
+def test_same_title_by_another_artist_is_not_a_duplicate(tmp_path: Path):
+    # Many songs share a title. Same length, missing length, or a few seconds
+    # off: a different known lead artist is another song.
+    for n, row_length in enumerate((222.0, None, 226.0)):
+        case = tmp_path / str(n)
+        case.mkdir()
+        source = _track("tidal", "1204", "Example Song", artist=ARTIST, duration=222, isrc="XX0000000204")
+        local = _candidate("Example Song", artist=ARTIST, duration=222, isrc="XX0000000204", path="/m/d.flac")
+        _report, sink, entries = _on_playlist_case(case, source, _plex_row("Example Song", OTHER, row_length), local)
+        assert [ids for _name, ids in sink.appends] == [["1204"]], row_length
+        assert "possible_playlist_duplicate" not in entries[0]["reasons"]
+        assert entries[0]["action"] != "skip_present"
+
+
+def test_playlist_row_without_a_length_goes_to_review(tmp_path: Path):
+    source = _track("tidal", "1205", "Example Song (Live)", artist=f"{ARTIST}, {OTHER}", duration=200, isrc="XX0000000205")
+    local = _candidate("Example Song (Live)", artist=ARTIST, duration=200, isrc="XX0000000205", path="/m/e.flac")
+    _report, sink, entries = _on_playlist_case(tmp_path, source, _plex_row("Example Song", ARTIST, None), local)
+    assert sink.appends == []
+    assert "possible_playlist_duplicate" in entries[0]["reasons"]
+
+
+def test_same_title_with_a_different_length_is_another_recording(tmp_path: Path):
+    source = _track("tidal", "1206", "Example Song", artist=ARTIST, duration=300, isrc="XX0000000206")
+    local = _candidate("Example Song", artist=ARTIST, duration=300, isrc="XX0000000206", path="/m/f.flac")
+    _report, sink, _entries = _on_playlist_case(tmp_path, source, _plex_row("Example Song", ARTIST, 330.0), local)
+    assert [ids for _name, ids in sink.appends] == [["1206"]]
+
+
+def _tags_by_path(rows: dict[str, dict]):
+    def reader(path: str) -> dict:
+        return rows[path]
+
+    return reader
+
+
+def test_filesystem_spellings_probe_stored_then_nfd_then_nfc():
+    from tidal_dl.playlist_sync.unicode_norm import filesystem_spellings
+
+    stored = f"/music/{SONG_NFC}/track.flac"
+    decomposed = unicodedata.normalize("NFD", stored)
+    assert stored != decomposed
+    assert filesystem_spellings(stored) == (stored, decomposed)
+    assert filesystem_spellings(decomposed) == (decomposed, stored)
+    assert filesystem_spellings("") == ()
+    assert filesystem_spellings(None) == ()
+
+
+def test_decorated_artist_same_isrc_within_3s_skips_three_rows(tmp_path: Path):
+    # Playlist rows carry no ISRC. The code is in the file. A decoration
+    # such as "● 440 ●" must not make the same recording look like another song.
+    cases = (
+        ("1301", "XX0000001301", "/srv/a.flac", "/lib/a.flac"),
+        ("1302", "XX0000001302", "/srv/b.flac", "/lib/b.flac"),
+        ("1303", "XX0000001303", "/srv/c.flac", "/lib/c.flac"),
+    )
+    sources = []
+    plex_rows = []
+    library_rows = []
+    tags = {}
+    for track_id, isrc, server_path, local_path in cases:
+        sources.append(_track("tidal", track_id, "Example Song", artist="Artist A", duration=211.8, isrc=isrc))
+        plex_rows.append(
+            _plex_row("Example Song", "Artist A ● 440 ●", 210.0, ident=f"p{track_id}", path=server_path)
+        )
+        library_rows.append(
+            _candidate("Example Song", artist="Artist A", duration=211.8, isrc=isrc, ident=track_id, path=f"/m/{track_id}.flac")
+        )
+        tags[local_path] = {"title": "Example Song", "artist": "Artist A ● 440 ●", "duration": 210.0, "isrc": isrc}
+    by_isrc = {row.isrc: row for row in library_rows}
+    sink = _Sink(plex_rows)
+    downloads = _Downloads()
+    report, _, _ = _run(
+        tmp_path,
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), sources)]),
+        sink=sink,
+        downloads=downloads,
+        library=lambda track: [by_isrc[track.isrc]],
+        tag_reader=_tags_by_path(tags),
+        file_exists=lambda path: True,
+        settings=_cfg(plex_server_prefix="/srv", plex_local_prefix="/lib"),
+    )
+    assert downloads.calls == []
+    assert sink.appends == []
+    assert report.added == []
+    entries = [entry for playlist in report.playlists for entry in playlist.tracks]
+    assert len(entries) == 3
+    for entry in entries:
+        assert entry["action"] == "skip_present"
+        assert "present_by_isrc" in entry["reasons"]
+        assert entry["action"] != "append"
+
+
+def test_same_isrc_lengths_4s_apart_goes_to_review(tmp_path: Path):
+    source = _track("tidal", "1311", "Example Song", artist="Artist A", duration=211.8, isrc="XX0000001311")
+    local = _candidate("Example Song", artist="Artist A", duration=211.8, isrc="XX0000001311", path="/m/studio.flac")
+    plex = _plex_row("Example Song", "Artist A ● 440 ●", 207.6, ident="p1311", path="/srv/other.flac")
+    sink = _Sink([plex])
+    downloads = _Downloads()
+    report, _, _ = _run(
+        tmp_path,
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [source])]),
+        sink=sink,
+        downloads=downloads,
+        library=lambda _track: [local],
+        tag_reader=_tags_by_path({
+            "/lib/other.flac": {
+                "title": "Example Song",
+                "artist": "Artist A ● 440 ●",
+                "duration": 207.6,
+                "isrc": "XX0000001311",
+            },
+        }),
+        file_exists=lambda path: path in {"/lib/other.flac", "/m/studio.flac"},
+        settings=_cfg(plex_server_prefix="/srv", plex_local_prefix="/lib"),
+    )
+    assert downloads.calls == []
+    assert sink.appends == []
+    assert report.added == []
+    entry = report.playlists[0].tracks[0]
+    assert entry["status"] == "needs_review"
+    assert "isrc_length_mismatch" in entry["reasons"]
+
+
+def test_same_title_different_artist_different_isrc_is_appended(tmp_path: Path):
+    source = _track("tidal", "1321", "Example Song", artist="Artist A", duration=180, isrc="XX0000001321")
+    local = _candidate("Example Song", artist="Artist A", duration=180, isrc="XX0000001321", path="/m/a.flac")
+    plex = _plex_row("Example Song", "Artist B", 181.0, ident="p1321", path="/srv/b.flac")
+    sink = _Sink([plex])
+    report, _, _ = _run(
+        tmp_path,
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [source])]),
+        sink=sink,
+        downloads=_Downloads(),
+        library=lambda _track: [local],
+        tag_reader=_tags_by_path({
+            "/lib/b.flac": {"title": "Example Song", "artist": "Artist B", "duration": 181.0, "isrc": "XX0000001399"},
+        }),
+        file_exists=lambda path: path in {"/lib/b.flac", "/m/a.flac"},
+        settings=_cfg(plex_server_prefix="/srv", plex_local_prefix="/lib"),
+    )
+    assert [ids for _name, ids in sink.appends] == [["1321"]]
+    assert report.playlists[0].tracks[0]["action"] != "skip_present"
+    assert "present_by_isrc" not in report.playlists[0].tracks[0]["reasons"]
+
+
+def test_live_and_studio_with_different_isrcs_are_appended(tmp_path: Path):
+    source = _track("tidal", "1331", "Example Song (Live)", artist="Artist A", duration=180, isrc="XX0000001331")
+    local = _candidate(
+        "Example Song (Live)",
+        artist="Artist A",
+        duration=180,
+        isrc="XX0000001331",
+        path="/m/live.flac",
+    )
+    plex = _plex_row("Example Song", "Artist A", 181.0, ident="p1331", path="/srv/studio.flac")
+    sink = _Sink([plex])
+    report, _, _ = _run(
+        tmp_path,
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [source])]),
+        sink=sink,
+        downloads=_Downloads(),
+        library=lambda _track: [local],
+        tag_reader=_tags_by_path({
+            "/lib/studio.flac": {"title": "Example Song", "artist": "Artist A", "duration": 181.0, "isrc": "XX0000001332"},
+        }),
+        file_exists=lambda path: path in {"/lib/studio.flac", "/m/live.flac"},
+        settings=_cfg(plex_server_prefix="/srv", plex_local_prefix="/lib"),
+    )
+    assert [ids for _name, ids in sink.appends] == [["1331"]]
+    entry = report.playlists[0].tracks[0]
+    assert entry["action"] != "skip_present"
+    assert "present_by_isrc" not in entry["reasons"]
+    assert "possible_playlist_duplicate" not in entry["reasons"]
+
+
+def test_feat_tag_with_a_different_isrc_goes_to_review(tmp_path: Path):
+    source = _track("tidal", "1381", "Example Song (feat. Guest)", artist="Artist A", duration=180, isrc="XX0000001381")
+    local = _candidate(
+        "Example Song (feat. Guest)",
+        artist="Artist A",
+        duration=180,
+        isrc="XX0000001381",
+        path="/m/feat.flac",
+    )
+    plex = _plex_row(
+        "Example Song",
+        "Artist A",
+        180.0,
+        ident="p1381",
+        path="/srv/plain.flac",
+        isrc="XX0000001382",
+    )
+    sink = _Sink([plex])
+    downloads = _Downloads()
+    report, _, _ = _run(
+        tmp_path,
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [source])]),
+        sink=sink,
+        downloads=downloads,
+        library=lambda _track: [local],
+        tag_reader=_tags_by_path({
+            "/lib/plain.flac": {"title": "Example Song", "artist": "Artist A", "duration": 180.0, "isrc": "XX0000001382"},
+        }),
+        file_exists=lambda path: path in {"/lib/plain.flac", "/m/feat.flac"},
+        settings=_cfg(plex_server_prefix="/srv", plex_local_prefix="/lib"),
+    )
+    assert downloads.calls == []
+    assert sink.appends == []
+    assert report.added == []
+    entry = report.playlists[0].tracks[0]
+    assert entry["status"] == "needs_review"
+    assert "possible_playlist_duplicate" in entry["reasons"]
+    assert entry["action"] != "skip_present"
+
+
+
+def test_same_title_same_length_different_isrcs_go_to_review(tmp_path: Path):
+    source = _track("tidal", "1361", "Example Song", artist="Artist A", duration=180, isrc="XX0000001361")
+    local = _candidate("Example Song", artist="Artist A", duration=180, isrc="XX0000001361", path="/m/single.flac")
+    plex = _plex_row(
+        "Example Song",
+        "Artist A",
+        180.0,
+        ident="p1361",
+        path="/srv/album.flac",
+        isrc="XX0000001362",
+    )
+    sink = _Sink([plex])
+    downloads = _Downloads()
+    report, _, _ = _run(
+        tmp_path,
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [source])]),
+        sink=sink,
+        downloads=downloads,
+        library=lambda _track: [local],
+        tag_reader=_tags_by_path({
+            "/lib/album.flac": {"title": "Example Song", "artist": "Artist A", "duration": 180.0, "isrc": "XX0000001362"},
+        }),
+        file_exists=lambda path: path in {"/lib/album.flac", "/m/single.flac"},
+        settings=_cfg(plex_server_prefix="/srv", plex_local_prefix="/lib"),
+    )
+    assert downloads.calls == []
+    assert sink.appends == []
+    assert report.added == []
+    entry = report.playlists[0].tracks[0]
+    assert entry["status"] == "needs_review"
+    assert "possible_playlist_duplicate" in entry["reasons"]
+    assert "present_by_title_length" not in entry["reasons"]
+    assert entry["action"] != "skip_present"
+
+
+def test_same_isrc_with_a_missing_duration_goes_to_review(tmp_path: Path):
+    source = _track("tidal", "1371", "Example Song", artist="Artist A", duration=180, isrc="XX0000001371")
+    local = _candidate("Example Song", artist="Artist A", duration=180, isrc="XX0000001371", path="/m/known.flac")
+    plex = _plex_row("Other Title", "Artist A ● 440 ●", None, ident="p1371", path="/srv/untimed.flac")
+    sink = _Sink([plex])
+    downloads = _Downloads()
+    report, _, _ = _run(
+        tmp_path,
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [source])]),
+        sink=sink,
+        downloads=downloads,
+        library=lambda _track: [local],
+        tag_reader=_tags_by_path({
+            "/lib/untimed.flac": {"title": "Example Song", "artist": "Artist A", "isrc": "XX0000001371"},
+        }),
+        file_exists=lambda path: path in {"/lib/untimed.flac", "/m/known.flac"},
+        settings=_cfg(plex_server_prefix="/srv", plex_local_prefix="/lib"),
+    )
+    assert downloads.calls == []
+    assert sink.appends == []
+    assert report.added == []
+    entry = report.playlists[0].tracks[0]
+    assert entry["status"] == "needs_review"
+    assert "isrc_length_unknown" in entry["reasons"]
+    assert entry["action"] != "skip_present"
+
+
+def test_nfd_only_library_row_is_live_and_post_download_finds_it(tmp_path: Path):
+    stored = f"/music/{SONG_NFC}/track.flac"
+    on_disk = unicodedata.normalize("NFD", stored)
+    assert stored != on_disk
+    opened: list[str] = []
+
+    def exists(path: str) -> bool:
+        return path == on_disk
+
+    def reader(path: str) -> dict:
+        opened.append(path)
+        return {"title": "Example Song", "artist": ARTIST, "duration": 180, "isrc": "XX0000001341"}
+
+    row = _track("tidal", "1341", "Example Song", isrc="XX0000001341", duration=180)
+    library_sink = _Sink()
+    library_report, _, _ = _run(
+        tmp_path / "library",
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])]),
+        sink=library_sink,
+        downloads=_Downloads(),
+        library=lambda _track: [_candidate("Example Song", isrc="XX0000001341", ident="row-1", path=stored)],
+        tag_reader=reader,
+        file_exists=exists,
+    )
+    library_entry = library_report.playlists[0].tracks[0]
+    assert "stale_library_row" not in library_entry["reasons"]
+    assert library_sink.appends == [("Playlist A", ["1341"])]
+    assert library_report.playlists[0].already_local == 1
+
+    opened.clear()
+    download = _Downloads({1342: DownloadResult(status="completed", path=stored)})
+    download_sink = _Sink()
+    later = _track("tidal", "1342", "Example Song", isrc="XX0000001341", duration=180)
+    download_report, _, _ = _run(
+        tmp_path / "download",
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [later])]),
+        sink=download_sink,
+        downloads=download,
+        library=lambda _track: [],
+        tag_reader=reader,
+        file_exists=exists,
+    )
+    assert download.calls == [[1342]]
+    assert opened == [on_disk]
+    assert download_report.download_mismatch == []
+    assert "downloaded_file_not_found" not in json.dumps(download_report.to_dict())
+    assert download_sink.appends == [("Playlist A", ["1342"])]
+
+
+def test_ledger_key_still_on_playlist_blocks_another_copy(tmp_path: Path):
+    source = _track("tidal", "1351", "Example Song", artist="Artist A", duration=208, isrc="XX0000001351")
+    on_playlist = _plex_row("Example Song", "Artist A ● 440 ●", 207.0, ident="25535")
+    other = _candidate("Example Song", artist="Artist A", duration=208, isrc="XX0000001351", path="/m/other.flac")
+    ledger = Ledger(tmp_path / "playlist_sync.db")
+    ledger.set_status(
+        source,
+        normalize_playlist_name("Playlist A"),
+        "added",
+        seen_at="2026-10-08T10:00:00",
+        plex_rating_key="25535",
+        local_path="/m/accented.flac",
+    )
+
+    class _RatingSink(_Sink):
+        def append(self, name: str, tracks: list[Track], paths: list[str | None] | None = None):
+            self.appends.append((name, [track.source_track_id for track in tracks]))
+            self.rows.extend(tracks)
+            return AppendResult(status="added", rating_keys=["9001"])
+
+    sink = _RatingSink([on_playlist])
+    report, store, _ = _run(
+        tmp_path,
+        _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [source])]),
+        sink=sink,
+        downloads=_Downloads(),
+        library=lambda _track: [other],
+        file_exists=lambda path: path == "/m/other.flac",
+        ledger=ledger,
+    )
+    assert sink.appends == []
+    assert report.added == []
+    entry = report.playlists[0].tracks[0]
+    assert entry["action"] == "skip_present"
+    assert "present_by_ledger_key" in entry["reasons"]
+    kept = store.get_track(source.source, source.source_track_id, normalize_playlist_name("Playlist A"))
+    assert kept is not None
+    assert kept["plex_rating_key"] == "25535"
+    assert kept["status"] == "added"

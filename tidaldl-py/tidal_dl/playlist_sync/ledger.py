@@ -72,6 +72,7 @@ class Ledger:
                     available INTEGER NOT NULL DEFAULT 1,
                     version TEXT NOT NULL DEFAULT '',
                     on_playlist INTEGER NOT NULL DEFAULT 1,
+                    local_path TEXT,
                     PRIMARY KEY (source, source_track_id, name_norm)
                 )"""
             )
@@ -80,10 +81,27 @@ class Ledger:
                 self._conn.execute(
                     "ALTER TABLE tracks ADD COLUMN on_playlist INTEGER NOT NULL DEFAULT 1"
                 )
+            if "local_path" not in columns:
+                self._conn.execute("ALTER TABLE tracks ADD COLUMN local_path TEXT")
             self._conn.execute(
                 """CREATE TABLE IF NOT EXISTS daily_downloads (
                     day TEXT PRIMARY KEY,
                     count INTEGER NOT NULL
+                )"""
+            )
+            self._conn.execute(
+                """CREATE TABLE IF NOT EXISTS plex_paths (
+                    server_path TEXT PRIMARY KEY,
+                    rating_key TEXT NOT NULL,
+                    updated_at TEXT
+                )"""
+            )
+            self._conn.execute(
+                """CREATE TABLE IF NOT EXISTS plex_added (
+                    name_norm TEXT NOT NULL,
+                    rating_key TEXT NOT NULL,
+                    added_at TEXT,
+                    PRIMARY KEY (name_norm, rating_key)
                 )"""
             )
 
@@ -202,13 +220,14 @@ class Ledger:
         seen_at: str,
         last_failure_day: str | None = None,
         plex_rating_key: str | None = None,
+        local_path: str | None = None,
     ) -> None:
         if status not in _TRACK_STATUSES:
             raise ValueError(f"unknown playlist sync status: {status}")
 
         def run() -> None:
             current = self._conn.execute(
-                """SELECT first_seen_at, last_failure_day, plex_rating_key
+                """SELECT first_seen_at, last_failure_day, plex_rating_key, local_path
                    FROM tracks
                    WHERE source = ? AND source_track_id = ? AND name_norm = ?""",
                 (track.source, track.source_track_id, name_norm),
@@ -220,12 +239,15 @@ class Ledger:
             rating_key = plex_rating_key
             if rating_key is None and current is not None:
                 rating_key = current["plex_rating_key"]
+            stored_path = nfc_path(local_path) if local_path else None
+            if stored_path is None and current is not None:
+                stored_path = current["local_path"]
             self._conn.execute(
                 """INSERT INTO tracks (
                     source, source_track_id, name_norm, isrc, title, artist, album,
                     duration, first_seen_at, status, last_failure_day, plex_rating_key,
-                    available, version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    available, version, local_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source, source_track_id, name_norm) DO UPDATE SET
                     isrc = excluded.isrc,
                     title = excluded.title,
@@ -236,7 +258,8 @@ class Ledger:
                     last_failure_day = excluded.last_failure_day,
                     plex_rating_key = excluded.plex_rating_key,
                     available = excluded.available,
-                    version = excluded.version""",
+                    version = excluded.version,
+                    local_path = excluded.local_path""",
                 (
                     track.source,
                     track.source_track_id,
@@ -252,10 +275,72 @@ class Ledger:
                     rating_key,
                     1 if track.available else 0,
                     track.version,
+                    stored_path,
                 ),
             )
 
         self._write(run)
+
+    def set_plex_rating_key(self, track: Track, name_norm: str, rating_key: str) -> None:
+        """Store a Plex rating key without changing the row's status."""
+
+        def run() -> None:
+            self._conn.execute(
+                """UPDATE tracks SET plex_rating_key = ?
+                   WHERE source = ? AND source_track_id = ? AND name_norm = ?""",
+                (rating_key, track.source, track.source_track_id, name_norm),
+            )
+
+        self._write(run)
+
+    def get_plex_rating_key(self, path: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT rating_key FROM plex_paths WHERE server_path = ?",
+            (nfc_path(path),),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["rating_key"])
+
+    def remember_plex_path(self, path: str, rating_key: str, at: str) -> None:
+        server_path = nfc_path(path)
+        if not server_path:
+            return
+
+        def run() -> None:
+            self._conn.execute(
+                """INSERT INTO plex_paths (server_path, rating_key, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(server_path) DO UPDATE SET
+                     rating_key = excluded.rating_key,
+                     updated_at = excluded.updated_at""",
+                (server_path, rating_key, at),
+            )
+
+        self._write(run)
+
+    def remember_plex_added(self, name_norm: str, rating_key: str, at: str) -> None:
+        """Remember a rating key this sync wrote onto a playlist."""
+        if not name_norm or not rating_key:
+            return
+
+        def run() -> None:
+            self._conn.execute(
+                """INSERT INTO plex_added (name_norm, rating_key, added_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(name_norm, rating_key) DO NOTHING""",
+                (name_norm, rating_key, at),
+            )
+
+        self._write(run)
+
+    def plex_added_keys(self, name_norm: str) -> set[str]:
+        """Rating keys this sync itself added for one playlist."""
+        rows = self._conn.execute(
+            "SELECT rating_key FROM plex_added WHERE name_norm = ?",
+            (name_norm,),
+        ).fetchall()
+        return {str(row["rating_key"]) for row in rows}
 
     def downloads_on(self, day: str) -> int:
         row = self._conn.execute(
