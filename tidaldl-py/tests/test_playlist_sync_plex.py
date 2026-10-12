@@ -1616,3 +1616,49 @@ def test_file_already_on_the_playlist_is_present_whatever_its_tags_say(tmp_path:
     assert "present_by_path" in entry["reasons"]
     assert server.playlists[0]["items"] == ["5001"]
     assert not any(call["method"] == "PUT" for call in session.calls)
+
+
+@pytest.mark.parametrize("status", [500, 0])
+def test_folder_scan_failure_keeps_the_track_pending(tmp_path: Path, status: int):
+    server, _session, _ledger, _client, sink, _clock = _stack(tmp_path)
+    server.add_track(
+        rating_key="5001",
+        title="Example Song",
+        artist=ARTIST,
+        file_path=_server("Example Song"),
+        visible=False,
+        appear_after=1,
+    )
+    server.failures.append(("GET", f"/library/sections/{SECTION}/refresh", status))
+    track = _track("tidal", "1001", "Example Song", duration=180)
+    result = sink.append("Playlist A", [track], paths=[_local("Example Song")])
+    assert result.status == "pending_plex"
+
+
+def test_plex_unavailable_halt_does_not_leave_an_added_entry():
+    from types import SimpleNamespace
+
+    from tidal_dl.playlist_sync import cycle
+    from tidal_dl.playlist_sync.models import AppendResult
+
+    entry = {"action": "append", "status": "added"}
+    halted: list[str] = []
+    work = SimpleNamespace(
+        report=SimpleNamespace(added=[entry]),
+        governor=SimpleNamespace(halt=halted.append),
+    )
+    track = _track("tidal", "1001", "Example Song", duration=180)
+    cycle._finish_append(
+        work,
+        entry,
+        track,
+        "playlist a",
+        AppendResult(status="plex_unavailable", detail="PlexError: 500 GET"),
+        report=SimpleNamespace(),
+        local_path=None,
+        pending_status="pending_plex",
+    )
+    assert halted == ["plex_unavailable"]
+    assert work.report.added == []
+    assert entry["status"] == "plex_unavailable"
+    assert entry["action"] != "append"

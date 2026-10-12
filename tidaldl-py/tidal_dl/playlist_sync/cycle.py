@@ -1589,6 +1589,12 @@ def _finish_append(
     rating = _result_rating(result)
     if status == "plex_unavailable":
         _drop_entry(work.report.added, entry)
+        entry["action"] = "halted"
+        entry["status"] = "plex_unavailable"
+        entry["reasons"] = ["plex_unavailable"]
+        detail = str(getattr(result, "detail", "") or "")
+        if detail:
+            entry["detail"] = detail
         work.governor.halt("plex_unavailable")
         return
     if status in _APPEND_OK:

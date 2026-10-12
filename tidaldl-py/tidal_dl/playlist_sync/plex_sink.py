@@ -169,7 +169,14 @@ class PlexWriterSink:
         if found is not None:
             return found
         self._step = f"scan folder={_folder(server_path)}"
-        self._client.scan_path(_folder(server_path))
+        try:
+            self._client.scan_path(_folder(server_path))
+        except PlexWriteBlocked:
+            raise
+        except PlexError:
+            # A failed folder refresh is per-track: keep this track pending
+            # instead of reporting plex_unavailable and halting the cycle.
+            return None
         self._step = f"lookup after scan path={server_path}"
         if self._gave_up:
             return self._rating_for_path(title, server_path)
