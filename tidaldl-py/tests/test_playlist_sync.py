@@ -1407,6 +1407,16 @@ def test_nfd_and_nfc_playlist_title_and_path_match(tmp_path: Path):
     assert nfc_path(nfd_path) == nfc_path(nfc_file)
     prefix = unicodedata.normalize("NFD", f"/music/{SONG_NFC}")
     assert apply_prefix_map(nfd_path, {prefix: f"/library/{SONG_NFC}"}) == f"/library/{SONG_NFC}/track.flac"
+    windows = unicodedata.normalize("NFD", rf"D:\Music\{SONG_NFC}\track.flac")
+    assert apply_prefix_map(windows, {r"D:\Music": "/library"}) == f"/library/{SONG_NFC}/track.flac"
+    assert apply_prefix_map(r"D:\Music\Artist\track.flac", {r"D:\Music": "/music"}) == "/music/Artist/track.flac"
+    assert apply_prefix_map(r"D:\Music\Artist\track.flac", {r"D:\Music": r"E:\Library"}) == r"E:\Library\Artist\track.flac"
+    assert apply_prefix_map("/music/Artist/track.flac", {"/music": "/library"}) == "/library/Artist/track.flac"
+    assert apply_prefix_map(r"D:\Musical\track.flac", {r"D:\Music": "/music"}) == r"D:\Musical\track.flac"
+    assert apply_prefix_map(
+        r"D:\Music\Artist\track.flac",
+        {r"D:\Music": "/music", r"D:\Music\Artist": "/music/Artist"},
+    ) == "/music/Artist/track.flac"
 
     tidal = _Source("tidal", [(_playlist("tidal", "pl-a", SONG_NFD, "2026-01-01"), [nfd_track])])
     apple = _Source("apple", [(_playlist("apple", "ap-a", SONG_NFC, "2026-01-01"), [nfc_track])])

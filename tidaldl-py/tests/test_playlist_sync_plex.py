@@ -33,7 +33,7 @@ from tidal_dl.playlist_sync.ledger import Ledger
 from tidal_dl.playlist_sync.matcher import normalize_playlist_name
 from tidal_dl.playlist_sync.models import DownloadResult, Track
 from tidal_dl.playlist_sync.plex_client import PlexClient, PlexError, PlexWriteBlocked
-from tidal_dl.playlist_sync.plex_sink import PlexWriterSink, build_plex_sink
+from tidal_dl.playlist_sync.plex_sink import PlexWriterSink, _folder, _under, build_plex_sink
 from tidal_dl.playlist_sync.plex_token import PlexToken, resolve_plex_token, save_plex_token_file
 from tidal_dl.playlist_sync.sink import NullPlexSink
 
@@ -419,7 +419,9 @@ def test_removed_upstream_track_stays_on_the_plex_playlist(tmp_path: Path):
 
 def test_smart_playlist_is_refused(tmp_path: Path):
     server, session, ledger, _client, sink, _clock = _stack(tmp_path)
-    server.add_playlist("playlist a", smart="1", items=[], rating_key="8001")
+    server.add_track(rating_key="5001", title="Example Song", artist=ARTIST, file_path=_server("Example Song"))
+    server.add_playlist("playlist a", smart="1", items=["5001"], rating_key="8001")
+    assert sink.list_tracks("Playlist A") == []
     row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
     source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
     local_file = _local("Example Song")
@@ -730,6 +732,108 @@ def test_find_401_halts_as_plex_unavailable(
     assert server.playlists == []
     assert report.halted_reason != "401"
     _assert_plex_read_halted(report, downloads, session, caplog)
+
+
+def test_regular_playlist_wins_when_smart_with_same_name_is_listed_first(tmp_path: Path):
+    server, session, ledger, _client, sink, _clock = _stack(tmp_path)
+    server.add_track(rating_key="5001", title="Example Song", artist=ARTIST, file_path=_server("Example Song"))
+    server.add_playlist("Playlist A", smart="1", items=["5001"], rating_key="8001")
+    server.add_playlist("Playlist A", smart="0", items=[], rating_key="4001")
+    assert sink.list_tracks("Playlist A") == []
+
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+    downloads = _Downloads()
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=downloads,
+        ledger=ledger,
+        library=_local_library,
+        file_exists=_exists,
+    )
+    assert downloads.calls == []
+    assert report.playlists[0].plex_count == 0
+    assert report.plex_errors == []
+    assert report.added
+    assert server.playlists[0]["items"] == ["5001"]
+    assert server.playlists[1]["items"] == ["5001"]
+    assert server.playlists[1]["rating_key"] == "4001"
+    assert not any(call["path"].startswith("/playlists/8001") for call in session.calls if call["method"] == "PUT")
+
+
+@pytest.mark.parametrize("status", [500, 0, 401])
+def test_append_read_error_halts_as_plex_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    status: int,
+):
+    caplog.set_level(logging.DEBUG)
+    _forbid_login_and_bulk_sync(monkeypatch)
+    server, session, ledger, _client, sink, _clock = _stack(tmp_path)
+    server.add_track(rating_key="5001", title="Example Song", artist=ARTIST, file_path=_server("Example Song"))
+    server.failures.append(("GET", f"/library/sections/{SECTION}/all", status))
+    source = _two_playlist_source()
+    downloads = _Downloads(
+        {
+            1001: DownloadResult(status="completed", path=_local("Example Song")),
+            1002: DownloadResult(status="completed", path=_local("Other Song")),
+        }
+    )
+    report, _store, _pacing = _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=downloads,
+        ledger=ledger,
+        library=_local_library,
+        file_exists=_exists,
+    )
+    assert source.track_calls == ["pl-a"]
+    assert report.halted_reason != "401"
+    _assert_plex_read_halted(report, downloads, session, caplog)
+
+
+def test_folder_and_prefix_accept_backslash_and_slash():
+    assert _folder(r"D:\Plex\Example Artist\Example Song.flac") == r"D:\Plex\Example Artist"
+    assert _folder("/music/Example Artist/Example Song.flac") == "/music/Example Artist"
+    assert _folder("Example Song.flac") == "Example Song.flac"
+    assert _under(r"D:\Music\Example Artist\Example Song.flac", r"D:\Music") is True
+    assert _under(r"D:\Musical\Example Song.flac", r"D:\Music") is False
+    assert _under("/music/Example Artist/Example Song.flac", "/music") is True
+    assert _under("/musical/Example Song.flac", "/music") is False
+
+
+def test_windows_prefix_maps_and_scan_uses_parent_folder(tmp_path: Path):
+    server, _session, ledger, client, _sink, clock = _stack(tmp_path)
+    sink = PlexWriterSink(
+        client,
+        ledger,
+        local_prefix=r"D:\Music",
+        server_prefix=r"D:\Plex",
+        scan_timeout_sec=0,
+        poll_sec=10,
+        clock=clock.clock,
+        sleep=clock.sleep,
+        dry_run=False,
+    )
+    server.add_track(
+        rating_key="5001",
+        title="Example Song",
+        artist=ARTIST,
+        file_path=r"D:\Plex\Example Artist\Example Song.flac",
+        visible=False,
+        appear_after=None,
+    )
+    result = sink.append(
+        "Playlist A",
+        [_track("tidal", "1001", "Example Song", duration=180)],
+        paths=[r"D:\Music\Example Artist\Example Song.flac"],
+    )
+    assert result.status == "pending_plex"
+    assert server.scanned_folders == [r"D:\Plex\Example Artist"]
 
 
 def test_unmapped_path_makes_no_plex_calls(tmp_path: Path):

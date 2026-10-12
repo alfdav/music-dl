@@ -10,10 +10,10 @@ from typing import Any
 from tidal_dl.playlist_sync.ledger import Ledger
 from tidal_dl.playlist_sync.matcher import normalize_playlist_name
 from tidal_dl.playlist_sync.models import AppendResult, Track
-from tidal_dl.playlist_sync.plex_client import PlexClient, PlexError, file_paths
+from tidal_dl.playlist_sync.plex_client import PlexClient, PlexError, PlexWriteBlocked, file_paths
 from tidal_dl.playlist_sync.plex_token import resolve_plex_token
 from tidal_dl.playlist_sync.sink import NullPlexSink, PlexSink
-from tidal_dl.playlist_sync.unicode_norm import apply_prefix_map, nfc_path, nfd_path
+from tidal_dl.playlist_sync.unicode_norm import _prefix_rest, apply_prefix_map, nfc_path, nfd_path
 
 
 class PlexWriterSink:
@@ -54,7 +54,7 @@ class PlexWriterSink:
 
     def list_tracks(self, name: str) -> list[Track]:
         match = self._named(name)
-        if match is None:
+        if match is None or match["smart"]:
             return []
         rows = self._client.playlist_items(match["rating_key"])
         stamp = _stamp()
@@ -86,7 +86,10 @@ class PlexWriterSink:
             detail = exc.describe()
             if self._step:
                 detail = f"{detail} during={self._step}"
-            return AppendResult(status="failed", detail=detail[:500])
+            detail = detail[:500]
+            if exc.method == "GET" and not isinstance(exc, PlexWriteBlocked):
+                return AppendResult(status="plex_unavailable", detail=detail)
+            return AppendResult(status="failed", detail=detail)
 
     def _append_tracks(
         self,
@@ -142,10 +145,15 @@ class PlexWriterSink:
 
     def _named(self, name: str) -> dict[str, Any] | None:
         target = normalize_playlist_name(name)
+        smart_match: dict[str, Any] | None = None
         for item in self._client.list_audio_playlists():
-            if normalize_playlist_name(str(item.get("title") or "")) == target:
+            if normalize_playlist_name(str(item.get("title") or "")) != target:
+                continue
+            if not item["smart"]:
                 return item
-        return None
+            if smart_match is None:
+                smart_match = item
+        return smart_match
 
     def _map(self, local_path: str | None) -> str | None:
         if not local_path or not self._local_prefix or not self._server_prefix:
@@ -312,17 +320,15 @@ def _seconds(value: object) -> float | None:
 
 
 def _under(path: str, prefix: str) -> bool:
-    if path == prefix:
-        return True
-    head = prefix if prefix.endswith("/") else f"{prefix}/"
-    return path.startswith(head)
+    return _prefix_rest(path, prefix) is not None
 
 
 def _folder(path: str) -> str:
-    text = nfc_path(path).rstrip("/")
-    if "/" not in text:
+    text = nfc_path(path).rstrip("/\\")
+    cut = max(text.rfind("/"), text.rfind("\\"))
+    if cut < 0:
         return text
-    return text.rsplit("/", 1)[0]
+    return text[:cut]
 
 
 def _match_path(rows: list[dict[str, Any]], server_path: str) -> str | None:

@@ -1587,6 +1587,10 @@ def _finish_append(
 ) -> None:
     status = _result_status(result)
     rating = _result_rating(result)
+    if status == "plex_unavailable":
+        _drop_entry(work.report.added, entry)
+        work.governor.halt("plex_unavailable")
+        return
     if status in _APPEND_OK:
         work.ledger.set_status(
             track,
