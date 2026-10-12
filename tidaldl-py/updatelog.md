@@ -20,6 +20,12 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
+## v1.7.13 (2026-10-09)
+- Library scans no longer stop with `Python int too large to convert to SQLite INTEGER` on filesystems that report 64-bit file IDs (some SMB shares among them). File IDs are stored as signed 64-bit values, so moved folders still heal by identity. One unreadable file is skipped instead of failing the whole scan, an unreadable library folder is reported as an error and the library is kept, unreadable subfolders are no longer pruned as deleted, and older rows get their file identity filled in during a normal scan ([#209](https://github.com/alfdav/music-dl/pull/209)).
+- Add the core of an append-only playlist sync. It is off and dry-run by default, nothing schedules it, and it has no endpoint or UI yet; writers, readers and scheduling come in later releases ([#208](https://github.com/alfdav/music-dl/pull/208)).
+- After an update, the desktop app replaces a server left running from the previous version instead of attaching to it, but only when that server is verified as the app's own. Unverified servers and browser mode are left alone ([#206](https://github.com/alfdav/music-dl/pull/206)).
+- Going back to a playlist while another playlist is still filling the queue keeps that playlist's own track count, so its list is sized correctly before the first page loads. Fixes [#201](https://github.com/alfdav/music-dl/issues/201) ([#204](https://github.com/alfdav/music-dl/pull/204)).
+
 ## v1.7.12 (2026-09-27)
 - Playlists show the first page of tracks right away instead of waiting for the whole list; the rest loads in pages while you scroll or play. Going back to a playlist restores its scroll position once the list can hold it, and a rate limit on a later page keeps the rows already shown ([#194](https://github.com/alfdav/music-dl/pull/194)).
 - Play no longer skips track 1 when its library path is stale. The upgrade probe no longer holds the library write lock during Tidal lookups, and local playback serves the on-disk file even when the path repair cannot get the lock ([#202](https://github.com/alfdav/music-dl/pull/202)).
