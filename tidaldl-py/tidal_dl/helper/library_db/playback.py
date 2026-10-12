@@ -10,9 +10,15 @@ class PlaybackMixin:
         assert self._conn
         now = int(time.time())
         nfc, nfd = library_path_forms(path)
+        # The stored row can carry the on-disk walk spelling (possibly mixed
+        # NFC/NFD), so include whatever spelling get() resolves to.
+        stored = nfc
+        row = self.get(path)
+        if row and row.get("path"):
+            stored = row["path"]
         self._conn.execute(
-            "UPDATE scanned SET play_count = play_count + 1, last_played = ? WHERE path IN (?, ?)",
-            (now, nfc, nfd),
+            "UPDATE scanned SET play_count = play_count + 1, last_played = ? WHERE path IN (?, ?, ?)",
+            (now, nfc, nfd, stored),
         )
 
     def log_play_event(
