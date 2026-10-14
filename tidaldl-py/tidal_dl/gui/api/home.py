@@ -117,10 +117,18 @@ def record_play(event: PlayEvent):
     db = _get_db()
 
     # --- Dedup guard: same path within 60 seconds is rejected silently ---
+    stored_path = event.path
     if event.path:
+        from tidal_dl.helper.library_db.utils import library_path_lookup_keys
+
+        row = db.get(event.path)
+        if row and row.get("path"):
+            stored_path = row["path"]
+        keys = library_path_lookup_keys(stored_path or event.path)
+        placeholders = ", ".join("?" * len(keys))
         last = db._conn.execute(
-            "SELECT MAX(played_at) FROM play_events WHERE path = ?",
-            (event.path,),
+            f"SELECT MAX(played_at) FROM play_events WHERE path IN ({placeholders})",
+            keys,
         ).fetchone()
         if last and last[0] and (time.time() - last[0]) < 60:
             return Response(status_code=204)
@@ -129,15 +137,17 @@ def record_play(event: PlayEvent):
     # If genre missing but we have a file path, read it from the file
     if not genre and event.path:
         row = db.get(event.path)
+        if row and row.get("path"):
+            stored_path = row["path"]
         if row and row.get("genre"):
             genre = row["genre"]
         else:
-            # Try reading genre from file tags directly
+            # Try reading genre from the stored on-disk path.
             try:
                 from tidal_dl.gui.api.library import _normalize_genre
                 from mutagen import File as MutagenFile
 
-                audio = MutagenFile(event.path, easy=True)
+                audio = MutagenFile(stored_path, easy=True)
                 if audio and audio.tags:
                     raw = audio.tags.get("genre")
                     if raw and isinstance(raw, list):
@@ -145,10 +155,10 @@ def record_play(event: PlayEvent):
                     elif raw:
                         genre = _normalize_genre(str(raw))
                     # Update the scanned table so future plays have it
-                    if genre:
+                    if genre and stored_path:
                         db._conn.execute(
                             "UPDATE scanned SET genre = ? WHERE path = ? AND (genre IS NULL OR genre = '')",
-                            (genre, event.path),
+                            (genre, stored_path),
                         )
             except Exception:
                 pass

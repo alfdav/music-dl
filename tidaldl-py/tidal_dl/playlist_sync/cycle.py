@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -30,7 +30,7 @@ from tidal_dl.playlist_sync.mount import download_path_available
 from tidal_dl.playlist_sync.sink import NullPlexSink, PlexSink
 from tidal_dl.playlist_sync.source import Source
 from tidal_dl.playlist_sync.tags import read_audio_tags
-from tidal_dl.playlist_sync.unicode_norm import apply_prefix_map, nfc_path
+from tidal_dl.playlist_sync.unicode_norm import apply_prefix_map, filesystem_spellings
 from tidal_dl.playlist_sync.verify import verify
 
 LibraryLookup = Callable[[Track], list[Candidate]]
@@ -678,7 +678,7 @@ def _post_download(
 
 
 def _existing_library_path(work: _Work, track: Track) -> str | None:
-    """NFC path of an ISRC library row whose file is still on disk."""
+    """On-disk path of an ISRC library row whose file is still on disk."""
     return existing_library_file(work.library, track, work.file_exists)
 
 
@@ -741,10 +741,13 @@ def _local(work: _Work, track: Track) -> tuple[str, Candidate | None, VerifyResu
     stale = False
     live: list[Candidate] = []
     for candidate in work.library(track) or []:
-        path = nfc_path(candidate.path)
-        if not path or not work.file_exists(path):
+        spellings = [item for item in filesystem_spellings(candidate.path) if item]
+        live_path = next((item for item in spellings if work.file_exists(item)), "")
+        if not live_path:
             stale = True
             continue
+        if live_path != candidate.path:
+            candidate = replace(candidate, path=live_path)
         live.append(candidate)
     state, chosen, result = _best(track, live)
     if state != "none":

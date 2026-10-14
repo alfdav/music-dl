@@ -17,6 +17,26 @@ def nfc_path(path: str | os.PathLike[str] | None) -> str:
     return unicodedata.normalize("NFC", os.fspath(path))
 
 
+def filesystem_spellings(path: str | os.PathLike[str] | None) -> tuple[str, ...]:
+    """Stored spelling, then NFD, then NFC. Empty strings are dropped.
+
+    Comparison and prefix maps stay on ``nfc_path``. This tuple is only for
+    probing which spelling opens.
+    """
+    if path is None:
+        return ()
+    raw = os.fspath(path)
+    if not raw:
+        return ()
+    nfc = unicodedata.normalize("NFC", raw)
+    nfd = unicodedata.normalize("NFD", nfc)
+    found: list[str] = []
+    for item in (raw, nfd, nfc):
+        if item not in found:
+            found.append(item)
+    return tuple(found)
+
+
 def apply_prefix_map(path: str, prefixes: Mapping[str, str]) -> str:
     """Rewrite *path* with the longest prefix. Keys and values are NFC first."""
     text = nfc_path(path)

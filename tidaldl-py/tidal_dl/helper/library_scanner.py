@@ -18,6 +18,7 @@ import os
 import pathlib
 import re
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
@@ -105,15 +106,21 @@ def drop_skipped_scan_paths(library_db: LibraryDB) -> int:
     return len(stale)
 
 
+def _music_root_key(value: str | pathlib.Path) -> str:
+    """NFC prefix key. The original string is what callers open."""
+    return unicodedata.normalize("NFC", os.path.normpath(os.path.expanduser(str(value))))
+
+
 def path_under_music_roots(path: str | pathlib.Path, roots: list[pathlib.Path]) -> bool:
     """Return True if *path* is the same as or inside one of *roots*.
 
     Prefix match only — no ``stat()`` / ``resolve()`` of the file, so Home
-    can drop leftover QA rows without probing a NAS music volume.
+    can drop leftover QA rows without probing a NAS music volume. NFC is
+    compared so an on-disk NFD spelling still counts as inside an NFC root.
     """
-    raw = os.path.normpath(os.path.expanduser(str(path)))
+    raw = _music_root_key(path)
     for root in roots:
-        root_raw = os.path.normpath(os.path.expanduser(str(root)))
+        root_raw = _music_root_key(root)
         if raw == root_raw or raw.startswith(root_raw + os.sep):
             return True
     return False

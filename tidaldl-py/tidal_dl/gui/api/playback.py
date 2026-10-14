@@ -289,11 +289,10 @@ def get_waveform(path: str = Query(..., description="Absolute path to audio file
     db = LibraryDB(Path(path_config_base()) / "library.db")
     db.open()
     try:
-        row = db._conn.execute(
-            "SELECT waveform, waveform_hires FROM scanned WHERE path = ?", (str(validated_path),)
-        ).fetchone()
+        row = db.get(path) or db.get(str(validated_path))
+        stored_path = row["path"] if row and row.get("path") else str(validated_path)
 
-        if row and row["waveform"] and row["waveform_hires"]:
+        if row and row.get("waveform") and row.get("waveform_hires"):
             display = peaks_from_json(row["waveform"])
             hires = peaks_from_json(row["waveform_hires"])
             if display and hires:
@@ -304,7 +303,7 @@ def get_waveform(path: str = Query(..., description="Absolute path to audio file
         if both:
             db._conn.execute(
                 "UPDATE scanned SET waveform = ?, waveform_hires = ? WHERE path = ?",
-                (peaks_to_json(both[0]), peaks_to_json(both[1]), str(validated_path)),
+                (peaks_to_json(both[0]), peaks_to_json(both[1]), stored_path),
             )
             db.commit()
     finally:
