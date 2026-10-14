@@ -37,8 +37,39 @@ def filesystem_spellings(path: str | os.PathLike[str] | None) -> tuple[str, ...]
     return tuple(found)
 
 
+def nfd_path(path: str | os.PathLike[str] | None) -> str:
+    if path is None:
+        return ""
+    return unicodedata.normalize("NFD", os.fspath(path))
+
+
+def _prefix_rest(path: str, prefix: str) -> str | None:
+    """Suffix after *prefix*, or ``""`` when *path* is the prefix. ``None`` if not under it.
+
+    ``/`` and ``\\`` are both separators. Comparison does not depend on the host OS.
+    """
+    folded_prefix = prefix.replace("\\", "/")
+    if not folded_prefix:
+        return None
+    head = folded_prefix.rstrip("/")
+    folded = path.replace("\\", "/")
+    if not head:
+        if not folded.startswith("/"):
+            return None
+        return folded[1:]
+    if folded == head:
+        return ""
+    needle = f"{head}/"
+    if folded.startswith(needle):
+        return folded[len(needle):]
+    return None
+
+
 def apply_prefix_map(path: str, prefixes: Mapping[str, str]) -> str:
-    """Rewrite *path* with the longest prefix. Keys and values are NFC first."""
+    """Rewrite *path* with the longest prefix. Keys and values are NFC first.
+
+    ``/`` and ``\\`` are both separators.
+    """
     text = nfc_path(path)
     ranked = sorted(
         ((nfc_path(source), nfc_path(dest)) for source, dest in prefixes.items()),
@@ -46,13 +77,13 @@ def apply_prefix_map(path: str, prefixes: Mapping[str, str]) -> str:
         reverse=True,
     )
     for source, dest in ranked:
-        if not source:
+        rest = _prefix_rest(text, source)
+        if rest is None:
             continue
-        if text == source:
+        if not rest:
             return dest
-        prefix = source if source.endswith("/") else f"{source}/"
-        if text.startswith(prefix):
-            rest = text[len(prefix):]
-            base = dest.removesuffix("/")
-            return nfc_path(f"{base}/{rest}" if rest else base)
+        sep = "\\" if "\\" in dest else "/"
+        base = dest.rstrip("/\\")
+        tail = rest.replace("/", sep)
+        return nfc_path(f"{base}{sep}{tail}")
     return text
