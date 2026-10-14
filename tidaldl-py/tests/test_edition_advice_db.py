@@ -26,9 +26,9 @@ class TestEditionAdviceSchema:
         }
         assert "edition_advice" in names
 
-    def test_schema_version_is_11(self, db):
-        assert LibraryDB._SCHEMA_VERSION == 11
-        assert db._conn.execute("PRAGMA user_version").fetchone()[0] == 11
+    def test_schema_version_is_12(self, db):
+        assert LibraryDB._SCHEMA_VERSION == 12
+        assert db._conn.execute("PRAGMA user_version").fetchone()[0] == 12
 
 
 class TestEditionAdviceCrud:
@@ -128,4 +128,4 @@ class TestEditionAdviceCrud:
         finally:
             migrated.close()
         assert "edition_advice" in names
-        assert version == 11
+        assert version == 12

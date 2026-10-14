@@ -22,11 +22,9 @@ class FavoritesMixin:
             row = self.get(path)
             if row and row.get("path"):
                 path = row["path"]
-            keys = library_path_lookup_keys(path)
-            placeholders = ", ".join("?" * len(keys))
             existing = self._conn.execute(
-                f"SELECT id FROM favorites WHERE path IN ({placeholders})",
-                keys,
+                "SELECT id FROM favorites WHERE path_key = ? OR path = ?",
+                (canonical_library_path(path), path),
             ).fetchone()
             if existing:
                 return
@@ -46,11 +44,9 @@ class FavoritesMixin:
         """Remove a favorite by path or tidal_id."""
         assert self._conn
         if path:
-            keys = library_path_lookup_keys(path)
-            placeholders = ", ".join("?" * len(keys))
             self._conn.execute(
-                f"DELETE FROM favorites WHERE path IN ({placeholders})",
-                keys,
+                "DELETE FROM favorites WHERE path_key = ? OR path = ?",
+                (canonical_library_path(path), path),
             )
         elif tidal_id:
             self._conn.execute("DELETE FROM favorites WHERE tidal_id = ?", (tidal_id,))
@@ -59,11 +55,9 @@ class FavoritesMixin:
         """Check if a track is favorited."""
         assert self._conn
         if path:
-            keys = library_path_lookup_keys(path)
-            placeholders = ", ".join("?" * len(keys))
             return self._conn.execute(
-                f"SELECT 1 FROM favorites WHERE path IN ({placeholders})",
-                keys,
+                "SELECT 1 FROM favorites WHERE path_key = ? OR path = ?",
+                (canonical_library_path(path), path),
             ).fetchone() is not None
         if tidal_id:
             return self._conn.execute(

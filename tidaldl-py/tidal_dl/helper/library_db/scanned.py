@@ -542,32 +542,16 @@ class ScannedMixin:
     def _stored_spellings(self, path: str) -> list[str]:
         """Stored paths equal to *path* under NFC, including mixed spellings.
 
-        A walk path can mix NFC and NFD across segments, so neither the pure
-        NFC nor the pure NFD form matches it. Probe those first (indexed),
-        then scan the ASCII-prefix range of the primary key and compare NFC
-        keys.
+        Uses the indexed ``path_key`` column (NFC of the stored path).
         """
         assert self._conn
-        keys = library_path_lookup_keys(path)
-        placeholders = ", ".join("?" * len(keys))
-        found = [
+        return [
             row["path"]
             for row in self._conn.execute(
-                f"SELECT path FROM scanned WHERE path IN ({placeholders})", keys
+                "SELECT path FROM scanned WHERE path_key = ? OR path = ?",
+                (canonical_library_path(path), path),
             )
         ]
-        prefix = library_path_ascii_prefix(path)
-        if prefix is None:
-            return found
-        target = canonical_library_path(path)
-        for row in self._conn.execute(
-            "SELECT path FROM scanned WHERE path >= ? AND path < ?",
-            (prefix, prefix + "\U0010ffff"),
-        ):
-            stored = row["path"]
-            if stored not in found and canonical_library_path(stored) == target:
-                found.append(stored)
-        return found
 
     def _lookup_keys(self, path: str) -> tuple[str, ...]:
         """Lookup keys plus any stored mixed spelling of *path*."""
