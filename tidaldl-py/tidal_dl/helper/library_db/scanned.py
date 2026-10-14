@@ -125,7 +125,7 @@ class ScannedMixin:
     def is_known(self, path: str) -> bool:
         """Return True if *path* has already been scanned."""
         assert self._conn
-        keys = library_path_lookup_keys(path)
+        keys = self._lookup_keys(path)
         placeholders = ", ".join("?" * len(keys))
         row = self._conn.execute(
             f"SELECT 1 FROM scanned WHERE path IN ({placeholders}) LIMIT 1",
@@ -212,7 +212,7 @@ class ScannedMixin:
         The exact string is tried first, then the NFC and NFD spellings.
         """
         assert self._conn
-        for key in library_path_lookup_keys(path):
+        for key in self._lookup_keys(path):
             row = self._conn.execute("SELECT * FROM scanned WHERE path = ?", (key,)).fetchone()
             if row:
                 return dict(row)
@@ -501,7 +501,7 @@ class ScannedMixin:
     def remove(self, path: str) -> None:
         """Remove a path from the ledger (e.g. file deleted)."""
         assert self._conn
-        keys = library_path_lookup_keys(path)
+        keys = self._lookup_keys(path)
         placeholders = ", ".join("?" * len(keys))
         self._conn.execute(f"DELETE FROM scanned WHERE path IN ({placeholders})", keys)
 
@@ -539,10 +539,43 @@ class ScannedMixin:
             return nfc
         return unique[0]
 
+    def _stored_spellings(self, path: str) -> list[str]:
+        """Stored paths equal to *path* under NFC, including mixed spellings.
+
+        A walk path can mix NFC and NFD across segments, so neither the pure
+        NFC nor the pure NFD form matches it. Probe those first (indexed),
+        then scan the ASCII-prefix range of the primary key and compare NFC
+        keys.
+        """
+        assert self._conn
+        keys = library_path_lookup_keys(path)
+        placeholders = ", ".join("?" * len(keys))
+        found = [
+            row["path"]
+            for row in self._conn.execute(
+                f"SELECT path FROM scanned WHERE path IN ({placeholders})", keys
+            )
+        ]
+        prefix = library_path_ascii_prefix(path)
+        if prefix is None:
+            return found
+        target = canonical_library_path(path)
+        for row in self._conn.execute(
+            "SELECT path FROM scanned WHERE path >= ? AND path < ?",
+            (prefix, prefix + "\U0010ffff"),
+        ):
+            stored = row["path"]
+            if stored not in found and canonical_library_path(stored) == target:
+                found.append(stored)
+        return found
+
+    def _lookup_keys(self, path: str) -> tuple[str, ...]:
+        """Lookup keys plus any stored mixed spelling of *path*."""
+        return tuple(dict.fromkeys((*library_path_lookup_keys(path), *self._stored_spellings(path))))
+
     def _adopt_stored_path(self, path: str) -> str:
-        """Fold any other spelling onto the path the caller gave."""
-        nfc, nfd = library_path_forms(path)
-        for other in (nfc, nfd):
+        """Fold any other stored spelling (NFC, NFD or mixed) onto *path*."""
+        for other in self._stored_spellings(path):
             if other == path:
                 continue
             other_row = self._conn.execute(
@@ -791,7 +824,7 @@ class ScannedMixin:
     def mark_missing(self, path: str, *, since: int | None = None) -> None:
         assert self._conn
         ts = int(since if since is not None else time.time())
-        keys = library_path_lookup_keys(path)
+        keys = self._lookup_keys(path)
         placeholders = ", ".join("?" * len(keys))
         self._conn.execute(
             f"UPDATE scanned SET missing_since = ? WHERE path IN ({placeholders}) AND missing_since IS NULL",
@@ -800,7 +833,7 @@ class ScannedMixin:
 
     def clear_missing(self, path: str) -> None:
         assert self._conn
-        keys = library_path_lookup_keys(path)
+        keys = self._lookup_keys(path)
         placeholders = ", ".join("?" * len(keys))
         self._conn.execute(
             f"UPDATE scanned SET missing_since = NULL WHERE path IN ({placeholders})",

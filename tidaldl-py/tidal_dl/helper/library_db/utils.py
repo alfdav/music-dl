@@ -58,6 +58,20 @@ def library_path_lookup_keys(path: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(item for item in (path, nfc, nfd) if item))
 
 
+def library_path_ascii_prefix(path: str) -> str | None:
+    """ASCII prefix shared by every Unicode spelling of *path*.
+
+    Returns ``None`` when *path* is pure ASCII (all spellings are identical).
+    The ASCII character right before the first non-ASCII one is dropped
+    because NFD can split it from a following combining mark.
+    """
+    nfd = unicodedata.normalize("NFD", str(path))
+    for index, ch in enumerate(nfd):
+        if ord(ch) > 0x7F:
+            return nfd[: max(index - 1, 0)]
+    return None
+
+
 def prefer_listed_spelling(current: str | None, candidate: str) -> str:
     """Keep an NFC spelling the walk listed; otherwise keep the earlier listing.
 
