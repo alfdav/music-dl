@@ -110,7 +110,7 @@ def _decode_local_id(item_id: str) -> str | None:
     padded = raw + "=" * (-len(raw) % 4)
     try:
         return base64.urlsafe_b64decode(padded.encode()).decode()
-    except Exception:
+    except Exception:  # noqa: BLE001 - best-effort, failure is non-fatal
         return None
 
 
@@ -123,12 +123,12 @@ def _lookup_local_metadata(path: str) -> dict[str, Any]:
     try:
         db.open()
         row = db.get(path)
-    except Exception:
+    except Exception:  # noqa: BLE001 - best-effort, failure is non-fatal
         row = None
     finally:
         try:
             db.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - best-effort, failure is non-fatal
             pass
 
     if row:
@@ -267,12 +267,12 @@ def resolve_play_request(
                             "artist": row["artist"] or "",
                             "duration": row["duration"] or 0,
                         }
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - best-effort, failure is non-fatal
                     pass
                 finally:
                     try:
                         db.close()
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110 - best-effort, failure is non-fatal
                         pass
 
             items = []

@@ -152,8 +152,8 @@ def stream_tidal_track(track_id: int):
     except HTTPException as exc:
         if exc.status_code != 401 or _persisted_refresh_token(tidal):
             raise
-    except Exception:  # noqa: BLE001
-        pass  # noqa: S110
+    except Exception:  # noqa: BLE001, S110
+        pass
 
     # Fallback: 30-second preview (host is hardcoded + track_id is int, but validate anyway)
     try:
@@ -166,8 +166,8 @@ def stream_tidal_track(track_id: int):
                 resp.iter_content(chunk_size=8192),
                 media_type=resp.headers.get("Content-Type", "audio/mp4"),
             )
-    except Exception:  # noqa: BLE001
-        pass  # noqa: S110
+    except Exception:  # noqa: BLE001, S110
+        pass
 
     raise HTTPException(status_code=503, detail="Unable to stream track")
 

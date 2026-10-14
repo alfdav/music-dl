@@ -4,8 +4,8 @@ import sqlite3
 
 import pytest
 
-from tidal_dl.helper.library_db import LibraryDB
 from tidal_dl.gui.services.edition_advice_policy import fingerprint
+from tidal_dl.helper.library_db import LibraryDB
 
 
 @pytest.fixture
