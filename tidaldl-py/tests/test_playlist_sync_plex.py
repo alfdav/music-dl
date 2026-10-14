@@ -195,7 +195,7 @@ class FakePlexServer:
                 }
                 for item in self.playlists
             ]
-            return 200, {"MediaContainer": {"size": len(rows), "Metadata": rows}}
+            return 200, self._page(rows, headers)
         if method == "GET" and path.startswith("/playlists/") and path.endswith("/items"):
             key = path.split("/")[2]
             playlist = self._playlist(key)
@@ -230,6 +230,7 @@ class FakePlexServer:
                 self.note_search()
                 wanted = str(params.get("title") or "").casefold()
                 rows = [row for row in self.visible() if str(row.get("title") or "").casefold() == wanted]
+                return 200, self._page(rows, headers)
             return 200, {"MediaContainer": {"size": len(rows), "totalSize": len(rows), "Metadata": rows}}
         return 404, {"MediaContainer": {}}
 
@@ -1156,6 +1157,36 @@ def test_playlist_items_page_until_the_container_is_complete(tmp_path: Path):
     assert [row["ratingKey"] for row in rows] == ["5001", "5002"]
     item_calls = [call for call in session.calls if call["path"].endswith("/items")]
     assert [call["headers"]["X-Plex-Container-Start"] for call in item_calls] == ["0", "1"]
+
+
+def test_playlist_listing_pages_until_complete(tmp_path: Path):
+    server, session, _ledger, client, _sink, _clock = _stack(tmp_path)
+    server.page_size = 1
+    server.add_playlist("Playlist A", rating_key="4001")
+    server.add_playlist("Playlist B", rating_key="4002")
+    server.add_playlist("Playlist C", rating_key="4003")
+    listed = client.list_audio_playlists()
+    assert [row["rating_key"] for row in listed] == ["4001", "4002", "4003"]
+    calls = [call for call in session.calls if call["path"] == "/playlists"]
+    assert [call["headers"]["X-Plex-Container-Start"] for call in calls] == ["0", "1", "2"]
+
+
+def test_late_page_playlist_is_found_not_recreated(tmp_path: Path):
+    server, _session, _ledger, _client, sink, _clock = _stack(tmp_path)
+    server.page_size = 1
+    server.add_playlist("Other One", rating_key="4001")
+    server.add_playlist("Playlist A", rating_key="4002")
+    sink.list_tracks("Playlist A")
+    assert [item["title"] for item in server.playlists].count("Playlist A") == 1
+
+
+def test_search_tracks_pages_until_complete(tmp_path: Path):
+    server, _session, _ledger, client, _sink, _clock = _stack(tmp_path)
+    server.page_size = 1
+    server.add_track(rating_key="5001", title="Same Song", artist=ARTIST, file_path=_server("Same Song 1"))
+    server.add_track(rating_key="5002", title="Same Song", artist=ARTIST, file_path=_server("Same Song 2"))
+    rows = client.search_tracks("Same Song")
+    assert sorted(row["ratingKey"] for row in rows) == ["5001", "5002"]
 
 
 def test_ledger_migrates_local_path_and_stores_nfc_plex_paths(tmp_path: Path):

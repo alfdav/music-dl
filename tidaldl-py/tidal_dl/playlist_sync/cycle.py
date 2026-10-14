@@ -969,7 +969,6 @@ def _run_download(
         work, report, placed, track, candidate, result, notes, candidate_source=candidate_source
     ):
         return
-    work.recording_downloads.add(_recording_key(track))
     work.ledger.set_status(track, name_norm, "queued", seen_at=work.seen_at)
 
     def once() -> DownloadResult:
@@ -1018,6 +1017,9 @@ def _run_download(
         work.ledger.set_status(track, name_norm, "failed", seen_at=work.seen_at, last_failure_day=work.day)
         return
 
+    # Claim the recording only once a download actually completed, so a cap
+    # deferral or failure leaves sibling playlists free to try it.
+    work.recording_downloads.add(_recording_key(track))
     checked, file_path = _post_download(work, track, outcome)
     if checked is None:
         entry = _entry(

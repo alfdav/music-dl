@@ -89,12 +89,41 @@ class PlexClient:
         self._machine_id = machine
         return machine
 
+    def _paged_rows(
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
+        *,
+        fallback_key: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """GET every page of a container (Metadata, or *fallback_key* rows)."""
+        start = 0
+        rows: list[dict[str, Any]] = []
+        while True:
+            payload = self._request(
+                "GET",
+                path,
+                params=params,
+                extra_headers={
+                    "X-Plex-Container-Start": str(start),
+                    "X-Plex-Container-Size": str(_PAGE),
+                },
+            )
+            container = _container(payload)
+            batch = _metadata(container)
+            if not batch and fallback_key:
+                batch = _named_list(container.get(fallback_key))
+            rows.extend(batch)
+            if not batch:
+                break
+            start += len(batch)
+            total = _total_size(container)
+            if total is None or start >= total:
+                break
+        return rows
+
     def list_audio_playlists(self) -> list[dict[str, Any]]:
-        payload = self._request("GET", "/playlists", params={"playlistType": "audio"})
-        container = _container(payload)
-        rows = _metadata(container)
-        if not rows:
-            rows = _named_list(container.get("Playlist"))
+        rows = self._paged_rows("/playlists", {"playlistType": "audio"}, fallback_key="Playlist")
         listed: list[dict[str, Any]] = []
         for row in rows:
             kind = str(row.get("playlistType") or "audio").casefold()
@@ -181,12 +210,10 @@ class PlexClient:
         return _metadata(_container(payload))
 
     def search_tracks(self, title: str) -> list[dict[str, Any]]:
-        payload = self._request(
-            "GET",
+        return self._paged_rows(
             f"/library/sections/{self._section_id}/all",
-            params={"type": "10", "title": title},
+            {"type": "10", "title": title},
         )
-        return _metadata(_container(payload))
 
     def recently_added_tracks(self, limit: int = 100) -> list[dict[str, Any]]:
         payload = self._request(

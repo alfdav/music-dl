@@ -2298,6 +2298,35 @@ def test_same_recording_across_playlists_downloads_once_per_cycle(tmp_path: Path
     assert deferred[0]["reasons"] == ["downloaded_this_cycle"]
 
 
+def test_failed_download_does_not_claim_recording_for_sibling_playlist(tmp_path: Path):
+    shared_isrc = "XX0000000098"
+    row_a = _track("tidal", "1001", "Shared Song", isrc=shared_isrc, playlist_name="Playlist A")
+    row_b = _track("tidal", "1002", "Shared Song", isrc=shared_isrc, duration=181, playlist_name="Playlist B")
+    source = _Source(
+        "tidal",
+        [
+            (_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row_a]),
+            (_playlist("tidal", "pl-b", "Playlist B", "2026-01-01"), [row_b]),
+        ],
+    )
+    downloads = _Downloads(
+        {
+            1001: DownloadResult(status="failed", path=""),
+            1002: DownloadResult(status="completed", path=str(tmp_path / "1002.flac")),
+        }
+    )
+    report, _, _ = _run(
+        tmp_path,
+        source,
+        sink=_PlaylistScopedSink(),
+        downloads=downloads,
+        settings=_cfg(allowlist=("Playlist A", "Playlist B")),
+        tag_reader=_tags_for([row_b]),
+    )
+    assert downloads.calls == [[1001], [1002]]
+    assert not [item for item in report.skipped if item.get("status") == "deferred_duplicate"]
+
+
 def test_isrc_match_with_comma_artist_list_confirms_on_lead_artist():
     source = _track("tidal", "1101", "Example Song", artist=f"{ARTIST}, {OTHER}", isrc="XX0000000101")
     lead_only = verify(source, _candidate("Example Song", artist=ARTIST, isrc="XX0000000101"))
