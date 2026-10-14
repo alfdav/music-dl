@@ -326,7 +326,7 @@ class TestScanDoesNotCreateTwins:
 
     def test_scan_does_not_readd_nfd_when_nfc_already_known(self, tmp_path, monkeypatch):
         library_dir = tmp_path / "music"
-        nfc, nfd = _hardlink_alizee_pair(library_dir)
+        nfc, _nfd = _hardlink_alizee_pair(library_dir)
         db = LibraryDB(tmp_path / "library.db")
         db.open()
         db.record(nfc, status="tagged", artist=ARTIST_NFC, title=TITLE, album=ALBUM_NFC)

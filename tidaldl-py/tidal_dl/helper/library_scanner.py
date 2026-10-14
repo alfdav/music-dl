@@ -77,9 +77,23 @@ def visible_scanned_path_sql(column: str = "path") -> str:
     """
     if not _SQL_IDENT.fullmatch(column):
         raise ValueError(f"invalid SQL identifier: {column}")
+    names = sorted(_SKIPPED_SCAN_DIR_NAMES)
+    # Cheap raw-string prefilter first: a skipped component can only appear when
+    # the name is somewhere in the path (LIKE folds ASCII case like lower()).
+    # Most rows stop here, so the slash/lower normalization below runs only on
+    # the few candidates instead of once per name on every row.
+    prefilter = " AND ".join(
+        f"{column} NOT LIKE '%{_sql_like_literal(name)}%' ESCAPE '\\'" for name in names
+    )
     norm = f"'/' || trim(lower(replace({column}, char(92), '/')), '/') || '/'"
-    clauses = [f"instr({norm}, '/{name}/') = 0" for name in sorted(_SKIPPED_SCAN_DIR_NAMES)]
-    return "(" + " AND ".join(clauses) + ")"
+    clauses = [f"instr({norm}, '/{name}/') = 0" for name in names]
+    return f"(({prefilter}) OR (" + " AND ".join(clauses) + "))"
+
+
+def _sql_like_literal(value: str) -> str:
+    """Escape *value* for a SQL LIKE pattern with ESCAPE '\\' and single quotes."""
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped.replace("'", "''")
 
 
 def purge_skipped_library_rows(library_db: LibraryDB) -> int:
@@ -226,7 +240,7 @@ def _extract_isrc(path: pathlib.Path) -> str | None:
     """
     try:
         audio = mutagen_file(str(path), easy=False)
-    except Exception:
+    except Exception:  # noqa: BLE001 - best-effort, failure is non-fatal
         return None
 
     if audio is None or audio.tags is None:
@@ -336,7 +350,7 @@ def scan_directory(
 
             try:
                 isrc = _extract_isrc(file_path)
-            except Exception:
+            except Exception:  # noqa: BLE001 - best-effort, failure is non-fatal
                 result.errors += 1
                 if len(result.error_paths) < result._ERROR_PATH_CAP:
                     result.error_paths.append(str(file_path))
