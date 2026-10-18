@@ -15,6 +15,7 @@
 #   MUSIC_DL_SHARE_PROBE_TIMEOUT       seconds, default 20
 #   MUSIC_DL_SHARE_UNMOUNT_TIMEOUT     seconds, default 30
 #   MUSIC_DL_SHARE_REMOUNT_TIMEOUT     seconds, default 45
+#   MUSIC_DL_SHARE_KEYCHAIN_TIMEOUT    seconds, default 10 (saved-login lookup)
 #   MUSIC_DL_SHARE_LOG                 optional file for one appended summary line
 #
 # Exit codes:
@@ -45,7 +46,7 @@ SMB_USER=""
 SMB_SERVER=""
 
 # Invoked by the EXIT trap inside main. ShellCheck does not see that call.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 cleanup() {
   local dir="${WORKDIR:-}"
   case "${dir}" in
@@ -410,7 +411,7 @@ unmount_stray() {
 }
 
 main() {
-  local url mp probe_t unmount_t remount_t
+  local url mp probe_t unmount_t remount_t keychain_t
   local snap stray stray_note
 
   url="${MUSIC_DL_SHARE_URL:-}"
@@ -437,6 +438,10 @@ main() {
     finish 21 "bad config: timeout"
   fi
 
+  if ! keychain_t="$(normalize_pos_int "${MUSIC_DL_SHARE_KEYCHAIN_TIMEOUT:-10}")"; then
+    finish 21 "bad config: timeout"
+  fi
+
   WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/share-recover.XXXXXX")" || finish 21 "bad config: no work dir"
   trap cleanup EXIT
 
@@ -456,7 +461,14 @@ main() {
     finish 21 "bad config: share url"
   fi
   # Four-character protocol code includes the trailing space. Attributes only.
-  if ! security find-internet-password -r "smb " -s "${SMB_SERVER}" -a "${SMB_USER}" >/dev/null 2>&1; then
+  # A locked keychain can raise an unlock dialog, so this lookup is timed too.
+  run_with_timeout "${keychain_t}" "${WORKDIR}/security.out" "${WORKDIR}/security.err" \
+    security find-internet-password -r "smb " -s "${SMB_SERVER}" -a "${SMB_USER}"
+  : >"${WORKDIR}/security.out"
+  if [ "${RUN_RC}" -eq 124 ]; then
+    finish 21 "keychain lookup timed out (keychain locked?); remount would prompt"
+  fi
+  if [ "${RUN_RC}" -ne 0 ]; then
     finish 21 "no saved login; remount would prompt"
   fi
 

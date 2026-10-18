@@ -216,6 +216,9 @@ printf '%s\n' "acct: exampleuser svce: nas.example"
 if [ -f "${STATE}/security.missing" ]; then
   exit 44
 fi
+if [ -f "${STATE}/security.hang" ]; then
+  exec sleep 30
+fi
 exit 0
 EOF
 
@@ -256,7 +259,8 @@ reset_state() {
     "${STATE}/osascript.stdout" \
     "${STATE}/osascript.stderr" \
     "${STATE}/osascript.mount" \
-    "${STATE}/security.missing"
+    "${STATE}/security.missing" \
+    "${STATE}/security.hang"
   URL="${SHARE_URL}"
   PROBE_TIMEOUT=1
   UNMOUNT_TIMEOUT=1
@@ -302,6 +306,7 @@ run_helper() {
       MUSIC_DL_SHARE_MOUNTPOINT="${MP}" \
       MUSIC_DL_SHARE_URL="${URL}" \
       MUSIC_DL_SHARE_PROBE_TIMEOUT="${PROBE_TIMEOUT}" \
+      MUSIC_DL_SHARE_KEYCHAIN_TIMEOUT=1 \
       MUSIC_DL_SHARE_UNMOUNT_TIMEOUT="${UNMOUNT_TIMEOUT}" \
       MUSIC_DL_SHARE_REMOUNT_TIMEOUT="${REMOUNT_TIMEOUT}" \
       MUSIC_DL_SHARE_LOG="${log}" \
@@ -490,6 +495,19 @@ assert_count diskutil 0 "missing login does not unmount"
 assert_count umount 0 "missing login does not fall back"
 assert_count osascript 0 "missing login does not remount"
 assert_security_query "missing login keychain query has no secret flag"
+
+# Keychain lookup blocks (locked keychain, unlock dialog). Fail fast, no unmount.
+reset_state
+set_ls 1 fail
+: >"${STATE}/security.hang"
+run_helper
+assert_eq "${STATUS}" "21" "keychain hang exits 21"
+assert_contains "${LOG}" "keychain lookup timed out" "keychain hang names the timeout"
+assert_common "keychain hang"
+assert_hang_window "keychain hang returns inside the keychain timeout"
+assert_count diskutil 0 "keychain hang does not unmount"
+assert_count umount 0 "keychain hang does not fall back"
+assert_count osascript 0 "keychain hang does not remount"
 
 # Remount blocks (auth dialog). Fail fast inside REMOUNT_TIMEOUT.
 reset_state
