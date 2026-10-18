@@ -469,8 +469,9 @@ case "${CALLS}" in
   *) fail "healthy did not list the mountpoint" ;;
 esac
 
-# Not an smbfs mount at the configured path.
+# Not an smbfs mount, and no share URL is configured. Nothing is mounted.
 reset_state
+URL=""
 {
   printf '%s\n' "/dev/disk0s1 on / (apfs, local, read-only)"
   printf '%s\n' "//exampleuser@nas.example/share on /path/to/other (smbfs, nodev, nosuid)"
@@ -990,5 +991,131 @@ assert_common "both unmount timeouts"
 assert_eq "$(count_diskutil_unmount)" "1" "both unmount timeouts try diskutil once"
 assert_count umount 1 "both unmount timeouts try umount once"
 assert_count osascript 1 "both unmount timeouts remount once"
+
+hide_share() {
+  printf '%s\n' "/dev/disk0s1 on / (apfs, local, read-only)" >"${STATE}/mount.table"
+}
+
+# Not mounted, no saved login: do not mount.
+reset_state
+hide_share
+: >"${STATE}/security.missing"
+run_helper
+assert_eq "${STATUS}" "21" "absent share missing login exits 21"
+assert_contains "${LOG}" "no saved login; mount would prompt" "absent share missing login explains why"
+assert_common "absent share missing login"
+assert_count security 1 "absent share missing login checks the keychain once"
+assert_count osascript 0 "absent share missing login does not mount"
+assert_count diskutil 0 "absent share missing login does not unmount"
+assert_count umount 0 "absent share missing login does not fall back"
+assert_count ls 0 "absent share missing login does not list"
+assert_security_query "absent share missing login keychain query has no secret flag"
+
+# Not mounted, URL is not smb://.
+reset_state
+hide_share
+URL="http://exampleuser@nas.example/share"
+run_helper
+assert_eq "${STATUS}" "21" "absent share bad url exits 21"
+assert_contains "${LOG}" "bad config: share url" "absent share bad url explains why"
+assert_common "absent share bad url"
+assert_count security 0 "absent share bad url does not check the keychain"
+assert_count osascript 0 "absent share bad url does not mount"
+assert_count diskutil 0 "absent share bad url does not unmount"
+
+# Not mounted, saved login, mount lands on the mountpoint and the probe works.
+reset_state
+hide_share
+set_ls 1 ok
+run_helper
+assert_eq "${STATUS}" "0" "absent share mount exits 0"
+assert_contains "${LOG}" "mount ok mount=osascript:0 probe=0" "absent share mount logs mount ok"
+assert_common "absent share mount"
+assert_count osascript 1 "absent share mount runs osascript once"
+assert_count ls 1 "absent share mount probes once"
+assert_count security 1 "absent share mount checks the keychain once"
+assert_count diskutil 0 "absent share mount does not unmount"
+assert_count umount 0 "absent share mount does not fall back"
+assert_osascript_url "absent share mount passes the url only to osascript"
+
+# Not mounted, mount lands, probe fails.
+reset_state
+hide_share
+set_ls 1 fail
+run_helper
+assert_eq "${STATUS}" "20" "absent share probe failure exits 20"
+assert_contains "${LOG}" "mount failed" "absent share probe failure logs mount failed"
+assert_contains "${LOG}" "mount=osascript:0" "absent share probe failure records the mount"
+assert_common "absent share probe failure"
+assert_count osascript 1 "absent share probe failure mounts once"
+assert_count ls 1 "absent share probe failure probes once"
+assert_count diskutil 0 "absent share probe failure does not unmount"
+assert_count umount 0 "absent share probe failure does not fall back"
+
+# Not mounted, the listing is refused after the mount.
+reset_state
+hide_share
+set_ls 1 tcc
+run_helper
+assert_eq "${STATUS}" "11" "absent share permission exits 11"
+assert_contains "${LOG}" "listing not permitted" "absent share permission explains why"
+assert_common "absent share permission"
+assert_count osascript 1 "absent share permission mounts once"
+assert_count ls 1 "absent share permission probes once"
+assert_count diskutil 0 "absent share permission does not unmount"
+assert_count umount 0 "absent share permission does not fall back"
+
+# Not mounted, osascript blocks.
+reset_state
+hide_share
+: >"${STATE}/osascript.sleep"
+run_helper
+assert_eq "${STATUS}" "21" "absent share mount hang exits 21"
+assert_contains "${LOG}" "mount timed out (auth prompt likely)" "absent share mount hang names the timeout"
+case "${LOG}" in
+  *"share now unmounted"*) fail "absent share mount hang claimed an unmount" ;;
+esac
+pass "absent share mount hang does not claim an unmount"
+assert_common "absent share mount hang"
+assert_hang_window "absent share mount hang returns inside the remount timeout"
+assert_count osascript 1 "absent share mount hang tries osascript once"
+assert_count diskutil 0 "absent share mount hang does not unmount"
+assert_count umount 0 "absent share mount hang does not fall back"
+assert_count ls 0 "absent share mount hang does not list"
+
+# Not mounted, keychain lookup blocks. Do not mount.
+reset_state
+hide_share
+: >"${STATE}/security.hang"
+run_helper
+assert_eq "${STATUS}" "21" "absent share keychain hang exits 21"
+assert_contains "${LOG}" "keychain lookup timed out" "absent share keychain hang names the timeout"
+assert_contains "${LOG}" "mount would prompt" "absent share keychain hang would prompt"
+assert_common "absent share keychain hang"
+assert_hang_window "absent share keychain hang returns inside the keychain timeout"
+assert_count osascript 0 "absent share keychain hang does not mount"
+assert_count diskutil 0 "absent share keychain hang does not unmount"
+assert_count umount 0 "absent share keychain hang does not fall back"
+
+# Not mounted, the volume appears at a valid stray path. Unmount that once.
+reset_state
+hide_share
+printf '%s\n' "${MP}-1" >"${STATE}/osascript.stdout"
+smbfs_line share "${MP}-1" >"${STATE}/osascript.mount"
+run_helper
+assert_eq "${STATUS}" "20" "absent share stray exits 20"
+assert_contains "${LOG}" "mount failed" "absent share stray logs mount failed"
+assert_common "absent share stray"
+assert_eq "$(count_diskutil_unmount)" "1" "absent share stray unmounts once"
+assert_count umount 0 "absent share stray does not fall back"
+assert_count osascript 1 "absent share stray mounts once"
+assert_count ls 0 "absent share stray does not probe the mountpoint"
+case "${CALLS}" in
+  *"diskutil [unmount] [force] [${MP}]"*) fail "absent share stray unmounted the mountpoint" ;;
+esac
+case "${CALLS}" in
+  *"diskutil [unmount] [force] [${MP}-1]"*) pass "absent share stray unmounts the stray path" ;;
+  *) fail "absent share stray did not unmount the stray path" ;;
+esac
 
 pass "playlist share recover tests"

@@ -4,6 +4,8 @@
 # A scheduler can see the share still listed as smbfs while a directory
 # listing hangs. This helper checks that listing once. When the listing is
 # stale it tries exactly one unmount and one remount, then lists again.
+# When the mountpoint is not smbfs and a share URL is set, it tries one
+# mount and does not unmount the mountpoint. With no share URL it exits 10.
 # It never loops and never retries.
 #
 # The caller passes configuration only through the environment:
@@ -11,7 +13,9 @@
 #   MUSIC_DL_SHARE_MOUNTPOINT           required, for example /path/to/mountpoint
 #                                       a trailing slash is ignored; "/" is refused
 #   MUSIC_DL_SHARE_URL                  smb://USER@SERVER/SHARE
-#                                       required only when a remount is needed
+#                                       required to remount, or to mount when
+#                                       the share is not mounted. An empty URL
+#                                       leaves a not-mounted share at exit 10
 #                                       a userinfo colon (user:password@) is refused
 #   MUSIC_DL_SHARE_PROBE_TIMEOUT        seconds, default 20
 #   MUSIC_DL_SHARE_UNMOUNT_TIMEOUT      seconds, default 30
@@ -21,15 +25,17 @@
 #   MUSIC_DL_SHARE_LOG                  optional file for one appended summary line
 #
 # Exit codes:
-#    0  listing ok (already healthy, or healthy after the one remount)
-#   10  mountpoint is not an smbfs mount; nothing else is tried
-#   11  listing was refused by permissions; not a stale session; no remount
-#   20  the one recovery ran and the share still fails
+#    0  listing ok (already healthy, healthy after the one remount, or mount ok)
+#   10  not mounted and no share URL configured
+#   11  listing was refused by permissions; not a stale session
+#   20  the one recovery or mount attempt ran and the share still fails
 #       (not at the mountpoint, or more than one possible stray)
 #   21  fail-fast: bad config, no saved login, mount table unavailable,
-#       or the remount timed out
+#       the remount timed out, or the mount timed out
 #       Exit 21 after a remount timeout means the share has already been
 #       unmounted. The log line includes "share now unmounted".
+#       A mount timeout means the share was not mounted and nothing was
+#       unmounted. The log line says "mount timed out (auth prompt likely)".
 #
 # Worst-case duration is about 3.3 minutes (199s). The longest path is a
 # stale listing, a saved login, both unmount commands, a remount that
@@ -540,6 +546,71 @@ unmount_stray() {
   note_rc diskutil "${RUN_RC}"
 }
 
+# The mountpoint is not smbfs. Never unmount it. One mount, then the same
+# stray rules, then one probe at the mountpoint.
+mount_absent_share() {
+  local url="$1"
+  local mp="$2"
+  local probe_t="$3"
+  local unmount_t="$4"
+  local remount_t="$5"
+  local keychain_t="$6"
+  local snap stray_note
+
+  if ! parse_smb_url "${url}"; then
+    finish 21 "bad config: share url"
+  fi
+  # Attributes only. A locked keychain can raise an unlock dialog.
+  run_with_timeout "${keychain_t}" "${WORKDIR}/security.out" "${WORKDIR}/security.err" \
+    security find-internet-password -r "smb " -s "${SMB_SERVER}" -a "${SMB_USER}"
+  : >"${WORKDIR}/security.out"
+  if [ "${RUN_RC}" -eq 124 ]; then
+    finish 21 "keychain lookup timed out (keychain locked?); mount would prompt"
+  fi
+  if [ "${RUN_RC}" -ne 0 ]; then
+    finish 21 "no saved login; mount would prompt"
+  fi
+
+  snap="${WORKDIR}/before.txt"
+  write_smbfs_paths "${snap}"
+
+  remount_once "${url}" "${remount_t}"
+  if [ "${REMOUNT_RC}" -eq 124 ]; then
+    finish 21 "mount timed out (auth prompt likely)"
+  fi
+
+  if ! load_mount_table; then
+    finish 20 "mount failed mount=${REMOUNT_RESULT} probe=not-at-mountpoint"
+  fi
+  if mount_table_has "${mp}"; then
+    probe_share "${mp}" "${probe_t}"
+    if probe_is_denied; then
+      finish 11 "listing not permitted"
+    fi
+    if [ "${PROBE_RC}" -eq 0 ]; then
+      finish 0 "mount ok mount=${REMOUNT_RESULT} probe=0"
+    fi
+    finish 20 "mount failed mount=${REMOUNT_RESULT} probe=${PROBE_RESULT}"
+  fi
+
+  find_stray "${mp}" "${snap}" || true
+  case "${STRAY_STATUS}" in
+    one)
+      if [ -z "${STRAY_PATH}" ]; then
+        finish 20 "mount failed mount=${REMOUNT_RESULT} probe=not-at-mountpoint"
+      fi
+      stray_note="$(unmount_stray "${STRAY_PATH}" "${unmount_t}")"
+      finish 20 "mount failed mount=${REMOUNT_RESULT} stray=${stray_note}"
+      ;;
+    ambiguous)
+      finish 20 "mount failed mount=${REMOUNT_RESULT} probe=stray-ambiguous"
+      ;;
+    *)
+      finish 20 "mount failed mount=${REMOUNT_RESULT} probe=not-at-mountpoint"
+      ;;
+  esac
+}
+
 main() {
   local url mp probe_t unmount_t remount_t keychain_t mount_t
   local snap stray_note
@@ -583,7 +654,10 @@ main() {
     finish 21 "mount table unavailable"
   fi
   if ! mount_table_has "${mp}"; then
-    finish 10 "not mounted"
+    if [ -z "${url}" ]; then
+      finish 10 "not mounted"
+    fi
+    mount_absent_share "${url}" "${mp}" "${probe_t}" "${unmount_t}" "${remount_t}" "${keychain_t}"
   fi
 
   probe_share "${mp}" "${probe_t}"
