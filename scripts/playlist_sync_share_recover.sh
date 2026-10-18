@@ -8,24 +8,46 @@
 #
 # The caller passes configuration only through the environment:
 #
-#   MUSIC_DL_SHARE_MOUNTPOINT          required, for example /path/to/mountpoint
-#   MUSIC_DL_SHARE_URL                 smb://USER@SERVER/SHARE
-#                                      required only when a remount is needed
-#                                      a userinfo colon (user:password@) is refused
-#   MUSIC_DL_SHARE_PROBE_TIMEOUT       seconds, default 20
-#   MUSIC_DL_SHARE_UNMOUNT_TIMEOUT     seconds, default 30
-#   MUSIC_DL_SHARE_REMOUNT_TIMEOUT     seconds, default 45
-#   MUSIC_DL_SHARE_KEYCHAIN_TIMEOUT    seconds, default 10 (saved-login lookup)
-#   MUSIC_DL_SHARE_LOG                 optional file for one appended summary line
+#   MUSIC_DL_SHARE_MOUNTPOINT           required, for example /path/to/mountpoint
+#                                       a trailing slash is ignored; "/" is refused
+#   MUSIC_DL_SHARE_URL                  smb://USER@SERVER/SHARE
+#                                       required only when a remount is needed
+#                                       a userinfo colon (user:password@) is refused
+#   MUSIC_DL_SHARE_PROBE_TIMEOUT        seconds, default 20
+#   MUSIC_DL_SHARE_UNMOUNT_TIMEOUT      seconds, default 30
+#   MUSIC_DL_SHARE_REMOUNT_TIMEOUT      seconds, default 45
+#   MUSIC_DL_SHARE_KEYCHAIN_TIMEOUT     seconds, default 10 (saved-login lookup)
+#   MUSIC_DL_SHARE_MOUNT_TABLE_TIMEOUT  seconds, default 10 (`mount` table read)
+#   MUSIC_DL_SHARE_LOG                  optional file for one appended summary line
 #
 # Exit codes:
 #    0  listing ok (already healthy, or healthy after the one remount)
 #   10  mountpoint is not an smbfs mount; nothing else is tried
 #   11  listing was refused by permissions; not a stale session; no remount
 #   20  the one recovery ran and the share still fails
-#   21  fail-fast: bad config, no saved login, or the remount timed out
+#       (not at the mountpoint, or more than one possible stray)
+#   21  fail-fast: bad config, no saved login, mount table unavailable,
+#       or the remount timed out
+#       Exit 21 after a remount timeout means the share has already been
+#       unmounted. The log line includes "share now unmounted".
+#
+# Worst-case duration is about 3.3 minutes (199s). The longest path is a
+# stale listing, a saved login, both unmount commands, a remount that
+# returns, and one stray volume unmounted afterwards. Steps that time out
+# and still continue also wait about 1s while the child is killed:
+#   mount table ×3 × 10s = 30s  (initial, pre-unmount snapshot, post-remount)
+#   probe                   20s  (times out; recovery still runs) + ~1s
+#   keychain                10s  (must succeed; finishes at the deadline)
+#   diskutil                30s  (times out; umount still runs) + ~1s
+#   umount                  30s  (times out; remount still runs) + ~1s
+#   osascript               45s  (must return; a timeout stops earlier)
+#   stray unmount           30s  (times out; then the helper stops) + ~1s
+#   3×10 + 20 + 10 + 30 + 30 + 45 + 30 + 4 = 199s
+# A second listing after a remount that lands on the mountpoint is shorter.
 #
 # Logs use the tag "share-recover" and never include the URL, user, or server.
+# osascript failures log only the exit status and, when stderr ends in
+# (-NNNN), that AppleScript error number.
 # The keychain lookup asks for attributes only. It does not read the secret.
 # Remount uses the saved login. A password is never placed on an argument list.
 #
@@ -41,9 +63,13 @@ PROBE_RESULT=""
 UNMOUNT_RESULT=""
 REMOUNT_RC=1
 REMOUNT_RESULT=""
-REMOUNT_OUT=""
 SMB_USER=""
 SMB_SERVER=""
+SMB_SHARE=""
+MOUNT_TABLE_RC=0
+MOUNT_TABLE_T=""
+STRAY_STATUS=""
+STRAY_PATH=""
 
 # Invoked by the EXIT trap inside main. ShellCheck does not see that call.
 # shellcheck disable=SC2317,SC2329
@@ -104,6 +130,7 @@ parse_smb_url() {
   local rest user hostpath server share
   SMB_USER=""
   SMB_SERVER=""
+  SMB_SHARE=""
   case "${url}" in
     smb://*) ;;
     *) return 1 ;;
@@ -129,6 +156,7 @@ parse_smb_url() {
   esac
   SMB_USER="${user}"
   SMB_SERVER="${server}"
+  SMB_SHARE="${share}"
   return 0
 }
 
@@ -227,36 +255,55 @@ mountpoint_from_line() {
   printf '%s\n' "${mp}"
 }
 
-list_smbfs_mountpoints() {
-  local line mp file
-  file="${WORKDIR}/mount.txt"
-  # mount's own errors can echo a server name; keep them out of our stderr.
-  mount >"${file}" 2>"${WORKDIR}/mount.err" || true
-  while IFS= read -r line || [ -n "${line}" ]; do
-    mp="$(mountpoint_from_line "${line}")" || continue
-    printf '%s\n' "${mp}"
-  done <"${file}"
+# Read the mount table. Non-zero (including timeout) leaves MOUNT_TABLE_RC set
+# and returns 1. mount's own errors can echo a server name; they stay in the
+# work file, not on our stderr.
+load_mount_table() {
+  run_with_timeout "${MOUNT_TABLE_T}" "${WORKDIR}/mount.txt" "${WORKDIR}/mount.err" mount
+  MOUNT_TABLE_RC="${RUN_RC}"
+  [ "${MOUNT_TABLE_RC}" -eq 0 ]
 }
 
-is_smbfs_mount() {
+mount_table_has() {
   local want="$1"
-  local mp
-  while IFS= read -r mp || [ -n "${mp}" ]; do
-    if [ "${mp}" = "${want}" ]; then
+  local line path
+  while IFS= read -r line || [ -n "${line}" ]; do
+    path="$(mountpoint_from_line "${line}")" || continue
+    path="$(normalize_volume_path "${path}")"
+    if [ "${path}" = "${want}" ]; then
       return 0
     fi
-  done < <(list_smbfs_mountpoints)
+  done <"${WORKDIR}/mount.txt"
   return 1
 }
 
-first_line() {
-  local file="$1"
-  local line
-  if [ ! -f "${file}" ]; then
-    return 0
-  fi
-  IFS= read -r line <"${file}" || true
-  printf '%s' "${line%$'\r'}"
+write_smbfs_paths() {
+  local dest="$1"
+  local line path
+  : >"${dest}"
+  while IFS= read -r line || [ -n "${line}" ]; do
+    path="$(mountpoint_from_line "${line}")" || continue
+    path="$(normalize_volume_path "${path}")"
+    [ -n "${path}" ] || continue
+    printf '%s\n' "${path}" >>"${dest}"
+  done <"${WORKDIR}/mount.txt"
+}
+
+strip_trailing_slashes() {
+  local p="$1"
+  local prev
+  while [ -n "${p}" ]; do
+    case "${p}" in
+      /) break ;;
+      */)
+        prev="${p}"
+        p="${p%/}"
+        [ "${p}" = "${prev}" ] && break
+        ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "${p}"
 }
 
 normalize_volume_path() {
@@ -264,11 +311,53 @@ normalize_volume_path() {
   case "${p}" in
     file://*) p="${p#file://}" ;;
   esac
-  case "${p}" in
-    /) ;;
-    */) p="${p%/}" ;;
-  esac
+  p="$(strip_trailing_slashes "${p}")"
   printf '%s' "${p}"
+}
+
+to_lower() {
+  # stdin is /dev/null so a caller reading a file is not consumed.
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+} </dev/null
+
+path_parent() {
+  local p="$1"
+  local parent
+  parent="${p%/*}"
+  if [ -z "${parent}" ]; then
+    parent="/"
+  fi
+  printf '%s' "${parent}"
+}
+
+path_in_file() {
+  local want="$1"
+  local file="$2"
+  local line
+  [ -f "${file}" ] || return 1
+  # fd 4 so this read cannot consume a caller's mount-table loop.
+  while IFS= read -r line <&4 || [ -n "${line}" ]; do
+    if [ "${line}" = "${want}" ]; then
+      return 0
+    fi
+  done 4<"${file}"
+  return 1
+}
+
+# Basename is exactly "<base>-" plus one or more digits.
+stray_name_ok() {
+  local base="$1"
+  local name="$2"
+  local rest
+  case "${name}" in
+    "${base}-"*) ;;
+    *) return 1 ;;
+  esac
+  rest="${name#"${base}-"}"
+  case "${rest}" in
+    "" | *[!0-9]*) return 1 ;;
+  esac
+  return 0
 }
 
 note_rc() {
@@ -281,25 +370,35 @@ note_rc() {
   fi
 }
 
-sanitize_note() {
-  local line="$1"
-  local url="$2"
-  (
-    set -f
-    local tok out
-    if [ -n "${url}" ]; then
-      line="${line//"$url"/}"
-    fi
-    line="${line%$'\r'}"
-    out=""
-    for tok in ${line}; do
-      case "${tok}" in
-        *"://"* | *"@"* | *"//"*) continue ;;
-        *) out="${out:+${out} }${tok}" ;;
-      esac
-    done
-    printf '%.120s' "${out}"
-  )
+# AppleScript appends "(-NNNN)" to a failed osascript. Return that number,
+# including the minus sign, only when stderr ends with it.
+applescript_errno() {
+  local s="$1"
+  local prev tail num
+  while [ -n "${s}" ]; do
+    case "${s}" in
+      *[[:space:]]) ;;
+      *) break ;;
+    esac
+    prev="${s}"
+    s="${s%[[:space:]]}"
+    [ "${s}" = "${prev}" ] && break
+  done
+  case "${s}" in
+    *\(-[0-9]*\)) ;;
+    *) return 1 ;;
+  esac
+  tail="${s##*(}"
+  tail="${tail%)}"
+  case "${tail}" in
+    -*) ;;
+    *) return 1 ;;
+  esac
+  num="${tail#-}"
+  case "${num}" in
+    "" | *[!0-9]*) return 1 ;;
+  esac
+  printf '%s' "${tail}"
 }
 
 probe_share() {
@@ -345,10 +444,9 @@ unmount_once() {
 remount_once() {
   local url="$1"
   local timeout_s="$2"
-  local out err expr err_line clean
+  local out err expr errno
   out="${WORKDIR}/remount.out"
   err="${WORKDIR}/remount.err"
-  REMOUNT_OUT="${out}"
   expr="mount volume \"${url}\""
   run_with_timeout "${timeout_s}" "${out}" "${err}" osascript -e "${expr}"
   REMOUNT_RC="${RUN_RC}"
@@ -360,47 +458,75 @@ remount_once() {
     REMOUNT_RESULT="osascript:0"
     return 0
   fi
-  err_line="$(first_line "${err}")"
-  clean="$(sanitize_note "${err_line}" "${url}")"
-  if [ -n "${clean}" ]; then
-    REMOUNT_RESULT="osascript:${REMOUNT_RC}:${clean}"
+  errno="$(applescript_errno "$(slurp "${err}")")" || errno=""
+  if [ -n "${errno}" ]; then
+    REMOUNT_RESULT="osascript:${REMOUNT_RC}:${errno}"
   else
     REMOUNT_RESULT="osascript:${REMOUNT_RC}"
   fi
 }
 
-stray_mountpoint() {
+# A stray is unmounted only when exactly one smbfs path passes every rule:
+# the share name matches (case-insensitive), the parent directory matches,
+# the basename is "<mountpoint-basename>-<digits>", and the path was absent
+# before the remount. The path osascript prints is only a hint: this scan
+# never unmounts a path that fails the rules, including that hint.
+# STRAY_STATUS is one, ambiguous, or none. STRAY_PATH is set for one.
+# Runs in the current shell so those globals survive.
+find_stray() {
   local mp="$1"
   local snap="$2"
-  local out_file="$3"
-  local returned candidate old found
-  returned="$(first_line "${out_file}")"
-  returned="$(normalize_volume_path "${returned}")"
-  if [ -n "${returned}" ] && [ "${returned}" != "${mp}" ]; then
-    case "${returned}" in
-      /*)
-        printf '%s\n' "${returned}"
-        return 0
-        ;;
-    esac
+  local base parent want_share line src share_name share_lc path
+  local cand_parent count found
+  STRAY_STATUS="none"
+  STRAY_PATH=""
+  if [ "${MOUNT_TABLE_RC}" -ne 0 ]; then
+    return 1
   fi
-  while IFS= read -r candidate || [ -n "${candidate}" ]; do
-    [ -n "${candidate}" ] || continue
-    if [ "${candidate}" = "${mp}" ]; then
+  base="${mp##*/}"
+  parent="$(path_parent "${mp}")"
+  want_share="$(to_lower "${SMB_SHARE}")"
+  count=0
+  found=""
+  while IFS= read -r line <&3 || [ -n "${line}" ]; do
+    path="$(mountpoint_from_line "${line}")" || continue
+    path="$(normalize_volume_path "${path}")"
+    [ -n "${path}" ] || continue
+    [ "${path}" = "${mp}" ] && continue
+    case "${path}" in
+      /*) ;;
+      *) continue ;;
+    esac
+    src="${line%% on *}"
+    case "${src}" in
+      //*/*) ;;
+      *) continue ;;
+    esac
+    share_name="${src##*/}"
+    share_lc="$(to_lower "${share_name}")"
+    [ "${share_lc}" = "${want_share}" ] || continue
+    cand_parent="$(path_parent "${path}")"
+    [ "${cand_parent}" = "${parent}" ] || continue
+    stray_name_ok "${base}" "${path##*/}" || continue
+    if path_in_file "${path}" "${snap}"; then
       continue
     fi
-    found=0
-    while IFS= read -r old || [ -n "${old}" ]; do
-      if [ "${old}" = "${candidate}" ]; then
-        found=1
-        break
-      fi
-    done <"${snap}"
-    if [ "${found}" -eq 0 ]; then
-      printf '%s\n' "${candidate}"
+    if [ "${count}" -eq 1 ] && [ "${path}" = "${found}" ]; then
+      continue
+    fi
+    count=$((count + 1))
+    if [ "${count}" -gt 1 ]; then
+      STRAY_STATUS="ambiguous"
       return 0
     fi
-  done < <(list_smbfs_mountpoints)
+    found="${path}"
+  done 3<"${WORKDIR}/mount.txt"
+  if [ "${count}" -eq 1 ]; then
+    STRAY_STATUS="one"
+    STRAY_PATH="${found}"
+    return 0
+  fi
+  STRAY_STATUS="none"
   return 1
 }
 
@@ -415,8 +541,8 @@ unmount_stray() {
 }
 
 main() {
-  local url mp probe_t unmount_t remount_t keychain_t
-  local snap stray stray_note
+  local url mp probe_t unmount_t remount_t keychain_t mount_t
+  local snap stray_note
 
   url="${MUSIC_DL_SHARE_URL:-}"
   mp="${MUSIC_DL_SHARE_MOUNTPOINT:-}"
@@ -424,6 +550,7 @@ main() {
   if url_has_password "${url}"; then
     finish 21 "bad config: password in share url"
   fi
+  mp="$(strip_trailing_slashes "${mp}")"
   case "${mp}" in
     /*)
       if [ "${mp}" = "/" ]; then
@@ -441,15 +568,21 @@ main() {
   if ! remount_t="$(normalize_pos_int "${MUSIC_DL_SHARE_REMOUNT_TIMEOUT:-45}")"; then
     finish 21 "bad config: timeout"
   fi
-
   if ! keychain_t="$(normalize_pos_int "${MUSIC_DL_SHARE_KEYCHAIN_TIMEOUT:-10}")"; then
     finish 21 "bad config: timeout"
   fi
+  if ! mount_t="$(normalize_pos_int "${MUSIC_DL_SHARE_MOUNT_TABLE_TIMEOUT:-10}")"; then
+    finish 21 "bad config: timeout"
+  fi
+  MOUNT_TABLE_T="${mount_t}"
 
   WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/share-recover.XXXXXX")" || finish 21 "bad config: no work dir"
   trap cleanup EXIT
 
-  if ! is_smbfs_mount "${mp}"; then
+  if ! load_mount_table; then
+    finish 21 "mount table unavailable"
+  fi
+  if ! mount_table_has "${mp}"; then
     finish 10 "not mounted"
   fi
 
@@ -477,15 +610,21 @@ main() {
   fi
 
   snap="${WORKDIR}/before.txt"
-  list_smbfs_mountpoints >"${snap}"
+  if ! load_mount_table; then
+    finish 21 "mount table unavailable"
+  fi
+  write_smbfs_paths "${snap}"
 
   unmount_once "${mp}" "${unmount_t}"
   remount_once "${url}" "${remount_t}"
   if [ "${REMOUNT_RC}" -eq 124 ]; then
-    finish 21 "remount timed out (auth prompt likely) unmount=${UNMOUNT_RESULT}"
+    finish 21 "remount timed out (auth prompt likely); share now unmounted unmount=${UNMOUNT_RESULT}"
   fi
 
-  if is_smbfs_mount "${mp}"; then
+  if ! load_mount_table; then
+    finish 20 "recovery failed unmount=${UNMOUNT_RESULT} remount=${REMOUNT_RESULT} probe=not-at-mountpoint"
+  fi
+  if mount_table_has "${mp}"; then
     probe_share "${mp}" "${probe_t}"
     if [ "${PROBE_RC}" -eq 0 ]; then
       finish 0 "remount ok unmount=${UNMOUNT_RESULT} remount=${REMOUNT_RESULT} probe=0"
@@ -493,13 +632,22 @@ main() {
     finish 20 "recovery failed unmount=${UNMOUNT_RESULT} remount=${REMOUNT_RESULT} probe=${PROBE_RESULT}"
   fi
 
-  stray="$(stray_mountpoint "${mp}" "${snap}" "${REMOUNT_OUT}")" || stray=""
-  if [ -n "${stray}" ]; then
-    stray_note="$(unmount_stray "${stray}" "${unmount_t}")"
-    finish 20 "recovery failed: different volume path unmount=${UNMOUNT_RESULT} remount=${REMOUNT_RESULT} stray=${stray_note}"
-  fi
-
-  finish 20 "recovery failed unmount=${UNMOUNT_RESULT} remount=${REMOUNT_RESULT} probe=not-at-mountpoint"
+  find_stray "${mp}" "${snap}" || true
+  case "${STRAY_STATUS}" in
+    one)
+      if [ -z "${STRAY_PATH}" ]; then
+        finish 20 "recovery failed unmount=${UNMOUNT_RESULT} remount=${REMOUNT_RESULT} probe=not-at-mountpoint"
+      fi
+      stray_note="$(unmount_stray "${STRAY_PATH}" "${unmount_t}")"
+      finish 20 "recovery failed: different volume path unmount=${UNMOUNT_RESULT} remount=${REMOUNT_RESULT} stray=${stray_note}"
+      ;;
+    ambiguous)
+      finish 20 "recovery failed unmount=${UNMOUNT_RESULT} remount=${REMOUNT_RESULT} probe=stray-ambiguous"
+      ;;
+    *)
+      finish 20 "recovery failed unmount=${UNMOUNT_RESULT} remount=${REMOUNT_RESULT} probe=not-at-mountpoint"
+      ;;
+  esac
 }
 
 main "$@"

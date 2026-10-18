@@ -49,6 +49,7 @@ BIN="${TMP}/bin"
 STATE="${TMP}/state"
 CALL_LOG="${STATE}/calls"
 MP="${TMP}/mountpoint"
+CANON_MP="${MP}"
 LIB="${BIN}/lib.sh"
 mkdir -p "${BIN}" "${STATE}"
 
@@ -107,6 +108,28 @@ install_shim() {
 
 install_shim mount <<'EOF'
 log_call mount "$@"
+n=0
+if [ -f "${STATE}/mount.count" ]; then
+  n="$(cat "${STATE}/mount.count")"
+fi
+n=$((n + 1))
+printf '%s\n' "${n}" >"${STATE}/mount.count"
+if [ -f "${STATE}/mount.hang_after" ]; then
+  after="$(cat "${STATE}/mount.hang_after")"
+  if [ "${n}" -ge "${after}" ]; then
+    exec sleep 30
+  fi
+fi
+if [ -f "${STATE}/mount.hang" ]; then
+  exec sleep 30
+fi
+rc="0"
+if [ -f "${STATE}/mount.rc" ]; then
+  rc="$(cat "${STATE}/mount.rc")"
+fi
+if [ "${rc}" != "0" ]; then
+  exit "${rc}"
+fi
 if [ -f "${STATE}/mount.table" ]; then
   cat "${STATE}/mount.table"
 fi
@@ -152,6 +175,9 @@ if [ "${1:-}" != "unmount" ] || [ "${2:-}" != "force" ] || [ -z "${3:-}" ]; then
   exit 97
 fi
 printf '%s\n' "diskutil saw //exampleuser@nas.example/share" >&2
+if [ -f "${STATE}/diskutil.hang" ]; then
+  exec sleep 30
+fi
 rc="0"
 if [ -f "${STATE}/diskutil.rc" ]; then
   rc="$(cat "${STATE}/diskutil.rc")"
@@ -170,6 +196,9 @@ if [ "${1:-}" != "-f" ] || [ -z "${2:-}" ]; then
   exit 96
 fi
 printf '%s\n' "umount saw //exampleuser@nas.example/share" >&2
+if [ -f "${STATE}/umount.hang" ]; then
+  exec sleep 30
+fi
 rc="0"
 if [ -f "${STATE}/umount.rc" ]; then
   rc="$(cat "${STATE}/umount.rc")"
@@ -234,6 +263,11 @@ write_mount_at() {
   printf '%s\n' "//exampleuser@nas.example/share on ${path} (smbfs, nodev, nosuid)" >"${dest}"
 }
 
+smbfs_line() {
+  local share="$1" path="$2" fstype="${3:-smbfs}"
+  printf '//exampleuser@nas.example/%s on %s (%s, nodev, nosuid)\n' "${share}" "${path}" "${fstype}"
+}
+
 set_ls() {
   printf '%s\n' "$2" >"${STATE}/ls.mode.$1"
 }
@@ -260,11 +294,19 @@ reset_state() {
     "${STATE}/osascript.stderr" \
     "${STATE}/osascript.mount" \
     "${STATE}/security.missing" \
-    "${STATE}/security.hang"
+    "${STATE}/security.hang" \
+    "${STATE}/mount.hang" \
+    "${STATE}/mount.hang_after" \
+    "${STATE}/mount.count" \
+    "${STATE}/mount.rc" \
+    "${STATE}/diskutil.hang" \
+    "${STATE}/umount.hang"
+  MP="${CANON_MP}"
   URL="${SHARE_URL}"
   PROBE_TIMEOUT=1
   UNMOUNT_TIMEOUT=1
   REMOUNT_TIMEOUT=1
+  MOUNT_TABLE_TIMEOUT=1
   write_mount_at "${MP}"
   arm_remount_at "${MP}"
 }
@@ -309,6 +351,7 @@ run_helper() {
       MUSIC_DL_SHARE_KEYCHAIN_TIMEOUT=1 \
       MUSIC_DL_SHARE_UNMOUNT_TIMEOUT="${UNMOUNT_TIMEOUT}" \
       MUSIC_DL_SHARE_REMOUNT_TIMEOUT="${REMOUNT_TIMEOUT}" \
+      MUSIC_DL_SHARE_MOUNT_TABLE_TIMEOUT="${MOUNT_TABLE_TIMEOUT}" \
       MUSIC_DL_SHARE_LOG="${log}" \
       "${SCRIPT}" \
       2>"${err}"
@@ -377,6 +420,34 @@ assert_hang_window() {
     fail "${label} (elapsed_ms=${ELAPSED_MS}, shim sleeps ${HANG_SECS}s)"
   fi
   pass "${label} (${ELAPSED_MS}ms)"
+}
+
+assert_no_names() {
+  local label="$1"
+  local blob="${STDOUT}${LOG}"
+  case "${blob}" in
+    *exampleuser*) fail "${label}: user leaked" ;;
+    *nas.example*) fail "${label}: server leaked" ;;
+  esac
+  pass "${label}: server and user redacted"
+}
+
+# Recovery unmounts the original share once. A stray must not add another.
+refuse_stray() {
+  local label="$1"
+  local forbidden
+  shift
+  assert_eq "${STATUS}" "20" "${label} exits 20"
+  assert_contains "${LOG}" "not-at-mountpoint" "${label} reports not-at-mountpoint"
+  assert_eq "$(count_diskutil_unmount)" "1" "${label} does not unmount a stray"
+  assert_count umount 0 "${label} does not umount a stray"
+  assert_count osascript 1 "${label} still tries osascript once"
+  for forbidden in "$@"; do
+    case "${CALLS}" in
+      *"${forbidden}"*) fail "${label}: unmounted ${forbidden}" ;;
+    esac
+  done
+  assert_common "${label}"
 }
 
 # Healthy listing: no recovery tools.
@@ -516,6 +587,7 @@ set_ls 1 fail
 run_helper
 assert_eq "${STATUS}" "21" "remount hang exits 21"
 assert_contains "${LOG}" "remount timed out (auth prompt likely)" "remount hang names the timeout"
+assert_contains "${LOG}" "share now unmounted" "remount hang records the share is unmounted"
 assert_common "remount hang"
 assert_hang_window "remount hang returns inside the remount timeout"
 assert_count ls 1 "remount hang does not probe again"
@@ -581,7 +653,8 @@ case "${CALLS}" in
   *) fail "alias stray did not unmount the new mountpoint" ;;
 esac
 
-# osascript failure text that echoes the URL is stripped before logging.
+# osascript failure text is not logged. Only the status is kept when stderr
+# has no trailing AppleScript error number.
 reset_state
 set_ls 1 fail
 printf '%s\n' "1" >"${STATE}/osascript.rc"
@@ -589,12 +662,333 @@ printf '%s\n' "failed ${SHARE_URL} //exampleuser@nas.example leftover" >"${STATE
 rm -f "${STATE}/osascript.mount" "${STATE}/osascript.stdout"
 run_helper
 assert_eq "${STATUS}" "20" "remount error exits 20"
-assert_contains "${LOG}" "osascript:1:failed leftover" "remount error keeps the safe words"
+assert_contains "${LOG}" "remount=osascript:1 probe=" "remount error logs only the status"
+case "${LOG}" in
+  *leftover* | *osascript:1:failed*) fail "remount error kept free text" ;;
+esac
+pass "remount error drops free text"
 assert_contains "${LOG}" "unmount=" "remount error records unmount"
-assert_contains "${LOG}" "probe=" "remount error records probe"
+assert_contains "${LOG}" "not-at-mountpoint" "remount error is not at the mountpoint"
+assert_no_names "remount error"
 assert_common "remount error"
 assert_count osascript 1 "remount error tries osascript once"
 assert_eq "$(count_diskutil_unmount)" "1" "remount error unmounts once"
 assert_count ls 1 "remount error does not probe again"
+
+# Real osascript wording: U+201C/U+201D around the server, error (-5014).
+reset_state
+set_ls 1 fail
+printf '%s\n' "1" >"${STATE}/osascript.rc"
+APPLE_LQ="$(printf '\342\200\234')"
+APPLE_RQ="$(printf '\342\200\235')"
+printf '%s\n' "execution error: The server ${APPLE_LQ}nas.example${APPLE_RQ} may not exist or it is unavailable at this time. (-5014)" >"${STATE}/osascript.stderr"
+rm -f "${STATE}/osascript.mount" "${STATE}/osascript.stdout"
+run_helper
+assert_eq "${STATUS}" "20" "server error exits 20"
+assert_contains "${LOG}" "remount=osascript:1:-5014" "server error keeps the number"
+assert_no_names "server error"
+case "${LOG}${STDOUT}" in
+  *"may not exist"* | *"execution error"*) fail "server error kept free text" ;;
+esac
+pass "server error drops the sentence"
+assert_common "server error"
+
+# Real osascript wording: the account name and the server, error (-5000).
+reset_state
+set_ls 1 fail
+printf '%s\n' "1" >"${STATE}/osascript.rc"
+printf '%s\n' "execution error: The user exampleuser could not log in to nas.example. (-5000)" >"${STATE}/osascript.stderr"
+rm -f "${STATE}/osascript.mount" "${STATE}/osascript.stdout"
+run_helper
+assert_eq "${STATUS}" "20" "login error exits 20"
+assert_contains "${LOG}" "remount=osascript:1:-5000" "login error keeps the number"
+assert_no_names "login error"
+case "${LOG}${STDOUT}" in
+  *"could not log"* | *"execution error"*) fail "login error kept free text" ;;
+esac
+pass "login error drops the sentence"
+assert_common "login error"
+
+# osascript prints "/". That path is not a stray.
+reset_state
+set_ls 1 fail
+printf '%s\n' "/" >"${STATE}/osascript.stdout"
+rm -f "${STATE}/osascript.mount"
+run_helper
+refuse_stray "root hint" "diskutil [unmount] [force] [/]"
+
+# osascript prints a path that is not smbfs.
+reset_state
+set_ls 1 fail
+printf '%s\n' "/path/to/other" >"${STATE}/osascript.stdout"
+smbfs_line share "/path/to/other" apfs >"${STATE}/osascript.mount"
+run_helper
+refuse_stray "non-smbfs hint" "diskutil [unmount] [force] [/path/to/other]"
+
+# A new smbfs mount of a different share, same parent, name <base>-1.
+reset_state
+set_ls 1 fail
+printf '%s\n' "${MP}-1" >"${STATE}/osascript.stdout"
+smbfs_line other "${MP}-1" >"${STATE}/osascript.mount"
+run_helper
+refuse_stray "different share" "diskutil [unmount] [force] [${MP}-1]"
+
+# Right share, but the new mount is in a different parent.
+reset_state
+set_ls 1 fail
+printf '%s\n' "/path/to/mountpoint-1" >"${STATE}/osascript.stdout"
+smbfs_line share "/path/to/mountpoint-1" >"${STATE}/osascript.mount"
+run_helper
+refuse_stray "different parent" "diskutil [unmount] [force] [/path/to/mountpoint-1]"
+
+# Right share and parent, but the name is not <base>-N.
+reset_state
+set_ls 1 fail
+printf '%s\n' "${MP}copy" >"${STATE}/osascript.stdout"
+smbfs_line share "${MP}copy" >"${STATE}/osascript.mount"
+run_helper
+refuse_stray "wrong basename" "diskutil [unmount] [force] [${MP}copy]"
+
+# Two new <base>-N mounts. The hint names one of them. Unmount neither.
+reset_state
+set_ls 1 fail
+printf '%s\n' "${MP}-1" >"${STATE}/osascript.stdout"
+{
+  smbfs_line share "${MP}-1"
+  smbfs_line share "${MP}-2"
+} >"${STATE}/osascript.mount"
+run_helper
+assert_eq "${STATUS}" "20" "ambiguous stray exits 20"
+assert_contains "${LOG}" "stray-ambiguous" "ambiguous stray is logged"
+assert_eq "$(count_diskutil_unmount)" "1" "ambiguous stray unmounts neither candidate"
+assert_count umount 0 "ambiguous stray does not run umount"
+assert_count osascript 1 "ambiguous stray remounts once"
+case "${CALLS}" in
+  *"diskutil [unmount] [force] [${MP}-1]"*) fail "ambiguous stray unmounted -1" ;;
+  *"diskutil [unmount] [force] [${MP}-2]"*) fail "ambiguous stray unmounted -2" ;;
+esac
+pass "ambiguous stray leaves both candidates mounted"
+assert_common "ambiguous stray"
+
+# Share names are case-insensitive. Share matches share.
+reset_state
+set_ls 1 fail
+printf '%s\n' "${MP}-1" >"${STATE}/osascript.stdout"
+smbfs_line Share "${MP}-1" >"${STATE}/osascript.mount"
+run_helper
+assert_eq "${STATUS}" "20" "share case exits 20"
+assert_contains "${LOG}" "different volume path" "share case unmounts the stray"
+assert_eq "$(count_diskutil_unmount)" "2" "share case unmounts the share and the stray"
+case "${CALLS}" in
+  *"diskutil [unmount] [force] [${MP}-1]"*) pass "share case unmounts the stray path" ;;
+  *) fail "share case did not unmount the stray path" ;;
+esac
+assert_common "share case"
+
+# A <base>-N volume that was already mounted is not a stray.
+reset_state
+set_ls 1 fail
+{
+  smbfs_line share "${MP}"
+  smbfs_line share "${MP}-1"
+} >"${STATE}/mount.table"
+rm -f "${STATE}/osascript.mount" "${STATE}/osascript.stdout"
+run_helper
+refuse_stray "pre-existing volume" "diskutil [unmount] [force] [${MP}-1]"
+
+# Remount returns 0, the share is not at the mountpoint, and nothing qualifies.
+reset_state
+set_ls 1 fail
+rm -f "${STATE}/osascript.mount" "${STATE}/osascript.stdout"
+run_helper
+assert_eq "${STATUS}" "20" "no stray exits 20"
+assert_contains "${LOG}" "remount=osascript:0" "no stray records a successful remount"
+assert_contains "${LOG}" "not-at-mountpoint" "no stray reports not-at-mountpoint"
+assert_eq "$(count_diskutil_unmount)" "1" "no stray unmounts only the original share"
+assert_count umount 0 "no stray does not run umount"
+assert_count osascript 1 "no stray remounts once"
+assert_count ls 1 "no stray does not probe again"
+assert_common "no stray"
+
+# mount table times out before any unmount.
+reset_state
+: >"${STATE}/mount.hang"
+run_helper
+assert_eq "${STATUS}" "21" "mount hang exits 21"
+assert_contains "${LOG}" "mount table unavailable" "mount hang explains why"
+assert_common "mount hang"
+assert_hang_window "mount hang returns inside the mount-table timeout"
+assert_count mount 1 "mount hang reads the table once"
+assert_count ls 0 "mount hang does not list"
+assert_count diskutil 0 "mount hang does not unmount"
+assert_count umount 0 "mount hang does not fall back"
+assert_count osascript 0 "mount hang does not remount"
+assert_count security 0 "mount hang does not check the keychain"
+
+# mount exits non-zero before any unmount.
+reset_state
+printf '%s\n' "3" >"${STATE}/mount.rc"
+run_helper
+assert_eq "${STATUS}" "21" "mount failure exits 21"
+assert_contains "${LOG}" "mount table unavailable" "mount failure explains why"
+assert_common "mount failure"
+assert_count mount 1 "mount failure reads the table once"
+assert_count ls 0 "mount failure does not list"
+assert_count diskutil 0 "mount failure does not unmount"
+assert_count osascript 0 "mount failure does not remount"
+
+# Snapshot times out after the stale probe and before unmount.
+reset_state
+set_ls 1 fail
+printf '%s\n' "2" >"${STATE}/mount.hang_after"
+run_helper
+assert_eq "${STATUS}" "21" "snapshot hang exits 21"
+assert_contains "${LOG}" "mount table unavailable" "snapshot hang explains why"
+assert_common "snapshot hang"
+assert_hang_window "snapshot hang returns inside the mount-table timeout"
+assert_count diskutil 0 "snapshot hang does not unmount"
+assert_count umount 0 "snapshot hang does not fall back"
+assert_count osascript 0 "snapshot hang does not remount"
+assert_count security 1 "snapshot hang checks the keychain first"
+
+# After unmount and remount, a mount-table timeout is not-at-mountpoint.
+reset_state
+set_ls 1 fail
+printf '%s\n' "3" >"${STATE}/mount.hang_after"
+run_helper
+assert_eq "${STATUS}" "20" "post-remount mount hang exits 20"
+assert_contains "${LOG}" "not-at-mountpoint" "post-remount mount hang is not-at-mountpoint"
+assert_common "post-remount mount hang"
+assert_hang_window "post-remount mount hang returns inside the mount-table timeout"
+assert_count osascript 1 "post-remount mount hang remounts once"
+assert_eq "$(count_diskutil_unmount)" "1" "post-remount mount hang does not unmount a stray"
+assert_count umount 0 "post-remount mount hang does not fall back"
+
+# Trailing slashes name the same mountpoint. "/" does not.
+reset_state
+set_ls 1 ok
+PLAIN_MP="${MP}"
+MP="${PLAIN_MP}/"
+run_helper
+assert_eq "${STATUS}" "0" "one trailing slash exits 0"
+assert_contains "${LOG}" "listing ok" "one trailing slash is healthy"
+case "${CALLS}" in
+  *"ls [-A] [${PLAIN_MP}]"*) pass "one trailing slash lists the normalized path" ;;
+  *) fail "one trailing slash listed the wrong path" ;;
+esac
+assert_count diskutil 0 "one trailing slash does not unmount"
+assert_common "one trailing slash"
+
+reset_state
+set_ls 1 ok
+PLAIN_MP="${MP}"
+MP="${PLAIN_MP}//"
+run_helper
+assert_eq "${STATUS}" "0" "two trailing slashes exit 0"
+assert_contains "${LOG}" "listing ok" "two trailing slashes are healthy"
+case "${CALLS}" in
+  *"ls [-A] [${PLAIN_MP}]"*) pass "two trailing slashes list the normalized path" ;;
+  *) fail "two trailing slashes listed the wrong path" ;;
+esac
+assert_common "two trailing slashes"
+
+reset_state
+MP="/"
+run_helper
+assert_eq "${STATUS}" "21" "root mountpoint exits 21"
+assert_contains "${LOG}" "bad config: mountpoint" "root mountpoint explains why"
+assert_eq "$(wc -c <"${CALL_LOG}" | tr -d ' ')" "0" "root mountpoint calls nothing"
+assert_common "root mountpoint"
+
+reset_state
+MP="///"
+run_helper
+assert_eq "${STATUS}" "21" "all-slashes mountpoint exits 21"
+assert_contains "${LOG}" "bad config: mountpoint" "all-slashes mountpoint explains why"
+assert_eq "$(wc -c <"${CALL_LOG}" | tr -d ' ')" "0" "all-slashes mountpoint calls nothing"
+assert_common "all-slashes mountpoint"
+
+reset_state
+MP=""
+run_helper
+assert_eq "${STATUS}" "21" "missing mountpoint exits 21"
+assert_contains "${LOG}" "bad config: mountpoint" "missing mountpoint explains why"
+assert_eq "$(wc -c <"${CALL_LOG}" | tr -d ' ')" "0" "missing mountpoint calls nothing"
+assert_common "missing mountpoint"
+
+reset_state
+MP="relative/mount"
+run_helper
+assert_eq "${STATUS}" "21" "relative mountpoint exits 21"
+assert_contains "${LOG}" "bad config: mountpoint" "relative mountpoint explains why"
+assert_eq "$(wc -c <"${CALL_LOG}" | tr -d ' ')" "0" "relative mountpoint calls nothing"
+assert_common "relative mountpoint"
+
+reset_state
+PROBE_TIMEOUT=0
+run_helper
+assert_eq "${STATUS}" "21" "zero timeout exits 21"
+assert_contains "${LOG}" "bad config: timeout" "zero timeout explains why"
+assert_eq "$(wc -c <"${CALL_LOG}" | tr -d ' ')" "0" "zero timeout calls nothing"
+assert_common "zero timeout"
+
+reset_state
+MOUNT_TABLE_TIMEOUT="10s"
+run_helper
+assert_eq "${STATUS}" "21" "non-numeric timeout exits 21"
+assert_contains "${LOG}" "bad config: timeout" "non-numeric timeout explains why"
+assert_eq "$(wc -c <"${CALL_LOG}" | tr -d ' ')" "0" "non-numeric timeout calls nothing"
+assert_common "non-numeric timeout"
+
+reset_state
+set_ls 1 fail
+URL="http://exampleuser@nas.example/share"
+run_helper
+assert_eq "${STATUS}" "21" "non-smb url exits 21"
+assert_contains "${LOG}" "bad config: share url" "non-smb url explains why"
+assert_common "non-smb url"
+assert_count ls 1 "non-smb url probes once"
+assert_count mount 1 "non-smb url reads the mount table once"
+assert_count security 0 "non-smb url does not check the keychain"
+assert_count diskutil 0 "non-smb url does not unmount"
+assert_count osascript 0 "non-smb url does not remount"
+
+reset_state
+set_ls 1 fail
+URL="smb://exampleuser@nas.example"
+run_helper
+assert_eq "${STATUS}" "21" "url missing share exits 21"
+assert_contains "${LOG}" "bad config: share url" "url missing share explains why"
+assert_common "url missing share"
+assert_count security 0 "url missing share does not check the keychain"
+assert_count diskutil 0 "url missing share does not unmount"
+assert_count osascript 0 "url missing share does not remount"
+
+# Both unmount tools fail. Remount still runs exactly once.
+reset_state
+set_ls 1 fail
+set_ls 2 ok
+printf '%s\n' "3" >"${STATE}/diskutil.rc"
+printf '%s\n' "5" >"${STATE}/umount.rc"
+run_helper
+assert_eq "${STATUS}" "0" "both unmounts fail then recover"
+assert_contains "${LOG}" "unmount=diskutil:3,umount:5" "both unmounts fail records both results"
+assert_common "both unmounts fail"
+assert_eq "$(count_diskutil_unmount)" "1" "both unmounts fail try diskutil once"
+assert_count umount 1 "both unmounts fail try umount once"
+assert_count osascript 1 "both unmounts fail remount once"
+
+reset_state
+set_ls 1 fail
+set_ls 2 ok
+: >"${STATE}/diskutil.hang"
+: >"${STATE}/umount.hang"
+run_helper
+assert_eq "${STATUS}" "0" "both unmounts time out then recover"
+assert_contains "${LOG}" "unmount=diskutil:timeout,umount:timeout" "both unmount timeouts are logged"
+assert_common "both unmount timeouts"
+assert_eq "$(count_diskutil_unmount)" "1" "both unmount timeouts try diskutil once"
+assert_count umount 1 "both unmount timeouts try umount once"
+assert_count osascript 1 "both unmount timeouts remount once"
 
 pass "playlist share recover tests"
