@@ -165,23 +165,27 @@ run_with_timeout() {
     return 0
   fi
 
-  kill -TERM "${pid}" 2>/dev/null || true
-  g=0
-  while [ "${g}" -lt 5 ]; do
-    if ! kill -0 "${pid}" 2>/dev/null; then
-      break
+  # bash 3.2 prints a job-status line ("Terminated") when it reaps a killed
+  # child; keep that off our stderr. The helper reports only via stdout/log.
+  {
+    kill -TERM "${pid}" 2>/dev/null || true
+    g=0
+    while [ "${g}" -lt 5 ]; do
+      if ! kill -0 "${pid}" 2>/dev/null; then
+        break
+      fi
+      sleep 0.2
+      g=$((g + 1))
+    done
+    if kill -0 "${pid}" 2>/dev/null; then
+      kill -KILL "${pid}" 2>/dev/null || true
     fi
-    sleep 0.2
-    g=$((g + 1))
-  done
-  if kill -0 "${pid}" 2>/dev/null; then
-    kill -KILL "${pid}" 2>/dev/null || true
-  fi
-  if kill -0 "${pid}" 2>/dev/null; then
-    disown "${pid}" 2>/dev/null || true
-  else
-    wait "${pid}" 2>/dev/null || true
-  fi
+    if kill -0 "${pid}" 2>/dev/null; then
+      disown "${pid}" 2>/dev/null || true
+    else
+      wait "${pid}" 2>/dev/null || true
+    fi
+  } 2>/dev/null
   RUN_RC=124
   return 0
 }
