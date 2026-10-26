@@ -27,4 +27,4 @@ tauri-plugin-deep-link = "2.4.10"
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-process = "2.3.1"
 tauri-plugin-single-instance = { version = "2.4.4", features = ["deep-link"] }
-tauri-plugin-updater = "2.11.0"
+tauri-plugin-updater = "2.12.0"

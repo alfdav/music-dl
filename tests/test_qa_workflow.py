@@ -345,6 +345,7 @@ def test_bot_contract_and_performance_jobs_run_required_checks():
         "tests/test_macos_local_installer.sh",
         "tests/test_macos_release_installer.sh",
         "tests/test_windows_local_installer.sh",
+        "tests/test_playlist_sync_share_recover.sh",
         "tests/test_edge_installers.sh",
         "tests/test_edge_workflow.sh",
         "tests/test_one_line_install_docs.sh",
