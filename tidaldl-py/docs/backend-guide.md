@@ -693,7 +693,9 @@ class BaseConfig(Generic[ConfigModelT]):
 | `playlist_sync_plex_server_prefix` | str | `""` | Path prefix Plex sees for those files |
 | `playlist_sync_plex_scan_timeout_sec` | int | `600` | Seconds to wait for one scanned file to appear |
 
-Nothing on master starts a cycle. `run_cycle()` in `tidal_dl/playlist_sync/cycle.py` has no CLI command, API route, or scheduler, so these settings only matter to code that calls it directly. `music-dl sync` is a different, interactive command and ignores them.
+Nothing schedules a cycle yet, and there is no API route or UI for one. `music-dl playlist-sync --dry-run` runs one cycle by hand. It forces `dry_run` on whatever the settings say, so it never downloads from Tidal and never writes to Plex. The only file it writes is the sync ledger, `playlist_sync.db` in the config folder. It prints one line per planned change (`would download:`, `would add:`, `would remove:`) and exits `0`, or `2` if the cycle halted. Without `--dry-run` the command refuses to run and exits `2`. `music-dl sync` is a different, interactive command and ignores these settings.
+
+When the same recording shows up twice in one source playlist, the second copy is reported as `duplicate_in_source` and marked for review. It is not planned as a second Plex add or a second download.
 
 ### Download share check
 
