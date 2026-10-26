@@ -74,7 +74,7 @@ test-results/
 output/
 **/docs/superpowers/
 
-# Local-only helper scripts. Keep public installer scripts tracked.
+# Local-only helper scripts. Keep public scripts tracked.
 /scripts/*
 !/scripts/install.sh
 !/scripts/install-macos-local.sh
@@ -85,6 +85,7 @@ output/
 !/scripts/release_version.py
 !/scripts/check_repository_privacy.py
 !/scripts/check_tauri_cli_plugin_versions.py
+!/scripts/playlist_sync_share_recover.sh
 /tidaldl-py/scripts/
 
 # Local MCP config

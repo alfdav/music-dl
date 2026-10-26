@@ -17,6 +17,9 @@ _FEAT_TAIL = re.compile(
     re.IGNORECASE,
 )
 _PRIMARY_SPLIT = re.compile(r"\s+(?:with|&|x)\s+", re.IGNORECASE)
+# Sources often join credited artists with commas ("Lead, Guest"). The lead
+# artist is whatever comes before the first comma, "with", "&", or "x".
+_LEAD_SPLIT = re.compile(r"\s*,\s*|\s+(?:with|&|x)\s+", re.IGNORECASE)
 _PUNCT = re.compile(r"[^\w\s]", re.UNICODE)
 _SPACES = re.compile(r"\s+")
 _SAFE_PHRASE = r"""
@@ -71,6 +74,16 @@ def normalize_artist(artist: str) -> str:
     return _collapse(text)
 
 
+def lead_artist(artist: str) -> str:
+    """Normalised lead artist. Like normalize_artist, but a comma also ends the lead."""
+    text = strip_accents(nfc(artist)).casefold()
+    text = _FEAT_PAREN.sub(" ", text)
+    text = _FEAT_TAIL.sub(" ", text)
+    text = _LEAD_SPLIT.split(text, maxsplit=1)[0]
+    text = _PUNCT.sub(" ", text)
+    return _collapse(text)
+
+
 def normalize_title(title: str) -> str:
     text = strip_accents(nfc(title)).casefold()
     text = _FEAT_PAREN.sub(" ", text)
@@ -78,6 +91,47 @@ def normalize_title(title: str) -> str:
     text = strip_safe_suffixes(text)
     text = _PUNCT.sub(" ", text)
     return _collapse(text)
+
+
+_LOOSE_PAREN = re.compile(
+    r"\s*[([][^)\]]*\b(?:live|en vivo|ao vivo|remaster(?:ed)?|feat(?:uring)?|ft|with)\b[^)\]]*[)\]]",
+    re.IGNORECASE,
+)
+_LOOSE_DASH = re.compile(r"\s+-\s+[^-]*\b(?:live|en vivo|ao vivo|remaster(?:ed)?)\b.*$", re.IGNORECASE)
+_LIVE_PAREN = re.compile(
+    r"\s*[([][^)\]]*\b(?:live|en vivo|ao vivo)\b[^)\]]*[)\]]",
+    re.IGNORECASE,
+)
+_LIVE_DASH = re.compile(r"\s+-\s+[^-]*\b(?:live|en vivo|ao vivo)\b.*$", re.IGNORECASE)
+_UNKNOWN_ARTISTS = frozenset({"", "various artists", "various", "varios artistas", "va"})
+
+
+def loose_title(title: str) -> str:
+    """Title for the "already on the playlist" check only.
+
+    Also drops "(Live)", "(En Vivo)", "(feat. ...)" and remaster tags, so a row
+    tagged without them still counts as the same song. Never used to confirm a
+    download or an append.
+    """
+    text = strip_accents(nfc(title)).casefold()
+    text = _LOOSE_PAREN.sub(" ", text)
+    text = _LOOSE_DASH.sub(" ", text)
+    return normalize_title(text)
+
+
+def has_live_tag(title: str) -> bool:
+    """True for a live marker in parentheses, brackets, or a dash tail.
+
+    Same shapes as the live part of ``loose_title``. A feat or remaster tag
+    is not a live marker.
+    """
+    text = strip_accents(nfc(title)).casefold()
+    return _LIVE_PAREN.search(text) is not None or _LIVE_DASH.search(text) is not None
+
+
+def artist_unknown(artist: str) -> bool:
+    """True for an empty or compilation artist such as "Various Artists"."""
+    return normalize_artist(artist) in _UNKNOWN_ARTISTS
 
 
 def normalize_playlist_name(name: str) -> str:
