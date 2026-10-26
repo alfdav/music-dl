@@ -2418,6 +2418,37 @@ def test_duplicate_in_source_after_local_match_appends_once(tmp_path: Path):
     assert report.playlists[0].duplicates_in_source == 1
 
 
+def test_isrc_duplicate_in_source_appends_once_and_reviews_the_copy(tmp_path: Path):
+    """Same ISRC twice: the confirm appends once. The second copy is review, as a non-ISRC duplicate already is."""
+    from tidal_dl.playlist_sync.dry_run import planned_lines
+
+    audio = tmp_path / "smooth.flac"
+    audio.write_bytes(b"local")
+    code = "USRC17607839"
+    first = _track("tidal", "1001", "Smooth", isrc=code, duration=180)
+    later = _track("tidal", "1002", "Smooth", isrc=code, duration=180)
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [first, later])])
+    sink = _Sink()
+
+    def library(track: Track) -> list[Candidate]:
+        if track.isrc == code:
+            return [_candidate("Smooth", isrc=code, ident="row-1", path=str(audio), duration=180)]
+        return []
+
+    report, _, _ = _run(tmp_path, source, sink=sink, downloads=_Downloads(), library=library)
+    assert sink.appends == [("Playlist A", ["1001"])]
+    playlist = report.playlists[0]
+    appends = [item for item in playlist.tracks if item.get("action") == "append"]
+    assert len(appends) == 1
+    copies = [item for item in playlist.tracks if item.get("status") == "duplicate_in_source"]
+    assert len(copies) == 1
+    assert copies[0]["action"] == "review"
+    assert copies[0]["confidence"] == "review"
+    assert [line for line in planned_lines(report) if line.startswith("would add:")] == [
+        "would add: Example Artist — Smooth"
+    ]
+
+
 def test_duplicate_recording_second_cycle_skips_when_plex_has_track(tmp_path: Path):
     first = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
     later = _track("tidal", "1002", "Example Song", isrc="XX0000000001", duration=181)

@@ -598,17 +598,24 @@ def _consider(
     prior = _prior(placed, track)
     if prior is not None:
         report.duplicates_in_source += 1
+        # A review match already copies "review". An ISRC confirm copied "append",
+        # and the dry-run then planned a second Plex add for the same recording.
+        action = prior.action
+        confidence = prior.entry["confidence"]
+        if action in {"append", "download"}:
+            action = "review"
+            confidence = "review"
         entry = _entry(
             track,
-            prior.action,
-            prior.entry["confidence"],
+            action,
+            confidence,
             None,
             None,
             notes=("duplicate_in_source",),
         )
         entry["status"] = "duplicate_in_source"
         report.tracks.append(entry)
-        placed.append(_Placed(track, prior.action, entry))
+        placed.append(_Placed(track, action, entry))
         return
 
     local_state, local_candidate, local_result, stale = _local(work, track, plex_tracks)
