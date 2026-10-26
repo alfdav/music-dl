@@ -17,8 +17,9 @@ def db(tmp_path):
 @pytest.fixture
 def api_home_client(tmp_path, monkeypatch, clear_singletons):
     from fastapi.testclient import TestClient
-    from tidal_dl.gui import create_app
+
     import tidal_dl.gui.api.home as home_api
+    from tidal_dl.gui import create_app
 
     monkeypatch.setenv("MUSIC_DL_CONFIG_DIR", str(tmp_path))
     home_api._invalidate_db_cache()
