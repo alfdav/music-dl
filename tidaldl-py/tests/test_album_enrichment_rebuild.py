@@ -275,6 +275,42 @@ def test_album_card_rebuilds_stay_constant_as_lookups_grow(tmp_path, monkeypatch
     db.close()
 
 
+def test_rebuild_still_runs_once_when_a_later_pair_raises(tmp_path, monkeypatch):
+    from tidal_dl import config
+    from tidal_dl.gui.api import library as library_api
+    from tidal_dl.helper.library_db import LibraryDB
+
+    _patch_catalogs(monkeypatch)
+    db = LibraryDB(tmp_path / "library.db")
+    db.open()
+    _seed_lookup_pairs(db, 2)
+    library_api._album_cards(db)
+    calls = []
+    real = library_api._album_cards
+
+    def spy(db_arg, rows=None, **kwargs):
+        calls.append(rows)
+        return real(db_arg, rows, **kwargs)
+
+    monkeypatch.setattr(library_api, "_album_cards", spy)
+    created = {"n": 0}
+
+    class FlakyTidal:
+        def __init__(self, *args, **kwargs):
+            created["n"] += 1
+            if created["n"] > 1:
+                raise RuntimeError("tidal down")
+            self.session = object()
+
+    monkeypatch.setattr(config, "Tidal", FlakyTidal)
+    try:
+        with pytest.raises(RuntimeError, match="tidal down"):
+            library_api._enrich_album_candidates(db)
+        assert calls == [None]
+    finally:
+        db.close()
+
+
 def test_enrichment_cards_and_assessments_match_per_lookup_rebuild(tmp_path, monkeypatch):
     from tidal_dl.gui.api import library as library_api
 
@@ -297,6 +333,9 @@ def test_enrichment_cards_and_assessments_match_per_lookup_rebuild(tmp_path, mon
         library_api._enrich_album_candidates(new)
         new_cards = recorded[-1]
         assert _snapshot(new) == _snapshot(old)
+        # Track release_id is left out of the card comparison. _album_cards copies
+        # track rows before it stamps, and enrichment discards those cards.
+        # The DB stamps are compared on the snapshot above.
         assert _cards_without_read_release_ids(new_cards) == _cards_without_read_release_ids(old_cards)
     finally:
         old.close()

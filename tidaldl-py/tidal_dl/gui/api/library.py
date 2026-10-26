@@ -1190,55 +1190,57 @@ def _enrich_album_candidates(db: LibraryDB) -> None:
 
     groups = build_local_album_groups(db.all_tracks())
     updated = False
-    for left, right in find_candidates(groups):
-        stored = db.get_grouping_assessment(left.signature, right.signature)
-        if stored is None:
-            continue
-        catalog = dict(stored.get("catalog") or {})
-        now = time.time()
-        same_provider = bool(
-            left.values("provider_album_id") & right.values("provider_album_id")
-            and left.values("provider_namespace") & right.values("provider_namespace")
-        )
-        same_musicbrainz = bool(
-            left.values("musicbrainz_release_id") & right.values("musicbrainz_release_id")
-        )
-        sources: list[tuple[str, Callable[[], dict]]] = []
+    try:
+        for left, right in find_candidates(groups):
+            stored = db.get_grouping_assessment(left.signature, right.signature)
+            if stored is None:
+                continue
+            catalog = dict(stored.get("catalog") or {})
+            now = time.time()
+            same_provider = bool(
+                left.values("provider_album_id") & right.values("provider_album_id")
+                and left.values("provider_namespace") & right.values("provider_namespace")
+            )
+            same_musicbrainz = bool(
+                left.values("musicbrainz_release_id") & right.values("musicbrainz_release_id")
+            )
+            sources: list[tuple[str, Callable[[], dict]]] = []
 
-        tidal = Tidal()
-        if _local_auth_status(tidal)["logged_in"] and _catalog_source_eligible(
-            stored, "tidal", now=now, direct_identity=same_provider,
-        ):
-            sources.append((
-                "tidal",
-                lambda left=left, right=right, session=tidal.session: _tidal_catalog_lookup(left, right, session),
-            ))
-        if _catalog_source_eligible(
-            stored, "musicbrainz", now=now, direct_identity=same_musicbrainz,
-        ):
-            sources.append((
-                "musicbrainz",
-                lambda left=left, right=right: _musicbrainz_catalog_lookup(left, right),
-            ))
+            tidal = Tidal()
+            if _local_auth_status(tidal)["logged_in"] and _catalog_source_eligible(
+                stored, "tidal", now=now, direct_identity=same_provider,
+            ):
+                sources.append((
+                    "tidal",
+                    lambda left=left, right=right, session=tidal.session: _tidal_catalog_lookup(left, right, session),
+                ))
+            if _catalog_source_eligible(
+                stored, "musicbrainz", now=now, direct_identity=same_musicbrainz,
+            ):
+                sources.append((
+                    "musicbrainz",
+                    lambda left=left, right=right: _musicbrainz_catalog_lookup(left, right),
+                ))
 
-        for source, lookup in sources:
-            attempted_at = time.time()
-            result = _safe_catalog_lookup(lookup)
-            catalog[source] = {**result, "attempted_at": attempted_at}
-            with db.write_transaction():
-                db.save_grouping_assessment(
-                    left_signature=left.signature,
-                    right_signature=right.signature,
-                    score=stored["score"],
-                    outcome=stored["outcome"],
-                    evidence=stored["evidence"],
-                    vetoes=stored["vetoes"],
-                    contradictions=stored["contradictions"],
-                    catalog=catalog,
-                )
-            updated = True
-    if updated:
-        _album_cards(db)
+            for source, lookup in sources:
+                attempted_at = time.time()
+                result = _safe_catalog_lookup(lookup)
+                catalog[source] = {**result, "attempted_at": attempted_at}
+                with db.write_transaction():
+                    db.save_grouping_assessment(
+                        left_signature=left.signature,
+                        right_signature=right.signature,
+                        score=stored["score"],
+                        outcome=stored["outcome"],
+                        evidence=stored["evidence"],
+                        vetoes=stored["vetoes"],
+                        contradictions=stored["contradictions"],
+                        catalog=catalog,
+                    )
+                updated = True
+    finally:
+        if updated:
+            _album_cards(db)
 
 
 def _safe_catalog_lookup(lookup: Callable[[], dict]) -> dict:
