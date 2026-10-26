@@ -684,6 +684,23 @@ class BaseConfig(Generic[ConfigModelT]):
 | `playlist_sync_max_per_cycle` | int | `5` | Download cap for one cycle |
 | `playlist_sync_max_per_day` | int | `30` | Download cap per local day |
 | `playlist_sync_allowlist` | list | `[]` | Empty includes every created playlist |
+| `playlist_sync_plex_url` | str | `""` | Plex base URL. Empty leaves the Plex step off |
+| `playlist_sync_plex_section_id` | str | `""` | Music library section key. Empty leaves the Plex step off |
+| `playlist_sync_plex_local_prefix` | str | `""` | Local path prefix mapped onto the server prefix |
+| `playlist_sync_plex_server_prefix` | str | `""` | Path prefix Plex sees for those files |
+| `playlist_sync_plex_scan_timeout_sec` | int | `600` | Seconds to wait for one scanned file to appear |
+
+### Plex writer
+
+Playlist sync can append tracks to one Plex music playlist. The step stays off unless playlist sync is enabled and both `playlist_sync_plex_url` and `playlist_sync_plex_section_id` are set. A URL such as `http://plex.example.invalid:32400` and a section key such as `1` are enough to turn the step on. The Plex token is not a setting and is never written to the sync report.
+
+Token resolution order is `MUSIC_DL_PLEX_TOKEN`, then on macOS the login keychain item `music-dl-plex-token` (`security find-generic-password -s music-dl-plex-token -w`), then a private `plex_token` file in the music-dl config directory. On macOS the token can be stored with `security add-generic-password -s music-dl-plex-token -a music-dl -w`. That command prompts, so the value is not placed on the command line.
+
+The writer is append-only. It keeps the current Plex order, leaves hand-added tracks where they are, and never deletes, moves, reorders, or clears a playlist. A smart playlist with the target name is refused. Path mapping uses the local and server prefixes after NFC normalization. A new file is scanned in its own folder. The first unmatched file waits up to `playlist_sync_plex_scan_timeout_sec` (10 minutes by default). After that wait expires, a later new file still gets one folder scan and one lookup, with no further wait, so Plex can index it before the next cycle. A new file that Plex has not indexed yet stays pending and is retried on the next cycle without a new download.
+
+When sync itself adds a rating key, it records that key. If a recorded key later disappears from the playlist, sync treats that as a user removal: it does not add the key again, and the cycle report lists the track as `removed_in_plex`. A track sync never added still follows the union and can be appended. If the playlist itself is gone, recorded keys count as removals too, and sync does not recreate the playlist just to put them back. A key sync never added can still create the playlist.
+
+A downloaded track whose saved file is missing or empty is not downloaded again. Each cycle reports it once as `needs_review` with reason `file_missing`, and leaves it out of the pending list. The ledger row stays `downloaded`. When that file is still present, the next cycle retries the append, and a dry-run reports the retry as pending. Dry-run performs no Plex writes: no playlist create, no playlist edit, and no library scan. A dry-run still reports `removed_in_plex` when a recorded key is already gone.
 
 ---
 

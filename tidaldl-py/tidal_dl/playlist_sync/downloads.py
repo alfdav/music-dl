@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from tidal_dl.playlist_sync.models import DownloadResult
-from tidal_dl.playlist_sync.unicode_norm import nfc_path
+from tidal_dl.playlist_sync.unicode_norm import filesystem_spellings
 
 _DONE = {"done", "completed"}
 _FAILED = {"error", "failed", "cancelled"}
@@ -36,16 +36,16 @@ def existing_library_file(
     track: Any,
     file_exists: Callable[[str], bool],
 ) -> str | None:
-    """NFC path of an ISRC library row whose file is still on disk."""
+    """On-disk spelling of an ISRC library row whose file is still on disk."""
     if library is None or not getattr(track, "isrc", None):
         return None
     for candidate in library(track) or []:
         raw = getattr(candidate, "path", None)
         if raw is None and isinstance(candidate, dict):
             raw = candidate.get("path")
-        path = nfc_path(raw or "")
-        if path and file_exists(path):
-            return path
+        for spelling in filesystem_spellings(raw or ""):
+            if spelling and file_exists(spelling):
+                return spelling
     return None
 
 

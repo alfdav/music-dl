@@ -198,6 +198,15 @@ SETTINGS_HELP: dict[str, str] = {
         "Playlist names included in sync. Empty means every playlist the user created. "
         "Matching is case-insensitive. Set this only in local settings."
     ),
+    "playlist_sync_plex_url": "Plex server URL for playlist sync. Empty leaves the Plex step off.",
+    "playlist_sync_plex_section_id": "Plex music library section key. Empty leaves the Plex step off.",
+    "playlist_sync_plex_local_prefix": (
+        "Path prefix on this machine. Rewritten to the server prefix before a Plex lookup."
+    ),
+    "playlist_sync_plex_server_prefix": "Path prefix Plex sees for files under the local prefix.",
+    "playlist_sync_plex_scan_timeout_sec": (
+        "Seconds to wait for a scanned file to appear in Plex before the next cycle. Default: 600."
+    ),
 }
 
 
@@ -261,6 +270,11 @@ class Settings(_JsonDataclassMixin):
     playlist_sync_gap_sec_min: float = 30
     playlist_sync_gap_sec_max: float = 60
     playlist_sync_allowlist: list[str] = field(default_factory=list)
+    playlist_sync_plex_url: str = ""
+    playlist_sync_plex_section_id: str = ""
+    playlist_sync_plex_local_prefix: str = ""
+    playlist_sync_plex_server_prefix: str = ""
+    playlist_sync_plex_scan_timeout_sec: int = 600
 
 
 @dataclass

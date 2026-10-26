@@ -1084,9 +1084,10 @@ def isrc_tag(
             if file_path.suffix.lower() not in SCAN_EXTENSIONS:
                 continue
 
-            path_str = canonical_library_path(str(file_path))
+            listed = str(file_path)
+            path_key = canonical_library_path(listed)
 
-            if path_str in known_paths:
+            if path_key in known_paths:
                 skipped_known += 1
                 continue
 
@@ -1095,25 +1096,25 @@ def isrc_tag(
             # Check if file already has an ISRC tag
             isrc = _extract_isrc(file_path)
             if isrc:
-                queue_record(path_str, status="has_isrc", isrc=isrc)
+                queue_record(listed, status="has_isrc", isrc=isrc)
                 continue
 
-            # Read artist + title
+            # Read artist + title from the walk path, not its NFC key.
             try:
-                audio = _mutagen.File(path_str, easy=True)
+                audio = _mutagen.File(file_path, easy=True)
             except (OSError, _mutagen.MutagenError, KeyError, TypeError, ValueError):
-                queue_record(path_str, status="error")
+                queue_record(listed, status="error")
                 continue
 
             if audio is None or audio.tags is None:
-                queue_record(path_str, status="no_tags")
+                queue_record(listed, status="no_tags")
                 continue
 
             artist_list = audio.tags.get("artist") or audio.tags.get("albumartist")
             title_list = audio.tags.get("title")
 
             if not artist_list or not title_list:
-                queue_record(path_str, status="no_tags")
+                queue_record(listed, status="no_tags")
                 continue
 
             artist = str(artist_list[0]) if isinstance(artist_list, list) else str(artist_list)
@@ -1121,13 +1122,13 @@ def isrc_tag(
 
             if artist.strip() and title.strip():
                 queue_record(
-                    path_str,
+                    listed,
                     status="needs_isrc",
                     artist=artist.strip(),
                     title=title.strip(),
                 )
             else:
-                queue_record(path_str, status="no_tags")
+                queue_record(listed, status="no_tags")
 
     flush_pending()
     dropped = drop_skipped_scan_paths(db)
