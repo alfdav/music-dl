@@ -681,14 +681,25 @@ class BaseConfig(Generic[ConfigModelT]):
 | `format_track` | str | template | Download path template for tracks |
 | `playlist_sync_enabled` | bool | `false` | Playlist sync does not run unless this is set |
 | `playlist_sync_dry_run` | bool | `true` | Report only; queue and append stay idle |
+| `playlist_sync_poll_minutes` | int | `15` | Minutes between cycles once a scheduler runs them |
 | `playlist_sync_max_per_cycle` | int | `5` | Download cap for one cycle |
 | `playlist_sync_max_per_day` | int | `30` | Download cap per local day |
-| `playlist_sync_allowlist` | list | `[]` | Empty includes every created playlist |
+| `playlist_sync_gap_sec_min` | float | `30` | Shortest wait between sync downloads |
+| `playlist_sync_gap_sec_max` | float | `60` | Longest wait between sync downloads (the two are swapped if reversed) |
+| `playlist_sync_allowlist` | list | `[]` | Empty includes every created playlist. Case-insensitive name match |
 | `playlist_sync_plex_url` | str | `""` | Plex base URL. Empty leaves the Plex step off |
 | `playlist_sync_plex_section_id` | str | `""` | Music library section key. Empty leaves the Plex step off |
 | `playlist_sync_plex_local_prefix` | str | `""` | Local path prefix mapped onto the server prefix |
 | `playlist_sync_plex_server_prefix` | str | `""` | Path prefix Plex sees for those files |
 | `playlist_sync_plex_scan_timeout_sec` | int | `600` | Seconds to wait for one scanned file to appear |
+
+Nothing on master starts a cycle. `run_cycle()` in `tidal_dl/playlist_sync/cycle.py` has no CLI command, API route, or scheduler, so these settings only matter to code that calls it directly. `music-dl sync` is a different, interactive command and ignores them.
+
+### Download share check
+
+Before a cycle downloads anything, it checks that `download_base_path` exists, is writable, and is a mount point (on macOS, any volume other than the startup disk counts). It never creates the folder. If the check fails, the cycle stops with `halted_reason="download_path_unavailable"` and does nothing else.
+
+`scripts/playlist_sync_share_recover.sh` is an optional helper for a scheduler to run before a cycle when the download folder is an SMB share. It lists the mountpoint once. If the listing hangs, it unmounts once, remounts once with the saved login, and lists again. It never loops. Configure it only through environment variables: `MUSIC_DL_SHARE_MOUNTPOINT` (required), `MUSIC_DL_SHARE_URL` (`smb://USER@SERVER/SHARE`, no password), the timeout variables, and `MUSIC_DL_SHARE_LOG`. Exit codes: `0` healthy, `10` not mounted and no URL, `11` permission denied, `20` recovery ran and the share still fails, `21` bad config, missing saved login, or a timeout. The script header lists every variable and default. Nothing in the app calls it yet, and its remount path uses macOS tools (`diskutil`, `osascript`, the login keychain).
 
 ### Plex writer
 
