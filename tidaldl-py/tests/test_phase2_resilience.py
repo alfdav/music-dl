@@ -376,6 +376,117 @@ def _hifi_result(delivered, codec):
     )
 
 
+def test_hifi_preview_falls_back_to_the_delivered_oauth_quality():
+    """A Hi-Fi PREVIEW must not be saved. The next source's real file is what we label."""
+    from tests.test_hires_flac_quality import _listed_hires_track, _oauth_cd_stream
+    from tidal_dl.download.quality import SESSION_HIRES_FALLBACK_NOTICE
+
+    result = _hifi_result("HI_RES_LOSSLESS", "flac")
+    result.bit_depth = 24
+    result.sample_rate = 44100
+    result.asset_presentation = "PREVIEW"
+    subject, calls = _hifi_stream_subject(result)
+    subject.session.audio_quality = Quality.hi_res_lossless
+    subject.tidal.session_max_quality = "LOSSLESS"
+    subject.tidal.restore_normal_session = lambda: True
+    subject.settings.data.download_source_fallback = True
+    messages: list[str] = []
+    subject.fn_logger.warning = lambda message: messages.append(str(message))
+    subject.fn_logger.error = lambda message: messages.append(str(message))
+    track = _listed_hires_track(_oauth_cd_stream())
+
+    manifest, *_rest = subject._get_stream_info(track)
+
+    assert manifest.get_urls() == ["https://example.invalid/cd.flac"]
+    assert subject.last_delivered_quality == "LOSSLESS"
+    assert any("PREVIEW" in item for item in messages)
+    assert SESSION_HIRES_FALLBACK_NOTICE not in messages
+    subject._note_accepted_lossless_fallback()
+    assert SESSION_HIRES_FALLBACK_NOTICE in messages
+    assert calls
+
+
+def test_hifi_preview_fails_the_track_when_fallback_is_disabled():
+    result = _hifi_result("HI_RES_LOSSLESS", "flac")
+    result.asset_presentation = "PREVIEW"
+    result.bit_depth = 24
+    result.sample_rate = 44100
+    subject, _calls = _hifi_stream_subject(result)
+    subject.session.audio_quality = Quality.hi_res_lossless
+    subject.settings.data.download_source_fallback = False
+    messages: list[str] = []
+    subject.fn_logger.error = lambda message: messages.append(str(message))
+    subject.fn_logger.exception = lambda message: messages.append(str(message))
+    track, _manifest = _oauth_track(Quality.hi_res_lossless, "flac", [])
+
+    returned, *_rest = subject._get_stream_info(track)
+
+    assert returned is None
+    assert any("PREVIEW" in item for item in messages)
+    assert any("not saved" in item.lower() or "fallback is disabled" in item.lower() for item in messages)
+
+
+def test_track_built_without_a_session_uses_the_login_session():
+    """Hi-Fi playlist tracks are blank Track objects. get_stream() must not crash."""
+    subject = _oauth_stream_subject()
+    subject.session.audio_quality = Quality.high_lossless
+    seen: list[str] = []
+    manifest = type("Manifest", (), {"file_extension": ".flac", "codecs": "flac"})()
+    stream = type(
+        "Stream",
+        (),
+        {"audio_quality": Quality.high_lossless, "get_stream_manifest": lambda self: manifest},
+    )()
+
+    def track_lookup(track_id):
+        seen.append(str(track_id))
+        return type("Bound", (), {"get_stream": lambda self: stream})()
+
+    subject.session.track = track_lookup
+    track = object.__new__(Track)
+    track.id = 66024828
+
+    info = subject._get_track_stream_info(track)
+
+    assert seen == ["66024828"]
+    assert info.stream_manifest is manifest
+
+
+def test_hifi_playlist_tracks_carry_the_login_session():
+    from tidal_dl.helper.tidal import instantiate_media
+
+    request = object()
+    session = type("Session", (), {"request": request})()
+
+    class Client:
+        def playlist(self, playlist_id, limit=100, offset=0):
+            return {
+                "playlist": {"uuid": playlist_id, "title": "Mine", "numberOfTracks": 1},
+                "items": [
+                    {
+                        "item": {
+                            "id": 66024828,
+                            "title": "If I Didn't Have Your Love",
+                            "duration": 216,
+                            "artist": {"name": "Leonard Cohen"},
+                        }
+                    }
+                ],
+            }
+
+    playlist = instantiate_media(
+        session,
+        MediaType.PLAYLIST,
+        "playlist-1",
+        hifi_client=Client(),
+        prefer_hifi=True,
+        oauth_fallback=False,
+    )
+    track = playlist.items()[0]
+    assert track.session is session
+    assert track.requests is request
+
+
 def test_hifi_exact_quality_returns_manifest_before_urls_reach_consumption():
     subject, calls = _hifi_stream_subject(_hifi_result("HI_RES_LOSSLESS", "flac"))
     subject.session.audio_quality = Quality.hi_res_lossless
@@ -456,6 +567,188 @@ def test_subscription_quality_probe_never_mutates_configured_or_session_quality(
     assert probe.settings.save_calls == 0
 
 
+def test_subscription_quality_probe_records_oauth_session_max_when_account_is_hi_res(capsys):
+    """Account HI_RES must not hide a Tidal Web login that only delivers LOSSLESS."""
+
+    class SettingsData:
+        quality_audio = Quality.hi_res_lossless
+
+    class ProbeSession:
+        audio_quality = Quality.hi_res_lossless
+
+        def track(self, _track_id):
+            stream = type("Stream", (), {"audio_quality": Quality.high_lossless})()
+            return type("Track", (), {"get_stream": lambda self: stream})()
+
+    probe = type(
+        "Probe",
+        (),
+        {
+            "settings": type("Settings", (), {"data": SettingsData()})(),
+            "session": ProbeSession(),
+            "refresh_account_quality": lambda self: "HI_RES",
+        },
+    )()
+
+    Tidal._probe_subscription_quality(probe)
+    out = capsys.readouterr().out
+    assert "HI_RES" in out
+    assert "this login only delivers" in out
+    assert "This login can't get Hi-Res streams" not in out
+    assert "downloading Lossless instead" not in out
+    assert getattr(probe, "_hires_fallback_notice_emitted", False) is False
+    assert probe.session_max_quality == "LOSSLESS"
+    assert probe.settings.data.quality_audio == Quality.hi_res_lossless
+    assert probe.session.audio_quality == Quality.hi_res_lossless
+
+
+def test_subscription_quality_probe_treats_hires_stamp_on_cd_as_lossless():
+    """Tidal Web can stamp HI_RES_LOSSLESS on a 16/44.1 stream. Cap must be LOSSLESS."""
+    from tidal_dl.download.quality import session_can_deliver_hires
+
+    class SettingsData:
+        quality_audio = Quality.hi_res_lossless
+
+    class ProbeSession:
+        audio_quality = Quality.hi_res_lossless
+
+        def track(self, _track_id):
+            stream = type(
+                "Stream",
+                (),
+                {
+                    "audio_quality": Quality.hi_res_lossless,
+                    "bit_depth": 16,
+                    "sample_rate": 44100,
+                },
+            )()
+            return type("Track", (), {"get_stream": lambda self: stream})()
+
+    probe = type(
+        "Probe",
+        (),
+        {
+            "settings": type("Settings", (), {"data": SettingsData()})(),
+            "session": ProbeSession(),
+            "refresh_account_quality": lambda self: "HI_RES",
+        },
+    )()
+
+    Tidal._probe_subscription_quality(probe)
+
+    assert probe.session_max_quality == "LOSSLESS"
+    assert session_can_deliver_hires(probe.session_max_quality) is False
+    assert probe.settings.data.quality_audio == Quality.hi_res_lossless
+
+
+def test_subscription_quality_probe_keeps_true_hires_delivery():
+    class SettingsData:
+        quality_audio = Quality.hi_res_lossless
+
+    class ProbeSession:
+        audio_quality = Quality.hi_res_lossless
+
+        def track(self, _track_id):
+            stream = type(
+                "Stream",
+                (),
+                {
+                    "audio_quality": Quality.hi_res_lossless,
+                    "bit_depth": 24,
+                    "sample_rate": 44100,
+                },
+            )()
+            return type("Track", (), {"get_stream": lambda self: stream})()
+
+    probe = type("Probe", (), {"settings": type("Settings", (), {"data": SettingsData()})(), "session": ProbeSession()})()
+
+    Tidal._probe_subscription_quality(probe)
+
+    assert probe.session_max_quality == "HI_RES_LOSSLESS"
+
+
+def test_subscription_quality_probe_timeout_does_not_wait_for_hung_worker():
+    """Silent restore must not stall past SOURCE_RESOLVE_TIMEOUT_SEC on a hung get_stream."""
+    import time
+
+    from tidal_dl.constants import SOURCE_RESOLVE_TIMEOUT_SEC
+
+    hang = threading.Event()
+
+    class SettingsData:
+        quality_audio = Quality.hi_res_lossless
+
+    class ProbeSession:
+        audio_quality = Quality.hi_res_lossless
+
+        def track(self, _track_id):
+            def get_stream(_self):
+                hang.wait(8)
+                return type("Stream", (), {"audio_quality": Quality.high_lossless})()
+
+            return type("Track", (), {"get_stream": get_stream})()
+
+    probe = type("Probe", (), {"settings": type("Settings", (), {"data": SettingsData()})(), "session": ProbeSession()})()
+
+    started = time.monotonic()
+    Tidal._probe_subscription_quality(probe)
+    elapsed = time.monotonic() - started
+    hang.set()
+
+    assert elapsed < SOURCE_RESOLVE_TIMEOUT_SEC + 2.0
+    assert getattr(probe, "session_max_quality", None) is None
+
+
+def test_subscription_quality_probe_holds_stream_lock_during_get_stream():
+    """Lazy probe must serialize with Atmos/normal credential switches."""
+
+    class RecordingLock:
+        def __init__(self):
+            self.held_during_get_stream = False
+            self._held = False
+            self._lock = threading.Lock()
+
+        def __enter__(self):
+            self._lock.acquire()
+            self._held = True
+            return self
+
+        def __exit__(self, *_args):
+            self._held = False
+            self._lock.release()
+            return False
+
+    lock = RecordingLock()
+
+    class SettingsData:
+        quality_audio = Quality.hi_res_lossless
+
+    class ProbeSession:
+        audio_quality = Quality.hi_res_lossless
+
+        def track(self, _track_id):
+            def get_stream(_self):
+                lock.held_during_get_stream = lock._held
+                return type("Stream", (), {"audio_quality": Quality.high_lossless})()
+
+            return type("Track", (), {"get_stream": get_stream})()
+
+    probe = type(
+        "Probe",
+        (),
+        {
+            "settings": type("Settings", (), {"data": SettingsData()})(),
+            "session": ProbeSession(),
+            "stream_lock": lock,
+        },
+    )()
+
+    Tidal._probe_subscription_quality(probe)
+
+    assert lock.held_during_get_stream is True
+    assert probe.session_max_quality == "LOSSLESS"
+
+
 def test_subscription_quality_probe_unknown_warns_without_pass(capsys):
     class SettingsData:
         quality_audio = Quality.low_96k
@@ -525,6 +818,47 @@ def test_resolve_source_non_interactive_uses_quiet_restore_without_login():
 
     assert Tidal.resolve_source(tidal, lambda _message: None, allow_interactive_login=False) is False
     assert tidal.quiet_restore is True
+
+
+def test_resolve_source_silent_restore_probes_session_max():
+    """Desktop restart / Hi-Fi-down restore must measure this login before the gate."""
+    probed: list[str] = []
+
+    class SilentRestoreTidal:
+        def __init__(self):
+            self.settings = type(
+                "Settings",
+                (),
+                {
+                    "data": type(
+                        "Data",
+                        (),
+                        {"download_source": DownloadSource.OAUTH, "download_source_fallback": True},
+                    )()
+                },
+            )()
+            self.session_max_quality = None
+            self.active_source = None
+
+        def _try_login_with_key_rotation(self, quiet: bool = False) -> bool:
+            assert quiet is True
+            return True
+
+        def _probe_subscription_quality(self) -> None:
+            probed.append("probe")
+            self.session_max_quality = "LOSSLESS"
+
+        def ensure_session_max_quality(self):
+            return Tidal.ensure_session_max_quality(self)
+
+        def login(self, fn_print):
+            raise AssertionError("silent restore must not start OAuth")
+
+    tidal = SilentRestoreTidal()
+    assert Tidal.resolve_source(tidal, lambda _message: None, allow_interactive_login=False) is True
+    assert probed == ["probe"]
+    assert tidal.session_max_quality == "LOSSLESS"
+    assert tidal.active_source == DownloadSource.OAUTH
 
 
 def test_source_resolve_timeout_is_capped_so_dead_network_cannot_eat_spinner():
@@ -967,7 +1301,7 @@ def test_hifi_client_decodes_dash_manifest():
         parsed = HiFiApiClient.parse_track_payload(payload)
         # If it parses, verify basic fields are populated
         assert parsed.audio_quality == "HI_RES_LOSSLESS"
-    except Exception:
+    except (ValueError, KeyError, TypeError, OSError, AttributeError, RuntimeError):
         pytest.skip("DASH parse_manifest unavailable or format not supported in test env")
 
 
@@ -1099,3 +1433,22 @@ def test_library_db_batch_commit_persists_isrc_registrations(tmp_path):
         assert reopened.has_live_isrc("ISRC0024")
     finally:
         reopened.close()
+
+
+def test_parse_release_date_keeps_a_real_calendar_date():
+    """Hi-Fi album releaseDate must survive parsing. datetime.UTC on the class does not."""
+    from datetime import datetime
+
+    from tidal_dl.helper.tidal import _parse_release_date
+
+    parsed = _parse_release_date("2016-10-21")
+    assert isinstance(parsed, datetime)
+    assert (parsed.year, parsed.month, parsed.day) == (2016, 10, 21)
+    assert parsed.tzinfo is not None
+
+    prefixed = _parse_release_date("2016-10-21T00:00:00.000+0000")
+    assert isinstance(prefixed, datetime)
+    assert (prefixed.year, prefixed.month, prefixed.day) == (2016, 10, 21)
+
+    assert _parse_release_date("") is None
+    assert _parse_release_date("not-a-date") is None

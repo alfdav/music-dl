@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from tidal_dl.helper.path import resolve_library_relative
+from tidal_dl.helper.path import resolve_library_relative, resolve_live_library_path
 
 
 def test_resolves_into_existing_artist_prefixed_album_folder(tmp_path: Path) -> None:
@@ -143,3 +143,36 @@ def test_mix_layout_is_left_alone(tmp_path: Path) -> None:
     relative = "Mix/My Mix/Billy Idol - White Wedding"
 
     assert resolve_library_relative(tmp_path, relative) == relative
+
+
+def test_reuses_v17_placeholder_folder_when_track_file_exists(tmp_path: Path) -> None:
+    """v1.7 `_` dest is present; do not remint Artist/Album/Track."""
+    legacy = tmp_path / "Artist" / "Album" / "_" / "Track.flac"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"existing")
+
+    result = resolve_library_relative(tmp_path, "Artist/Album/Track")
+
+    assert result == "Artist/Album/_/Track"
+
+
+def test_empty_placeholder_dir_is_not_reused_for_new_track(tmp_path: Path) -> None:
+    """`_` leftover without this file must not keep minting `_` for new tracks."""
+    (tmp_path / "Artist" / "Album" / "_").mkdir(parents=True)
+    sibling = tmp_path / "Artist" / "Album" / "_" / "Other.flac"
+    sibling.write_bytes(b"other")
+
+    result = resolve_library_relative(tmp_path, "Artist/Album/Track")
+
+    assert result == "Artist/Album/Track"
+
+
+def test_live_lookup_finds_v17_placeholder_from_collapsed_dest(tmp_path: Path) -> None:
+    """scanned / history dest Artist/Album/Track.flac still resolves to `_`."""
+    legacy = tmp_path / "Artist" / "Album" / "_" / "Track.flac"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"existing")
+    collapsed = tmp_path / "Artist" / "Album" / "Track.flac"
+
+    assert resolve_live_library_path(str(collapsed)) == str(legacy)
+    assert resolve_live_library_path(str(legacy)) == str(legacy)

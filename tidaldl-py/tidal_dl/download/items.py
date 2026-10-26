@@ -9,6 +9,10 @@ from tidal_dl.helper.recording_identity import (
     live_identity_paths,
 )
 
+_FAILURE_INIT_LOCK = Lock()
+
+UNAVAILABLE_ON_TIDAL_REASON = "This item is not available for listening anymore on TIDAL."
+
 
 class ItemMixin:
     def item(
@@ -54,6 +58,8 @@ class ItemMixin:
         # Step 1: Validate and prepare media
         validated_media = self._validate_and_prepare_media(media, media_id, media_type, video_download)
         if validated_media is None or not isinstance(validated_media, Track | Video):
+            if self._peek_item_unavailable(media):
+                return DownloadOutcome.UNAVAILABLE, ""
             return DownloadOutcome.FAILED, ""
 
         media = validated_media
@@ -91,8 +97,27 @@ class ItemMixin:
                 if win_long_path(path_canonical).is_file() or win_long_path(path_copy_dst).is_file():
                     return DownloadOutcome.SKIPPED, path_canonical
                 win_long_path(path_copy_dst).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_path_str, win_long_path(path_copy_dst))
-                self.fn_logger.info(f"Copied '{name_builder_item(media)}' from '{src_path_str}'.")
+                # Copy is intentional when this playlist/mix dest does not already
+                # have the file. SMB shares reject macOS `arch` flags in copystat;
+                # the audio bytes still have to land, and one track must not abort the run.
+                dest_copy = win_long_path(path_copy_dst)
+                try:
+                    shutil.copyfile(src_path_str, dest_copy)
+                except OSError as exc:
+                    self.fn_logger.exception(
+                        f"Could not copy '{name_builder_item(media)}' from '{src_path_str}'."
+                    )
+                    self._note_item_failure(media, f"OSError: {exc}")
+                    return DownloadOutcome.FAILED, ""
+                try:
+                    shutil.copystat(src_path_str, dest_copy)
+                except OSError as exc:
+                    self.fn_logger.warning(
+                        f"Copied '{name_builder_item(media)}' from '{src_path_str}' "
+                        f"but could not copy file flags ({exc})."
+                    )
+                else:
+                    self.fn_logger.info(f"Copied '{name_builder_item(media)}' from '{src_path_str}'.")
                 register_downloaded_track(path_copy_dst)
                 return DownloadOutcome.COPIED, path_copy_dst
             else:
@@ -139,6 +164,13 @@ class ItemMixin:
         )
 
         outcome = DownloadOutcome.DOWNLOADED if download_success else DownloadOutcome.FAILED
+
+        if outcome == DownloadOutcome.DOWNLOADED:
+            note = getattr(self, "_note_accepted_lossless_fallback", None)
+            if callable(note):
+                note()
+        else:
+            self._note_item_failure(media, "download failed", overwrite=False)
 
         # Record the ISRC after a successful download so future duplicate checks work.
         if outcome == DownloadOutcome.DOWNLOADED and isinstance(media, Track):
@@ -197,8 +229,9 @@ class ItemMixin:
             elif isinstance(media, Track | Video):
                 # Check if media is available not deactivated / removed from TIDAL.
                 if not media.allow_streaming:
+                    self._note_item_unavailable(media, UNAVAILABLE_ON_TIDAL_REASON)
                     self.fn_logger.info(
-                        f"This item is not available for listening anymore on TIDAL. Skipping: {name_builder_item(media)}"
+                        f"{UNAVAILABLE_ON_TIDAL_REASON} Skipping: {name_builder_item(media)}"
                     )
                     return None
                 elif isinstance(media, Track):
@@ -223,7 +256,7 @@ class ItemMixin:
                     return None
             elif not media:
                 self._raise_media_missing()
-        except (MediaMissing, Exception):
+        except Exception:  # noqa: BLE001 — unavailable media skips this item; it must not abort the run
             return None
 
         # If video download is not allowed and this is a video, return None
@@ -337,9 +370,10 @@ class ItemMixin:
             dest_path=path_media_dst,
         )
         if not bypass_isrc and not skip_file and self.settings.data.skip_duplicate_isrc and isinstance(media, Track):
-            if media_isrc and self._library_db_for_current_thread().has_live_isrc(media_isrc):
-                skip_file = True
-            elif folder_identity:
+            isrc_already_live = bool(
+                media_isrc and self._library_db_for_current_thread().has_live_isrc(media_isrc)
+            )
+            if isrc_already_live or folder_identity:
                 skip_file = True
 
         if (
@@ -529,12 +563,102 @@ class ItemMixin:
             # Handle metadata, lyrics, and cover
             self._handle_metadata_and_extras(media, tmp_path_file, path_media_dst, is_parent_album, media_stream)
 
+            if self._downloaded_audio_is_preview(media, tmp_path_file, stream_manifest):
+                return False, path_media_dst
+
             self.fn_logger.info(f"Downloaded item '{name_builder_item(media)}'.")
 
             # Move final file to the configured destination directory.
             shutil.move(tmp_path_file, win_long_path(path_media_dst))
 
             return True, path_media_dst
+
+    def _downloaded_audio_is_preview(
+        self,
+        media: Track | Video,
+        path_media_src: pathlib.Path,
+        stream_manifest: StreamManifest | HiFiStreamManifest | None,
+    ) -> bool:
+        """Refuse a preview clip before it is moved or recorded.
+
+        The manifest flag is authoritative. Decoded duration is the backstop
+        for a container whose STREAMINFO claims the full track.
+        """
+        from tidal_dl.download.quality import duration_is_far_short, is_preview_presentation
+
+        if not isinstance(media, Track):
+            return False
+        presentation = getattr(stream_manifest, "asset_presentation", None)
+        label = str(getattr(media, "id", "track"))
+        if is_preview_presentation(presentation):
+            reason = f"Stream for track {label} is assetPresentation PREVIEW. Refusing to save it."
+            self.fn_logger.error(reason)
+            self._note_item_failure(media, reason)
+            return True
+        decoded = self._decoded_audio_seconds(path_media_src)
+        catalog = getattr(media, "duration", None)
+        if duration_is_far_short(decoded, catalog):
+            reason = (
+                f"Decoded audio for track {label} is {decoded:.2f}s but the track is {catalog}s. "
+                "Refusing to save a preview."
+            )
+            self.fn_logger.error(reason)
+            self._note_item_failure(media, reason)
+            return True
+        return False
+
+    def _decoded_audio_seconds(self, path_media_src: pathlib.Path) -> float | None:
+        """Seconds of the audio stream. Cover art must not replace this."""
+        from tidal_dl.download_ffmpeg import audio_stream_duration_seconds
+
+        return audio_stream_duration_seconds(
+            path_media_src,
+            getattr(self.settings.data, "path_binary_ffmpeg", None),
+        )
+
+    def _ensure_failure_store(self) -> None:
+        if getattr(self, "_item_failure_lock", None) is not None:
+            if not hasattr(self, "_item_unavailable_reasons"):
+                self._item_unavailable_reasons = {}
+            return
+        with _FAILURE_INIT_LOCK:
+            if getattr(self, "_item_failure_lock", None) is None:
+                self._item_failure_reasons = {}
+                self._item_unavailable_reasons = {}
+                self._item_failure_lock = Lock()
+
+    def _note_item_failure(self, media: object, reason: str, *, overwrite: bool = True) -> None:
+        self._ensure_failure_store()
+        key = str(getattr(media, "id", "") or id(media))
+        with self._item_failure_lock:
+            if overwrite or key not in self._item_failure_reasons:
+                self._item_failure_reasons[key] = reason
+
+    def _take_item_failure(self, media: object) -> str:
+        self._ensure_failure_store()
+        key = str(getattr(media, "id", "") or id(media))
+        with self._item_failure_lock:
+            return self._item_failure_reasons.pop(key, "")
+
+    def _note_item_unavailable(self, media: object, reason: str) -> None:
+        self._ensure_failure_store()
+        key = str(getattr(media, "id", "") or id(media))
+        with self._item_failure_lock:
+            self._item_unavailable_reasons[key] = reason
+
+    def _peek_item_unavailable(self, media: object | None) -> str:
+        if media is None:
+            return ""
+        self._ensure_failure_store()
+        key = str(getattr(media, "id", "") or id(media))
+        with self._item_failure_lock:
+            return self._item_unavailable_reasons.get(key, "")
+
+    def _take_item_unavailable(self, media: object) -> str:
+        self._ensure_failure_store()
+        key = str(getattr(media, "id", "") or id(media))
+        with self._item_failure_lock:
+            return self._item_unavailable_reasons.pop(key, "")
 
     def _flac_stream_in_mp4_container(
         self, path_media_src: pathlib.Path, codecs: str, current_extension: str
@@ -615,7 +739,7 @@ class ItemMixin:
 
         # Write metadata to file.  media_stream may be None for Hi-Fi API
         # downloads; metadata_write handles this gracefully.
-        result_metadata, tmp_path_lyrics, tmp_path_cover = self.metadata_write(
+        _result_metadata, tmp_path_lyrics, tmp_path_cover = self.metadata_write(
             media, tmp_path_file, is_parent_album, media_stream
         )
 

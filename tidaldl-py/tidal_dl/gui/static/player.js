@@ -1685,6 +1685,11 @@ function _isTypingTarget(target) {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
 }
 
+function _isPlaylistListTarget(target) {
+  if (!target || typeof target.closest !== 'function') return false;
+  return !!(target.closest('.tracks-virtual') || target.closest('.track.selected'));
+}
+
 function _focusSearchShortcut() {
   navigate('search');
   setTimeout(() => {
@@ -1696,6 +1701,7 @@ function _focusSearchShortcut() {
 // Keyboard shortcuts (YouTube-style)
 document.addEventListener('keydown', (e) => {
   if (_isTypingTarget(e.target)) return;
+  if (_isPlaylistListTarget(e.target) && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) return;
   if (e.code === 'Escape' && _lyricsOpen()) {
     e.preventDefault();
     closeLyricsPanel({ restoreFocus: true });
