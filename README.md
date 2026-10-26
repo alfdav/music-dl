@@ -254,7 +254,7 @@ Your browser opens automatically. The wizard handles the rest.
 - **Duplicate cleanup** — ISRC-based deduplication finds exact copies across your collection
 - **In-browser playback** — play anything in your library, bit-perfect to your DAC, with persisted queue, volume, repeat/shuffle preferences, keyboard shortcuts, and queue actions
 - **Waveform visualizer** — pre-computed amplitude data drives a ripple animation from the playhead, zero audio post-processing
-- **Playlist sync** — point it at a Tidal playlist and it downloads only the tracks you don't have
+- **Playlist sync** — `music-dl sync` compares the playlists in your Tidal collection with your library and downloads only the tracks you don't have. A separate append-only sync (with an optional Plex playlist writer) is off by default and has no scheduler or UI yet. `music-dl playlist-sync --dry-run` previews one cycle without touching Plex or Tidal; see [`tidaldl-py/docs/backend-guide.md`](tidaldl-py/docs/backend-guide.md#plex-writer).
 - **Favorites** — mark tracks you love, access them from one place
 - **Lyrics** — the now-playing panel reads a sidecar `.lrc` or embedded tags first, then Tidal `track.lyrics()` when signed in. Save lyrics writes that sidecar for the current local file so later plays work offline. Download-time embed/sidecar stay opt-in. See [`tidaldl-py/docs/local-lyrics.md`](tidaldl-py/docs/local-lyrics.md).
 - **Setup wizard** — first-run experience that walks you through Tidal login and library paths
@@ -274,10 +274,16 @@ music-dl dl <URL> --output ~/x  # one-off output directory override
 music-dl cfg                    # view/edit settings
 music-dl login                  # authenticate with Tidal from the terminal
 music-dl logout                 # clear stored Tidal credentials
-music-dl sync                   # sync library database
+music-dl sync                   # download missing tracks from your Tidal playlists (asks per playlist)
+music-dl sync --yes             # same, without the per-playlist prompt
+music-dl playlist-sync --dry-run # preview one append-only sync cycle; no Plex or Tidal writes
 music-dl import <file>          # import a playlist from CSV/JSON
 music-dl isrc-tag <path>        # write ISRC tags to local audio files
-music-dl scan add <PATH>        # add and scan a local library directory
+music-dl scan                   # scan configured library paths (--all, --dry-run, -v)
+music-dl scan add <PATH>        # add and scan a local library directory (--no-scan to only save it)
+music-dl scan remove <PATH>     # stop scanning a directory
+music-dl scan show              # list configured scan paths
+music-dl source show            # show the current download source
 music-dl dl_fav tracks --since 2026-01-01  # download favorite tracks incrementally
 music-dl gui --setup-bot        # compatibility reminder; bot setup stays in the DJAI panel
 ```
