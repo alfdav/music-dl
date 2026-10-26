@@ -99,6 +99,7 @@ class PlexClient:
         """GET every page of a container (Metadata, or *fallback_key* rows)."""
         start = 0
         rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
         while True:
             payload = self._request(
                 "GET",
@@ -113,12 +114,26 @@ class PlexClient:
             batch = _metadata(container)
             if not batch and fallback_key:
                 batch = _named_list(container.get(fallback_key))
-            rows.extend(batch)
             if not batch:
                 break
+            fresh = 0
+            for row in batch:
+                ident = _row_id(row)
+                if ident:
+                    if ident in seen:
+                        continue
+                    seen.add(ident)
+                rows.append(row)
+                fresh += 1
             start += len(batch)
             total = _total_size(container)
-            if total is None or start >= total:
+            # ponytail: a page of ids already stored means the offset did not move.
+            # A cursor per id if a full overlapping page can still hide later rows.
+            if fresh == 0:
+                break
+            if total is not None and start >= total:
+                break
+            if total is None and len(batch) < _PAGE:
                 break
         return rows
 
@@ -142,28 +157,7 @@ class PlexClient:
         return listed
 
     def playlist_items(self, playlist_key: str) -> list[dict[str, Any]]:
-        path = f"/playlists/{playlist_key}/items"
-        start = 0
-        items: list[dict[str, Any]] = []
-        while True:
-            payload = self._request(
-                "GET",
-                path,
-                extra_headers={
-                    "X-Plex-Container-Start": str(start),
-                    "X-Plex-Container-Size": str(_PAGE),
-                },
-            )
-            container = _container(payload)
-            batch = _metadata(container)
-            items.extend(batch)
-            if not batch:
-                break
-            start += len(batch)
-            total = _total_size(container)
-            if total is None or start >= total:
-                break
-        return items
+        return self._paged_rows(f"/playlists/{playlist_key}/items")
 
     def create_playlist(self, title: str, first_rating_key: str) -> str:
         self._block_write("POST", "/playlists")
@@ -348,6 +342,14 @@ def _container(payload: object) -> dict[str, Any]:
 
 def _metadata(container: Mapping[str, Any]) -> list[dict[str, Any]]:
     return _named_list(container.get("Metadata"))
+
+
+def _row_id(row: Mapping[str, Any]) -> str:
+    for key in ("ratingKey", "rating_key"):
+        value = row.get(key)
+        if value is not None and str(value) != "":
+            return str(value)
+    return ""
 
 
 def _named_list(raw: object) -> list[dict[str, Any]]:

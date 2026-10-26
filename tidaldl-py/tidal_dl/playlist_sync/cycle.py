@@ -598,17 +598,24 @@ def _consider(
     prior = _prior(placed, track)
     if prior is not None:
         report.duplicates_in_source += 1
+        # A review match already copies "review". An ISRC confirm copied "append",
+        # and the dry-run then planned a second Plex add for the same recording.
+        action = prior.action
+        confidence = prior.entry["confidence"]
+        if action in {"append", "download"}:
+            action = "review"
+            confidence = "review"
         entry = _entry(
             track,
-            prior.action,
-            prior.entry["confidence"],
+            action,
+            confidence,
             None,
             None,
             notes=("duplicate_in_source",),
         )
         entry["status"] = "duplicate_in_source"
         report.tracks.append(entry)
-        placed.append(_Placed(track, prior.action, entry))
+        placed.append(_Placed(track, action, entry))
         return
 
     local_state, local_candidate, local_result, stale = _local(work, track, plex_tracks)
@@ -663,6 +670,8 @@ def _consider(
             )
         return
     if local_state == "review":
+        if _saved_file_retry(work, group, report, union, placed, track, name_norm):
+            return
         union.append(track)
         _keep(
             work,
@@ -718,6 +727,8 @@ def _consider(
                     )
                 return
             if plex_state == "review":
+                if _saved_file_retry(work, group, report, union, placed, track, name_norm):
+                    return
                 union.append(track)
                 _keep(
                     work,
@@ -1664,6 +1675,22 @@ def _note_file_missing(
     report.needs_review.append(entry)
     work.report.needs_review.append(entry)
     placed.append(_Placed(track, "review", entry))
+
+
+def _saved_file_retry(
+    work: _Work,
+    group: _Group,
+    report: PlaylistReport,
+    union: list[Track],
+    placed: list[_Placed],
+    track: Track,
+    name_norm: str,
+) -> bool:
+    """Append a downloaded file even when a later lookup only rates as review."""
+    row = work.ledger.get_track(track.source, track.source_track_id, name_norm)
+    if not row:
+        return False
+    return _retry_saved_file(work, group, report, union, placed, track, name_norm, row)
 
 
 def _retry_saved_file(
