@@ -1,6 +1,78 @@
 """Download duplicates helpers."""
 
-from tidal_dl.download._common import *  # noqa: F403
+from tidal_dl.download._common import *
+
+
+def track_file_is_in_output(
+    downloader,
+    media,
+    file_template: str | None,
+    list_position: int = 0,
+    list_total: int = 0,
+) -> bool:
+    """True when this job's dest already has the track, even if skip_existing is off.
+
+    The path is checked directly. Do not flip the shared skip_existing flag:
+    other tracks are downloading on this same downloader.
+    """
+    prepare = getattr(downloader, "_prepare_file_paths_and_skip_logic", None)
+    if not callable(prepare):
+        return False
+    try:
+        result = prepare(
+            media,
+            file_template or "{track_title}",
+            None,
+            list_position,
+            list_total,
+            bypass_isrc=True,
+        )
+    except (TypeError, ValueError, OSError, AttributeError):
+        return False
+    if not isinstance(result, tuple) or not result:
+        return False
+    try:
+        return check_file_exists(pathlib.Path(result[0]), extension_ignore=False)
+    except (TypeError, ValueError, OSError):
+        return False
+
+
+def dest_already_present(
+    downloader,
+    media,
+    source_path: str,
+    file_template: str | None = None,
+    list_position: int = 0,
+    list_total: int = 0,
+) -> bool:
+    """True when a file exists at this job's dest (including legacy `_/`).
+
+    Presence is path-only. An ISRC or library row at another location must not
+    count as dest — playlists and mixes still copy into their own folder.
+    """
+    if getattr(downloader, "skip_existing", False) is not True:
+        return False
+    prepare = getattr(downloader, "_prepare_file_paths_and_skip_logic", None)
+    if not callable(prepare):
+        return False
+    template = (
+        file_template
+        or getattr(getattr(downloader.settings, "data", None), "format_album", None)
+        or "{track_title}"
+    )
+    try:
+        result = prepare(media, template, None, list_position, list_total, bypass_isrc=True)
+    except TypeError:
+        return False
+    if not isinstance(result, tuple) or len(result) < 3:
+        return False
+    dest, _ext, skip_file = result[0], result[1], result[2]
+    if skip_file is True:
+        return True
+    try:
+        return pathlib.Path(dest).resolve() == pathlib.Path(source_path).resolve()
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 class DuplicateMixin:
@@ -9,6 +81,7 @@ class DuplicateMixin:
         items: list,
         checkpoint: "DownloadCheckpoint | None" = None,
         ensure_complete: bool = False,
+        file_template: str | None = None,
     ) -> dict[str, str]:
         """Scan items for duplicate ISRCs before downloads start.
 
@@ -16,21 +89,36 @@ class DuplicateMixin:
         Empty dict means no duplicates were found or ISRC dedup is disabled.
 
         When *ensure_complete* is True (collections: albums, playlists, mixes),
-        duplicates are always copied or re-downloaded — never skipped.
+        duplicates are copied or re-downloaded unless dest already exists.
         """
         if not self.settings.data.skip_duplicate_isrc:
             return {}
 
         hits_with_source: list[tuple] = []  # (Track, path_str) — source file exists
         hits_missing_source: list[tuple] = []  # (Track, path_str) — source file gone
+        list_total = len(items)
+        positions = {
+            str(item_media.id): index
+            for index, item_media in enumerate(items, start=1)
+            if isinstance(item_media, Track) and getattr(item_media, "id", None) is not None
+        }
 
         for item_media in items:
             if not isinstance(item_media, Track):
                 continue
-            # Skip tracks already completed in checkpoint
-            if checkpoint is not None:
-                if checkpoint.status_of(str(item_media.id)) == STATUS_DOWNLOADED:
-                    continue
+            # Skip tracks already completed in this output dir.
+            if (
+                checkpoint is not None
+                and checkpoint.status_of(str(item_media.id)) == STATUS_DOWNLOADED
+                and track_file_is_in_output(
+                    self,
+                    item_media,
+                    file_template,
+                    list_position=positions.get(str(item_media.id), 0),
+                    list_total=list_total,
+                )
+            ):
+                continue
             isrc = getattr(item_media, "isrc", None)
             if not isrc:
                 continue
@@ -46,17 +134,36 @@ class DuplicateMixin:
             return {}
 
         # Collections must always be complete: copy if source exists, re-download if not.
+        # Dest already present (including v1.7 `Artist/Album/_/Track`) is skip, not copy.
         if ensure_complete:
             resolved = {}
-            for track, _ in hits_with_source:
-                resolved[str(track.id)] = "copy"
+            skip_n = 0
+            copy_n = 0
+            for track, path_str in hits_with_source:
+                if dest_already_present(
+                    self,
+                    track,
+                    path_str,
+                    file_template=file_template,
+                    list_position=positions.get(str(track.id), 0),
+                    list_total=list_total,
+                ):
+                    resolved[str(track.id)] = "skip"
+                    skip_n += 1
+                else:
+                    resolved[str(track.id)] = "copy"
+                    copy_n += 1
             for track, _ in hits_missing_source:
                 resolved[str(track.id)] = "redownload"
             if resolved:
-                self.fn_logger.info(
-                    f"{len(hits_with_source)} track(s) will be copied from existing "
-                    f"library, {len(hits_missing_source)} will be re-downloaded."
-                )
+                parts: list[str] = []
+                if skip_n:
+                    parts.append(f"{skip_n} track(s) already in library will be skipped")
+                if copy_n:
+                    parts.append(f"{copy_n} track(s) will be copied from existing library")
+                if hits_missing_source:
+                    parts.append(f"{len(hits_missing_source)} will be re-downloaded")
+                self.fn_logger.info(", ".join(parts) + ".")
             return resolved
 
         saved_action = getattr(self.settings.data, "duplicate_action", "ask")

@@ -1,5 +1,341 @@
 # Mistakes
 
+## 2026-09-29 — Desktop shell attached to a stale sidecar after an update
+
+**What happened:** A 1.7.12 app installed over 1.7.11 still found the Sep 15 `music-dl-server` on port 8765. Health reported `version: 1.7.11` and `mode: tauri-sidecar`. Quitting the old app left that process running, and the new shell would have attached to it.
+
+**Root cause:** `launch_initial_sidecar` reused any ready `daemon.json` server. `DaemonMetadata` and `HealthResponse` dropped `version` and the health `pid`. External servers are not owned, so nothing stopped them.
+
+**Prevention:** Compare trimmed versions and ignore one leading `v`. A different or missing version on a verified `tauri-sidecar` (health pid matches `daemon.json`, and on Unix the process command is this bundle's `music-dl-server`) gets SIGTERM, or `taskkill` on Windows, then the bundled sidecar starts. If it is still answering after about 5 seconds, leave it and spawn on another port. Browser mode and a failed check are never signalled. The same version still attaches.
+
+## 2026-09-29 — Playlist spacer used another playlist's queue-fill total
+
+**What happened:** Leaving playlist B while playlist A was still filling the queue saved A's track count onto B. Coming back, the virtual spacer was A's count times 66px until B's first page arrived (36630px instead of 7920px, or the reverse).
+
+**Root cause:** `navigate()` stored the module-wide `_playlistFillTotal` on every `playlist:*` view. That variable is also written by whichever playlist is loading or filling the queue, so the view being left did not own the number.
+
+**Prevention:** Remember each playlist's own count under its view key when that load learns `num_tracks`, the first page total, or a later page total. Save and restore that count. Leave `_playlistFillTotal` for the live queue-fill message only.
+
+## 2026-09-27 — Upgrade probe held the library write lock across Tidal lookups
+
+**What happened:** Opening a playlist started `/api/upgrade/probe`. From then on the download worker logged "deferred claim; library db locked", and Play on a stale `Artist/Artist - Album` path returned HTTP 500. The player skipped ahead. Time-to-play went from about 0.2 s to several seconds. Blocking `/api/upgrade/*` made the lock go away.
+
+**Root cause:** `probe_isrcs` called `set_probe()` inside the ISRC loop. That INSERT opened a write transaction, and `commit()` ran only after every network probe (sleep plus a Tidal search, up to 50 ISRCs). The same pattern was in `probe_by_meta`. The playback heal's `migrate_path` UPDATE then waited out `busy_timeout=5000` and raised `sqlite3.OperationalError: database is locked`.
+
+**Prevention:** Read the cache and local rows, end any open transaction, do all network and filesystem work with no transaction, then store probe rows in one `write_transaction()`. The layout heal uses a short `BEGIN IMMEDIATE` and closes its connection. If that write cannot lock, the file request still returns the on-disk file and remembers the path in memory.
+
+## 2026-09-27 — A layout scroll cancelled playlist restore, and a later-page retry hammered
+
+**What happened:** Coming back from an album, the browser clamped `#view` onto the short playlist placeholder and fired `scroll`. That was treated as the user scrolling, so the saved offset was dropped. A later-page 429 also retried every 1.5s and toasted every time, and a retry that finished the list never ran the upgrade scan.
+
+**Root cause:** `cancelRestore('scroll')` ran for every scroll, including the clamp. Retry delay was fixed, and `_scanPlaylistUpgrades` was skipped whenever a retry timer was still pending at the end of the first pass.
+
+**Prevention:** Cancel restore only for wheel, touch, pointer/mouse down, scroll keys, and leaving the view. If the track count is already known, size the spacer to `total * 66` before the first page. Later pages use 1.5s, 3s, 6s, 12s, then 24s, capped at 30s, at most 5 automatic retries, one toast per streak. Scan upgrades once when the loaded offset reaches the total. Playlist perf artifacts go to `PLAYLIST_PERF_ARTIFACTS` or the test `tmp_path`.
+
+## 2026-09-27 — A later playlist page 429 replaced rows already on screen
+
+**What happened:** `loadPlaylistTracks` treated every 429 like a first-page failure. After page 1 had painted, a 429 on a later page cleared the list and showed the "Tidal rate limit" empty state.
+
+**Root cause:** The catch always removed `trackList` children. The server already returns HTTP 429 after a capped backoff and leaves earlier pages in the playlist cache, but the client threw that away.
+
+**Prevention:** If any page after the first fails and rows are already rendered, keep those rows, toast `Tidal rate limit — N of M loaded, will retry` (or the non-429 pause toast), and retry that offset on a backoff and on scroll, play, or keyboard. Only a first-page failure may show the empty state. A later-page 429 must stay HTTP 429 and must not drop the cached first page.
+
+## 2026-09-27 — Playlist scroll restore fired while the list was still the placeholder
+
+**What happened:** On the Us playlist the user scrolled `#view` to 20000 and the app saved scrollY 19100. Album then browser-back, album then in-app back, and Home then browser-back all left `#view.scrollTop` around 99–107.
+
+**Root cause:** `_applyPlaylistScrollRestore` and the navigate rAF wrote `scrollTop` while only the loading placeholder was painted (~863 px, clientHeight ~800). The browser clamped the write. The real list reached ~36935 px about 250 ms later and nothing applied the saved offset again.
+
+**Prevention:** Keep a pending restore per view. Size the virtual spacer to `total * PLAYLIST_VIRTUAL_ROW_PX` before assigning `scrollTop`. Re-apply after the first real paint and each page append until the target is within 2 px. A wheel, touch, keyboard, or non-restore scroll cancels it, and leaving the view cancels it. Do not set `scrollTop` to 0 when a saved offset is waiting.
+
+## 2026-09-27 — Pid file published before the bot process object
+
+**What happened:** `test_bot_control_lifespan_starts_and_stops_configured_bot` failed under QA with `running` still false after polling `/api/bot-control/status` for 2s. A second ordering failed the pid-file read after status had already reported running. A gist 403 from `api.github.com` showed up in that stdout and was not the cause.
+
+**Root cause:** #198 writes `discord-bot.pid` and only then assigns `discord_bot_process`. Status that lands in between takes the "no process object" path, reads the pid, and `_pid_alive` uses `os.kill`. The lifespan test's FakeProcess pid is not an OS process, so that path calls `_forget_recorded_pid`. If start has assigned the process by then, forget clears it and `running` stays false. If forget runs first, it deletes the pid file and the later assignment still reports running.
+
+**Prevention:** Hold `_bot_lifecycle_lock` across the pid-file write and both state assignments, and across the status read that may forget a dead pid. `running=True` still means the pid file exists. Do not widen the poll timeout. Tests stub `api.github.com` so lifespan key refresh never dials the network. Do not reformat an existing `"\n".join` of Discord fixture ids to silence FLY002: gitleaks scans added lines (`git log -p -U0`) and flags `discord-client-id` on the snowflake. Leave those lines and mark the join `# noqa: FLY002`.
+
+## 2026-09-27 — Unavailable TIDAL tracks were counted as download failures
+
+**What happened:** Playlist `177cb91d` logged "not available for listening anymore on TIDAL. Skipping" for three La Adictiva tracks, then the summary listed them as FAILED with reason "download failed". The command exited non-zero even though every other track was kept.
+
+**Root cause:** `allow_streaming` is false returns None from `_validate_and_prepare_media`, and `item()` turned every None into `DownloadOutcome.FAILED` with no reason (`items.py` around the validate result).
+
+**Prevention:** Unavailable is `DownloadOutcome.UNAVAILABLE`. The summary lists "Unavailable on TIDAL" with the track names and that reason, separate from failures. Unavailable tracks do not make the exit code non-zero. A real failure still does.
+
+## 2026-09-27 — Resume file check flipped skip_existing during downloads
+
+**What happened:** The "already in this output folder" check set the shared `skip_existing` flag true while other tracks in the same collection were still downloading.
+
+**Root cause:** `track_file_is_in_output` mutated `downloader.skip_existing` so `_prepare_file_paths_and_skip_logic` would set `skip_file`. That flag is process-wide for the downloader, not per call.
+
+**Prevention:** Compute the dest path and call `check_file_exists` on it. Do not write `skip_existing`.
+
+## 2026-09-27 — Live playlist load statted the SMB share and scrolled the wrong box
+
+**What happened:** PR #194 at 15574bec passed mocked CI, then failed on a Mac whose library is an SMB share (`/Volumes/Music`). The 'Us' playlist (555 entries, 440 unique) took 12 s for the first page and about 2 minutes for the list. Scrolling during load blanked the virtual window. Play started at 50 tracks and finished at 441. Home-back restored scroll 20,000 as 44; browser-back restored 0. A stuck Tidal 429 retried forever.
+
+**Root cause:** Display matching still called `match_local_row` → `resolve_live_library_path`, which `stat`s every candidate on the request path. CI's fake DB never touched the filesystem, and a missing local file stats quickly. `.main` is `overflow: hidden`; `#view` is the scroller. Virtual paint, scroll restore, and listeners read `.main.scrollTop`. Page append dropped rows by track id, so playlist repeats never joined the queue. `_fetch_pages` slept on 429 with no retry cap.
+
+**Prevention:** Paginated display stamps are `tracks_by_isrc` plus the indexed `path` only. A test patches `os.stat` / `Path.exists` / `Path.is_file` to raise during first-page stamping, and a second test stamps a 15k-row `library.db` with paths that are not on disk. Scroll save, restore, virtual paint, and the scroll listener all use `_appScrollEl` (`#view` in the real `index.html` / `style.css`). Queue append is by playlist index, keeps duplicates, and splices shuffle pages into the unplayed tail. Leaving after Play keeps filling; opening another playlist toasts `Playlist queue incomplete`. 429s stop after 3 backoff sleeps and return HTTP 429 `Tidal rate limit; playlist tracks paused`.
+
+## 2026-09-27 — Playlist first-page stamp and virtual list dropped playability and queue
+
+**What happened:** Bugbot on #194 at 7707ffb: paginated `_stamp_sql_only` set `is_local` without `path`/`local_path`, so owned tracks looked unplayable. Virtual paint used raw `.main.scrollTop` while chrome sat above `.tracks`. `paintLoaded` reapplied saved scroll on every remaining page. Play/Shuffle snapshotted the first 50 tracks.
+
+**Root cause:** First-page identity skipped `stamp_track`. Virtual range treated parent scroll as list scroll. Restore ran on every paint. Queue used `loaded.slice()` at click and never appended later pages.
+
+**Prevention:** First-page SQL stamp goes through `stamp_track` (no NAS). Paint uses `_playlistListScrollTop(parent.scrollTop, list.offsetTop)` and 66px border-box rows. Restore is one-shot via `_applyPlaylistScrollRestore`. After Play/Shuffle/play-from-here, `_playlistUnqueuedTracks` appends later pages into `queue`/`queueOriginal`. Client `total` never raises cache size above Tidal `num_tracks` or 10_000.
+
+## 2026-09-27 — Overlay keycaps reused the settings-card fill
+
+**What happened:** The `?` help overlay switched to `shortcut-keycap` chips. Those chips fill with `--bg-warm`, the same token as `.shortcuts-card`, so chords lost their key surface and kept only a faint border.
+
+**Root cause:** The settings strip sits on `--surface` over `--bg`. The overlay card *is* `--bg-warm`. One keycap fill cannot serve both parents.
+
+**Prevention:** `.shortcuts-card .shortcut-keycap` uses `--surface-active` so overlay keys lift off the `--bg-warm` card. Keep the settings strip on `--bg-warm`. Tests lock that the two fills differ. Do not reuse a surface token as both card and keycap. `--bg` on `--bg-warm` is too close to count.
+
+## 2026-09-27 — Cover art made every download look like a 0.00s preview
+
+**What happened:** After a JPEG cover was embedded, ffmpeg's last `time=` was the cover image (`frame=1 … time=00:00:00.00`). A full 16/44.1 FLAC of 216s was refused as a preview.
+
+**Root cause:** `_decoded_audio_seconds` parsed ffmpeg progress after metadata write and did not select the audio stream.
+
+**Prevention:** Read duration with ffprobe JSON on stream `a:0`. Regression test builds a real FLAC, embeds a generated JPEG, and still rejects a real 30s clip of a 216s track.
+
+## 2026-09-27 — "downloading Lossless instead" printed for a refused file
+
+**What happened:** The session-cap notice was shown when the track was refused, so the log claimed a Lossless download that was not kept.
+
+**Root cause:** `_accept_session_capped_cd` called `remember_session_hires_fallback` at stream-info time, before the file was accepted.
+
+**Prevention:** Set `_pending_session_capped_cd` at stream time. `_note_accepted_lossless_fallback` runs only when `item()` outcome is DOWNLOADED.
+
+## 2026-09-27 — Valid Hi-Fi release dates raised AttributeError
+
+**What happened:** Every album `releaseDate` broke Hi-Fi album details and silently fell back to OAuth.
+
+**Root cause:** `_parse_release_date` used `datetime.UTC` while `datetime` was the class. Only `ValueError` was caught, so `AttributeError` escaped.
+
+**Prevention:** Use `timezone.utc`. Test `_parse_release_date("2016-10-21")`. Do not catch `AttributeError`.
+
+## 2026-09-27 — Album and playlist runs exited 0 after track failures
+
+**What happened:** A `QualityMismatchError` in one track was logged and the command still exited 0. The summary showed a failed count and no reason.
+
+**Root cause:** `_process_download_futures` caught every exception, `items()` returned None, and the CLI ignored that result.
+
+**Prevention:** Keep going, record `ExceptionType: message` on `DownloadSummary.failures`, print each one, and return False from `items()` so the command exits non-zero.
+
+## 2026-09-27 — Resume checkpoint ignored --output
+
+**What happened:** A checkpoint keyed only by playlist id made a fresh `--output` folder skip tracks that were not in that folder.
+
+**Root cause:** The checkpoint filename was `{type}_{id}.json`, and a `downloaded` status skipped without checking the dest file.
+
+**Prevention:** Key the checkpoint by collection id plus the resolved output dir. Skip only when that status is downloaded and the file exists in this dir.
+
+## 2026-09-27 — Hi-Fi PREVIEW was saved as a 24-bit download
+
+**What happened:** Track 66024828 from monochrome-api.samidy.com had `assetPresentation: PREVIEW` at HI_RES_LOSSLESS. The FLAC header said 216s; ffmpeg decoded 29.91s. tidal_dl moved the file and `library.db` recorded it as 24-bit. The login probe also printed "downloading Lossless instead" even though that 24-bit clip was what got saved. Hi-Fi LOSSLESS then returned 403.
+
+**Root cause:** `parse_track_payload` dropped `assetPresentation`, so a preview looked like a successful Hi-Res manifest. The session notice was printed when the probe measured LOSSLESS, not when a LOSSLESS file was actually kept.
+
+**Prevention:** Reject `PREVIEW` before save and fall through to the next source (or fail the track if fallback is off). Before `shutil.move`, refuse audio whose audio-stream duration is far short of the catalog duration. Print the Lossless notice only after a file is accepted.
+
+## 2026-09-27 — Playlist copy died on SMB `copystat`
+
+**What happened:** Owned tracks in a playlist are copied into that playlist's dest (the #189 rule: skip only when this job's dest already has the file). One copy raised `PermissionError: [Errno 1]` from `shutil.copystat` because the source is on `/Volumes/Music` with the macOS `arch` flag. `future.result()` was uncaught, so that one track aborted the collection.
+
+**Root cause:** `shutil.copy2` treats file-flag copy as part of success, and the collection loop treated any worker exception as fatal.
+
+**Prevention:** `copyfile` the bytes, then `copystat` in its own try. A flag error is a warning and the track stays COPIED. A data-copy error returns FAILED for that track. `_process_download_futures` records FAILED and continues.
+
+## 2026-09-27 — Hi-Fi Track had no session for OAuth fallback
+
+**What happened:** After Hi-Fi failed, `media.get_stream()` raised `AttributeError: 'Track' object has no attribute 'session'` at `streams.py`. Zero of five new tracks downloaded.
+
+**Root cause:** Hi-Fi metadata uses `object.__new__(Track)`, which skips `Track.__init__`. `tidalapi.Track.get_stream` needs `self.session` and `self.requests`.
+
+**Prevention:** `_bind_login_session` on every Hi-Fi track, album, playlist, and mix. If a Track still has no session, load the stream with `session.track(id).get_stream()`. Doubles that replace `get_stream` keep their own method.
+
+## 2026-09-27 — Logout kept the previous login's Hi-Res cap
+
+**What happened:** `logout()` replaced the OAuth session but left `session_max_quality` and `_hires_fallback_notice_emitted` on the Tidal singleton. `ensure_session_max_quality()` skipped the probe because the cap was already set. Reset Tidal connection then a new login kept the previous client's gate.
+
+**Root cause:** Session capability was treated as process-lifetime state, not login-lifetime state.
+
+**Prevention:** Clear `session_max_quality` and the one-notice flag in `logout()`. The next login / restore probes again.
+
+## 2026-09-27 — Probe stored a Hi-Res stamp as capability
+
+**What happened:** `_probe_subscription_quality` stored raw `stream.audio_quality`. A 16/44.1 delivery stamped `HI_RES_LOSSLESS` was classified Hi-Res capable, so `_accept_session_capped_cd` fail-closed again.
+
+**Root cause:** Capability used the vendor stamp, not bit-depth / sample rate. Labels already knew that stamp+16/44.1 is CD.
+
+**Prevention:** Store `delivered_quality_label` (LOSSLESS for 16/44.1). Keep a true 24-bit probe as `HI_RES_LOSSLESS`.
+
+## 2026-09-27 — Quality probe timeout still waited on the hung worker
+
+**What happened:** `future.result(timeout=2)` was followed by `ThreadPoolExecutor` shutdown `wait=True`. A hung `get_stream` blocked silent restore far past `SOURCE_RESOLVE_TIMEOUT_SEC`.
+
+**Root cause:** The timeout only abandoned the future, not the worker.
+
+**Prevention:** `shutdown(wait=False, cancel_futures=True)`. Unprobed stays fail-closed.
+
+## 2026-09-27 — DASH parser dropped AAC-only Hi-Fi streams
+
+**What happened:** `parse_track_payload` always used `select_highest_flac_representation`. AAC-only LOW/HIGH DASH yielded empty URLs, then `_require_exact_quality` raised `QualityMismatchError` and the Hi-Fi path re-raised instead of falling back to OAuth.
+
+**Root cause:** FLAC-first selection had no fallback to the remaining representations.
+
+**Prevention:** `select_best_audio_representation` prefers FLAC, then the highest remaining stream. AAC-only DASH keeps URLs and codecs.
+
+## 2026-09-27 — Preflight dest ignored playlist `{list_pos}`
+
+**What happened:** `dest_already_present` always called prepare with `list_position=0`. The default playlist template uses `{list_pos}`, so preflight looked at `0. Artist - Title` instead of `1. Artist - Title` and never treated the real numbered dest as present.
+
+**Root cause:** Dest rendering dropped the collection index that download uses (`count + 1`).
+
+**Prevention:** Pass 1-based item index and `list_total` into dest check. Skip only the numbered dest this job will write.
+
+## 2026-09-27 — Lazy quality probe raced the stream lock
+
+**What happened:** `_prefer_listed_hires` runs after `stream_lock` is released. `_accept_session_capped_cd` then called OAuth `get_stream` on the probe track with no lock. Parallel collection workers could overlap that probe with an Atmos/normal credential switch.
+
+**Root cause:** The new probe used the shared tidalapi session but skipped the lock that serializes credential changes.
+
+**Prevention:** Hold `stream_lock` around probe `get_stream`. Restore/login probes and lazy probes share that path.
+
+## 2026-09-26 — Preflight skip treated any ISRC as this job's dest
+
+**What happened:** `dest_already_present` reused `_prepare_file_paths_and_skip_logic` `skip_file` and always expanded `format_album`. `skip_file` is also true when the ISRC lives anywhere. Playlists and mixes then skipped their own copies and finished incomplete.
+
+**Root cause:** Dest presence was "ISRC already in the library", not "file exists at this job's dest".
+
+**Prevention:** Pass the collection `file_template`. Call prepare with `bypass_isrc=True`. Skip only when a file exists at this dest, including that dest's legacy `Album/_/` equivalent. An ISRC at another path still copies, matching master.
+
+## 2026-09-26 — Silent restore left session_max unset so the Hi-Res gate fail-closed
+
+**What happened:** Desktop restart and Hi-Fi-down used `allow_interactive_login=False`. That path restored the token and never called `_probe_subscription_quality`. `_accept_session_capped_cd` treats unprobed as strict. A Lossless-only Tidal Web login then raised `QualityMismatchError` after a working session.
+
+**Root cause:** Probe lived only on interactive `login()` and Hi-Fi-up restore. Treating unprobed as strict is correct only after a probe has run.
+
+**Prevention:** `ensure_session_max_quality()` on every session-establishing path. Lazy-probe in `_accept_session_capped_cd` before the gate. Tests: silent restore, restore-then-download, CLI start from an existing token.
+
+## 2026-09-26 — Capped CD was labeled Hi-Res because Tidal stamped HI_RES_LOSSLESS
+
+**What happened:** `_record_last_delivered_quality` stored raw `audio_quality`. A 16/44.1 stream labeled `HI_RES_LOSSLESS` is CD (`delivery_is_cd_lossless`) but jobs/history/complete events said Hi-Res.
+
+**Root cause:** Label was the vendor stamp, not the delivered signal.
+
+**Prevention:** `delivered_quality_label` uses bit-depth/rate. Record LOSSLESS for 16/44.1.
+
+## 2026-09-26 — Collapsing `_` reminted dest and would re-download v1.7 libraries
+
+**What happened:** Empty optional CD segments became `_` from `67c8551` / first release `v1.7.0`. Collapsing that segment changed dest for every single-disc album to `Artist/Album/Track`. `skip_existing` checked only the new dest; `live_identity_paths` only looks in dest parent; `has_live_isrc` helps only if `library.db` already scanned the `_` file and ISRC skip is on.
+
+**Root cause:** Dest identity was the computed path. A released layout is also identity.
+
+**Prevention:** If `Artist/Album/_/Track.ext` exists, dest and skip reuse it. Do not move files. New tracks still mint `Artist/Album/Track`. Cover an existing `_` file in skip-existing tests.
+
+## 2026-09-26 — Empty optional CD token minted a `_` album folder
+
+**What happened:** Live #188 album download of You Want It Darker landed in `Leonard Cohen/You Want It Darker/_/`. Track and album both succeeded; only the folder was wrong.
+
+**Root cause:** Default `format_album` is `{album_artist}/{album_title}/{track_volume_num_optional_CD}/{track_title}`. On a single-disc album the optional token is `""`. `format_path_media` ran `_sanitize_name("")`, which returns `_`. Pre-existing on master; #189 did not touch path templates.
+
+**Prevention:** Empty optional tokens collapse the path segment (`a/{token}/b` → `a/b`). Cover single-disc default album templates and an empty `{track_quality}` segment. Multi-disc still gets `CD2`.
+
+## 2026-09-26 — Treated account HI_RES as “this login can stream Hi-Res”
+
+**What happened:** #189 negotiated catalog / `trackManifests` / DASH correctly, but a Tidal Web session capped at LOSSLESS still hit `QualityMismatchError` on listed Hi-Res tracks (`FLAC_HIRES` offered, Hi-Fi down). The reporter’s first-install Mac failed; another Mac with a Hi-Res-capable login worked. Account `highestSoundQuality` was HI_RES on both.
+
+**Root cause:** Login probe trusted account HI_RES and skipped OAuth `get_stream`. `#148` fail-closed then required unencrypted Hi-Res whenever `FLAC_HIRES` was offered, with no session-max fallback. Quality is a ceiling; the session is what the current client can actually fetch.
+
+**Prevention:** Always probe OAuth delivery. Store `session_max_quality` in-memory. When the session is LOSSLESS-capped, accept delivered CD, label history as LOSSLESS, and emit one notice. Fail-closed only when the session is Hi-Res capable or unprobed. Do not wipe `token.json` or start a new login. Document a future login-client picker; do not implement it here.
+
+## 2026-09-26 — Advisory QA hid master failures until enforcement
+
+**What happened:** `.github/workflows/qa.yml` collected check outcomes with `continue-on-error` and scored them without `--enforce`. Master stayed "green" while `python_smoke` (download 401 hole), `security_tests` (bot pid race), stale lyrics/settings contracts, and ruff deductions were already would_block.
+
+**Root cause:** Calibration left the final `qa` job advisory. Status reporting was treated as the merge gate. Publishing `discord_bot_process` before the pid file made `running=True` visible before `discord-bot.pid` existed. Settings field-count and lyrics `lyricsBody` wheel assertions were not updated when #186 and the viewport scroller landed.
+
+**Prevention:** Final `qa` job always passes `--enforce`. Check steps still continue so evidence is complete. Publish the bot pid file and `discord_bot_process` under `_bot_lifecycle_lock` (see 2026-09-27). Writing the pid file first without that lock lets status forget a start whose pid is not alive yet. `running=True` means the pid file exists. Settings field-count tests name the new fields, not a magic number alone. Lyrics detach tests lock the viewport listener. Player-bar invariance is the bun lyrics-sync contract: do not hide `#now-heart` / `#now-download` on `.lyrics-open`. LibraryDB probe ceilings must match GitHub-hosted 10k-probe cost (`visible_scanned_path_sql` + `fold_search`), not a quiet laptop. Do not skip or delete a failing test to go green.
+
+## 2026-09-26 — Playlist pages retried Tidal 429s immediately and lost list state
+
+**What happened:** Concurrent remaining-page fetches had no TooManyRequests handling, so a 429 aborted the load or the other worker kept hammering. The virtual list also lived inside the `playlists` hash, so back from an artist/album remounted the card grid and dropped scroll, focus, and selection.
+
+**Root cause:** `_fetch_pages` called `playlist.tracks()` with no pacer. Playlist detail was not a drill-in view, and virtual paint destroyed focused DOM without a selected index.
+
+**Prevention:** Remaining pages honor `TooManyRequests.retry_after` via `TidalApiPacer.note_429` before retrying. Playlist detail is `playlist:<id>` with saved scroll. Arrow keys move a selected index; volume shortcuts skip `.tracks-virtual` / `.track.selected`.
+
+## 2026-09-26 — Playlist click waited for every track plus a full-library NAS stamp
+
+**What happened:** Clicking a playlist froze the UI for seconds. A mocked Tidal client (50-item pages, 200 ms/request, 15 ms NAS stats) measured 1.9s for 50 tracks and 3.4s for a 500-track playlist that then rendered only the first 50.
+
+**Root cause:** `GET /playlists/{id}/tracks` called `playlist.tracks()` with no limit (Tidal caps ~50–100), loaded `db.all_tracks()`, then `_serialize_track` + `_best_local_row` + `present_playable_path` per row (N+1 SQL and two filesystem stats each). The UI awaited that full payload behind an unstyled `skeleton-row`. Cache was TTL-only, no lastUpdated/ETag.
+
+**Prevention:** First page is `limit=50` catalog serialize + SQLite identity only. Remaining pages fetch with concurrency 2. Cache invalidates on last_updated/ETag. Local honesty/NAS stats stay on the unpaginated sync path. Paint `skeleton-track` rows immediately and virtualize lists over 80 tracks.
+
+## 2026-09-26 — Shortcut strip showed Cmd/Ctrl as one wide string
+
+**What happened:** Settings Playback shortcut cards used a single amber monospace box per combo (`ArrowLeft`, `Cmd/Ctrl+Shift+Q`). Queue overflowed its card, Forward 10s wrapped, and card widths were uneven.
+
+**Root cause:** Display copied the event-code / cross-platform chord text instead of rendering one keycap per key. Labels sat after the wide key box with no nowrap/ellipsis contract.
+
+**Prevention:** Render platform-specific `kbd.shortcut-keycap` chips (`⌘ ⇧ Q` / `Ctrl Shift Q`) via `_shortcutKeycaps`. Detect OS through Tauri `os.platform` / `plugin:os|platform`, then `navigator.userAgentData.platform` / `navigator.platform`. Never paint `Cmd/Ctrl`. Keep labels sentence-case, nowrap, `min-width: 0`, ellipsis fallback. Shortcut *behavior* stays `metaKey || e.ctrlKey`. Glyphs use `--text` on `--bg-warm` (≥ AA). Symbols get `shortcut-keycap-symbol` at 1.15× letter size. Grid is 3+3 through the default 1440 window and 6 only at ≥1680, when Windows `Ctrl Shift Q` still fits — never `auto-fit` that wraps 6 items as 4+2. Screenshot harness labels stay out of app DOM.
+
+## 2026-09-21 — Empty trackManifests formats and HI_RES+16/44.1 slipped past fail-closed
+
+**What happened:** After the first #188 negotiation pass, a successful OpenAPI probe with `formats=[]` was treated as “Tidal has no Hi-Res,” so listed Hi-Res tracks could write CD. A delivery labeled `HI_RES_LOSSLESS` at 16/44.1 was neither Hi-Res nor CD, so `_prefer_listed_hires` never gated it. Hi-Fi-primary CD returns skipped the gate. DASH picked the first AdaptationSet (AAC before FLAC_HIRES). JSON:API `data` as a list raised `AttributeError`.
+
+**Root cause:** `is not None` on an empty list is “known.” Bit-depth/rate were used only to *deny* Hi-Res, not to *classify* CD. Capability check lived only on the OAuth upgrade path. DASH walked sets in document order.
+
+**Prevention:** Empty/missing formats = unknown → catalog tags. `HI_RES_*` + 16/44.1 = CD. Same fail-closed helper on Hi-Fi-primary. Score FLAC reps across all AdaptationSets. Parse JSON:API data as object or list. Keep `formats` as an OpenAPI array (Tidal Web repeated keys), not a comma-string.
+
+## 2026-09-21 — Treated OAuth LOSSLESS as “Tidal has no Hi-Res”
+
+**What happened:** #188 (desktop + CLI 1.7.11). Max / `HI_RES_LOSSLESS` on listed Hi-Res tracks failed: requested `HI_RES_LOSSLESS`, received `LOSSLESS`, “Hi-Fi has no Hi-Res stream.” Standard lossless still worked. Account `highestSoundQuality` was `HI_RES`.
+
+**Root cause:** Catalog `audioQuality` is often `LOSSLESS` while tags include `HIRES_LOSSLESS`. Tidal Web `playbackinfopostpaywall?audioquality=HI_RES_LOSSLESS` silently returns 16/44.1 BTS. The same user token’s OpenAPI `trackManifests` lists `FLAC_HIRES` (DASH id `FLAC_HIRES,44100,24`, Widevine). `#148` fail-closed then required Hi-Fi. Hi-Fi DASH took `representations[0]` (CD), `LOSSLESS`+24-bit was treated as CD, and `HIFI_QUALITY_MAP.get(..., "LOSSLESS")` could request the wrong tier. Login probe used OAuth `get_stream` on a stale “Dreams” id and warned the subscription was LOSSLESS.
+
+**Prevention:** Negotiate from four signals: request, catalog tags, playbackInfo bit-depth/rate, `trackManifests.formats`. Require unencrypted Hi-Res only when `FLAC_HIRES` is offered (or tags if the probe is missing). Select the `FLAC_HIRES` DASH rep. Accept CD when Tidal has no Hi-Res. Probe `highestSoundQuality` (`HI_RES` = Max). Do not close #188 on fail-closed alone.
+
+## 2026-09-18 — Module-on delete gate kept only Jev-actable extras
+
+**What happened:** After the group-chip checkbox fix, `resolve_delete_paths` kept only ≥0.95 layout_twin / true_dup. Posted engine-auto extras with no cache, missing scorer, or pair error were dropped. Enabling the module blocked ordinary Clean Up.
+
+**Root cause:** Jev auto-check (UI) was copied onto the server allowlist. Design: Jev never auto-deletes unscored; it also never blocks engine/manual cleanup of unscored. Only strip keep_both / insufficient.
+
+**Prevention:** Server strips only those two relations. Unscored / error posted paths stay. UI still auto-checks Jev-actable per extra only; engine `auto` extras with no keep/unclear/error still start checked so missing-scorer Clean Up works.
+
+## 2026-09-18 — Group edition chip drove every extra’s checkbox
+
+**What happened:** Clean Up initialized extra checkboxes from the group `edition_chip` and `status === 'auto'`. `applyAdviceToChecks` matched by shared `g.key` (auto + uncertain cards reuse it) and left missing/error pairs unchanged. Partial cache marked the group `ready`, so one actable sibling auto-checked unscored remasters; reload re-checked `keep_both_editions` autos.
+
+**Root cause:** Aggregate chip is display-only. Act rules are per extra. Group status is not Jev advice.
+
+**Prevention:** Init and sync checkboxes from that extra’s pair / `edition_advice.default_checked`. Auto-check only `layout_twin_extra` / `true_duplicate_candidate` at ≥0.95. Partial cache is not `ready`. Server `resolve_delete_paths` keeps only actable per-path advice when the module is on.
+
+## 2026-09-18 — Shipped DJAI AI docs without a shared “can be wrong” stance
+
+**What happened:** Edition advice and DJAI cards described advisory chips and “never safe to delete” in the Clean Up path, but DJAI overview / bot onboarding / module cards did not share one AI-mistake disclaimer.
+
+**Root cause:** Docs were written around TypeSafe key facts and module placement first. The “AI can err” line was treated as implied by “advisory” instead of being copied into every DJAI surface.
+
+**Prevention:** Keep the same phrases in `djai-modules.md`, `djai-edition-advice.md` (top + How to use), a light pointer in `bot-onboarding.md`, and the Edition advice card. Tests lock the disclaimer strings. Never write “safe to delete” as a promise.
+
+## 2026-09-18 — Assumed nested Artist/Album path is the Clean Up keeper
+
+**What happened:** Edition-advice selective-clean tests labeled `Artist/Album` as keeper and `Artist - Album` as extra. Grouping actually keeps the flatter `Artist - Album` path (`_path_score` prefers fewer slashes). Tests then posted the keeper and asserted the extra vanished.
+
+**Root cause:** Fixture invented keeper/extra instead of reading `_find_duplicate_groups`.
+
+**Prevention:** After seeding layout twins, resolve keeper/extra from grouping. Never assume nested vs flat.
+
 ## 2026-09-11 — Joined album_artist missed identity SQL membership
 
 **What happened:** Bugbot on PR #184: `_tag_join` stores multi-value album-artist as `host; guest`, but `tracks_for_album_artist` and the leftover `Album [FLAC]` clause required `fold_search(album_artist)` whole-string equality. Guest rows never entered the album identity pool when the album tag was not an exact title match, so leftover codec-bracket guests kept Download.
@@ -288,14 +624,6 @@
 
 **Prevention:** Endpoint tests for in-root NFC/NFD twins must pin `download_base_path` / `scan_paths` to that music root. Do not skip the unrooted purge. Vanished in-root rows stay on `missing_since`.
 
-## 2026-09-01 — Library served leftover QA rows outside the music root
-
-**What happened:** Live 1.7.8 search (`Night Watch`) and Recents showed Sting *The Last Ship (Live at the Rijksmuseum)* at `/Users/hackbook/.cache/tactica/music-dl-pr149-qa/...flac`. The file was gone. Art returned 403 because the path was outside `/Volumes/Music`. Settings scan path was only `/Volumes/Music`.
-
-**Root cause:** `scanned` is a shared ledger. Search/Recents return every row. Sync prune waits for a successful walk, and the fingerprint fast-path only drops `#recycle` rows, so leftover rows from an isolated QA profile stayed forever.
-
-**Prevention:** On library open, Recents, and scan start, drop rows whose path is outside configured `download_base_path` / `scan_paths`. Never DELETE vanished in-root rows (or their play history) — those use `missing_since` + reconcile migrate. Skip an unrooted drop when it would remove more than half of a library larger than 100 rows (empty mount / remount). `OSError` on `is_dir()` treats the root as unmounted; a purge `OSError` must not 500 library/search/Recents. Do not delete files on disk. Do not change `#recycle` policy.
-
 ## 2026-09-03 — Local heal retry looped and replayed a stale track
 
 **What happened:** After 202/409/200 the player always `playTrack`ed the captured track and returned success, so `_consecutiveErrors` never advanced. A user skip during the 30s wait still restarted the old file.
@@ -383,6 +711,14 @@
 **Root cause:** With height-relative end padding, `_lyricsScrollTarget` for a mid-list line is `index * step` and does not change with viewport height. `_lyricsWriteScrollTop` skipped whenever the cached target matched, even after scroll-anchoring drifted `scrollTop` by Δpad ≈ Δviewport/2 (~100px). rAF ticks kept skipping until the active index (and therefore the target number) changed.
 
 **Prevention:** Skip a write only when `scrollTop` is already at the target, or when a programmatic write toward that target is in flight. On resize, invalidate the cached target, recompute spacers, then force an instant recenter after two layout frames while attached. While detached, restore the captured reading anchor — do not recenter.
+
+## 2026-09-01 — Library served leftover QA rows outside the music root
+
+**What happened:** Live 1.7.8 search (`Night Watch`) and Recents showed Sting *The Last Ship (Live at the Rijksmuseum)* at `/Users/hackbook/.cache/tactica/music-dl-pr149-qa/...flac`. The file was gone. Art returned 403 because the path was outside `/Volumes/Music`. Settings scan path was only `/Volumes/Music`.
+
+**Root cause:** `scanned` is a shared ledger. Search/Recents return every row. Sync prune waits for a successful walk, and the fingerprint fast-path only drops `#recycle` rows, so leftover rows from an isolated QA profile stayed forever.
+
+**Prevention:** On library open, Recents, and scan start, drop rows whose path is outside configured `download_base_path` / `scan_paths`. Never DELETE vanished in-root rows (or their play history) — those use `missing_since` + reconcile migrate. Skip an unrooted drop when it would remove more than half of a library larger than 100 rows (empty mount / remount). `OSError` on `is_dir()` treats the root as unmounted; a purge `OSError` must not 500 library/search/Recents. Do not delete files on disk. Do not change `#recycle` policy.
 
 ## 2026-09-01 — NFC/NFD path twins double-counted one inode
 
@@ -591,6 +927,7 @@
 **Root cause:** `.pill` is a 36px box with padding but was not a flex-centered box, so the label did not sit in the capsule. `.filter-pills` had horizontal padding only (`0 2px`). A 36px pill and the focused input’s 4px gold glow met across the 16px `.search-area` gap. PR 132 already named both defects and the CSS fix, but that branch stayed behind master and was never re-applied.
 
 **Prevention:** Flex-center every `.pill` label (`display: flex; align-items: center; justify-content: center`) and `align-items: center` the row. Keep `.filter-pills` top padding (`8px 2px 0`) so an active chip cannot meet a rounded gold control above it. Do not give `.pill.active` a different height or padding. Leave `.album-search-filters .pill` at 28px. `button.pill` (Play/Shuffle, grouping, load-more) shares this chrome.
+
 ## 2026-08-18 — Library remount lost Plays, search, and the way back
 
 **What happened:** Tetrarch opened a song/album cell from Library → Plays, landed on the album, and had no way back to that Plays list. Library and Plays in the sidebar were the only exits, and both felt like starting over.

@@ -37,10 +37,14 @@ def write_lock_for(db_path: pathlib.Path | str) -> threading.Lock:
         return _WRITE_LOCKS.setdefault(key, threading.Lock())
 
 
+def _path_key_or_none(path: object) -> str | None:
+    return None if path is None else canonical_library_path(str(path))
+
+
 class LibraryDBCore:
     """Thin wrapper around a SQLite scan ledger."""
 
-    _SCHEMA_VERSION = 10
+    _SCHEMA_VERSION = 12
 
     def __init__(self, db_path: pathlib.Path) -> None:
         self._path = db_path
@@ -63,6 +67,8 @@ class LibraryDBCore:
         from tidal_dl.helper.local_identity import credits_include
 
         self._conn.create_function("fold_search", 1, fold_search_text, deterministic=True)
+        # Used by the path_key triggers; must be registered before any write.
+        self._conn.create_function("library_path_key", 1, _path_key_or_none, deterministic=True)
         self._conn.create_function(
             "credit_includes",
             2,
@@ -421,6 +427,60 @@ class LibraryDBCore:
             """CREATE INDEX IF NOT EXISTS idx_album_grouping_signatures
                ON album_grouping_assessments(left_signature, right_signature)"""
         )
+
+        # v10 → v11: Jev edition-advice cache (advisory; never a grouping outcome).
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS edition_advice (
+                path_a TEXT NOT NULL,
+                path_b TEXT NOT NULL,
+                fingerprint_a TEXT NOT NULL,
+                fingerprint_b TEXT NOT NULL,
+                relation TEXT,
+                confidence REAL,
+                probabilities_json TEXT,
+                same_isrc_misleading INTEGER,
+                model TEXT,
+                usage_json TEXT,
+                scored_at REAL,
+                error TEXT,
+                group_id TEXT,
+                PRIMARY KEY (path_a, path_b)
+            )"""
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_edition_advice_group ON edition_advice(group_id)"
+        )
+
+        # v11 → v12: indexed NFC key so any stored spelling (NFC, NFD or mixed
+        # per segment) is found with one indexed lookup. Triggers keep it in
+        # sync with every path write.
+        for table in ("scanned", "favorites"):
+            cols = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+            if "path_key" not in cols:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN path_key TEXT")
+            self._conn.execute(f"UPDATE {table} SET path_key = library_path_key(path)")
+            self._conn.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{table}_path_key ON {table}(path_key)"
+            )
+            self._conn.execute(
+                f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_path_key_ins
+                    AFTER INSERT ON {table} BEGIN
+                        UPDATE {table} SET path_key = library_path_key(NEW.path)
+                        WHERE rowid = NEW.rowid;
+                    END"""
+            )
+            self._conn.execute(
+                f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_path_key_upd
+                    AFTER UPDATE OF path ON {table} BEGIN
+                        UPDATE {table} SET path_key = library_path_key(NEW.path)
+                        WHERE rowid = NEW.rowid;
+                    END"""
+            )
+
+    def release_transaction(self) -> None:
+        """End a leftover read or implicit transaction before slow work."""
+        if self._conn is not None and self._conn.in_transaction:
+            self._conn.rollback()
 
     def begin_immediate(self) -> None:
         """Take a reserved lock with a short acquire wait; caller retries."""

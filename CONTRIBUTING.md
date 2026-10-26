@@ -41,13 +41,15 @@ Do not use that option; protected-branch CI is the final merge gate.
 4. Review the final `qa` summary:
    - 90–100: ready
    - 80–89: ready with visible debt
-   - Below 80: would be blocked after enforcement
-   - Any hard blocker: would be blocked after enforcement
+   - Below 80: blocked
+   - Any hard blocker or missing required check: blocked
 5. If you touch the GUI, test in a browser. If you touch Docker, build and run the image.
 
-The `qa` workflow is advisory for its first five representative PRs. During
-this calibration period it reports what would block, but does not enforce the
-merge decision yet.
+The `qa` workflow is enforcing. Check steps still use `continue-on-error` so
+every result is gathered, but the final `qa` job fails on a hard blocker, a
+missing required check, or a score under 80. Ruff stays a score deduction,
+not a hard fail. The owner should make `qa / qa` a required status check on
+`master` in branch protection.
 
 ## Code Conventions
 

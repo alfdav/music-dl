@@ -4,6 +4,7 @@ from tidal_dl.helper.library_db.browse import BrowseMixin
 from tidal_dl.helper.library_db.core import LibraryDBCore, is_sqlite_lock_error
 from tidal_dl.helper.library_db.utils import canonical_library_path, library_path_forms
 from tidal_dl.helper.library_db.downloads import DownloadsMixin
+from tidal_dl.helper.library_db.edition_advice import EditionAdviceMixin
 from tidal_dl.helper.library_db.favorites import FavoritesMixin
 from tidal_dl.helper.library_db.images import ImagesMixin
 from tidal_dl.helper.library_db.meta import MetaMixin
@@ -15,6 +16,7 @@ from tidal_dl.helper.library_db.scanned import ScannedMixin
 class LibraryDB(
     BrowseMixin,
     DownloadsMixin,
+    EditionAdviceMixin,
     FavoritesMixin,
     ImagesMixin,
     MetaMixin,

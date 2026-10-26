@@ -1,10 +1,10 @@
 from pathlib import Path
 
+from tests.gui_js_source import read_gui_js
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INDEX_HTML = PROJECT_ROOT / "tidal_dl" / "gui" / "static" / "index.html"
 STYLE_CSS = PROJECT_ROOT / "tidal_dl" / "gui" / "static" / "style.css"
-from tests.gui_js_source import read_gui_js
 
 
 def test_index_contains_direct_body_child_lyrics_overlay_mount():
@@ -36,12 +36,14 @@ def test_style_contains_lyrics_panel_shells_and_player_height_variable():
     assert '.lyrics-save' in css
 
 
-def test_style_contains_reduced_motion_and_open_state_action_hiding_rules():
+def test_style_contains_reduced_motion_without_hiding_player_actions():
     css = STYLE_CSS.read_text()
 
     assert '@media (prefers-reduced-motion: reduce)' in css
-    assert '.lyrics-open #now-heart' in css
-    assert '.lyrics-open #now-download' in css
+    # Player-bar invariance: lyrics-open must not hide heart/download.
+    # Locked by tidaldl-py/tests/lyrics-sync.test.js.
+    assert '.lyrics-open #now-heart' not in css
+    assert '.lyrics-open #now-download' not in css
 
 
 def test_app_has_lyrics_state_contract():
@@ -82,7 +84,8 @@ def test_app_has_synced_rendering_and_artwork_motion_hooks():
     assert 'function applyLyricsArtworkBackground(track)' in source
     assert 'requestAnimationFrame(syncActiveLyricLine)' in source
     assert "window.matchMedia('(prefers-reduced-motion: reduce)')" in source
-    assert "lyricsBody.addEventListener('wheel'" in source
+    assert "viewport.addEventListener('wheel'" in source
+    assert "lyricsBody.addEventListener('wheel'" not in source
 
 
 def test_app_enables_lyrics_for_tidal_only_now_playing():

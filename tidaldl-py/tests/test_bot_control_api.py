@@ -1,10 +1,49 @@
 from __future__ import annotations
 
 import os
+import socket
+import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
+import pytest
 from fastapi.testclient import TestClient
+
+
+class _GithubStubResponse:
+    status_code = 200
+    url = "https://api.github.com/gists/stub"
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return {"files": {}}
+
+
+@pytest.fixture(autouse=True)
+def _stub_api_github_com(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lifespan refreshes Tidal keys from a GitHub gist. Never dial api.github.com."""
+    import requests
+
+    real_request = requests.sessions.Session.request
+    real_connect = socket.socket.connect
+
+    def _request(self, method, url, *args, **kwargs):
+        parsed = urlsplit(url) if isinstance(url, str) else None
+        if parsed is not None and parsed.hostname == "api.github.com" and parsed.scheme in {"http", "https"}:
+            return _GithubStubResponse()
+        return real_request(self, method, url, *args, **kwargs)
+
+    def _connect(self, address):
+        host = address[0] if isinstance(address, tuple) else address
+        if host == "api.github.com":
+            raise AssertionError("test dialed api.github.com")
+        return real_connect(self, address)
+
+    monkeypatch.setattr(requests.sessions.Session, "request", _request)
+    monkeypatch.setattr(socket.socket, "connect", _connect)
 
 
 HOST_HEADER = {"host": "localhost:8765"}
@@ -31,10 +70,10 @@ def _write_bot_config(tmp_path: Path, monkeypatch) -> Path:
     (bot_root / "package.json").write_text("{}", encoding="utf-8")
     (bot_root / "src" / "boot.ts").write_text("console.log('bot')\n", encoding="utf-8")
     env_path.write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 — keep fixture ids off newly added lines (gitleaks discord-client-id)
             [
                 'DISCORD_TOKEN="discord-secret"',
-                'DISCORD_APPLICATION_ID="123456789012345678"',
+                'DISCORD_APPLICATION_ID="12345678901234567"',
                 'ALLOWED_GUILD_ID="223456789012345678"',
                 'ALLOWED_CHANNEL_ID="323456789012345678"',
                 'ALLOWED_USER_ID="423456789012345678"',
@@ -77,7 +116,7 @@ def test_bot_control_status_reports_missing_config(
     monkeypatch.setenv("MUSIC_DL_BOT_PID_PATH", str(tmp_path / "discord-bot.pid"))
     monkeypatch.setenv("MUSIC_DL_BOT_PATH", str(tmp_path / "discord-bot"))
 
-    app, client = _client()
+    _app, client = _client()
 
     resp = client.get("/api/bot-control/status", headers=HOST_HEADER)
 
@@ -204,7 +243,7 @@ def test_bot_control_status_uses_valid_legacy_env_when_canonical_has_placeholder
     monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(token_path))
     monkeypatch.setenv("MUSIC_DL_BOT_PATH", str(legacy_dir))
 
-    app, client = _client()
+    _app, client = _client()
     resp = client.get("/api/bot-control/status", headers=HOST_HEADER)
 
     assert resp.status_code == 200
@@ -285,7 +324,7 @@ def test_bot_control_status_rejects_placeholder_ids(tmp_path: Path, monkeypatch)
     env_path = tmp_path / "discord-bot.env"
     token_path = tmp_path / "bot-shared-token"
     env_path.write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002
             [
                 'DISCORD_TOKEN="discord-secret"',
                 'DISCORD_APPLICATION_ID="app-1"',
@@ -303,7 +342,7 @@ def test_bot_control_status_rejects_placeholder_ids(tmp_path: Path, monkeypatch)
     monkeypatch.setenv("MUSIC_DL_BOT_TOKEN_PATH", str(token_path))
     monkeypatch.setenv("MUSIC_DL_BOT_PATH", str(tmp_path / "discord-bot"))
 
-    app, client = _client()
+    _app, client = _client()
 
     resp = client.get("/api/bot-control/status", headers=HOST_HEADER)
 
@@ -488,8 +527,88 @@ def test_bot_control_lifespan_starts_and_stops_configured_bot(
         assert pid_path.read_text(encoding="utf-8").strip() == "4321"
 
     assert killed
-    assert getattr(app.state, "discord_bot_process") is None
+    assert app.state.discord_bot_process is None
     assert not pid_path.exists()
+
+
+def test_status_during_pid_publish_does_not_forget_the_bot(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Status must not treat the pid file as a dead bot before the process is published.
+
+    #198 writes discord-bot.pid before discord_bot_process. A status read in that
+    window calls _pid_alive on the recorded pid. FakeProcess pid 4321 is not an OS
+    process, so _forget_recorded_pid deletes the pid file and can clear the process
+    object once start assigns it. The lifespan poll then stays running=False.
+    """
+    _write_bot_config(tmp_path, monkeypatch)
+    pid_path = tmp_path / "discord-bot.pid"
+    monkeypatch.setenv("MUSIC_DL_BOT_PID_PATH", str(pid_path))
+
+    from tidal_dl.gui import create_app
+    from tidal_dl.gui.api import bot_control
+
+    class FakeProcess:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(
+        bot_control.shutil, "which", lambda name: "/usr/bin/bun" if name == "bun" else None
+    )
+    monkeypatch.setattr(bot_control.subprocess, "Popen", lambda cmd, **kwargs: FakeProcess())
+
+    pid_written = threading.Event()
+    release_publish = threading.Event()
+    status_entered = threading.Event()
+    saw_pid_without_process = threading.Event()
+    real_write = bot_control._write_private_file_atomic
+    real_read_pid = bot_control._read_recorded_pid
+
+    def blocking_write(path: Path, body: str) -> None:
+        real_write(path, body)
+        if path == pid_path:
+            pid_written.set()
+            assert release_publish.wait(timeout=3), "publish was not released"
+
+    def read_pid() -> int | None:
+        pid = real_read_pid()
+        if pid is not None:
+            saw_pid_without_process.set()
+        return pid
+
+    monkeypatch.setattr(bot_control, "_write_private_file_atomic", blocking_write)
+    monkeypatch.setattr(bot_control, "_read_recorded_pid", read_pid)
+
+    app = create_app(port=8765)
+    observed: dict = {}
+
+    def read_status() -> None:
+        status_entered.set()
+        observed["body"] = bot_control._status_for_app(app)
+
+    starter = threading.Thread(
+        target=lambda: bot_control._start_bot_for_app(app),
+        name="bot-start",
+    )
+    watcher = threading.Thread(target=read_status, name="status-watcher")
+    starter.start()
+    assert pid_written.wait(timeout=2)
+    watcher.start()
+    assert status_entered.wait(timeout=2)
+    # Broken publish returns as soon as status has seen the pid file. Fixed
+    # publish holds the lifecycle lock, so this times out and status is still blocked.
+    saw_pid_without_process.wait(timeout=0.5)
+    release_publish.set()
+    starter.join(timeout=2)
+    watcher.join(timeout=2)
+
+    assert not starter.is_alive()
+    assert not watcher.is_alive()
+    assert observed["body"]["running"] is True
+    assert pid_path.read_text(encoding="utf-8").strip() == "4321"
+    assert app.state.discord_bot_process is not None
 
 
 def test_bot_control_stop_terminates_running_bot(tmp_path: Path, monkeypatch) -> None:
@@ -520,7 +639,7 @@ def test_bot_control_stop_terminates_running_bot(tmp_path: Path, monkeypatch) ->
     assert resp.status_code == 200
     assert resp.json()["running"] is False
     assert killed
-    assert getattr(app.state, "discord_bot_process") is None
+    assert app.state.discord_bot_process is None
 
 
 def test_bot_control_restart_stops_then_starts_bot(tmp_path: Path, monkeypatch) -> None:

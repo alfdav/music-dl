@@ -20,6 +20,20 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
+## v1.7.13 (2026-10-09)
+- Library scans no longer stop with `Python int too large to convert to SQLite INTEGER` on filesystems that report 64-bit file IDs (some SMB shares among them). File IDs are stored as signed 64-bit values, so moved folders still heal by identity. One unreadable file is skipped instead of failing the whole scan, an unreadable library folder is reported as an error and the library is kept, unreadable subfolders are no longer pruned as deleted, and older rows get their file identity filled in during a normal scan ([#209](https://github.com/alfdav/music-dl/pull/209)).
+- Add the core of an append-only playlist sync. It is off and dry-run by default, nothing schedules it, and it has no endpoint or UI yet; writers, readers and scheduling come in later releases ([#208](https://github.com/alfdav/music-dl/pull/208)).
+- After an update, the desktop app replaces a server left running from the previous version instead of attaching to it, but only when that server is verified as the app's own. Unverified servers and browser mode are left alone ([#206](https://github.com/alfdav/music-dl/pull/206)).
+- Going back to a playlist while another playlist is still filling the queue keeps that playlist's own track count, so its list is sized correctly before the first page loads. Fixes [#201](https://github.com/alfdav/music-dl/issues/201) ([#204](https://github.com/alfdav/music-dl/pull/204)).
+
+## v1.7.12 (2026-09-27)
+- Playlists show the first page of tracks right away instead of waiting for the whole list; the rest loads in pages while you scroll or play. Going back to a playlist restores its scroll position once the list can hold it, and a rate limit on a later page keeps the rows already shown ([#194](https://github.com/alfdav/music-dl/pull/194)).
+- Play no longer skips track 1 when its library path is stale. The upgrade probe no longer holds the library write lock during Tidal lookups, and local playback serves the on-disk file even when the path repair cannot get the lock ([#202](https://github.com/alfdav/music-dl/pull/202)).
+- When the login session can't stream Hi-Res, downloads keep the delivered Lossless FLAC instead of failing on a quality mismatch, with one notice per session; preview clips are still refused. Tracks TIDAL no longer streams are listed separately as Unavailable on TIDAL and don't make the command exit non-zero; real failures still do. Thanks to @STEPPING3DCAD for reporting in [#188](https://github.com/alfdav/music-dl/issues/188) ([#189](https://github.com/alfdav/music-dl/pull/189)).
+- Discord bot control publishes the bot process and its pid file under one lock, so a status check during start no longer forgets a running bot ([#200](https://github.com/alfdav/music-dl/pull/200)).
+- Sort imports in `test_static_assets.py` so ruff passes ([#199](https://github.com/alfdav/music-dl/pull/199)).
+- Settings → Playback shortcut cards show each key as its own keycap (`⌘ ⇧ Q` on macOS, `Ctrl Shift Q` elsewhere); shortcut behavior is unchanged ([#193](https://github.com/alfdav/music-dl/pull/193)).
+
 ## v1.7.11 (2026-09-11)
 - Stamp album-detail / album-lookup `is_local` for guest-credit tracks when `album_artist` is missing or joined (`host; guest`), including accent-folded artist identity and Vorbis `ALBUM ARTIST` tags ([#184](https://github.com/alfdav/music-dl/pull/184)).
 
