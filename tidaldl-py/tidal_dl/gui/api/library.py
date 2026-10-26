@@ -10,6 +10,7 @@ The library lives on a NAS (/Volumes/Music), so scanning is slow. Strategy:
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sqlite3
@@ -17,7 +18,7 @@ import threading
 import time
 from base64 import b64decode
 from collections import Counter, defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -26,13 +27,15 @@ from mutagen import File as MutagenFile
 from pydantic import BaseModel
 
 from tidal_dl.config import Settings
-from tidal_dl.helper.library_db import LibraryDB
+from tidal_dl.helper.library_db import LibraryDB, is_sqlite_lock_error
 from tidal_dl.helper.library_db.utils import (
     _album_track_key,
     _album_track_preference,
     canonical_library_path,
     library_path_forms,
     local_quality_label,
+    prefer_listed_spelling,
+    sqlite_int64,
 )
 from tidal_dl.helper.library_scanner import (
     drop_skipped_scan_paths,
@@ -43,6 +46,8 @@ from tidal_dl.helper.library_scanner import (
     visible_scanned_path_sql,
 )
 from tidal_dl.helper.path import path_config_base
+
+logger = logging.getLogger("music-dl.library")
 
 router = APIRouter()
 
@@ -246,12 +251,13 @@ def _lexically_under_roots(path_str: str, allowed_dirs: list[str]) -> str | None
     suffix = os.path.splitext(normalized)[1].casefold()
     if suffix not in _AUDIO_EXTENSIONS:
         return None
+    normalized_key = canonical_library_path(normalized)
     for root in allowed_dirs:
         if not root or not str(root).strip():
             continue
         root_norm = os.path.normpath(str(root).replace("\\", "/"))
-        prefix = root_norm.rstrip("/") + "/"
-        if normalized.startswith(prefix) and len(normalized) > len(prefix):
+        prefix = canonical_library_path(root_norm).rstrip("/") + "/"
+        if normalized_key.startswith(prefix) and len(normalized_key) > len(prefix):
             return path_str
     return None
 
@@ -346,15 +352,31 @@ def apply_playback_layout_heal(path: str) -> str | None:
             return False
         return validate_audio_path(candidate, allowed) is not None
 
+    db = LibraryDB(Path(path_config_base()) / "library.db")
     try:
-        db = _get_db()
-    except Exception:  # noqa: BLE001
+        db.open()
+        healed = heal_artist_album_layout_path(db, stored, exists=exists)
+    except sqlite3.OperationalError as exc:
+        if not is_sqlite_lock_error(exc):
+            raise
+        logger.warning("playback layout heal skipped; library db locked for %s", stored)
+        _remember_locked_layout_migration(path, stored, exists)
         return None
-    healed = heal_artist_album_layout_path(db, stored, exists=exists)
+    finally:
+        db.close()
     if not healed:
         return None
     _remember_playback_migrations([(path, healed)])
     return healed
+
+
+def _remember_locked_layout_migration(path: str, stored: str, exists) -> None:
+    """Cache the on-disk layout target when the best-effort DB write cannot lock."""
+    from tidal_dl.helper.library_reconcile import artist_album_layout_candidate
+
+    candidate = artist_album_layout_candidate(stored)
+    if candidate and exists(candidate):
+        _remember_playback_migrations([(path, candidate)])
 
 
 def request_playback_path_heal(path: str) -> dict:
@@ -1296,19 +1318,74 @@ def _scan_directories() -> list[Path]:
 def _file_identity_fields(file_path: Path, *, allowed_dirs: list[str]) -> dict:
     from tidal_dl.gui.security import validate_audio_path
 
-    validated = validate_audio_path(str(file_path), allowed_dirs)
-    if validated is None:
-        return {}
     try:
+        validated = validate_audio_path(str(file_path), allowed_dirs)
+        if validated is None:
+            return {}
         st = validated.stat()
+        return {
+            "file_size": st.st_size,
+            "file_mtime": int(st.st_mtime),
+            "file_inode": sqlite_int64(st.st_ino),
+            "file_device": sqlite_int64(st.st_dev),
+        }
     except OSError:
         return {}
-    return {
-        "file_size": st.st_size,
-        "file_mtime": int(st.st_mtime),
-        "file_inode": st.st_ino,
-        "file_device": st.st_dev,
-    }
+    except (OverflowError, ValueError) as exc:
+        print(f"[library] Skipping file: {type(exc).__name__}")
+        return {}
+
+
+def _backfill_file_identity(
+    db: LibraryDB,
+    disk_paths: set[str] | None,
+    scan_dirs: list[Path],
+    on_disk_by_key: dict[str, str] | None = None,
+) -> int:
+    """Stat live rows written before file identity existed.
+
+    ``disk_paths`` limits the update to files the walk just saw. ``None`` is
+    the signature fast path: stat each NULL row whose stored path is still a
+    regular file. When ``on_disk_by_key`` is set, stat that walk spelling.
+    The stored NFC key is not a path to open. One pass per legacy row.
+    """
+    assert db._conn
+    rows = db._conn.execute(
+        "SELECT path FROM scanned WHERE file_size IS NULL AND missing_since IS NULL"
+    ).fetchall()
+    db.commit()
+    allowed = [str(directory) for directory in scan_dirs]
+    listing = on_disk_by_key or {}
+    updates: list[tuple] = []
+    for row in rows:
+        path = row["path"]
+        key = canonical_library_path(path)
+        if path_has_skipped_scan_dir(path):
+            continue
+        if disk_paths is not None and key not in disk_paths:
+            continue
+        actual = listing.get(key)
+        try:
+            if actual is None:
+                if disk_paths is not None or not Path(path).is_file():
+                    continue
+                actual = path
+            fields = _file_identity_fields(Path(actual), allowed_dirs=allowed)
+        except (OSError, OverflowError, ValueError) as exc:
+            print(f"[library] Skipping file: {type(exc).__name__}")
+            continue
+        if not fields or fields.get("file_size") is None:
+            continue
+        updates.append((
+            fields["file_size"],
+            fields["file_mtime"],
+            fields["file_inode"],
+            fields["file_device"],
+            path,
+        ))
+    if not updates:
+        return 0
+    return db.backfill_file_identity(updates)
 
 
 def _new_reconcile_progress(**overrides) -> dict:
@@ -1374,8 +1451,8 @@ def _index_reconciled_file(db: LibraryDB, file_path: Path, identity, meta: dict 
         art_available=_has_local_art(file_path),
         file_size=identity.size,
         file_mtime=identity.mtime,
-        file_inode=identity.inode,
-        file_device=identity.device,
+        file_inode=sqlite_int64(identity.inode),
+        file_device=sqlite_int64(identity.device),
     )
 
 
@@ -1397,7 +1474,11 @@ def _path_reconciler(db: LibraryDB, scan_dirs: list[Path]):
 
 
 def _dir_signatures_unchanged(db: LibraryDB, scan_dirs: list[Path]) -> bool:
-    """True when every walked directory matches its stored signature."""
+    """True when every walked directory matches its stored signature.
+
+    A match still heals stored spellings from the listing this walk already
+    produced. Unreadable roots fall through to the full scan.
+    """
     rec = _path_reconciler(db, scan_dirs)
     current, unreadable = rec.walk_dirs()
     if unreadable:
@@ -1405,7 +1486,10 @@ def _dir_signatures_unchanged(db: LibraryDB, scan_dirs: list[Path]) -> bool:
     stored = db.dir_signatures()
     if not stored or set(stored) != set(current):
         return False
-    return all(stored[path] == info.signature for path, info in current.items())
+    if not all(stored[path] == info.signature for path, info in current.items()):
+        return False
+    rec._align_listed_files(current)
+    return True
 
 
 def _run_path_reconcile(db: LibraryDB, scan_dirs: list[Path], on_progress=None):
@@ -1422,8 +1506,15 @@ def _migrate_moved_scan_paths(
     known: set[str],
     disk_paths: set[str],
     scan_dirs: list[Path],
-) -> None:
-    """Identity-migrate rows before the scan indexes new paths or prunes old ones."""
+    skip_paths: set[str] | None = None,
+    on_disk_by_key: dict[str, str] | None = None,
+) -> set[str]:
+    """Identity-migrate rows before the scan indexes new paths or prunes old ones.
+
+    Returns the canonical old paths that moved, so a rescan does not count
+    them as vanished when it applies the mass-prune guard. Stats and metadata
+    use the walk spelling from ``on_disk_by_key``.
+    """
     from tidal_dl.helper.library_reconcile import (
         FileIdentity,
         apply_path_migrations,
@@ -1431,10 +1522,14 @@ def _migrate_moved_scan_paths(
         plan_path_reconcile,
     )
 
-    stale = [path for path in known - disk_paths if not path_has_skipped_scan_dir(path)]
+    blocked = skip_paths or set()
+    stale = [
+        path for path in known - disk_paths
+        if not path_has_skipped_scan_dir(path) and not _under_any_dir(path, blocked)
+    ]
     appeared_paths = disk_paths - known
     if not stale or not appeared_paths:
-        return
+        return set()
 
     vanished: list[FileIdentity] = []
     for path in stale:
@@ -1444,8 +1539,8 @@ def _migrate_moved_scan_paths(
                 path=row["path"],
                 size=row.get("file_size"),
                 mtime=row.get("file_mtime"),
-                inode=row.get("file_inode"),
-                device=row.get("file_device"),
+                inode=sqlite_int64(row.get("file_inode")),
+                device=sqlite_int64(row.get("file_device")),
                 duration=row.get("duration"),
                 codec=row.get("codec"),
                 title=row.get("title"),
@@ -1454,22 +1549,26 @@ def _migrate_moved_scan_paths(
                 isrc=row.get("isrc"),
             ))
 
+    listing = on_disk_by_key or {}
     appeared = []
     appeared_by_path: dict[str, FileIdentity] = {}
     for path in appeared_paths:
-        file_path = Path(path)
+        file_path = Path(listing.get(path, path))
         try:
             st = file_path.stat()
+            meta = _read_metadata(file_path, scan_dirs)
+            identity = identity_from_stat(file_path, st, meta)
         except OSError:
             continue
-        meta = _read_metadata(file_path, scan_dirs)
-        identity = identity_from_stat(file_path, st, meta)
+        except (OverflowError, ValueError) as exc:
+            print(f"[library] Skipping file: {type(exc).__name__}")
+            continue
         appeared.append(identity)
         appeared_by_path[identity.path] = identity
 
     plan = plan_path_reconcile(vanished, appeared)
     if not plan.migrations:
-        return
+        return set()
     kept, _failed = apply_path_migrations(
         db,
         plan.migrations,
@@ -1477,6 +1576,7 @@ def _migrate_moved_scan_paths(
         directory_moves=plan.directory_moves,
     )
     _remember_playback_migrations(kept)
+    return {canonical_library_path(old) for old, _new in kept}
 
 
 def request_path_reconcile(*, force: bool = False) -> dict:
@@ -1496,29 +1596,80 @@ def request_path_reconcile(*, force: bool = False) -> dict:
     return {"status": "started"}
 
 
+_UNREADABLE_ROOT_ERROR = "Library folder is not readable — library kept"
+
+
+def _unreadable_roots(scan_dirs: list[Path], unreadable: Iterable[str]) -> list[Path]:
+    """Configured roots that exist but could not be listed."""
+    from tidal_dl.helper.library_reconcile import canon_path
+
+    bad = {canon_path(path) for path in unreadable}
+    return [root for root in scan_dirs if canon_path(root) in bad]
+
+
+def _under_any_dir(path: str, directories: set[str]) -> bool:
+    """True when *path* is one of *directories* or a file inside one.
+
+    Both sides are canonicalised, so ``Album 10`` is not inside ``Album 1``
+    and a Windows backslash listing matches a slash row.
+    """
+    from tidal_dl.helper.library_reconcile import _is_under
+
+    if not path or not directories:
+        return False
+    return _is_under(path, directories)
+
+
+def _scan_root_unlistable(root: Path) -> bool:
+    """True when a configured directory cannot be listed.
+
+    Same failure ``os.walk`` reports through ``onerror`` and ``walk_dirs``
+    records as an unreadable root: ``stat`` or ``scandir`` raises ``OSError``.
+    """
+    actual = os.path.normpath(os.fspath(root))
+    try:
+        os.stat(actual)
+        with os.scandir(actual):
+            return False
+    except OSError:
+        return True
+
+
 def _background_path_reconcile() -> None:
     global _reconcile_running, _reconcile_last_at
     db = None
     _update_reconcile_progress(phase="walking")
     try:
         scan_dirs = _scan_directories()
+        # Before any reconcile write. One unlistable root used to migrate and
+        # backfill the readable roots, then report that the reconcile was skipped.
+        if any(_scan_root_unlistable(root) for root in scan_dirs):
+            print("[library] Library folder is not readable — skipping reconcile to preserve cache")
+            _update_reconcile_progress(phase="error", done=True, error=_UNREADABLE_ROOT_ERROR)
+            _reconcile_last_at = time.time()
+            return
         db = LibraryDB(Path(path_config_base()) / "library.db")
         db.open()
         if scan_dirs:
             _migrate_volume_prefixes(db, scan_dirs)
         result = _run_path_reconcile(db, scan_dirs, on_progress=_update_reconcile_progress)
+        # Backstop only. reconcile() returns before writing when a configured
+        # root is unlistable, so this cannot follow a partial update.
+        unreadable_roots = _unreadable_roots(scan_dirs, result.skipped_dirs)
         if not result.unchanged:
             dropped = drop_skipped_scan_paths(db)
             if dropped:
                 print(f"[library] Dropped {dropped} rows under skipped directories")
+        if unreadable_roots:
+            print("[library] Library folder is not readable — skipping reconcile to preserve cache")
         _update_reconcile_progress(
-            phase="done",
+            phase="error" if unreadable_roots else "done",
             done=True,
             migrated=len(result.migrations),
             indexed=len(result.indexed),
             missing=len(result.marked_missing),
             directory_moves=len(result.directory_moves),
-            error=None,
+            error=_UNREADABLE_ROOT_ERROR if unreadable_roots else None,
         )
         _remember_playback_migrations(result.migrations)
         if not result.unchanged:
@@ -1560,6 +1711,44 @@ def _backup_library_db(db_path: Path) -> Path:
     return backup_path
 
 
+def _stored_under_prefix(path: str, prefix: str) -> bool:
+    """True when *path* is under *prefix* in NFC, whatever spelling is stored."""
+    path_key = canonical_library_path(path)
+    prefix_key = canonical_library_path(prefix)
+    return path_key.startswith((prefix_key + os.sep, prefix_key + "/"))
+
+
+def _align_scan_spellings(
+    db: LibraryDB,
+    on_disk_by_key: dict[str, str],
+    scan_dirs: list[Path],
+) -> None:
+    """Retarget rows onto the walk path and stat that path for empty identity."""
+    if not on_disk_by_key:
+        return
+    rows = [
+        (row["path"], row.get("file_size"), row.get("file_inode"))
+        for row in db.identity_rows()
+    ]
+    db.commit()
+    allowed = [str(directory) for directory in scan_dirs]
+    identities: dict[str, dict] = {}
+    needs = False
+    for path, file_size, file_inode in rows:
+        actual = on_disk_by_key.get(canonical_library_path(path))
+        if actual is None:
+            continue
+        if path == actual and file_size is not None and file_inode is not None:
+            continue
+        needs = True
+        try:
+            identities[actual] = _file_identity_fields(Path(actual), allowed_dirs=allowed)
+        except OSError:
+            identities[actual] = {}
+    if needs:
+        db.align_stored_paths(on_disk_by_key, identities, canonical_library_path)
+
+
 def _migrate_volume_prefixes(db: LibraryDB, scan_dirs: list[Path]) -> None:
     """Rewrite stored path prefixes when a volume remounts under a different name.
 
@@ -1583,7 +1772,7 @@ def _migrate_volume_prefixes(db: LibraryDB, scan_dirs: list[Path]) -> None:
     for scan_dir in scan_dirs:
         current_prefix = str(scan_dir)
         # Check if any stored path already starts with this scan dir — no migration needed
-        if any(p.startswith((current_prefix + os.sep, current_prefix + "/")) for p in stored_paths):
+        if any(_stored_under_prefix(p, current_prefix) for p in stored_paths):
             continue
 
         # Try to find a stored prefix that looks like a variant of this scan dir.
@@ -1665,10 +1854,14 @@ def _reconcile_library_rows(db: LibraryDB, *, scan_dirs: list[Path]) -> int:
     if total:
         _update_scan_progress(phase="repairing", scanned=0, total=total, done=False)
     for row in eligible:
-        file_path = Path(row["path"])
-        if not file_path.is_file():
+        try:
+            file_path = Path(row["path"])
+            if not file_path.is_file():
+                continue
+            meta = _read_metadata(file_path, scan_dirs)
+        except (OSError, OverflowError, ValueError) as exc:
+            print(f"[library] Skipping file: {type(exc).__name__}")
             continue
-        meta = _read_metadata(file_path, scan_dirs)
         if meta:
             pending.append({
                 "path": row["path"],
@@ -1759,7 +1952,8 @@ def _background_scan(rescan: bool) -> None:
             _update_scan_progress(phase="done", scanned=0, total=0, done=True, error=None)
             return
 
-        known = set() if rescan else {canonical_library_path(path) for path in db.known_paths()}
+        prior_known = {canonical_library_path(path) for path in db.known_paths()}
+        known = set() if rescan else set(prior_known)
         db.commit()
 
         # Per-directory signatures replace the root-only scan_fingerprint skip.
@@ -1767,6 +1961,11 @@ def _background_scan(rescan: bool) -> None:
         if not rescan and _dir_signatures_unchanged(db, scan_dirs):
             print("[library] Directory signatures unchanged — skipping walk")
             db.stamp_complete_identity_rows()
+            # This return never reaches the walk backfill. Fill NULL identity
+            # here so a later sync still upgrades legacy rows.
+            backfilled = _backfill_file_identity(db, None, scan_dirs)
+            if backfilled:
+                print(f"[library] Backfilled file identity for {backfilled} rows")
             dropped = drop_skipped_scan_paths(db)
             if dropped:
                 print(f"[library] Dropped {dropped} rows under skipped directories")
@@ -1776,35 +1975,79 @@ def _background_scan(rescan: bool) -> None:
             return
 
         _update_scan_progress(phase="discovering", scanned=0, total=0, done=False, error=None)
-        disk_paths: set[str] = set()
+        on_disk_by_key: dict[str, str] = {}
+        walk_errors: set[str] = set()
+        discovery_failures: set[str] = set()
+
+        def _on_walk_error(exc: OSError) -> None:
+            # os.walk() drops unlistable directories by default. An unreadable
+            # album must not look like a deleted album.
+            if exc.filename:
+                walk_errors.add(canonical_library_path(os.path.normpath(str(exc.filename))))
 
         # Phase 1: Walk filesystem — no DB writes. Skip trash trees without descent.
+        # The canonical key is for set math. open/stat/store use the walk string.
         for scan_dir in scan_dirs:
-            for walk_root, dirs, files in os.walk(scan_dir):
+            for walk_root, dirs, files in os.walk(scan_dir, onerror=_on_walk_error):
                 dirs[:] = [name for name in dirs if not is_skipped_scan_dir(name)]
                 for fname in files:
                     f = Path(walk_root) / fname
-                    if path_has_skipped_scan_dir(f):
+                    try:
+                        if path_has_skipped_scan_dir(f):
+                            continue
+                        if f.is_symlink():  # symlink → arbitrary target recorded as trusted path (DB poisoning)
+                            continue
+                        if f.suffix.lower() not in _AUDIO_EXTENSIONS:
+                            continue
+                        listed = str(f)
+                        key = canonical_library_path(listed)
+                        on_disk_by_key[key] = prefer_listed_spelling(on_disk_by_key.get(key), listed)
+                    except (OSError, OverflowError, ValueError) as exc:
+                        print(f"[library] Skipping file: {type(exc).__name__}")
+                        # A stat failure is not proof the file vanished. Keep the
+                        # existing row, and do not index this path as new.
+                        discovery_failures.add(canonical_library_path(os.path.normpath(str(f))))
                         continue
-                    if f.is_symlink():  # symlink → arbitrary target recorded as trusted path (DB poisoning)
-                        continue
-                    if f.suffix.lower() not in _AUDIO_EXTENSIONS:
-                        continue
-                    disk_paths.add(canonical_library_path(str(f)))
                     _update_scan_progress(
                         phase="discovering",
-                        scanned=len(disk_paths),
+                        scanned=len(on_disk_by_key),
                         total=0,
                         done=False,
                     )
 
-        # Phase 2: Read metadata + waveform only for NEW files (the diff)
+        disk_paths = set(on_disk_by_key)
+        unreadable_roots = [
+            root for root in scan_dirs
+            if canonical_library_path(os.path.normpath(str(root))) in walk_errors
+        ]
+        if unreadable_roots:
+            print(
+                f"[library] {len(unreadable_roots)} library folder(s) not readable"
+                " — skipping scan to preserve cache"
+            )
+            _update_scan_progress(phase="error", done=True, error=_UNREADABLE_ROOT_ERROR)
+            return
+
+        _align_scan_spellings(db, on_disk_by_key, scan_dirs)
+
+        # Phase 2: Heal renames before indexing. Rescan still re-reads every
+        # file afterwards; the moved row keeps plays and favourites.
+        # Vanished = prior rows not on disk. Appeared = on-disk paths not in
+        # those rows. Discovery failures stay out of both sets.
         from tidal_dl.helper.waveform import extract_both, peaks_to_json
 
+        protected = walk_errors | discovery_failures
+        migrated_old = _migrate_moved_scan_paths(
+            db,
+            prior_known,
+            disk_paths,
+            scan_dirs,
+            skip_paths=protected,
+            on_disk_by_key=on_disk_by_key,
+        )
         if not rescan:
-            _migrate_moved_scan_paths(db, known, disk_paths, scan_dirs)
-            known = db.known_paths()
-            db.commit()
+            known = {canonical_library_path(path) for path in db.known_paths()}
+        db.commit()
 
         new_paths = disk_paths - known
         pending: list[dict] = []
@@ -1816,20 +2059,25 @@ def _background_scan(rescan: bool) -> None:
             done=False,
         )
         for path_str in new_paths:
-            file_path = Path(path_str)
-            art_available = _has_local_art(file_path)
-            meta = _read_metadata(file_path, scan_dirs)
-            allowed = [str(directory) for directory in scan_dirs]
-            identity_fields = _file_identity_fields(file_path, allowed_dirs=allowed)
+            listed = on_disk_by_key.get(path_str, path_str)
+            try:
+                file_path = Path(listed)
+                art_available = _has_local_art(file_path)
+                meta = _read_metadata(file_path, scan_dirs)
+                allowed = [str(directory) for directory in scan_dirs]
+                identity_fields = _file_identity_fields(file_path, allowed_dirs=allowed)
+            except (OSError, OverflowError, ValueError) as exc:
+                print(f"[library] Skipping file: {type(exc).__name__}")
+                continue
             if meta:
                 waveform_json = None
                 hires_json = None
-                both = extract_both(Path(path_str))
+                both = extract_both(file_path)
                 if both:
                     waveform_json = peaks_to_json(both[0])
                     hires_json = peaks_to_json(both[1])
                 pending.append({
-                    "path": path_str,
+                    "path": listed,
                     "status": "tagged" if meta["isrc"] else "needs_isrc",
                     "isrc": meta["isrc"] or None,
                     "artist": meta["artist"],
@@ -1859,7 +2107,7 @@ def _background_scan(rescan: bool) -> None:
                 })
             else:
                 pending.append({
-                    "path": path_str,
+                    "path": listed,
                     "status": "unreadable",
                     "art_available": art_available,
                     "codec": "unknown",
@@ -1876,6 +2124,12 @@ def _background_scan(rescan: bool) -> None:
                 done=False,
             )
         _flush_scan_records(db, pending)
+        if not rescan:
+            backfilled = _backfill_file_identity(
+                db, disk_paths, scan_dirs, on_disk_by_key,
+            )
+            if backfilled:
+                print(f"[library] Backfilled file identity for {backfilled} rows")
 
         # Cheap leftover repair after discovery so first progress is the walk,
         # not a multi-minute NAS mutagen pass over already-tagged rows.
@@ -1891,12 +2145,14 @@ def _background_scan(rescan: bool) -> None:
         dropped = drop_skipped_scan_paths(db)
         if dropped:
             print(f"[library] Dropped {dropped} rows under skipped directories")
-        stale = known - disk_paths
+        prune_base = prior_known if rescan else known
+        stale = prune_base - disk_paths
         skipped_stale = {path for path in stale if path_has_skipped_scan_dir(path)}
-        prune = stale - skipped_stale
-        if len(prune) > 0.5 * len(known) and len(known) > 100:
+        unreadable_stale = {path for path in stale if _under_any_dir(path, protected)}
+        prune = stale - skipped_stale - unreadable_stale - migrated_old
+        if len(prune) > 0.5 * len(prune_base) and len(prune_base) > 100:
             print(
-                f"[library] Skipping prune: {len(prune)}/{len(known)} paths would be removed"
+                f"[library] Skipping prune: {len(prune)}/{len(prune_base)} paths would be removed"
                 " — possible volume remount"
             )
         elif prune:
@@ -1907,7 +2163,7 @@ def _background_scan(rescan: bool) -> None:
 
         restored = [
             row["path"] for row in db.missing_rows()
-            if row["path"] in disk_paths
+            if canonical_library_path(row["path"]) in disk_paths
         ]
         if restored:
             with db.write_transaction():
@@ -2238,7 +2494,7 @@ def library_art(path: str = Query(..., description="Absolute path to audio file"
         db = _get_db()
         row = db.get(path)
         if row and row.get("art_available") is None:
-            db._conn.execute("UPDATE scanned SET art_available = 1 WHERE path = ?", (path,))
+            db._conn.execute("UPDATE scanned SET art_available = 1 WHERE path = ?", (row["path"],))
             db.commit()
         return FileResponse(
             cache_file, media_type="image/jpeg",
@@ -2253,7 +2509,7 @@ def library_art(path: str = Query(..., description="Absolute path to audio file"
         db = _get_db()
         row = db.get(path)
         if row and row.get("art_available") is None:
-            db._conn.execute("UPDATE scanned SET art_available = 1 WHERE path = ?", (path,))
+            db._conn.execute("UPDATE scanned SET art_available = 1 WHERE path = ?", (row["path"],))
             db.commit()
         return Response(
             content=art_data, media_type=art_mime,
@@ -2263,7 +2519,7 @@ def library_art(path: str = Query(..., description="Absolute path to audio file"
     db = _get_db()
     row = db.get(path)
     if row and row.get("art_available") is None:
-        db._conn.execute("UPDATE scanned SET art_available = 0 WHERE path = ?", (path,))
+        db._conn.execute("UPDATE scanned SET art_available = 0 WHERE path = ?", (row["path"],))
         db.commit()
     return Response(content=_NO_ART_PNG, media_type="image/png")
 

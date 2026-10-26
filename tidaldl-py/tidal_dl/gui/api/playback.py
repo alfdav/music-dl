@@ -152,8 +152,8 @@ def stream_tidal_track(track_id: int):
     except HTTPException as exc:
         if exc.status_code != 401 or _persisted_refresh_token(tidal):
             raise
-    except Exception:  # noqa: BLE001
-        pass  # noqa: S110
+    except Exception:  # noqa: BLE001, S110
+        pass
 
     # Fallback: 30-second preview (host is hardcoded + track_id is int, but validate anyway)
     try:
@@ -166,8 +166,8 @@ def stream_tidal_track(track_id: int):
                 resp.iter_content(chunk_size=8192),
                 media_type=resp.headers.get("Content-Type", "audio/mp4"),
             )
-    except Exception:  # noqa: BLE001
-        pass  # noqa: S110
+    except Exception:  # noqa: BLE001, S110
+        pass
 
     raise HTTPException(status_code=503, detail="Unable to stream track")
 
@@ -289,11 +289,10 @@ def get_waveform(path: str = Query(..., description="Absolute path to audio file
     db = LibraryDB(Path(path_config_base()) / "library.db")
     db.open()
     try:
-        row = db._conn.execute(
-            "SELECT waveform, waveform_hires FROM scanned WHERE path = ?", (str(validated_path),)
-        ).fetchone()
+        row = db.get(path) or db.get(str(validated_path))
+        stored_path = row["path"] if row and row.get("path") else str(validated_path)
 
-        if row and row["waveform"] and row["waveform_hires"]:
+        if row and row.get("waveform") and row.get("waveform_hires"):
             display = peaks_from_json(row["waveform"])
             hires = peaks_from_json(row["waveform_hires"])
             if display and hires:
@@ -304,7 +303,7 @@ def get_waveform(path: str = Query(..., description="Absolute path to audio file
         if both:
             db._conn.execute(
                 "UPDATE scanned SET waveform = ?, waveform_hires = ? WHERE path = ?",
-                (peaks_to_json(both[0]), peaks_to_json(both[1]), str(validated_path)),
+                (peaks_to_json(both[0]), peaks_to_json(both[1]), stored_path),
             )
             db.commit()
     finally:

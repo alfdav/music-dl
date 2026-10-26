@@ -1,0 +1,8 @@
+title = "music-dl"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "c6412c2 reflowed the existing sequential Discord fixture id onto an added line. Not a new credential."
+commits = ["c6412c212a4e75e72b3d345045e557fae5caa4d0"]

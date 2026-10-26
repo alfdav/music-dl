@@ -281,19 +281,36 @@ class TestPreflightIsrcScan:
         # Must be 'copy', NOT 'skip'
         assert result == {"12": "copy"}
 
-    def test_skips_checkpoint_downloaded_tracks(self, tmp_path):
+    def test_skips_checkpoint_downloaded_tracks_only_when_the_dest_file_exists(self, tmp_path):
         source = tmp_path / "track.flac"
         source.touch()
+        dest = tmp_path / "out" / "track.flac"
+        dest.parent.mkdir()
+        dest.write_bytes(b"flac")
         dl = _make_download_obj(tmp_path, {"US-ABC-00-00007": str(source)}, duplicate_action="skip")
+        dl.skip_existing = False
+        dl.path_base = str(tmp_path / "out")
 
+        def prepare(media, template, quality, pos, total, bypass_isrc=False):
+            return dest, ".flac", dest.is_file(), False
+
+        dl._prepare_file_paths_and_skip_logic = prepare
         track = _make_track(7, "US-ABC-00-00007")
         checkpoint = MagicMock()
         from tidal_dl.helper.checkpoint import STATUS_DOWNLOADED
 
         checkpoint.status_of.return_value = STATUS_DOWNLOADED
 
-        result = dl._preflight_isrc_scan([track], checkpoint=checkpoint)
-        assert result == {}
+        present = dl._preflight_isrc_scan(
+            [track], checkpoint=checkpoint, file_template="{track_title}"
+        )
+        assert present == {}
+
+        dest.unlink()
+        missing = dl._preflight_isrc_scan(
+            [track], checkpoint=checkpoint, file_template="{track_title}"
+        )
+        assert missing == {"7": "skip"}
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +386,81 @@ class TestItemCopyAction:
         dest_flac = pathlib.Path(result_path)
         assert dest_flac.is_file()
         assert dest_flac.read_bytes() == b"audio data"
+
+    def test_copy_keeps_the_audio_when_copystat_hits_smb_arch_flag(self, tmp_path, monkeypatch):
+        """macOS `arch` on an SMB source makes shutil.copystat raise EPERM. The bytes still land."""
+        import shutil
+
+        src = tmp_path / "src.flac"
+        src.write_bytes(b"audio data")
+
+        def reject_flags(_src, _dst, **_kwargs):
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(shutil, "copystat", reject_flags)
+        dl = self._build_minimal_download(tmp_path)
+        dl._library_db.register_isrc_path("US-TST-00-00002", src, commit=True)
+
+        track = _make_track(100, "US-TST-00-00002")
+        track.isrc = "US-TST-00-00002"
+        track.album = MagicMock()
+        track.allow_streaming = True
+        track.media_metadata_tags = []
+
+        with (
+            patch.object(dl, "_validate_and_prepare_media", return_value=track),
+            patch.object(dl, "_prepare_file_paths_and_skip_logic") as mock_paths,
+        ):
+            dst = tmp_path / "output" / "dest.flac"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            mock_paths.return_value = (dst.with_suffix(".m4a"), ".m4a", False, False)
+            outcome, result_path = dl.item(
+                file_template="test/{track_title}",
+                media=track,
+                duplicate_action_override="copy",
+            )
+
+        assert outcome == DownloadOutcome.COPIED
+        dest_flac = pathlib.Path(result_path)
+        assert dest_flac.is_file()
+        assert dest_flac.read_bytes() == b"audio data"
+        assert dl.fn_logger.warning.called
+
+    def test_copy_io_error_fails_only_that_track(self, tmp_path, monkeypatch):
+        import shutil
+
+        src = tmp_path / "src.flac"
+        src.write_bytes(b"audio data")
+
+        def reject_data(_src, _dst, **_kwargs):
+            raise OSError("read failed")
+
+        monkeypatch.setattr(shutil, "copyfile", reject_data)
+        dl = self._build_minimal_download(tmp_path)
+        dl._library_db.register_isrc_path("US-TST-00-00003", src, commit=True)
+
+        track = _make_track(101, "US-TST-00-00003")
+        track.isrc = "US-TST-00-00003"
+        track.album = MagicMock()
+        track.allow_streaming = True
+        track.media_metadata_tags = []
+
+        with (
+            patch.object(dl, "_validate_and_prepare_media", return_value=track),
+            patch.object(dl, "_prepare_file_paths_and_skip_logic") as mock_paths,
+        ):
+            dst = tmp_path / "output" / "dest.flac"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            mock_paths.return_value = (dst.with_suffix(".m4a"), ".m4a", False, False)
+            outcome, result_path = dl.item(
+                file_template="test/{track_title}",
+                media=track,
+                duplicate_action_override="copy",
+            )
+
+        assert outcome == DownloadOutcome.FAILED
+        assert not (tmp_path / "output" / "dest.flac").is_file()
+        assert result_path == ""
 
     def test_prepare_paths_skip_existing_uses_canonical_path(self, tmp_path):
         """skip_existing must check the canonical path before any _01 uniquify."""
@@ -514,3 +606,350 @@ class TestCheckpointOutcomeMapping:
     def test_skipped_marks_checkpoint_downloaded(self):
         checkpoint = self._run_process_download_futures(DownloadOutcome.SKIPPED)
         checkpoint.mark.assert_called_once_with("42", STATUS_DOWNLOADED)
+
+    def test_one_track_exception_does_not_drop_the_rest(self):
+        from tidal_dl.download import Download
+        from tidal_dl.helper.checkpoint import STATUS_FAILED
+
+        dl = Download.__new__(Download)
+        dl.event_abort = Event()
+        dl.fn_logger = MagicMock()
+        process_fn = Download._process_download_futures.__get__(dl, Download)
+
+        good_track = _make_track(1, "US-TST-00-00011")
+        bad_track = _make_track(2, "US-TST-00-00012")
+        good = Future()
+        good.set_result((DownloadOutcome.DOWNLOADED, pathlib.Path("/tmp/good.flac")))
+        bad = Future()
+        bad.set_exception(PermissionError(1, "Operation not permitted"))
+        summary = DownloadSummary()
+        checkpoint = MagicMock()
+
+        process_fn(
+            [bad, good],
+            progress=MagicMock(),
+            progress_task=1,
+            progress_stdout=True,
+            summary=summary,
+            checkpoint=checkpoint,
+            future_to_item={bad: bad_track, good: good_track},
+        )
+
+        assert summary.downloaded == 1
+        assert summary.failed == 1
+        marked = {call.args for call in checkpoint.mark.call_args_list}
+        assert ("1", STATUS_DOWNLOADED) in marked
+        assert ("2", STATUS_FAILED) in marked
+
+
+UNAVAILABLE_REASON = "This item is not available for listening anymore on TIDAL."
+
+
+def _unavailable_track(track_id: int, name: str):
+    track = _make_track(track_id, f"US-UNAV-{track_id:05d}")
+    track.name = name
+    track.allow_streaming = False
+    track.album = None
+    track.artists = []
+    return track
+
+
+def _run_collection(tmp_path, tracks, bind_item):
+    from types import SimpleNamespace
+
+    from rich.progress import Progress
+    from tidalapi.album import Album
+
+    from tidal_dl.download import Download
+
+    album = object.__new__(Album)
+    album.id = 88
+    dl = Download.__new__(Download)
+    dl.fn_logger = MagicMock()
+    dl.path_base = str(tmp_path / "library")
+    dl.event_abort = Event()
+    dl.progress = Progress(disable=True)
+    dl.progress_overall = None
+    dl.settings = SimpleNamespace(
+        data=SimpleNamespace(
+            downloads_concurrent_max=2,
+            playlist_create=False,
+            skip_duplicate_isrc=False,
+        )
+    )
+    dl._validate_and_prepare_media = lambda *args, **kwargs: album
+    dl._setup_collection_download_context = lambda *args, **kwargs: (
+        "{track_title}",
+        "La Adictiva",
+        "La Adictiva",
+        tracks,
+        False,
+    )
+    dl._preflight_isrc_scan = lambda *args, **kwargs: {}
+    dl.item = bind_item(dl)
+    panels: list[object] = []
+    with (
+        patch("tidal_dl.download.collections.path_config_base", return_value=str(tmp_path)),
+        patch(
+            "tidal_dl.download.collections.Console",
+            lambda *args, **kwargs: SimpleNamespace(print=panels.append),
+        ),
+    ):
+        ok = dl.items(file_template="{track_title}", media=album)
+    text = "\n".join(str(getattr(panel, "renderable", panel)) for panel in panels)
+    return ok, text
+
+
+def _download_real_item(dl, media):
+    """Run item() with the real media validator, not the collection stub."""
+    from tidal_dl.download import Download
+
+    saved = dl._validate_and_prepare_media
+    dl._validate_and_prepare_media = lambda *args, **kwargs: Download._validate_and_prepare_media(dl, *args, **kwargs)
+    try:
+        return Download.item(dl, "{track_title}", media=media)
+    finally:
+        dl._validate_and_prepare_media = saved
+
+
+def test_unavailable_plus_success_exits_zero_and_lists_unavailable(tmp_path):
+    """Unavailable tracks are listed on their own and do not fail the command."""
+    from tidal_dl.model.downloader import DownloadOutcome
+
+    kept = _make_track(1, "US-TST-00-00021")
+    kept.name = "Kept Song"
+    kept.allow_streaming = True
+    gone = _unavailable_track(2, "Te Quiero")
+    downloaded: list[int] = []
+
+    def bind_item(dl):
+        def item(media=None, **kwargs):
+            if getattr(media, "allow_streaming", True) is False:
+                return _download_real_item(dl, media)
+            downloaded.append(media.id)
+            return DownloadOutcome.DOWNLOADED, tmp_path / "ok.flac"
+
+        return item
+
+    ok, text = _run_collection(tmp_path, [kept, gone], bind_item)
+
+    assert ok is True
+    assert downloaded == [1]
+    assert "Unavailable on TIDAL" in text
+    assert "Te Quiero" in text
+    assert UNAVAILABLE_REASON in text
+    assert "download failed" not in text
+
+
+def test_real_failure_stays_separate_from_unavailable(tmp_path):
+    """A real failure still exits non-zero. Unavailable tracks stay on their own list."""
+    from tidal_dl.download.streams import QualityMismatchError
+    from tidal_dl.model.downloader import DownloadOutcome
+
+    kept = _make_track(1, "US-TST-00-00031")
+    kept.name = "Kept Song"
+    kept.allow_streaming = True
+    gone = _unavailable_track(2, "Te Quiero")
+    broken = _make_track(3, "US-TST-00-00033")
+    broken.name = "Broken Song"
+    broken.allow_streaming = True
+
+    def bind_item(dl):
+        def item(media=None, **kwargs):
+            if getattr(media, "allow_streaming", True) is False:
+                return _download_real_item(dl, media)
+            if media.id == 3:
+                raise QualityMismatchError("requested HI_RES_LOSSLESS but received LOSSLESS")
+            return DownloadOutcome.DOWNLOADED, tmp_path / "ok.flac"
+
+        return item
+
+    ok, text = _run_collection(tmp_path, [kept, gone, broken], bind_item)
+
+    assert ok is False
+    assert "QualityMismatchError" in text
+    assert "requested HI_RES_LOSSLESS but received LOSSLESS" in text
+    assert "Unavailable on TIDAL" in text
+    assert "Te Quiero" in text
+    assert UNAVAILABLE_REASON in text
+    assert "Broken Song: download failed" not in text
+    failure_line = next(line for line in text.splitlines() if "QualityMismatchError" in line)
+    unavailable_line = next(line for line in text.splitlines() if "Te Quiero" in line)
+    assert "Unavailable on TIDAL" not in failure_line
+    assert "QualityMismatchError" not in unavailable_line
+
+
+def test_output_file_check_does_not_change_skip_existing(tmp_path):
+    from tidal_dl.download.duplicates import track_file_is_in_output
+
+    dest = tmp_path / "song.flac"
+    dest.write_bytes(b"flac")
+    observed: list[bool] = []
+
+    class Downloader:
+        def __init__(self):
+            self.skip_existing = False
+
+        def _prepare_file_paths_and_skip_logic(self, *args, **kwargs):
+            observed.append(self.skip_existing)
+            return dest, ".flac", False, False
+
+    dl = Downloader()
+    track = _make_track(7, "US-TST-00-00007")
+    assert track_file_is_in_output(dl, track, "{track_title}", 1, 1) is True
+    assert observed == [False]
+    assert dl.skip_existing is False
+
+    dest.unlink()
+    assert track_file_is_in_output(dl, track, "{track_title}", 1, 1) is False
+    assert dl.skip_existing is False
+
+
+def test_quality_mismatch_is_listed_and_the_collection_still_finishes(tmp_path):
+    """A per-track QualityMismatchError must not vanish into exit 0."""
+    from types import SimpleNamespace
+
+    from rich.progress import Progress
+    from tidalapi.album import Album
+
+    from tidal_dl.download import Download
+    from tidal_dl.download.streams import QualityMismatchError
+
+    album = object.__new__(Album)
+    album.id = 77
+    good = _make_track(1, "US-TST-00-00011")
+    bad = _make_track(2, "US-TST-00-00012")
+    tracks = [good, bad]
+    downloaded: list[int] = []
+
+    dl = Download.__new__(Download)
+    dl.fn_logger = MagicMock()
+    dl.path_base = str(tmp_path / "library")
+    dl.event_abort = Event()
+    dl.progress = Progress(disable=True)
+    dl.progress_overall = None
+    dl.settings = SimpleNamespace(
+        data=SimpleNamespace(
+            downloads_concurrent_max=2,
+            playlist_create=False,
+            skip_duplicate_isrc=False,
+        )
+    )
+    dl._validate_and_prepare_media = lambda *args, **kwargs: album
+    dl._setup_collection_download_context = lambda *args, **kwargs: (
+        "{track_title}",
+        "The Album",
+        "The Album",
+        tracks,
+        False,
+    )
+    dl._preflight_isrc_scan = lambda *args, **kwargs: {}
+
+    def item(media=None, **kwargs):
+        if getattr(media, "id", None) == 2:
+            raise QualityMismatchError("requested HI_RES_LOSSLESS but received LOSSLESS")
+        downloaded.append(media.id)
+        return DownloadOutcome.DOWNLOADED, pathlib.Path("/tmp/ok.flac")
+
+    dl.item = item
+    panels: list[object] = []
+
+    with (
+        patch("tidal_dl.download.collections.path_config_base", return_value=str(tmp_path)),
+        patch(
+            "tidal_dl.download.collections.Console",
+            lambda *args, **kwargs: SimpleNamespace(print=panels.append),
+        ),
+    ):
+        ok = dl.items(file_template="{track_title}", media=album)
+
+    assert ok is False
+    assert downloaded == [1]
+    text = "\n".join(str(getattr(panel, "renderable", panel)) for panel in panels)
+    assert "QualityMismatchError" in text
+    assert "requested HI_RES_LOSSLESS but received LOSSLESS" in text
+    assert "Failed:" in text
+
+
+def test_checkpoint_path_includes_the_resolved_output_dir(tmp_path):
+    from tidal_dl.helper.checkpoint import checkpoint_path_for
+
+    first = checkpoint_path_for(tmp_path, "playlist_9", str(tmp_path / "fresh"))
+    second = checkpoint_path_for(tmp_path, "playlist_9", str(tmp_path / "other"))
+    stale = tmp_path / "checkpoints" / "playlist_9.json"
+
+    assert first != second
+    assert first != stale
+    assert first.parent == tmp_path / "checkpoints"
+    assert "playlist_9" in first.name
+    assert first.name != second.name
+
+
+def test_checkpoint_skip_requires_the_file_in_this_output_dir(tmp_path):
+    """A downloaded checkpoint for another folder must not skip a fresh --output."""
+    from rich.progress import Progress
+
+    from tidal_dl.download import Download
+    from tidal_dl.helper.checkpoint import STATUS_DOWNLOADED, DownloadCheckpoint
+
+    out = tmp_path / "fresh"
+    dest = out / "song.flac"
+    dl = Download.__new__(Download)
+    dl.settings = type("S", (), {"data": type("D", (), {"downloads_concurrent_max": 1})()})()
+    dl.event_abort = Event()
+    dl.fn_logger = MagicMock()
+    dl.path_base = str(out)
+    dl.skip_existing = False
+    calls: list[int] = []
+
+    def item(media=None, **kwargs):
+        calls.append(media.id)
+        return DownloadOutcome.DOWNLOADED, dest
+
+    def prepare(media, template, quality, pos, total, bypass_isrc=False):
+        return dest, ".flac", dest.is_file(), False
+
+    dl.item = item
+    dl._prepare_file_paths_and_skip_logic = prepare
+    track = _make_track(7, "US-TST-00-00007")
+    checkpoint = DownloadCheckpoint(
+        path=tmp_path / "cp.json",
+        collection_id="playlist_9",
+        collection_type="playlist",
+        output_dir=str(out.resolve()),
+    )
+    checkpoint.initialize_tracks(["7"])
+    checkpoint.mark("7", STATUS_DOWNLOADED)
+
+    def run_once() -> DownloadSummary:
+        summary = DownloadSummary()
+        with Progress(disable=True) as progress:
+            task = progress.add_task("collection", total=1)
+            dl._execute_collection_downloads(
+                [track],
+                "{track_title}",
+                None,
+                None,
+                False,
+                False,
+                1,
+                progress,
+                task,
+                False,
+                summary=summary,
+                checkpoint=checkpoint,
+            )
+        return summary
+
+    missing = run_once()
+    assert calls == [7]
+    assert missing.skipped == 0
+    assert missing.downloaded == 1
+
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"full-flac")
+    calls.clear()
+    present = run_once()
+    assert calls == []
+    assert present.skipped == 1
+    assert present.downloaded == 0

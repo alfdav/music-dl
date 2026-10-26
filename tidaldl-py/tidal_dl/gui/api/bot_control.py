@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -25,6 +26,9 @@ BOT_PID_FILENAME = "discord-bot.pid"
 BOT_BUNDLE_DIRNAME = "discord-bot"
 BOT_INSTALLED_DIRNAME = "discord-bot-runtime"
 STOP_TIMEOUT_SECONDS = 5
+# Pid file and discord_bot_process must publish together. Status that sees the
+# pid file first treats a not-yet-visible pid as a dead bot and forgets the start.
+_bot_lifecycle_lock = threading.Lock()
 DISCORD_API = "https://discord.com/api/v10"
 DISCORD_LOOKUP_TIMEOUT_SECONDS = 2
 USER_FIELDS = [
@@ -202,9 +206,10 @@ def _start_bot_for_app(app) -> dict:
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Could not start Discord bot: {exc}") from exc
 
-    _write_private_file_atomic(bot_pid_path(), f"{proc.pid}\n")
-    app.state.discord_bot_process = proc
-    app.state.discord_bot_pid = proc.pid
+    with _bot_lifecycle_lock:
+        _write_private_file_atomic(bot_pid_path(), f"{proc.pid}\n")
+        app.state.discord_bot_process = proc
+        app.state.discord_bot_pid = proc.pid
     return _status_for_app(app)
 
 
@@ -280,20 +285,21 @@ def _running_process(request: Request):
 
 
 def _running_process_for_app(app):
-    proc = getattr(app.state, "discord_bot_process", None)
-    if proc is None:
-        pid = getattr(app.state, "discord_bot_pid", None) or _read_recorded_pid()
-        if pid is None:
+    with _bot_lifecycle_lock:
+        proc = getattr(app.state, "discord_bot_process", None)
+        if proc is None:
+            pid = getattr(app.state, "discord_bot_pid", None) or _read_recorded_pid()
+            if pid is None:
+                return None
+            if _pid_alive(pid):
+                app.state.discord_bot_pid = pid
+                return pid
+            _forget_recorded_pid(app)
             return None
-        if _pid_alive(pid):
-            app.state.discord_bot_pid = pid
-            return pid
+        if proc.poll() is None:
+            return proc
         _forget_recorded_pid(app)
         return None
-    if proc.poll() is None:
-        return proc
-    _forget_recorded_pid(app)
-    return None
 
 
 def _stop_bot(request: Request) -> None:

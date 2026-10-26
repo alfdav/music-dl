@@ -13,9 +13,36 @@ _SQLITE_CORRUPTION_MESSAGES = (
     "database disk image is malformed",
 )
 
+# SQLite INTEGER is signed int64. Filesystem ids are unsigned 64-bit.
+_SQLITE_INT64_MOD = 1 << 64
+_SQLITE_INT64_SIGN = 1 << 63
+
+
+def sqlite_int64(n: int | None) -> int | None:
+    """Fold a filesystem id into SQLite's signed 64-bit INTEGER.
+
+    macOS SMB shares can report ``st_ino`` >= 2**63. Those values are stored
+    as two's complement (``n - 2**64``). Numbers already in
+    ``[-2**63, 2**63)`` are returned unchanged, so the conversion is
+    idempotent and a stored id compares equal to a freshly stat'd one.
+
+    Integers outside a single 64-bit window are folded modulo 2**64 (the low
+    64 bits) and then reinterpreted. ``None`` and non-integers become
+    ``None``. This function never raises.
+    """
+    if n is None or isinstance(n, bool) or not isinstance(n, int):
+        return None
+    try:
+        unsigned = n % _SQLITE_INT64_MOD
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    if unsigned >= _SQLITE_INT64_SIGN:
+        return unsigned - _SQLITE_INT64_MOD
+    return unsigned
+
 
 def canonical_library_path(path: str) -> str:
-    """Index paths as NFC so macOS NFD walk strings match tag/download NFC."""
+    """NFC comparison key. Not the path to open or store."""
     return unicodedata.normalize("NFC", str(path))
 
 
@@ -23,6 +50,24 @@ def library_path_forms(path: str) -> tuple[str, str]:
     """Return (NFC, NFD) spellings of *path* for indexed twin lookups."""
     nfc = canonical_library_path(path)
     return nfc, unicodedata.normalize("NFD", nfc)
+
+
+def library_path_lookup_keys(path: str) -> tuple[str, ...]:
+    """Exact string, then NFC and NFD, for indexed path lookups."""
+    nfc, nfd = library_path_forms(path)
+    return tuple(dict.fromkeys(item for item in (path, nfc, nfd) if item))
+
+
+def prefer_listed_spelling(current: str | None, candidate: str) -> str:
+    """Keep an NFC spelling the walk listed; otherwise keep the earlier listing.
+
+    Never invents a spelling. Both arguments must be strings the walk returned.
+    """
+    if not current:
+        return candidate
+    if unicodedata.is_normalized("NFC", candidate) and not unicodedata.is_normalized("NFC", current):
+        return candidate
+    return current
 
 
 def _is_sqlite_corruption(exc: sqlite3.DatabaseError) -> bool:

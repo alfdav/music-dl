@@ -613,37 +613,155 @@ function showContextMenu(e, items) {
   }, 0);
 }
 
+let _shortcutPlatformCache = null;
+
+function _resetShortcutPlatformCache() {
+  _shortcutPlatformCache = null;
+}
+
+function _normalizeShortcutPlatform(value) {
+  const raw = String(value || '').toLowerCase();
+  if (raw.includes('mac') || raw.includes('darwin') || raw.includes('iphone') || raw.includes('ipad')) {
+    return 'mac';
+  }
+  if (raw.includes('win')) return 'win';
+  return 'linux';
+}
+
+function _navigatorShortcutPlatform(nav) {
+  const source = nav || (typeof navigator !== 'undefined' ? navigator : {});
+  const raw = String(
+    (source.userAgentData && source.userAgentData.platform)
+    || source.platform
+    || source.userAgent
+    || ''
+  );
+  return _normalizeShortcutPlatform(raw);
+}
+
+async function _resolveShortcutPlatform(opts) {
+  const options = opts || {};
+  if (!options.fresh && _shortcutPlatformCache) return _shortcutPlatformCache;
+  const tauri = options.tauri !== undefined
+    ? options.tauri
+    : (typeof window !== 'undefined' ? window.__TAURI__ : undefined);
+  const nav = options.navigator !== undefined
+    ? options.navigator
+    : (typeof navigator !== 'undefined' ? navigator : undefined);
+  try {
+    if (tauri && tauri.os && typeof tauri.os.platform === 'function') {
+      _shortcutPlatformCache = _normalizeShortcutPlatform(await tauri.os.platform());
+      return _shortcutPlatformCache;
+    }
+    if (tauri && tauri.core && typeof tauri.core.invoke === 'function') {
+      _shortcutPlatformCache = _normalizeShortcutPlatform(await tauri.core.invoke('plugin:os|platform'));
+      return _shortcutPlatformCache;
+    }
+  } catch (_) { /* fall through to navigator */ }
+  _shortcutPlatformCache = _navigatorShortcutPlatform(nav);
+  return _shortcutPlatformCache;
+}
+
+function _shortcutKeycaps(keys, platform) {
+  const isMac = platform === 'mac';
+  const symbol = (glyph, ariaLabel) => ({ glyph, ariaLabel, symbol: true });
+  const letter = (glyph, ariaLabel) => ({ glyph, ariaLabel, symbol: false });
+  return keys.map((key) => {
+    switch (key) {
+      case 'Mod':
+        return isMac ? symbol('\u2318', 'Command') : letter('Ctrl', 'Control');
+      case 'Shift':
+        return isMac ? symbol('\u21E7', 'Shift') : letter('Shift', 'Shift');
+      case 'Alt':
+      case 'Option':
+        return isMac ? symbol('\u2325', 'Option') : letter('Alt', 'Alt');
+      case 'Ctrl':
+        return isMac ? symbol('\u2303', 'Control') : letter('Ctrl', 'Control');
+      case 'ArrowLeft':
+        return symbol('\u2190', 'Left arrow');
+      case 'ArrowRight':
+        return symbol('\u2192', 'Right arrow');
+      case 'ArrowUp':
+        return symbol('\u2191', 'Up arrow');
+      case 'ArrowDown':
+        return symbol('\u2193', 'Down arrow');
+      case 'Space':
+        return letter('Space', 'Space');
+      default:
+        return letter(key, key);
+    }
+  });
+}
+
+function _playbackShortcutRows() {
+  return [
+    { keys: ['Space'], label: 'Play / Pause' },
+    { keys: ['ArrowLeft'], label: 'Back 10s' },
+    { keys: ['ArrowRight'], label: 'Forward 10s' },
+    { keys: ['Mod', 'K'], label: 'Search' },
+    { keys: ['Mod', 'L'], label: 'Lyrics' },
+    { keys: ['Mod', 'Shift', 'Q'], label: 'Queue' },
+  ];
+}
+
+function _renderShortcutKeycaps(keys, platform) {
+  const wrap = h('span', { className: 'shortcut-keys' });
+  _shortcutKeycaps(keys, platform).forEach((cap) => {
+    wrap.appendChild(h('kbd', {
+      className: cap.symbol ? 'shortcut-keycap shortcut-keycap-symbol' : 'shortcut-keycap',
+      'aria-label': cap.ariaLabel,
+    }, cap.glyph));
+  });
+  return wrap;
+}
+
+function _renderShortcutStrip(platform) {
+  const shortcuts = h('div', { className: 'settings-shortcuts' });
+  _playbackShortcutRows().forEach((row) => {
+    shortcuts.appendChild(h('div', { className: 'settings-shortcut-row' },
+      textEl('span', row.label, 'settings-shortcut-label'),
+      _renderShortcutKeycaps(row.keys, platform)
+    ));
+  });
+  return shortcuts;
+}
+
 // ---- SHORTCUTS HELP OVERLAY ----
-function toggleShortcutsHelp() {
+async function toggleShortcutsHelp() {
   const existing = document.querySelector('.shortcuts-overlay');
   if (existing) { existing.remove(); return; }
 
+  const platform = await _resolveShortcutPlatform();
+  if (document.querySelector('.shortcuts-overlay')) return;
+
   const groups = [
-    { label: 'Playback', keys: [
-      ['Space / K', 'Play / Pause'],
-      ['M', 'Mute / Unmute'],
-      ['Shift+N', 'Next track'],
-      ['Shift+P', 'Previous track'],
+    { label: 'Playback', rows: [
+      { keys: ['Space'], action: 'Play / Pause' },
+      { keys: ['K'], action: 'Play / Pause' },
+      { keys: ['M'], action: 'Mute / Unmute' },
+      { keys: ['Shift', 'N'], action: 'Next track' },
+      { keys: ['Shift', 'P'], action: 'Previous track' },
     ]},
-    { label: 'Seeking', keys: [
-      ['J', 'Back 10s'],
-      ['L', 'Forward 10s'],
-      ['\u2190', 'Back 10s'],
-      ['\u2192', 'Forward 10s'],
-      ['0 / Home', 'Restart track'],
-      ['End', 'Jump to end'],
-      ['1\u20139', 'Jump to 10\u201390%'],
+    { label: 'Seeking', rows: [
+      { keys: ['J'], action: 'Back 10s' },
+      { keys: ['L'], action: 'Forward 10s' },
+      { keys: ['ArrowLeft'], action: 'Back 10s' },
+      { keys: ['ArrowRight'], action: 'Forward 10s' },
+      { keys: ['0'], action: 'Restart track' },
+      { keys: ['Home'], action: 'Restart track' },
+      { keys: ['End'], action: 'Jump to end' },
+      { keys: ['1\u20139'], action: 'Jump to 10\u201390%' },
     ]},
-    { label: 'Volume', keys: [
-      ['\u2191', 'Volume up'],
-      ['\u2193', 'Volume down'],
+    { label: 'Volume', rows: [
+      { keys: ['ArrowUp'], action: 'Volume up' },
+      { keys: ['ArrowDown'], action: 'Volume down' },
     ]},
-    { label: 'Navigation', keys: [
-      ['/', 'Focus search'],
-      ['Cmd/Ctrl+K', 'Focus search'],
-      ['Cmd/Ctrl+L', 'Toggle lyrics'],
-      ['Cmd/Ctrl+Shift+Q', 'Toggle queue'],
-      ['?', 'This help'],
+    { label: 'Navigation', rows: [
+      { keys: ['/'], action: 'Focus search' },
+      { keys: ['Mod', 'K'], action: 'Focus search' },
+      { keys: ['Mod', 'L'], action: 'Toggle lyrics' },
+      { keys: ['Mod', 'Shift', 'Q'], action: 'Toggle queue' },
+      { keys: ['?'], action: 'This help' },
     ]},
   ];
 
@@ -654,9 +772,9 @@ function toggleShortcutsHelp() {
   for (const group of groups) {
     card.appendChild(textEl('h3', group.label, 'shortcuts-group'));
     const grid = h('div', { className: 'shortcuts-grid' });
-    for (const [key, action] of group.keys) {
-      grid.appendChild(textEl('span', key, 'shortcut-key'));
-      grid.appendChild(textEl('span', action, 'shortcut-action'));
+    for (const row of group.rows) {
+      grid.appendChild(_renderShortcutKeycaps(row.keys, platform));
+      grid.appendChild(textEl('span', row.action, 'shortcut-action'));
     }
     card.appendChild(grid);
   }
