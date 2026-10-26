@@ -90,13 +90,14 @@ def _prepare_downloaded_file(file_path: Path, roots: list[Path], known: set[str]
         return None
     from tidal_dl.helper.library_db.utils import canonical_library_path
 
-    path_str = canonical_library_path(str(file_path))
-    if path_str in known:
+    listed = str(file_path)
+    path_key = canonical_library_path(listed)
+    if path_key in known:
         return None
     meta = _read_metadata(file_path, roots)
     if meta:
         record = {
-            "path": path_str,
+            "path": listed,
             "status": "tagged" if meta["isrc"] else "needs_isrc",
             "isrc": meta["isrc"] or None,
             "artist": meta["artist"],
@@ -122,12 +123,12 @@ def _prepare_downloaded_file(file_path: Path, roots: list[Path], known: set[str]
         }
     else:
         record = {
-            "path": path_str,
+            "path": listed,
             "status": "unreadable",
             "codec": "unknown",
             "metadata_complete": True,
         }
-    known.add(path_str)
+    known.add(path_key)
     return record
 
 
@@ -209,7 +210,7 @@ class DownloadJobService:
         try:
             data = settings_cls().data
             n = int(getattr(data, "downloads_concurrent_max", 3) or 3)
-        except Exception:
+        except (TypeError, ValueError, AttributeError, OSError):
             n = 3
         return max(1, min(n, 10))
 
@@ -661,6 +662,10 @@ class DownloadJobService:
             self._mark_job_error(current, error)
             self._broadcast_error(current, error)
             return
+        if download_outcome == DownloadOutcome.UNAVAILABLE:
+            finished_at = time.time()
+            self._update_job(job, status=JobStatus.DONE.value, progress=100, finished_at=finished_at)
+            return
 
         if not self._update_job(job, status=JobStatus.INDEXING.value, progress=100):
             self._mark_cancelled(job)
@@ -696,6 +701,9 @@ class DownloadJobService:
             return
 
         finished_at = time.time()
+        delivered = getattr(dl, "last_delivered_quality", None)
+        if delivered:
+            quality = self._quality_value(delivered)
         self._record_history(
             track_id=job.track_id,
             name=name,
@@ -707,7 +715,9 @@ class DownloadJobService:
             cover_url=cover_url,
             quality=quality,
         )
-        self._update_job(job, status=JobStatus.DONE.value, progress=100, finished_at=finished_at)
+        self._update_job(
+            job, status=JobStatus.DONE.value, progress=100, finished_at=finished_at, quality=quality
+        )
         self.events.broadcast(
             {
                 "type": "complete",
@@ -736,6 +746,7 @@ class DownloadJobService:
             row = db.get(old_path)
             if row is None:
                 raise ValueError(f"Not in library: {old_path}")
+            db.release_transaction()
 
             tidal = tidal_cls()
             track = tidal.session.track(job.track_id)
@@ -856,8 +867,8 @@ class DownloadJobService:
 
             isrc = row.get("isrc")
             if isrc:
-                db.delete_probe(isrc)
-                db.commit()
+                with db.write_transaction(immediate=True):
+                    db.delete_probe(isrc)
 
             finished_at = time.time()
             self._record_history(

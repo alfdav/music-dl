@@ -23,6 +23,7 @@ from rich.progress import (
 from rich.table import Table
 from tidalapi.album import Album
 from tidalapi.artist import Artist
+from tidalapi.exceptions import ObjectNotFound, TidalAPIError
 from tidalapi.media import Track, Video
 from tidalapi.mix import Mix
 from tidalapi.playlist import Playlist
@@ -31,7 +32,9 @@ from tidal_dl import __version__
 from tidal_dl.config import HandlingApp, Settings, Tidal
 from tidal_dl.constants import CTX_TIDAL, FAVORITES, DownloadSource, MediaType
 from tidal_dl.download import Download
+from tidal_dl.download.streams import QualityMismatchError
 from tidal_dl.helper.cli import parse_timestamp
+from tidal_dl.helper.exceptions import MediaUnknown
 from tidal_dl.helper.path import get_format_template, path_config_base, path_file_settings
 from tidal_dl.helper.playlist_import import PlaylistImporter
 from tidal_dl.helper.tidal import (
@@ -43,6 +46,7 @@ from tidal_dl.helper.tidal import (
 )
 from tidal_dl.hifi_api import HiFiApiClient
 from tidal_dl.model.cfg import SETTINGS_HELP
+from tidal_dl.model.downloader import DownloadOutcome
 
 
 def _progress_logger(print_fn: Callable[..., Any], *, debug: bool = False):
@@ -114,7 +118,7 @@ class FavoriteMedia(Protocol):
 def _ctx_tidal(ctx: typer.Context) -> Tidal:
     tidal = ctx.obj.get(CTX_TIDAL) if isinstance(ctx.obj, dict) else None
     if not isinstance(tidal, Tidal):
-        raise RuntimeError("TIDAL context is not initialized")
+        raise TypeError("TIDAL context is not initialized")
     return tidal
 
 
@@ -158,7 +162,7 @@ def _handle_track_or_video(
     file_template: str,
     idx: int,
     urls_pos_last: int,
-) -> None:
+) -> bool:
     """Handle downloading a track or video item.
 
     Args:
@@ -168,17 +172,21 @@ def _handle_track_or_video(
         file_template (str): The file template for saving the media.
         idx (int): The index of the item in the list.
         urls_pos_last (int): The last index in the URLs list.
+
+    Returns:
+        bool: False when the track failed.
     """
     settings = _ctx_settings(ctx)
     download_delay: bool = bool(settings.data.download_delay and idx < urls_pos_last)
 
-    _ = dl.item(
+    outcome, _path = dl.item(
         media=media,
         file_template=file_template,
         download_delay=download_delay,
         quality_audio=settings.data.quality_audio,
         quality_video=settings.data.quality_video,
     )
+    return outcome != DownloadOutcome.FAILED
 
 
 def _handle_album_playlist_mix_artist(
@@ -214,21 +222,26 @@ def _handle_album_playlist_mix_artist(
     else:
         item_ids.append(item_id)
 
+    any_failed = False
     for _item_id in item_ids:
         if handling_app.event_abort.is_set():
             return False
 
-        dl.items(
-            media_id=_item_id,
-            media_type=media_type,
-            file_template=file_template,
-            video_download=settings.data.video_download,
-            download_delay=settings.data.download_delay,
-            quality_audio=settings.data.quality_audio,
-            quality_video=settings.data.quality_video,
-        )
+        if (
+            dl.items(
+                media_id=_item_id,
+                media_type=media_type,
+                file_template=file_template,
+                video_download=settings.data.video_download,
+                download_delay=settings.data.download_delay,
+                quality_audio=settings.data.quality_audio,
+                quality_video=settings.data.quality_video,
+            )
+            is False
+        ):
+            any_failed = True
 
-    return True
+    return not any_failed
 
 
 def _process_url(
@@ -285,12 +298,12 @@ def _process_url(
             prefer_hifi=prefer_hifi,
             oauth_fallback=bool(settings.data.download_source_fallback),
         )
-    except Exception:
+    except (ObjectNotFound, TidalAPIError, MediaUnknown, requests.RequestException, AttributeError, KeyError, TypeError, ValueError, OSError):
         print(f"Media not found (ID: {url_clean_id}). Maybe it is not available anymore.")
         return False
 
     if media_type in [MediaType.TRACK, MediaType.VIDEO]:
-        _handle_track_or_video(dl, ctx, cast(TrackOrVideo, media), file_template, idx, urls_pos_last)
+        return _handle_track_or_video(dl, ctx, cast(TrackOrVideo, media), file_template, idx, urls_pos_last)
     elif media_type in [MediaType.ALBUM, MediaType.PLAYLIST, MediaType.MIX, MediaType.ARTIST]:
         return _handle_album_playlist_mix_artist(
             ctx,
@@ -380,6 +393,9 @@ def _download(
             for idx, item in enumerate(urls):
                 if _process_url(dl, ctx, handling_app, item, idx, urls_pos_last) is False:
                     return False
+        except QualityMismatchError as exc:
+            print(str(exc))
+            return False
         finally:
             progress.refresh()
             progress.stop()
@@ -1073,9 +1089,10 @@ def isrc_tag(
             if file_path.suffix.lower() not in SCAN_EXTENSIONS:
                 continue
 
-            path_str = canonical_library_path(str(file_path))
+            listed = str(file_path)
+            path_key = canonical_library_path(listed)
 
-            if path_str in known_paths:
+            if path_key in known_paths:
                 skipped_known += 1
                 continue
 
@@ -1084,25 +1101,25 @@ def isrc_tag(
             # Check if file already has an ISRC tag
             isrc = _extract_isrc(file_path)
             if isrc:
-                queue_record(path_str, status="has_isrc", isrc=isrc)
+                queue_record(listed, status="has_isrc", isrc=isrc)
                 continue
 
-            # Read artist + title
+            # Read artist + title from the walk path, not its NFC key.
             try:
-                audio = _mutagen.File(path_str, easy=True)
-            except Exception:
-                queue_record(path_str, status="error")
+                audio = _mutagen.File(file_path, easy=True)
+            except (OSError, _mutagen.MutagenError, KeyError, TypeError, ValueError):
+                queue_record(listed, status="error")
                 continue
 
             if audio is None or audio.tags is None:
-                queue_record(path_str, status="no_tags")
+                queue_record(listed, status="no_tags")
                 continue
 
             artist_list = audio.tags.get("artist") or audio.tags.get("albumartist")
             title_list = audio.tags.get("title")
 
             if not artist_list or not title_list:
-                queue_record(path_str, status="no_tags")
+                queue_record(listed, status="no_tags")
                 continue
 
             artist = str(artist_list[0]) if isinstance(artist_list, list) else str(artist_list)
@@ -1110,13 +1127,13 @@ def isrc_tag(
 
             if artist.strip() and title.strip():
                 queue_record(
-                    path_str,
+                    listed,
                     status="needs_isrc",
                     artist=artist.strip(),
                     title=title.strip(),
                 )
             else:
-                queue_record(path_str, status="no_tags")
+                queue_record(listed, status="no_tags")
 
     flush_pending()
     dropped = drop_skipped_scan_paths(db)
@@ -1184,7 +1201,7 @@ def isrc_tag(
 
             audio.save()
             return True
-        except Exception:
+        except (OSError, mutagen.MutagenError, KeyError, TypeError, ValueError):
             return False
 
     progress = Progress(
@@ -1250,7 +1267,7 @@ def isrc_tag(
                             db.record(path_str, status="error", artist=artist, title=title)
                         errors += 1
 
-            except Exception:
+            except (TidalAPIError, ObjectNotFound, requests.RequestException, AttributeError, KeyError, TypeError, ValueError, OSError):
                 with db.write_transaction():
                     db.record(path_str, status="error", artist=artist, title=title)
                 errors += 1

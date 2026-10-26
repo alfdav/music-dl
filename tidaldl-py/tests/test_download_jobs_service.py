@@ -1168,3 +1168,59 @@ def test_cancel_all_clears_only_after_all_workers_acknowledge(tmp_path, monkeypa
     finally:
         release_first.set()
         service.stop_worker(join_timeout=5)
+
+
+def test_history_records_delivered_quality_when_session_falls_back(tmp_path, monkeypatch):
+    service = _service(tmp_path)
+    events = []
+    service.events.broadcast = events.append
+
+    class FakeTrack:
+        id = 66024828
+        name = "If I Didn't Have Your Love"
+        full_name = "If I Didn't Have Your Love"
+        duration = 1
+        artists = ()
+        album = None
+
+    class FakeSession:
+        def track(self, track_id):
+            return FakeTrack()
+
+    class FakeTidal:
+        session = FakeSession()
+
+    class FakeSettingsData:
+        download_base_path = str(tmp_path)
+        skip_existing = True
+        format_track = "{track_title}"
+        quality_audio = "HI_RES_LOSSLESS"
+        download_delay = False
+
+    class FakeSettings:
+        data = FakeSettingsData()
+
+    class FakeDownload:
+        last_delivered_quality = "LOSSLESS"
+
+        def __init__(self, **kwargs):
+            pass
+
+        def item(self, **kwargs):
+            return DownloadOutcome.DOWNLOADED, tmp_path / "cohen.flac"
+
+    monkeypatch.setattr("tidal_dl.gui.services.download_job_service.Tidal", FakeTidal)
+    monkeypatch.setattr("tidal_dl.gui.services.download_job_service.Settings", FakeSettings)
+    monkeypatch.setattr("tidal_dl.gui.services.download_job_service.Download", FakeDownload)
+    monkeypatch.setattr("tidal_dl.gui.services.download_job_service.scan_new_downloads", lambda *args: None)
+
+    service.enqueue_download([66024828])
+    job = service.claim_next_for_test()
+    service.execute_job_for_test(job)
+
+    stored = service.get_job_for_test(job.id)
+    history = service.history(limit=10)["downloads"]
+    complete = [event for event in events if event["type"] == "complete"]
+    assert stored.quality == "LOSSLESS"
+    assert history[0]["quality"] == "LOSSLESS"
+    assert complete[0]["quality"] == "LOSSLESS"

@@ -17,8 +17,9 @@ def db(tmp_path):
 @pytest.fixture
 def api_home_client(tmp_path, monkeypatch, clear_singletons):
     from fastapi.testclient import TestClient
-    from tidal_dl.gui import create_app
+
     import tidal_dl.gui.api.home as home_api
+    from tidal_dl.gui import create_app
 
     monkeypatch.setenv("MUSIC_DL_CONFIG_DIR", str(tmp_path))
     home_api._invalidate_db_cache()
@@ -605,3 +606,20 @@ def test_volume_available_cache_expires_after_ttl(monkeypatch):
     assert first is True
     assert second is False
     assert probes["n"] == 2
+
+
+def test_increment_play_counts_a_mixed_nfc_nfd_stored_path(db):
+    """A stored walk spelling mixing NFC and NFD segments still gets counted."""
+    import unicodedata
+
+    nfc_dir = unicodedata.normalize("NFC", "Beyonc\u00e9")
+    nfd_file = unicodedata.normalize("NFD", "Canci\u00f3n.flac")
+    mixed = f"/music/{nfc_dir}/{nfd_file}"
+    assert mixed != unicodedata.normalize("NFC", mixed)
+    assert mixed != unicodedata.normalize("NFD", mixed)
+    db.record(mixed, status="tagged", artist="Example", title="Cancion")
+    db.commit()
+
+    db.increment_play(mixed)
+    db.commit()
+    assert db.get(mixed)["play_count"] == 1

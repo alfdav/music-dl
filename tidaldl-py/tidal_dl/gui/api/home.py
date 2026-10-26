@@ -4,7 +4,6 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Query
 from fastapi.responses import Response
@@ -52,7 +51,7 @@ def _close_thread_db() -> None:
     if db is not None:
         try:
             db.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - best-effort, failure is non-fatal
             pass
     _db_local.db = None
     _db_local.generation = -1
@@ -84,7 +83,7 @@ def _get_db() -> LibraryDB:
     else:
         try:
             db._conn.execute("SELECT 1")
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort, failure is non-fatal
             _close_thread_db()
             db = LibraryDB(db_path)
             db.open()
@@ -102,10 +101,10 @@ _real_get_db = _get_db
 
 
 class PlayEvent(BaseModel):
-    path: Optional[str] = None
-    artist: Optional[str] = None
-    genre: Optional[str] = None
-    duration: Optional[int] = None
+    path: str | None = None
+    artist: str | None = None
+    genre: str | None = None
+    duration: int | None = None
 
 
 @router.post("/home/play", status_code=204)
@@ -117,10 +116,18 @@ def record_play(event: PlayEvent):
     db = _get_db()
 
     # --- Dedup guard: same path within 60 seconds is rejected silently ---
+    stored_path = event.path
     if event.path:
+        from tidal_dl.helper.library_db.utils import library_path_lookup_keys
+
+        row = db.get(event.path)
+        if row and row.get("path"):
+            stored_path = row["path"]
+        keys = library_path_lookup_keys(stored_path or event.path)
+        placeholders = ", ".join("?" * len(keys))
         last = db._conn.execute(
-            "SELECT MAX(played_at) FROM play_events WHERE path = ?",
-            (event.path,),
+            f"SELECT MAX(played_at) FROM play_events WHERE path IN ({placeholders})",
+            keys,
         ).fetchone()
         if last and last[0] and (time.time() - last[0]) < 60:
             return Response(status_code=204)
@@ -129,15 +136,18 @@ def record_play(event: PlayEvent):
     # If genre missing but we have a file path, read it from the file
     if not genre and event.path:
         row = db.get(event.path)
+        if row and row.get("path"):
+            stored_path = row["path"]
         if row and row.get("genre"):
             genre = row["genre"]
         else:
-            # Try reading genre from file tags directly
+            # Try reading genre from the stored on-disk path.
             try:
-                from tidal_dl.gui.api.library import _normalize_genre
                 from mutagen import File as MutagenFile
 
-                audio = MutagenFile(event.path, easy=True)
+                from tidal_dl.gui.api.library import _normalize_genre
+
+                audio = MutagenFile(stored_path, easy=True)
                 if audio and audio.tags:
                     raw = audio.tags.get("genre")
                     if raw and isinstance(raw, list):
@@ -145,12 +155,12 @@ def record_play(event: PlayEvent):
                     elif raw:
                         genre = _normalize_genre(str(raw))
                     # Update the scanned table so future plays have it
-                    if genre:
+                    if genre and stored_path:
                         db._conn.execute(
                             "UPDATE scanned SET genre = ? WHERE path = ? AND (genre IS NULL OR genre = '')",
-                            (genre, event.path),
+                            (genre, stored_path),
                         )
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - best-effort, failure is non-fatal
                 pass
     # Fallback: infer genre from the artist's other tracks in the library
     if not genre and event.artist:
@@ -163,7 +173,7 @@ def record_play(event: PlayEvent):
             ).fetchone()
             if artist_genre:
                 genre = artist_genre[0]
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - best-effort, failure is non-fatal
             pass
     if event.path:
         db.increment_play(event.path)
@@ -290,7 +300,7 @@ def artist_image(name: str = Query(..., description="Artist name")):
     """Return a Tidal artist photo URL, with DB cache."""
     try:
         db = _get_db()
-    except Exception:
+    except Exception:  # noqa: BLE001 - best-effort, failure is non-fatal
         return {"image_url": None}
 
     cached = db.get_artist_image(name)
@@ -317,7 +327,7 @@ def artist_image(name: str = Query(..., description="Artist name")):
                 db.set_artist_image(name, url)
                 db.commit()
                 return {"image_url": url}
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - best-effort, failure is non-fatal
         pass
 
     # Tidal fallback — only if session is already active (avoid cold-start)
@@ -335,13 +345,13 @@ def artist_image(name: str = Query(..., description="Artist name")):
                 db.set_artist_image(name, url)
                 db.commit()
                 return {"image_url": url}
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - best-effort, failure is non-fatal
         pass
 
     # No image found — cache the miss so we don't retry
     try:
         db.set_artist_image(name, "")
         db.commit()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - best-effort, failure is non-fatal
         pass
     return {"image_url": None}

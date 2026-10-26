@@ -1,15 +1,33 @@
 """Download streams helpers."""
 
 from tidal_dl.download._common import *
+from tidal_dl.download.quality import (
+    delivered_quality_label,
+    delivery_is_cd_lossless,
+    fetch_track_manifest_formats,
+    hifi_quality_param,
+    is_preview_presentation,
+    remember_session_hires_fallback,
+    session_can_deliver_hires,
+    should_require_hires_delivery,
+    tidal_offers_hires,
+)
 
 
 class QualityMismatchError(ValueError):
     """The provider cannot satisfy the selected audio-quality contract."""
 
 
+class PreviewStreamError(ValueError):
+    """The provider returned a preview clip instead of the full track.
+
+    This is not a quality mismatch. Callers fall through to the next source
+    instead of saving the clip or fail-closing the track.
+    """
+
+
 _LOSSLESS_TIERS = frozenset({"LOSSLESS", "HI_RES", "HI_RES_LOSSLESS"})
 _HIRES_TIERS = frozenset({"HI_RES", "HI_RES_LOSSLESS"})
-_HIRES_TAGS = frozenset({"HIRES_LOSSLESS", "HIRES", "HI_RES_LOSSLESS", "HI_RES", "MQA"})
 _EXPECTED_CODECS = {
     "LOW": ("aac", "mp4a"),
     "HIGH": ("aac", "mp4a"),
@@ -17,6 +35,16 @@ _EXPECTED_CODECS = {
     "HI_RES": ("flac",),
     "HI_RES_LOSSLESS": ("flac",),
 }
+
+
+def _stream_media_label(media: object) -> str:
+    """Label a track for logs without requiring a fully built tidalapi object."""
+    title = getattr(media, "name", None) or getattr(media, "title", None) or getattr(media, "id", "track")
+    artist = getattr(media, "artist", None)
+    artist_name = getattr(artist, "name", None) if artist is not None else None
+    if artist_name:
+        return f"{artist_name} - {title}"
+    return str(title)
 
 
 def is_flac_codec(codecs: str | None) -> bool:
@@ -48,8 +76,7 @@ def plan_flac_output(codecs: str | None, file_extension: str, extract_flac: bool
 
 
 def _track_lists_hires(media: Track) -> bool:
-    tags = {str(tag).upper() for tag in (getattr(media, "media_metadata_tags", None) or [])}
-    return bool(tags & _HIRES_TAGS)
+    return tidal_offers_hires(getattr(media, "media_metadata_tags", None), None)
 
 
 def _requested_wants_hires(requested: Quality | str | None) -> bool:
@@ -60,11 +87,9 @@ def _delivery_is_cd_lossless(
     quality: Quality | str | None,
     bit_depth: int | None = None,
     sample_rate: int | None = None,
+    representation_id: str | None = None,
 ) -> bool:
-    name = quality_name(quality).upper() if quality else ""
-    if name in _HIRES_TIERS:
-        return bit_depth is not None and bit_depth <= 16 and sample_rate is not None and sample_rate <= 44100
-    return name == "LOSSLESS"
+    return delivery_is_cd_lossless(quality, bit_depth, sample_rate, representation_id)
 
 
 def _require_exact_quality(requested: Quality | str, delivered: Quality | str | None, codec: str | None) -> None:
@@ -169,12 +194,17 @@ class StreamMixin:
                        can decide whether to fall back to OAuth.
         """
         requested = self._requested_audio_quality(quality_audio)
-        quality_str = HIFI_QUALITY_MAP.get(quality_name(requested), "LOSSLESS")
+        quality_str = hifi_quality_param(requested)
         hifi_client = self.tidal.hifi_client
         if hifi_client is None:
             raise RuntimeError("Hi-Fi client is not configured")
         self._pace_stream_api(pace_api)
         result = hifi_client.track_stream(media.id, quality_str)
+        if is_preview_presentation(getattr(result, "asset_presentation", None)):
+            raise PreviewStreamError(
+                f"Hi-Fi returned assetPresentation PREVIEW at {result.audio_quality} "
+                f"for track {media.id}. That clip is not the full track."
+            )
         _require_exact_quality(requested, result.audio_quality, result.codecs)
         file_extension, requires_flac_extraction = plan_flac_output(
             result.codecs, result.file_extension, self.settings.data.extract_flac
@@ -188,6 +218,7 @@ class StreamMixin:
             audio_quality=result.audio_quality,
             bit_depth=result.bit_depth,
             sample_rate=result.sample_rate,
+            asset_presentation=str(getattr(result, "asset_presentation", "") or ""),
         )
         return TrackStreamInfo(
             stream_manifest=manifest,
@@ -208,6 +239,90 @@ class StreamMixin:
         self.tidal.hifi_client = HiFiApiClient(instances=instances or None)
         return self.tidal.hifi_client
 
+    def _track_manifest_formats(self, media: Track, *, pace_api: bool = False) -> list[str] | None:
+        session = getattr(self, "session", None)
+        token = getattr(session, "access_token", None)
+        track_id = getattr(media, "id", None)
+        if not token or track_id is None:
+            return None
+        try:
+            self._pace_stream_api(pace_api)
+            return fetch_track_manifest_formats(str(token), track_id)
+        except (TypeError, ValueError, OSError, requests.RequestException, AttributeError, KeyError):
+            return None
+
+    def _session_max_quality(self) -> object | None:
+        return getattr(getattr(self, "tidal", None), "session_max_quality", None)
+
+    def _accept_session_capped_cd(self) -> bool:
+        """Accept CD when this login was measured below Hi-Res.
+
+        Probe first when this login has not been measured yet (silent restore,
+        CLI token start). Unprobed after that still fail-closes. Strict
+        mismatch is only for a Hi-Res-capable (or still-unknown) session.
+        """
+        tidal = getattr(self, "tidal", None)
+        ensure = getattr(tidal, "ensure_session_max_quality", None)
+        if callable(ensure):
+            ensure()
+        elif session_can_deliver_hires(self._session_max_quality()) is None:
+            probe = getattr(tidal, "_probe_subscription_quality", None)
+            if callable(probe):
+                probe()
+        if session_can_deliver_hires(self._session_max_quality()) is not False:
+            return False
+        self._pending_session_capped_cd = True
+        return True
+
+    def _note_accepted_lossless_fallback(self) -> None:
+        """Print the Lossless notice only after a file is actually kept."""
+        if not getattr(self, "_pending_session_capped_cd", False):
+            return
+        self._pending_session_capped_cd = False
+        remember_session_hires_fallback(getattr(self, "tidal", None), getattr(self, "fn_logger", None))
+
+    def _record_last_delivered_quality(
+        self,
+        quality: Quality | str | None,
+        bit_depth: int | None = None,
+        sample_rate: int | None = None,
+        representation_id: str | None = None,
+    ) -> None:
+        label = delivered_quality_label(quality, bit_depth, sample_rate, representation_id)
+        if not label:
+            return
+        self.last_delivered_quality = label
+
+    def _require_unencrypted_hires_if_offered(
+        self,
+        media: Track,
+        quality: Quality | str | None,
+        bit_depth: int | None,
+        sample_rate: int | None,
+        quality_audio: Quality | None,
+        *,
+        pace_api: bool = False,
+    ) -> None:
+        requested = self._requested_audio_quality(quality_audio)
+        if not _requested_wants_hires(requested):
+            return
+        if not _delivery_is_cd_lossless(quality, bit_depth, sample_rate):
+            return
+        formats = self._track_manifest_formats(media, pace_api=pace_api)
+        if not should_require_hires_delivery(True, _track_lists_hires(media), formats):
+            return
+        if self._accept_session_capped_cd():
+            return
+        requested_name = quality_name(requested).upper()
+        delivered = quality_name(quality).upper() if quality else "LOSSLESS"
+        offered = ""
+        if formats and any(str(item).upper() == "FLAC_HIRES" for item in formats):
+            offered = "; Tidal offers FLAC_HIRES"
+        raise QualityMismatchError(
+            f"Quality mismatch: requested {requested_name} for listed Hi-Res track "
+            f"but received {delivered}{offered} and no unencrypted Hi-Res stream is available."
+        )
+
     def _prefer_listed_hires(
         self,
         media: Track,
@@ -215,9 +330,9 @@ class StreamMixin:
         quality_audio: Quality | None = None,
         pace_api: bool = False,
     ) -> TrackStreamInfo | None:
-        """Take Hi-Fi HiRes for a listed-HiRes CD delivery, or fail — do not keep 16/44.1."""
+        """Upgrade a CD OAuth delivery to Hi-Res when Tidal actually offers it."""
         requested = self._requested_audio_quality(quality_audio)
-        if not _requested_wants_hires(requested) or not _track_lists_hires(media):
+        if not _requested_wants_hires(requested):
             return None
         stream = oauth_info.media_stream
         if not _delivery_is_cd_lossless(
@@ -226,11 +341,19 @@ class StreamMixin:
             getattr(stream, "sample_rate", None),
         ):
             return None
+        formats = self._track_manifest_formats(media, pace_api=pace_api)
+        if not should_require_hires_delivery(True, _track_lists_hires(media), formats):
+            return None
         try:
             self._ensure_hifi_client()
             hifi_info = self._get_track_stream_info_hifi(
                 media, quality_audio=requested, pace_api=pace_api
             )
+        except PreviewStreamError as exc:
+            self.fn_logger.warning(
+                f"Hi-Fi upgrade for '{_stream_media_label(media)}' was a PREVIEW, not the full track. {exc}"
+            )
+            hifi_info = None
         except (QualityMismatchError, RuntimeError, ValueError, OSError, requests.RequestException):
             hifi_info = None
         manifest = getattr(hifi_info, "stream_manifest", None)
@@ -240,11 +363,16 @@ class StreamMixin:
             getattr(manifest, "sample_rate", None),
         ):
             return hifi_info
+        if self._accept_session_capped_cd():
+            return None
         requested_name = quality_name(requested).upper()
         delivered = quality_name(getattr(stream, "audio_quality", None)).upper() if getattr(stream, "audio_quality", None) else "LOSSLESS"
+        offered = ""
+        if formats and any(str(item).upper() == "FLAC_HIRES" for item in formats):
+            offered = "; Tidal offers FLAC_HIRES"
         raise QualityMismatchError(
             f"Quality mismatch: requested {requested_name} for listed Hi-Res track "
-            f"but received {delivered} and Hi-Fi has no Hi-Res stream."
+            f"but received {delivered}{offered} and no unencrypted Hi-Res stream is available."
         )
 
     def _get_stream_info(
@@ -284,6 +412,20 @@ class StreamMixin:
                     media, quality_audio=quality_audio, pace_api=pace_api
                 )
                 if track_info.stream_manifest is not None:
+                    manifest = track_info.stream_manifest
+                    self._require_unencrypted_hires_if_offered(
+                        media,
+                        getattr(manifest, "audio_quality", None),
+                        getattr(manifest, "bit_depth", None),
+                        getattr(manifest, "sample_rate", None),
+                        quality_audio,
+                        pace_api=pace_api,
+                    )
+                    self._record_last_delivered_quality(
+                        getattr(manifest, "audio_quality", None),
+                        getattr(manifest, "bit_depth", None),
+                        getattr(manifest, "sample_rate", None),
+                    )
                     return (
                         track_info.stream_manifest,
                         track_info.file_extension,
@@ -292,6 +434,15 @@ class StreamMixin:
                     )
             except QualityMismatchError:
                 raise
+            except PreviewStreamError as exc:
+                message = (
+                    f"Hi-Fi returned a PREVIEW for '{_stream_media_label(media)}', not the full track. {exc}"
+                )
+                allow_fallback = getattr(self.settings.data, "download_source_fallback", True)
+                if not allow_fallback:
+                    self.fn_logger.error(f"{message} Fallback is disabled. This track was not saved.")
+                    return None, "", False, None
+                self.fn_logger.warning(f"{message} Trying the next source.")
             except TooManyRequests:
                 self._on_rate_limit_hit()
                 self.fn_logger.exception(
@@ -367,23 +518,50 @@ class StreamMixin:
                 except Exception:
                     self.fn_logger.exception(f"Something went wrong. Skipping '{name_builder_item(media)}'.")
                     return None, "", False, None
-
-                if isinstance(media, Track) and track_info is not None:
-                    upgraded = self._prefer_listed_hires(
-                        media, track_info, quality_audio=quality_audio, pace_api=pace_api
-                    )
-                    if upgraded is not None:
-                        track_info = upgraded
-                    return (
-                        track_info.stream_manifest,
-                        track_info.file_extension,
-                        track_info.requires_flac_extraction,
-                        track_info.media_stream,
-                    )
-
-                return None, "", False, None
             finally:
                 self._restore_call_quality(old_audio, old_video, bound_audio, bound_video)
+
+        if isinstance(media, Track) and track_info is not None:
+            upgraded = self._prefer_listed_hires(
+                media, track_info, quality_audio=quality_audio, pace_api=pace_api
+            )
+            if upgraded is not None:
+                track_info = upgraded
+            stream = track_info.media_stream
+            upgraded_manifest = getattr(track_info, "stream_manifest", None)
+            delivered = None
+            bit_depth = None
+            sample_rate = None
+            if upgraded_manifest is not None:
+                delivered = getattr(upgraded_manifest, "audio_quality", None)
+                bit_depth = getattr(upgraded_manifest, "bit_depth", None)
+                sample_rate = getattr(upgraded_manifest, "sample_rate", None)
+            if stream is not None:
+                if delivered is None:
+                    delivered = getattr(stream, "audio_quality", None)
+                if bit_depth is None:
+                    bit_depth = getattr(stream, "bit_depth", None)
+                if sample_rate is None:
+                    sample_rate = getattr(stream, "sample_rate", None)
+            self._record_last_delivered_quality(delivered, bit_depth, sample_rate)
+            return (
+                track_info.stream_manifest,
+                track_info.file_extension,
+                track_info.requires_flac_extraction,
+                track_info.media_stream,
+            )
+
+        return None, "", False, None
+
+    def _track_needs_login_session(self, media: Track) -> bool:
+        """Hi-Fi builds Track with object.__new__, so get_stream has no session.
+
+        Doubles that replace get_stream keep their own method. A real tidalapi
+        Track without session or requests is loaded through the login session.
+        """
+        if type(media).get_stream is not Track.get_stream:
+            return False
+        return getattr(media, "session", None) is None or getattr(media, "requests", None) is None
 
     def _get_track_stream_info(self, media: Track) -> TrackStreamInfo:
         """Get stream info for a Track, handling Atmos/Normal session switching.
@@ -411,7 +589,10 @@ class StreamMixin:
                 self.fn_logger.error(f"Failed to restore normal session for track: {media.id}")
                 return TrackStreamInfo(None, "", False, None)
 
-        media_stream = self.session.track(str(media.id)).get_stream() if want_atmos else media.get_stream()
+        if want_atmos or self._track_needs_login_session(media):
+            media_stream = self.session.track(str(media.id)).get_stream()
+        else:
+            media_stream = media.get_stream()
 
         stream_manifest = media_stream.get_stream_manifest()
         if not want_atmos:

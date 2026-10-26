@@ -93,7 +93,15 @@ function createH() {
     if (!node.classList || typeof node.classList.add !== 'function') {
       node.classList = classListFor(node);
     }
-    children.forEach(child => node.appendChild(child));
+    children.forEach(child => {
+      if (typeof child === 'string' || typeof child === 'number') {
+        const text = createNode('#text');
+        text.textContent = String(child);
+        node.appendChild(text);
+      } else if (child) {
+        node.appendChild(child);
+      }
+    });
     return node;
   };
   const textEl = (tag, value, className) => h(tag, { textContent: value, className });
@@ -1547,7 +1555,7 @@ function loadNavStackHelpers() {
     throw new Error('nav stack helpers not found');
   }
   return new Function(
-    `${block}\nreturn {\n  _isTopLevelView, _isDrillInView, _shouldShowNavBack,\n  _snapshotOutgoing, _pushNav, _popNav, _restoreLibrary,\n  _navMode, _hashchangeNavOpts,\n};`,
+    `${block}\nreturn {\n  _isTopLevelView, _isDrillInView, _shouldShowNavBack,\n  _snapshotOutgoing, _pushNav, _popNav, _restoreLibrary,\n  _navMode, _hashchangeNavOpts, _appScrollEl,\n};`,
   )();
 }
 
@@ -1724,7 +1732,7 @@ describe('navigation stack', () => {
 
   test('drill-in with a non-empty stack shows the back control', () => {
     const nav = loadNavStackHelpers();
-    ['artist:Tetrarch', 'localalbum:Tetrarch:Unstable', 'localrelease:abc123', 'album:99'].forEach(view => {
+    ['artist:Tetrarch', 'localalbum:Tetrarch:Unstable', 'localrelease:abc123', 'album:99', 'playlist:pl-80'].forEach(view => {
       expect(nav._isDrillInView(view)).toBe(true);
       expect(nav._isTopLevelView(view)).toBe(false);
       expect(nav._shouldShowNavBack(view, 1)).toBe(true);
@@ -2247,3 +2255,491 @@ function loadArtistTileWithClicks(navigate) {
     () => Promise.resolve({ json: async () => ({}) }),
   )({ name: 'Tetrarch', play_count: 40, album_count: 2, track_count: 9 }, true);
 }
+
+function cssBlock(css, selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = css.match(new RegExp(escaped + '\\s*\\{([^}]*)\\}'));
+  if (!match) throw new Error('missing css block ' + selector);
+  return match[1];
+}
+
+function clampingViewScroller(initial) {
+  let scrollHeight = initial.scrollHeight;
+  let scrollTop = initial.scrollTop || 0;
+  const clientHeight = initial.clientHeight;
+  return {
+    id: 'view',
+    clientHeight,
+    _playlistRestoreAssign: false,
+    get scrollHeight() { return scrollHeight; },
+    set scrollHeight(value) { scrollHeight = value; },
+    get scrollTop() { return scrollTop; },
+    set scrollTop(value) {
+      const max = Math.max(0, scrollHeight - clientHeight);
+      const next = Number(value) || 0;
+      scrollTop = Math.max(0, Math.min(max, next));
+    },
+  };
+}
+
+function loadPlaylistScrollRestore() {
+  const start = viewsSource.indexOf('let _playlistScrollRestores =');
+  const end = viewsSource.indexOf('function _playlistUnqueuedByPosition(');
+  if (start < 0 || end < start) {
+    throw new Error('playlist scroll restore helpers missing');
+  }
+  const extra = new Function(
+    `${viewsSource.slice(start, end)}\nreturn { _armPlaylistScrollRestore, _tryPlaylistScrollRestore, _playlistUserScrollCancelsRestore };`,
+  )();
+  return Object.assign(loadPlaylistPageHelpers(), extra);
+}
+
+function loadPlaylistPageHelpers() {
+  const start = viewsSource.indexOf('const PLAYLIST_PAGE_SIZE = 50;');
+  const end = viewsSource.indexOf('async function loadPlaylistTracks(');
+  const scrollStart = viewsSource.indexOf('function _appScrollEl(doc)');
+  const scrollEnd = viewsSource.indexOf('// ---- /NAV STACK ----');
+  if (start < 0 || end < start || scrollStart < 0 || scrollEnd < scrollStart) {
+    throw new Error('playlist page helpers not found');
+  }
+  return new Function(
+    `${viewsSource.slice(scrollStart, scrollEnd)}\n${viewsSource.slice(start, end)}\nreturn { PLAYLIST_PAGE_SIZE, playlistTracksUrl, _playlistVirtualRange, playlistViewKey, _playlistMoveIndex, _playlistEnsureVisibleScroll, _playlistListScrollTop, _playlistLaterPageFailure, _playlistKnownTrackCount, _playlistPlaceholderHeight, _playlistPageRetryPlan, _playlistShouldScanUpgrades, _armPlaylistScrollRestore, _tryPlaylistScrollRestore, _playlistUnqueuedByPosition, _appendPlaylistQueueEntries, _playlistFetchContinues, _playlistLeaveDecision, _playlistQueueIncomplete, _playlistListOffset, _playlistScrollParent, _appScrollEl };`,
+  )();
+}
+
+describe('playlist first-page load', () => {
+  test('playlist URL requests a page, not the whole list', () => {
+    const helpers = loadPlaylistPageHelpers();
+    expect(helpers.PLAYLIST_PAGE_SIZE).toBe(50);
+    expect(helpers.playlistTracksUrl({ id: 'pl-1', last_updated: '2026-01-15T12:00:00+00:00', num_tracks: 500 }, 50, 0))
+      .toBe('/playlists/pl-1/tracks?limit=50&offset=0&last_updated=2026-01-15T12%3A00%3A00%2B00%3A00&total=500');
+  });
+
+  test('virtual range only paints a window of a long playlist', () => {
+    const helpers = loadPlaylistPageHelpers();
+    const range = helpers._playlistVirtualRange(660, 400, 500, 66, 2);
+    expect(range.start).toBe(8);
+    expect(range.end).toBeLessThan(500);
+    expect(range.height).toBe(500 * 66);
+    expect(range.top).toBe(8 * 66);
+  });
+
+  test('keyboard selection moves within a list over 80 tracks and keeps the row visible', () => {
+    const helpers = loadPlaylistPageHelpers();
+    expect(helpers._playlistMoveIndex(0, 1, 120)).toBe(1);
+    expect(helpers._playlistMoveIndex(0, -1, 120)).toBe(0);
+    expect(helpers._playlistMoveIndex(119, 1, 120)).toBe(119);
+    expect(helpers._playlistMoveIndex(null, 1, 120)).toBe(1);
+
+    const row = 66;
+    const view = 400;
+    expect(helpers._playlistEnsureVisibleScroll(90, 0, view, row)).toBe((90 + 1) * row - view);
+    expect(helpers._playlistEnsureVisibleScroll(2, 2000, view, row)).toBe(2 * row);
+    expect(helpers._playlistEnsureVisibleScroll(10, 10 * row, view, row)).toBe(10 * row);
+  });
+
+  test('virtualized rows keep play-from-here, queue actions, and selection', () => {
+    const paint = viewsSource.split('function _paintPlaylistVirtual')[1] || '';
+    expect(paint).toContain('renderTrackRow(track, i + 1, tracks)');
+    expect(viewsSource).toContain("startPlaybackFromList(track, allTracks)");
+    expect(viewsSource).toContain("label: 'Play Next'");
+    expect(viewsSource).toContain("label: 'Add to Queue'");
+    expect(viewsSource).toMatch(/classList\.add\('selected'\)/);
+    expect(viewsSource).toMatch(/ArrowDown|ArrowUp/);
+    expect(viewsSource).toContain('_playlistMoveIndex');
+    expect(viewsSource).toContain('_playlistEnsureVisibleScroll');
+  });
+
+  test('virtual paint uses list-relative scroll, not raw .main scrollTop', () => {
+    const helpers = loadPlaylistPageHelpers();
+    expect(helpers._playlistListScrollTop(1200, 400)).toBe(800);
+    expect(helpers._playlistListScrollTop(200, 400)).toBe(0);
+    const paint = viewsSource.split('function _paintPlaylistVirtual')[1].split('async function loadPlaylistTracks')[0];
+    expect(paint).toContain('_playlistListScrollTop(');
+    expect(paint).toContain('_playlistListOffset(');
+    const css = readFileSync(
+      join(import.meta.dir, '../tidal_dl/gui/static/style.css'),
+      'utf8',
+    );
+    expect(css).toMatch(/\.tracks-virtual \.track[\s\S]*height:\s*66px/);
+  });
+
+  test('scroll paint, restore, and listeners use #view from the real layout', () => {
+    const css = readFileSync(
+      join(import.meta.dir, '../tidal_dl/gui/static/style.css'),
+      'utf8',
+    );
+    const html = readFileSync(
+      join(import.meta.dir, '../tidal_dl/gui/static/index.html'),
+      'utf8',
+    );
+    const mainBody = cssBlock(css, '.main');
+    const viewBody = cssBlock(css, '#view');
+    expect(mainBody).toMatch(/overflow:\s*hidden/);
+    expect(mainBody).not.toMatch(/overflow(?:-y)?:\s*(?:auto|scroll)/);
+    expect(viewBody).toMatch(/overflow-y:\s*auto/);
+
+    const mainAt = html.indexOf('<main class="main">');
+    const viewAt = html.indexOf('<div id="view">');
+    const mainEnd = html.indexOf('</main>', mainAt);
+    expect(mainAt).toBeGreaterThan(0);
+    expect(viewAt).toBeGreaterThan(mainAt);
+    expect(viewAt).toBeLessThan(mainEnd);
+
+    const main = {
+      className: 'main',
+      scrollTop: 44,
+      clientHeight: 900,
+      getBoundingClientRect() { return { top: 0 }; },
+    };
+    const view = {
+      id: 'view',
+      scrollTop: 20000,
+      clientHeight: 800,
+      parentElement: main,
+      getBoundingClientRect() { return { top: 48 }; },
+    };
+    const trackList = {
+      className: 'tracks',
+      offsetTop: 420,
+      parentElement: { className: 'album-detail-view', parentElement: view },
+      getBoundingClientRect() { return { top: 48 + 420 - view.scrollTop }; },
+    };
+    const doc = {
+      getElementById(id) { return id === 'view' ? view : null; },
+      querySelector(sel) { return sel === '.main' ? main : null; },
+    };
+
+    const helpers = loadPlaylistPageHelpers();
+    expect(helpers._appScrollEl(doc)).toBe(view);
+    expect(helpers._appScrollEl(doc).scrollTop).toBe(20000);
+
+    const previous = globalThis.document;
+    globalThis.document = doc;
+    let range;
+    try {
+      const scroller = helpers._playlistScrollParent(trackList);
+      expect(scroller).toBe(view);
+      const listOffset = helpers._playlistListOffset(trackList, scroller);
+      const listScroll = helpers._playlistListScrollTop(scroller.scrollTop, listOffset);
+      range = helpers._playlistVirtualRange(listScroll, scroller.clientHeight, 555, 66, 8);
+      expect(listOffset).toBe(420);
+      expect(listScroll).toBe(20000 - 420);
+    } finally {
+      if (previous === undefined) delete globalThis.document;
+      else globalThis.document = previous;
+    }
+    expect(range.start).toBeGreaterThan(200);
+    expect(range.end).toBeGreaterThan(range.start);
+    expect(range.top).toBeLessThan(20000);
+    expect(range.top + (range.end - range.start) * 66).toBeGreaterThan(20000 - 420);
+
+    const navigateSrc = viewsSource.split('function navigate(view, opts)')[1].split("window.addEventListener('focus'")[0];
+    expect(navigateSrc.match(/_appScrollEl\(document\)/g)).toHaveLength(2);
+    expect(navigateSrc).toContain('scrollY: scrollEl ? scrollEl.scrollTop : 0');
+    expect(navigateSrc).toContain('_tryPlaylistScrollRestore(');
+    expect(navigateSrc).not.toContain('scrollEl.scrollTop = saved.scrollY');
+    expect(viewsSource).toContain("navigate(null, { back: true })");
+    expect(viewsSource).toContain('navigate(hash, hashOpts)');
+
+    const load = viewsSource.split('async function loadPlaylistTracks')[1].split('// ---- DOWNLOAD TRIGGER')[0];
+    expect(load).toContain('_playlistScrollParent(trackList)');
+    expect(load).toContain("addEventListener('scroll'");
+    expect(load).toContain('_playlistListOffset(trackList, scrollParent)');
+    expect(load).not.toContain('trackList.offsetTop');
+    expect(load).not.toContain("querySelector('.main')");
+  });
+
+  test('playlist scroll restore applies the saved offset only once the scroller can hold it', () => {
+    const helpers = loadPlaylistScrollRestore();
+    const scroller = clampingViewScroller({ scrollHeight: 40000, clientHeight: 800 });
+    const pending = helpers._armPlaylistScrollRestore(
+      { 'playlist:pl-80': { scrollY: 5280 } },
+      'playlist:pl-80',
+      true,
+    );
+    const first = helpers._tryPlaylistScrollRestore(scroller, pending);
+    const second = helpers._tryPlaylistScrollRestore(scroller, pending);
+    expect(first).toEqual({ applied: true, scrollY: null, pending: false });
+    expect(second).toEqual({ applied: true, scrollY: null, pending: false });
+    expect(scroller.scrollTop).toBe(5280);
+    const load = viewsSource.split('async function loadPlaylistTracks')[1] || '';
+    expect(load).toContain('_tryPlaylistScrollRestore(');
+    expect(load).not.toMatch(/restorePlaylistScroll\(\)/);
+    expect(load).not.toContain('scrollParent.scrollTop = restore.scrollY');
+  });
+
+  test('playlist scroll restore waits until #view can hold the saved offset', () => {
+    const css = readFileSync(
+      join(import.meta.dir, '../tidal_dl/gui/static/style.css'),
+      'utf8',
+    );
+    const html = readFileSync(
+      join(import.meta.dir, '../tidal_dl/gui/static/index.html'),
+      'utf8',
+    );
+    const mainBody = cssBlock(css, '.main');
+    const viewBody = cssBlock(css, '#view');
+    expect(mainBody).toMatch(/overflow:\s*hidden/);
+    expect(viewBody).toMatch(/overflow-y:\s*auto/);
+    const mainAt = html.indexOf('<main class="main">');
+    const viewAt = html.indexOf('<div id="view">');
+    const mainEnd = html.indexOf('</main>', mainAt);
+    expect(viewAt).toBeGreaterThan(mainAt);
+    expect(viewAt).toBeLessThan(mainEnd);
+
+    const helpers = loadPlaylistScrollRestore();
+    const saved = 19100;
+    const view = clampingViewScroller({ scrollHeight: 863, clientHeight: 800, scrollTop: 0 });
+    const doc = {
+      getElementById(id) { return id === 'view' ? view : null; },
+      querySelector(sel) { return sel === '.main' ? { className: 'main', scrollTop: 44 } : null; },
+    };
+    expect(helpers._appScrollEl(doc)).toBe(view);
+
+    const pending = helpers._armPlaylistScrollRestore(
+      { 'playlist:us': { scrollY: saved } },
+      'playlist:us',
+      true,
+    );
+    helpers._tryPlaylistScrollRestore(view, pending);
+    expect(view.scrollTop).toBe(0);
+
+    view.scrollHeight = (50 * 66) + 400;
+    helpers._tryPlaylistScrollRestore(view, pending);
+    expect(view.scrollTop).toBe(0);
+
+    view.scrollHeight = 36935;
+    helpers._tryPlaylistScrollRestore(view, pending);
+    expect(Math.abs(view.scrollTop - saved)).toBeLessThanOrEqual(2);
+
+    const paint = viewsSource.split('function _paintPlaylistVirtual')[1].split('async function loadPlaylistTracks')[0];
+    const heightAt = paint.indexOf('spacer.style.height');
+    const restoreAt = paint.indexOf('_tryPlaylistScrollRestore(');
+    expect(heightAt).toBeGreaterThan(-1);
+    expect(restoreAt).toBeGreaterThan(heightAt);
+
+    const navigateSrc = viewsSource.split('function navigate(view, opts)')[1].split("window.addEventListener('focus'")[0];
+    expect(navigateSrc).toContain('_tryPlaylistScrollRestore(');
+    expect(navigateSrc).not.toContain('scrollEl.scrollTop = saved.scrollY');
+    expect(navigateSrc).toContain('scrollEl.scrollTop = 0');
+  });
+
+  test('a user scroll during a pending playlist restore cancels it', () => {
+    const helpers = loadPlaylistScrollRestore();
+    const saved = 19100;
+    const view = clampingViewScroller({ scrollHeight: 863, clientHeight: 800, scrollTop: 0 });
+    const pending = helpers._armPlaylistScrollRestore(
+      { 'playlist:us': { scrollY: saved } },
+      'playlist:us',
+      true,
+    );
+    helpers._tryPlaylistScrollRestore(view, pending);
+    expect(pending.cancelled).toBe(false);
+
+    helpers._playlistUserScrollCancelsRestore(pending, 'wheel');
+    view.scrollHeight = 36935;
+    view.scrollTop = 1200;
+    helpers._tryPlaylistScrollRestore(view, pending);
+    expect(view.scrollTop).toBe(1200);
+
+    const clamp = helpers._armPlaylistScrollRestore(
+      { 'playlist:us': { scrollY: saved } },
+      'playlist:us',
+      true,
+    );
+    helpers._playlistUserScrollCancelsRestore(clamp, 'scroll');
+    expect(clamp.cancelled).toBe(false);
+    view.scrollTop = 0;
+    helpers._tryPlaylistScrollRestore(view, clamp);
+    expect(Math.abs(view.scrollTop - saved)).toBeLessThanOrEqual(2);
+
+    const load = viewsSource.split('async function loadPlaylistTracks')[1].split('// ---- DOWNLOAD TRIGGER')[0];
+    expect(load).toContain('_playlistUserScrollCancelsRestore');
+    expect(load).toContain("'wheel'");
+    expect(load).toContain("'touchmove'");
+    expect(load).toContain("'touchstart'");
+    expect(load).toContain("'mousedown'");
+    expect(load).toContain("'pointerdown'");
+    expect(load).toContain('PageDown');
+    expect(load).toContain('ArrowUp');
+    expect(load).not.toContain("cancelRestore('scroll')");
+    expect(load).toContain("addEventListener('scroll'");
+  });
+
+  test('a known playlist length sizes the spacer before the first page', () => {
+    const start = viewsSource.indexOf('function _playlistKnownTrackCount(');
+    if (start < 0) throw new Error('_playlistKnownTrackCount missing');
+    const helpers = loadPlaylistPageHelpers();
+    expect(helpers._playlistKnownTrackCount({ num_tracks: 555 }, {}, 'playlist:us')).toBe(555);
+    expect(helpers._playlistKnownTrackCount({ numberOfTracks: 440 }, {}, 'playlist:us')).toBe(440);
+    expect(helpers._playlistKnownTrackCount(
+      {},
+      { 'playlist:us': { scrollY: 19100, playlistTracks: 555 } },
+      'playlist:us',
+    )).toBe(555);
+    expect(helpers._playlistPlaceholderHeight(555)).toBe(555 * 66);
+
+    const view = clampingViewScroller({ scrollHeight: 863, clientHeight: 800, scrollTop: 0 });
+    const pending = helpers._armPlaylistScrollRestore(
+      { 'playlist:us': { scrollY: 19100, playlistTracks: 555 } },
+      'playlist:us',
+      true,
+    );
+    view.scrollHeight = helpers._playlistPlaceholderHeight(555);
+    helpers._tryPlaylistScrollRestore(view, pending);
+    expect(Math.abs(view.scrollTop - 19100)).toBeLessThanOrEqual(2);
+
+    const load = viewsSource.split('async function loadPlaylistTracks')[1].split('await api(')[0];
+    expect(load).toContain('_playlistKnownTrackCount(');
+    expect(load).toContain('_paintPlaylistVirtual(');
+    const navigateSrc = viewsSource.split('function navigate(view, opts)')[1].split("window.addEventListener('focus'")[0];
+    expect(navigateSrc).toContain('playlistTracks');
+  });
+
+  test('later pages append by playlist position and keep duplicate tracks', () => {
+    const helpers = loadPlaylistPageHelpers();
+    const loaded = [];
+    for (let i = 0; i < 555; i++) loaded.push({ id: i % 440, name: 'T' + (i % 440) });
+    expect(new Set(loaded.map(track => track.id)).size).toBe(440);
+
+    const queuedUntil = 50;
+    const rest = helpers._playlistUnqueuedByPosition(loaded, queuedUntil);
+    expect(rest).toHaveLength(505);
+    expect(rest[0]).toBe(loaded[50]);
+
+    const merged = helpers._appendPlaylistQueueEntries(
+      loaded.slice(0, queuedUntil),
+      loaded.slice(0, queuedUntil),
+      0,
+      rest,
+      false,
+    );
+    expect(merged.queue).toHaveLength(555);
+    expect(merged.queueOriginal.map(track => track.id)).toEqual(loaded.map(track => track.id));
+    expect(viewsSource).not.toContain('_playlistUnqueuedTracks');
+    const load = viewsSource.split('async function loadPlaylistTracks')[1].split('// ---- DOWNLOAD TRIGGER')[0];
+    expect(load).toContain('_syncPlaylistLiveQueue(loaded, queuedUntil, state.shuffle, stillThisFill())');
+    expect(load).toContain('noteQueueStarted()');
+  });
+
+  test('shuffled page appends join the unplayed tail and stay in playlist order', () => {
+    const helpers = loadPlaylistPageHelpers();
+    const original = [
+      { id: 'cur', _queueEntryId: 1 },
+      { id: 'a', _queueEntryId: 2 },
+      { id: 'b', _queueEntryId: 3 },
+    ];
+    const shuffled = [original[0], original[2], original[1]];
+    const extra = [
+      { id: 'dup', _queueEntryId: 4 },
+      { id: 'dup', _queueEntryId: 5 },
+    ];
+    const merged = helpers._appendPlaylistQueueEntries(
+      shuffled, original, 0, extra, true, () => 0,
+    );
+    expect(merged.queueOriginal.map(track => track._queueEntryId)).toEqual([1, 2, 3, 4, 5]);
+    expect(merged.queue).toHaveLength(5);
+    expect(merged.queue[0]).toBe(shuffled[0]);
+    expect(merged.queue.map(track => track._queueEntryId)).toEqual([1, 5, 4, 3, 2]);
+    expect(merged.queue.map(track => track._queueEntryId)).not.toEqual([1, 2, 3, 4, 5]);
+  });
+
+  test('leaving mid-load keeps a started queue and reports a replaced one', () => {
+    const helpers = loadPlaylistPageHelpers();
+    expect(helpers._playlistFetchContinues(false, true)).toBe(true);
+    expect(helpers._playlistFetchContinues(false, false)).toBe(false);
+    expect(helpers._playlistLeaveDecision(false, true, true, true)).toBe('continue');
+    expect(helpers._playlistLeaveDecision(false, false, true, true)).toBe('stop');
+    expect(helpers._playlistLeaveDecision(true, false, true, true)).toBe('continue');
+    expect(helpers._playlistLeaveDecision(false, true, false, true)).toBe('handoff');
+    expect(helpers._playlistLeaveDecision(false, true, false, false)).toBe('stop-incomplete');
+    expect(helpers._playlistQueueIncomplete(true, 50, 555)).toBe(true);
+    expect(helpers._playlistQueueIncomplete(true, 555, 555)).toBe(false);
+    expect(helpers._playlistQueueIncomplete(false, 50, 555)).toBe(false);
+
+    const load = viewsSource.split('async function loadPlaylistTracks')[1].split('// ---- DOWNLOAD TRIGGER')[0];
+    expect(load).toContain('_playlistLeaveDecision(');
+    expect(load).toContain('Playlist queue incomplete (');
+    expect(load).toContain('err.status === 429');
+    expect(load).toContain("toast(message, 'error')");
+    expect(load).toContain("rateLimited ? 'Tidal rate limit'");
+  });
+
+  test('a later playlist page 429 keeps rendered rows and will retry', () => {
+    const start = viewsSource.indexOf('function _playlistLaterPageFailure(');
+    if (start < 0) throw new Error('_playlistLaterPageFailure missing');
+    const helpers = loadPlaylistPageHelpers();
+    const later = helpers._playlistLaterPageFailure(50, 555, 429);
+    expect(later.keepRows).toBe(true);
+    expect(later.empty).toBe(false);
+    expect(later.retry).toBe(true);
+    expect(later.hasMore).toBe(true);
+    expect(later.toast).toBe('Tidal rate limit — 50 of 555 loaded, will retry');
+
+    const other = helpers._playlistLaterPageFailure(50, 555, 500);
+    expect(other.keepRows).toBe(true);
+    expect(other.empty).toBe(false);
+    expect(other.retry).toBe(true);
+    expect(other.toast).toContain('50 of 555');
+    expect(other.toast).toContain('will retry');
+
+    const first = helpers._playlistLaterPageFailure(0, 555, 429);
+    expect(first.keepRows).toBe(false);
+    expect(first.empty).toBe(true);
+    expect(first.retry).toBe(false);
+
+    const load = viewsSource.split('async function loadPlaylistTracks')[1].split('// ---- DOWNLOAD TRIGGER')[0];
+    expect(load).toContain('_playlistLaterPageFailure(');
+    expect(load).toContain('failure.keepRows');
+    expect(load).toContain('continuePages');
+  });
+
+  test('later playlist pages back off and still scan upgrades once the list finishes', () => {
+    const start = viewsSource.indexOf('function _playlistPageRetryPlan(');
+    if (start < 0) throw new Error('_playlistPageRetryPlan missing');
+    const helpers = loadPlaylistPageHelpers();
+    expect(helpers._playlistPageRetryPlan(1)).toEqual({
+      delayMs: 1500, auto: true, toast: true, hasMore: true,
+    });
+    expect(helpers._playlistPageRetryPlan(2).toast).toBe(false);
+    expect(helpers._playlistPageRetryPlan(2).delayMs).toBe(3000);
+    expect(helpers._playlistPageRetryPlan(3).delayMs).toBe(6000);
+    expect(helpers._playlistPageRetryPlan(4).delayMs).toBe(12000);
+    expect(helpers._playlistPageRetryPlan(5).delayMs).toBe(24000);
+    expect(helpers._playlistPageRetryPlan(5).delayMs).toBeLessThanOrEqual(30000);
+    const stopped = helpers._playlistPageRetryPlan(6);
+    expect(stopped.auto).toBe(false);
+    expect(stopped.toast).toBe(false);
+    expect(stopped.hasMore).toBe(true);
+    expect(stopped.delayMs).toBe(null);
+
+    expect(helpers._playlistShouldScanUpgrades(false, true, 555, 555)).toBe(true);
+    expect(helpers._playlistShouldScanUpgrades(true, true, 555, 555)).toBe(false);
+    expect(helpers._playlistShouldScanUpgrades(false, true, 50, 555)).toBe(false);
+    expect(helpers._playlistShouldScanUpgrades(false, false, 555, 555)).toBe(false);
+
+    const load = viewsSource.split('async function loadPlaylistTracks')[1].split('// ---- DOWNLOAD TRIGGER')[0];
+    expect(load).toContain('_playlistPageRetryPlan(');
+    expect(load).toContain('_playlistShouldScanUpgrades(');
+    expect(load).not.toContain('!pageRetryTimer');
+  });
+
+  test('playlist detail is a drill-in view that restores scroll after navigating back', () => {
+    const nav = loadNavStackHelpers();
+    const helpers = loadPlaylistPageHelpers();
+    expect(helpers.playlistViewKey({ id: 'pl-80' })).toBe('playlist:pl-80');
+    expect(nav._isDrillInView('playlist:pl-80')).toBe(true);
+    expect(nav._isTopLevelView('playlist:pl-80')).toBe(false);
+    expect(nav._shouldShowNavBack('playlist:pl-80', 1)).toBe(true);
+
+    const stack = [];
+    nav._pushNav(stack, nav._snapshotOutgoing('playlist:pl-80', 'artist', '', 5280));
+    const restored = nav._popNav(stack);
+    expect(restored.view).toBe('playlist:pl-80');
+    expect(restored.scrollY).toBe(5280);
+
+    expect(viewsSource).toMatch(/navigate\(playlistViewKey\(/);
+    expect(viewsSource).toContain("safeView.startsWith('playlist:')");
+  });
+});

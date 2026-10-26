@@ -5,6 +5,7 @@ const navItems = document.querySelectorAll('.nav-item[data-view]');
 let _lastNavHash = '';
 const _viewState = {};
 const _navStack = [];
+const _playlistMeta = {};
 
 // ---- NAV STACK ----
 function _isTopLevelView(view) {
@@ -17,7 +18,8 @@ function _isTopLevelView(view) {
 function _isDrillInView(view) {
   const name = String(view || '');
   return name.startsWith('artist:') || name.startsWith('localalbum:')
-    || name.startsWith('localrelease:') || name.startsWith('album:');
+    || name.startsWith('localrelease:') || name.startsWith('album:')
+    || name.startsWith('playlist:');
 }
 
 function _shouldShowNavBack(view, stackLen) {
@@ -62,6 +64,14 @@ function _hashchangeNavOpts(hash, lastNavHash, stackTopView) {
   if (stackTopView && hash === stackTopView) return { back: true };
   return { jump: true };
 }
+
+function _appScrollEl(doc) {
+  const root = doc || (typeof document !== 'undefined' ? document : null);
+  if (!root) return null;
+  const view = root.getElementById ? root.getElementById('view') : null;
+  if (view) return view;
+  return root.querySelector ? root.querySelector('.main') : null;
+}
 // ---- /NAV STACK ----
 
 function _navBackControl() {
@@ -86,10 +96,14 @@ function navigate(view, opts) {
 
   // Save outgoing view state
   if (state.view && viewEl.firstChild) {
-    const scrollEl = document.querySelector('.main');
-    _viewState[state.view] = {
+    const scrollEl = _appScrollEl(document);
+    const outgoing = {
       scrollY: scrollEl ? scrollEl.scrollTop : 0,
     };
+    if (String(state.view).indexOf('playlist:') === 0) {
+      outgoing.playlistTracks = _playlistKnownByView[state.view] || 0;
+    }
+    _viewState[state.view] = outgoing;
   }
 
   if (mode === 'jump') {
@@ -108,7 +122,17 @@ function navigate(view, opts) {
     const next = _restoreLibrary(restore, { librarySort, libraryQuery });
     librarySort = next.librarySort;
     libraryQuery = next.libraryQuery;
-    _viewState[restore.view] = { scrollY: restore.scrollY || 0 };
+    const prior = _viewState[restore.view];
+    const ownCount = _playlistKnownByView[restore.view] || (prior && prior.playlistTracks) || 0;
+    _viewState[restore.view] = {
+      scrollY: restore.scrollY || 0,
+      playlistTracks: ownCount,
+    };
+  }
+
+  if (state.view && state.view !== safeView) {
+    _playlistUserScrollCancelsRestore(_playlistScrollRestoreFor(state.view), 'navigate');
+    delete _playlistScrollRestores[state.view];
   }
 
   state.view = safeView;
@@ -159,6 +183,9 @@ function navigate(view, opts) {
         renderArtistGallery(container, parsed.name, parsed.tidalId);
       } else if (safeView.startsWith('album:')) {
         renderAlbumDetail(container, safeView.split(':')[1]);
+      } else if (safeView.startsWith('playlist:')) {
+        const playlistId = decodeURIComponent(safeView.substring(9));
+        loadPlaylistTracks(container, _playlistMeta[playlistId] || { id: playlistId });
       } else {
         renderPlaceholder(container, 'Not Found', 'This view does not exist.');
       }
@@ -166,13 +193,20 @@ function navigate(view, opts) {
 
   viewEl.appendChild(container);
 
-  // Restore saved scroll position or reset to top
-  const scrollEl = document.querySelector('.main');
+  // Restore saved scroll once #view can hold it. Assigning now, while a playlist
+  // is still the short loading placeholder, clamps scrollTop and never retries.
+  const scrollEl = _appScrollEl(document);
   if (scrollEl) {
     const saved = _viewState[safeView];
     if (saved && saved.scrollY) {
-      requestAnimationFrame(() => { scrollEl.scrollTop = saved.scrollY; });
+      const pending = _armPlaylistScrollRestore(_viewState, safeView, true);
+      requestAnimationFrame(() => { _tryPlaylistScrollRestore(scrollEl, pending); });
     } else {
+      const stale = _playlistScrollRestoreFor(safeView);
+      if (stale) {
+        _playlistUserScrollCancelsRestore(stale, 'navigate');
+        delete _playlistScrollRestores[safeView];
+      }
       scrollEl.scrollTop = 0;
     }
   }
@@ -1563,12 +1597,12 @@ function _followSearchResolve(resultsArea, tidalData) {
     return;
   }
   if (resolved.kind === 'playlist' && resolved.id) {
-    loadPlaylistTracks(resultsArea, {
+    navigate(playlistViewKey(_rememberPlaylist({
       id: resolved.id,
       name: resolved.name,
       cover_url: resolved.cover_url,
       num_tracks: resolved.num_tracks,
-    });
+    })));
   }
 }
 
@@ -1895,7 +1929,7 @@ function renderSearchResults(container, data, showHeader = true) {
       } else if (state.searchType === 'artists') {
         card.addEventListener('click', () => navigate(buildArtistView(item.name, item.id)));
       } else if (state.searchType === 'playlists') {
-        card.addEventListener('click', () => loadPlaylistTracks(container, item));
+        card.addEventListener('click', () => navigate(playlistViewKey(_rememberPlaylist(item))));
       }
       a11yClick(card);
       grid.appendChild(card);
@@ -4463,7 +4497,7 @@ async function loadPlaylists(resultsArea) {
       meta.appendChild(textEl('div', (pl.num_tracks || 0) + ' tracks', 'album-card-sub'));
       card.appendChild(meta);
 
-      card.addEventListener('click', () => loadPlaylistTracks(resultsArea, pl));
+      card.addEventListener('click', () => navigate(playlistViewKey(_rememberPlaylist(pl))));
       a11yClick(card);
       grid.appendChild(card);
     });
@@ -4477,15 +4511,395 @@ async function loadPlaylists(resultsArea) {
   }
 }
 
+const PLAYLIST_PAGE_SIZE = 50;
+const PLAYLIST_VIRTUAL_ROW_PX = 66;
+const PLAYLIST_VIRTUAL_THRESHOLD = 80;
+let _playlistSelectedIndex = 0;
+let _playlistFocusSelected = false;
+let _playlistQueueLive = false;
+let _playlistFillGen = 0;
+let _playlistFillPlaylistId = null;
+let _playlistQueuedUntil = 0;
+let _playlistFillTotal = 0;
+let _playlistKnownByView = {};
+let _playlistNoteQueueStarted = null;
+
+function playlistViewKey(pl) {
+  const id = (pl && pl.id != null) ? String(pl.id) : '';
+  return 'playlist:' + encodeURIComponent(id);
+}
+
+function _rememberPlaylist(pl) {
+  if (pl && pl.id != null) _playlistMeta[String(pl.id)] = pl;
+  return pl;
+}
+
+function _playlistMoveIndex(index, delta, total) {
+  if (!total) return 0;
+  const base = index == null ? 0 : index;
+  return Math.max(0, Math.min(total - 1, base + delta));
+}
+
+function _playlistEnsureVisibleScroll(index, scrollTop, viewHeight, rowPx) {
+  const row = rowPx || PLAYLIST_VIRTUAL_ROW_PX;
+  const top = index * row;
+  const bottom = top + row;
+  if (top < (scrollTop || 0)) return top;
+  if (bottom > (scrollTop || 0) + viewHeight) return Math.max(0, bottom - viewHeight);
+  return scrollTop || 0;
+}
+
+function _playlistListScrollTop(parentScrollTop, listOffsetTop) {
+  return Math.max(0, (parentScrollTop || 0) - (listOffsetTop || 0));
+}
+
+let _playlistScrollRestores = {};
+let _playlistRestoreAssignDepth = 0;
+
+function _playlistScrollMax(scrollHeight, clientHeight) {
+  return Math.max(0, (scrollHeight || 0) - (clientHeight || 0));
+}
+
+function _playlistScrollRestoreFor(view) {
+  return view ? _playlistScrollRestores[view] : null;
+}
+
+function _armPlaylistScrollRestore(viewState, view, force) {
+  if (!view) return null;
+  const saved = viewState && viewState[view];
+  const scrollY = saved && saved.scrollY ? saved.scrollY : 0;
+  const existing = _playlistScrollRestores[view];
+  if (!force && existing) return existing;
+  if (!scrollY) {
+    if (existing) existing.cancelled = true;
+    delete _playlistScrollRestores[view];
+    return null;
+  }
+  const pending = { view: view, scrollY: scrollY, cancelled: false, done: false };
+  _playlistScrollRestores[view] = pending;
+  return pending;
+}
+
+function _cancelPlaylistScrollRestore(pending) {
+  if (!pending || pending.done) return pending || null;
+  pending.cancelled = true;
+  return pending;
+}
+
+function _playlistUserScrollCancelsRestore(pending, eventType, ours) {
+  if (!pending || pending.done || pending.cancelled) return pending || null;
+  if (ours) return pending;
+  const kind = String(eventType || '');
+  if (
+    kind === 'wheel' || kind === 'touch' || kind === 'touchmove' || kind === 'touchstart'
+    || kind === 'mousedown' || kind === 'pointerdown'
+    || kind === 'keyboard' || kind === 'navigate'
+  ) {
+    return _cancelPlaylistScrollRestore(pending);
+  }
+  return pending;
+}
+
+function _playlistScrollAssignIsOurs(scroller) {
+  return _playlistRestoreAssignDepth > 0 || !!(scroller && scroller._playlistRestoreAssign);
+}
+
+function _assignRestoredScrollTop(scroller, target) {
+  _playlistRestoreAssignDepth += 1;
+  if (scroller) scroller._playlistRestoreAssign = true;
+  try {
+    scroller.scrollTop = target;
+  } finally {
+    const release = () => {
+      _playlistRestoreAssignDepth = Math.max(0, _playlistRestoreAssignDepth - 1);
+      if (!_playlistRestoreAssignDepth && scroller) scroller._playlistRestoreAssign = false;
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(release);
+    else release();
+  }
+}
+
+function _tryPlaylistScrollRestore(scroller, pending) {
+  if (!pending || pending.cancelled) {
+    return { applied: false, scrollY: null, pending: false };
+  }
+  if (pending.done) {
+    return { applied: true, scrollY: null, pending: false };
+  }
+  if (!scroller) {
+    return { applied: false, scrollY: pending.scrollY, pending: true };
+  }
+  const target = pending.scrollY;
+  const max = _playlistScrollMax(scroller.scrollHeight, scroller.clientHeight);
+  if (max + 2 < target) {
+    return { applied: false, scrollY: target, pending: true };
+  }
+  _assignRestoredScrollTop(scroller, target);
+  if (Math.abs((scroller.scrollTop || 0) - target) <= 2) {
+    pending.done = true;
+    return { applied: true, scrollY: null, pending: false };
+  }
+  return { applied: false, scrollY: target, pending: true };
+}
+
+function _rememberPlaylistKnownCount(view, count) {
+  const n = Number(count) || 0;
+  if (!view || String(view).indexOf('playlist:') !== 0 || n <= 0) return;
+  _playlistKnownByView[view] = n;
+}
+
+function _playlistKnownTrackCount(pl, viewState, view) {
+  const saved = viewState && view ? viewState[view] : null;
+  const fromState = saved ? Number(saved.playlistTracks) || 0 : 0;
+  const fromPl = pl ? (Number(pl.num_tracks) || Number(pl.numberOfTracks) || 0) : 0;
+  return Math.max(fromState, fromPl);
+}
+
+function _playlistPlaceholderHeight(total, rowPx) {
+  return (total || 0) * (rowPx || PLAYLIST_VIRTUAL_ROW_PX);
+}
+
+function _playlistPageRetryPlan(streak) {
+  const attempt = streak || 0;
+  if (attempt > 5) {
+    return { delayMs: null, auto: false, toast: false, hasMore: true };
+  }
+  const delayMs = Math.min(30000, 1500 * Math.pow(2, attempt - 1));
+  return { delayMs: delayMs, auto: true, toast: attempt === 1, hasMore: true };
+}
+
+function _playlistShouldScanUpgrades(already, onView, offset, total) {
+  if (already || !onView) return false;
+  return (total || 0) > 0 && (offset || 0) >= total;
+}
+
+function _playlistLaterPageFailure(loadedCount, total, status) {
+  const loaded = loadedCount || 0;
+  const count = total || loaded;
+  if (loaded <= 0) {
+    return { keepRows: false, empty: true, retry: false, hasMore: false, toast: null };
+  }
+  const rateLimited = status === 429;
+  const toast = rateLimited
+    ? 'Tidal rate limit — ' + loaded + ' of ' + count + ' loaded, will retry'
+    : 'Playlist load paused — ' + loaded + ' of ' + count + ' loaded, will retry';
+  return {
+    keepRows: true,
+    empty: false,
+    retry: true,
+    hasMore: loaded < count,
+    toast: toast,
+  };
+}
+
+function _playlistUnqueuedByPosition(loaded, queuedUntil) {
+  const start = Math.max(0, queuedUntil || 0);
+  return (loaded || []).slice(start);
+}
+
+function _appendPlaylistQueueEntries(queue, queueOriginal, queueIndex, entries, shuffle, random) {
+  const nextQueue = (queue || []).slice();
+  const nextOriginal = (queueOriginal || []).slice();
+  const rng = random || Math.random;
+  (entries || []).forEach(entry => {
+    nextOriginal.push(entry);
+    if (!shuffle) {
+      nextQueue.push(entry);
+      return;
+    }
+    const tail = Math.max(0, (queueIndex || 0) + 1);
+    const span = Math.max(1, nextQueue.length - tail + 1);
+    const at = Math.min(nextQueue.length, tail + Math.floor(rng() * span));
+    nextQueue.splice(at, 0, entry);
+  });
+  return { queue: nextQueue, queueOriginal: nextOriginal };
+}
+
+function _playlistFetchContinues(onView, queueLive) {
+  return !!(onView || queueLive);
+}
+
+function _playlistLeaveDecision(onView, filling, stillThisFill, samePlaylist) {
+  if (!stillThisFill) {
+    if (filling && samePlaylist) return 'handoff';
+    if (filling) return 'stop-incomplete';
+    return 'stop';
+  }
+  if (onView || filling) return 'continue';
+  return 'stop';
+}
+
+function _playlistQueueIncomplete(filling, loadedCount, total) {
+  return !!(filling && (total || 0) > (loadedCount || 0));
+}
+
+function _syncPlaylistLiveQueue(loaded, queuedUntil, shuffle, live) {
+  const active = live == null ? !!_playlistQueueLive : !!live;
+  if (!active) return queuedUntil || 0;
+  const extraTracks = _playlistUnqueuedByPosition(loaded, queuedUntil);
+  const entries = extraTracks.map(track => _cloneQueueTrack(track, ++_queueEntrySeq));
+  const merged = _appendPlaylistQueueEntries(
+    state.queue, state.queueOriginal, state.queueIndex, entries, !!shuffle,
+  );
+  state.queue = merged.queue;
+  state.queueOriginal = merged.queueOriginal;
+  if (entries.length) {
+    _saveQueue();
+    if (typeof queuePanel !== 'undefined' && queuePanel && queuePanel.classList.contains('open')) {
+      renderQueue();
+    }
+  }
+  const nextUntil = (queuedUntil || 0) + extraTracks.length;
+  _playlistQueuedUntil = nextUntil;
+  return nextUntil;
+}
+
+function playlistTracksUrl(pl, limit, offset) {
+  let url = '/playlists/' + encodeURIComponent(pl.id) + '/tracks?limit=' + limit + '&offset=' + offset;
+  if (pl.last_updated) url += '&last_updated=' + encodeURIComponent(pl.last_updated);
+  if (pl.num_tracks) url += '&total=' + encodeURIComponent(pl.num_tracks);
+  return url;
+}
+
+function renderPlaylistTrackSkeleton(container, count) {
+  const n = count || 8;
+  for (let i = 0; i < n; i++) {
+    container.appendChild(h('div', { className: 'skeleton-track', 'aria-hidden': 'true' },
+      h('div', { className: 'skeleton sk-num' }),
+      h('div', { className: 'skeleton sk-art' }),
+      h('div', { className: 'skeleton sk-meta' }),
+      h('div', { className: 'skeleton sk-album' }),
+      h('div', { className: 'skeleton sk-quality' }),
+      h('div', { className: 'skeleton sk-time' }),
+      h('div')
+    ));
+  }
+}
+
+function _playlistVirtualRange(scrollTop, viewHeight, total, rowPx, overscan) {
+  const row = rowPx || PLAYLIST_VIRTUAL_ROW_PX;
+  const extra = overscan == null ? 8 : overscan;
+  const start = Math.max(0, Math.floor((scrollTop || 0) / row) - extra);
+  const visible = Math.ceil((viewHeight || row * 12) / row) + extra * 2;
+  const end = Math.min(total, start + Math.max(visible, 1));
+  return { start: start, end: end, top: start * row, height: total * row };
+}
+
+function _playlistListOffset(trackList, scroller) {
+  if (!trackList || !scroller || trackList === scroller) return 0;
+  if (typeof trackList.getBoundingClientRect === 'function'
+      && typeof scroller.getBoundingClientRect === 'function') {
+    const list = trackList.getBoundingClientRect();
+    const box = scroller.getBoundingClientRect();
+    if (list && box && (list.top || box.top || scroller.scrollTop)) {
+      return (list.top - box.top) + (scroller.scrollTop || 0);
+    }
+  }
+  return Math.max(0, (trackList.offsetTop || 0) - (scroller.offsetTop || 0));
+}
+
+function _playlistScrollParent(trackList) {
+  if (typeof document !== 'undefined') {
+    const scroller = _appScrollEl(document);
+    if (scroller) return scroller;
+  }
+  return trackList && trackList.parentElement;
+}
+
+function _playlistMarkSelected(row, index) {
+  if (index === _playlistSelectedIndex) {
+    row.classList.add('selected');
+    if (_playlistFocusSelected && typeof row.focus === 'function') {
+      row.focus();
+      _playlistFocusSelected = false;
+    }
+  }
+  row.addEventListener('click', () => {
+    _playlistSelectedIndex = index;
+    if (typeof _playlistNoteQueueStarted === 'function') _playlistNoteQueueStarted();
+  });
+  row.addEventListener('focus', () => { _playlistSelectedIndex = index; });
+}
+
+function renderPlaylistRows(trackList, tracks, total) {
+  const count = total || tracks.length;
+  if (count <= PLAYLIST_VIRTUAL_THRESHOLD) {
+    trackList.classList.remove('tracks-virtual');
+    while (trackList.firstChild) trackList.removeChild(trackList.firstChild);
+    tracks.forEach((track, i) => {
+      const row = renderTrackRow(track, i + 1, tracks);
+      _playlistMarkSelected(row, i);
+      trackList.appendChild(row);
+    });
+    return;
+  }
+  _paintPlaylistVirtual(trackList, tracks, count);
+}
+
+function _paintPlaylistVirtual(trackList, tracks, total) {
+  trackList.classList.add('tracks-virtual');
+  const parent = _playlistScrollParent(trackList);
+  const spacerHeight = (total || 0) * PLAYLIST_VIRTUAL_ROW_PX;
+  while (trackList.firstChild) trackList.removeChild(trackList.firstChild);
+  const spacer = h('div', { className: 'tracks-virtual-spacer' });
+  spacer.style.height = spacerHeight + 'px';
+  trackList.appendChild(spacer);
+  const pending = _playlistScrollRestoreFor(typeof state !== 'undefined' ? state.view : '');
+  if (parent) _tryPlaylistScrollRestore(parent, pending);
+  const rawTop = parent && parent !== trackList ? (parent.scrollTop || 0) : 0;
+  const listOffsetTop = _playlistListOffset(trackList, parent);
+  const scrollTop = _playlistListScrollTop(rawTop, listOffsetTop);
+  const viewHeight = parent && parent.clientHeight ? parent.clientHeight : 720;
+  const range = _playlistVirtualRange(scrollTop, viewHeight, total, PLAYLIST_VIRTUAL_ROW_PX, 8);
+  const windowEl = h('div', { className: 'tracks-virtual-window' });
+  windowEl.style.top = range.top + 'px';
+  for (let i = range.start; i < range.end; i++) {
+    const track = tracks[i];
+    if (!track) {
+      windowEl.appendChild(h('div', { className: 'skeleton-track', 'aria-hidden': 'true' },
+        h('div', { className: 'skeleton sk-num' }),
+        h('div', { className: 'skeleton sk-art' }),
+        h('div', { className: 'skeleton sk-meta' }),
+        h('div', { className: 'skeleton sk-album' }),
+        h('div', { className: 'skeleton sk-quality' }),
+        h('div', { className: 'skeleton sk-time' }),
+        h('div')
+      ));
+      continue;
+    }
+    const row = renderTrackRow(track, i + 1, tracks);
+    _playlistMarkSelected(row, i);
+    windowEl.appendChild(row);
+  }
+  trackList.appendChild(windowEl);
+}
+
 async function loadPlaylistTracks(resultsArea, pl) {
+  _rememberPlaylist(pl);
+  _playlistSelectedIndex = 0;
+  const playlistId = String(pl && pl.id != null ? pl.id : '');
+  const continuing = !!(_playlistQueueLive && _playlistFillPlaylistId === playlistId);
+  const myGen = ++_playlistFillGen;
+  _playlistFillPlaylistId = playlistId;
+  let filling = continuing;
+  let queuedUntil = continuing ? _playlistQueuedUntil : 0;
+  if (!continuing) {
+    _playlistQueueLive = false;
+    _playlistQueuedUntil = 0;
+  }
+  let total = pl.num_tracks || 0;
+  _playlistFillTotal = total;
   while (resultsArea.firstChild) resultsArea.removeChild(resultsArea.firstChild);
   resultsArea.className = 'album-detail-view';
 
-  // Breadcrumb
-  resultsArea.appendChild(breadcrumb([
+  const crumbRow = h('div', { className: 'nav-back-row' });
+  const back = _navBackControl();
+  if (back) crumbRow.appendChild(back);
+  crumbRow.appendChild(breadcrumb([
     { label: 'Playlists', view: 'playlists' },
     { label: pl.name || 'Playlist' },
   ]));
+  resultsArea.appendChild(crumbRow);
 
   // Playlist header — art + meta + action pills
   const plHeader = h('div', { className: 'album-detail-header' });
@@ -4545,73 +4959,304 @@ async function loadPlaylistTracks(resultsArea, pl) {
 
   const trackList = h('div', { className: 'tracks' });
   resultsArea.appendChild(trackList);
-  trackList.appendChild(h('div', { className: 'skeleton-row' }));
+  const viewKey = state.view;
+  if (!_playlistScrollRestoreFor(viewKey)) {
+    _armPlaylistScrollRestore(_viewState, viewKey, false);
+  }
+  const knownTotal = _playlistKnownTrackCount(pl, _viewState, viewKey);
+  if (knownTotal > total) {
+    total = knownTotal;
+    _playlistFillTotal = knownTotal;
+  }
+  _rememberPlaylistKnownCount(viewKey, total);
+  if (knownTotal > PLAYLIST_VIRTUAL_THRESHOLD) {
+    _paintPlaylistVirtual(trackList, [], knownTotal);
+  } else {
+    renderPlaylistTrackSkeleton(trackList, 8);
+  }
 
-  try {
-    const data = await api('/playlists/' + encodeURIComponent(pl.id) + '/tracks');
-    while (trackList.firstChild) trackList.removeChild(trackList.firstChild);
-    const tracks = data.tracks || [];
-
-    tracks.forEach((track, i) => {
-      trackList.appendChild(renderTrackRow(track, i + 1, tracks));
+  const loaded = [];
+  if (knownTotal > PLAYLIST_VIRTUAL_THRESHOLD) {
+    requestAnimationFrame(() => {
+      const parent = _playlistScrollParent(trackList);
+      _tryPlaylistScrollRestore(parent, _playlistScrollRestoreFor(viewKey));
+      _paintPlaylistVirtual(trackList, loaded, knownTotal);
     });
+  }
+  let actionsWired = false;
+  const stillThisFill = () => _playlistFillGen === myGen;
+  const onThisView = () => state.view === viewKey && stillThisFill();
+  const noteQueueStarted = () => {
+    if (!stillThisFill()) return;
+    filling = true;
+    _playlistQueueLive = true;
+    queuedUntil = loaded.length;
+    _playlistQueuedUntil = queuedUntil;
+    _playlistFillTotal = total;
+  };
+  _playlistNoteQueueStarted = noteQueueStarted;
 
-    // Wire action buttons
-    if (tracks.length) {
+  const paintLoaded = (totalHint) => {
+    const total = totalHint || loaded.length;
+    renderPlaylistRows(trackList, loaded, total);
+    const scrollParent = _playlistScrollParent(trackList);
+    _tryPlaylistScrollRestore(scrollParent, _playlistScrollRestoreFor(state.view));
+    if (filling) {
+      queuedUntil = _syncPlaylistLiveQueue(loaded, queuedUntil, state.shuffle, stillThisFill());
+      _playlistFillTotal = totalHint || total;
+    }
+    const countEl = plMeta.querySelector('.album-detail-sub');
+    if (countEl) countEl.textContent = total + ' tracks';
+    if (loaded.length) {
       playBtn.disabled = false;
       shuffleBtn.disabled = false;
-      playBtn.addEventListener('click', () => {
-        state.shuffle = false;
-        btnShuffle.classList.remove('active');
-        _setQueueOrder(tracks, tracks[0]);
-        playTrack(state.queue[state.queueIndex]);
-      });
-      shuffleBtn.addEventListener('click', () => {
-        state.shuffle = true;
-        btnShuffle.classList.add('active');
-        _setQueueOrder(tracks, tracks[0]);
-        playTrack(state.queue[state.queueIndex]);
-      });
     }
-
-    // Download Missing — hide if all tracks are local
-    const missingCount = tracks.filter(t => !t.is_local).length;
-    if (missingCount === 0) {
+    const missingCount = loaded.filter(t => !t.is_local).length;
+    const knownComplete = loaded.length >= total;
+    if (knownComplete && missingCount === 0) {
       dlBtn.style.display = 'none';
-    } else {
+    } else if (missingCount > 0) {
+      dlBtn.style.display = '';
       dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download ' + missingCount + ' Missing';
-      dlBtn.addEventListener('click', async () => {
-        dlBtn.textContent = 'Syncing...';
-        dlBtn.style.pointerEvents = 'none';
-        try {
-          const result = await api('/playlists/' + encodeURIComponent(pl.id) + '/sync', { method: 'POST' });
-          if (result.status === 'up_to_date') {
-            toast('All tracks are already local', 'success');
-            dlBtn.style.display = 'none';
-          } else {
-            toast('Downloading ' + result.missing + ' missing tracks', 'success');
-            refreshDlBadge();
-            _ensureGlobalSSE();
-            dlBtn.textContent = 'Queued';
-            dlBtn.disabled = true;
-          }
-        } catch (err) {
-          toast('Sync failed: ' + err.message, 'error');
-          dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download ' + missingCount + ' Missing';
-          dlBtn.style.pointerEvents = '';
-        }
-      });
     }
+  };
 
-    _scanPlaylistUpgrades(tracks, trackList, upgradeBtn, refreshUpgradeBtn);
+  const wireActions = () => {
+    if (actionsWired) return;
+    actionsWired = true;
+    playBtn.addEventListener('click', () => {
+      if (!loaded.length) return;
+      state.shuffle = false;
+      btnShuffle.classList.remove('active');
+      noteQueueStarted();
+      if (loaded.length < total) continuePages(false);
+      _setQueueOrder(loaded, loaded[0]);
+      playTrack(state.queue[state.queueIndex]);
+    });
+    shuffleBtn.addEventListener('click', () => {
+      if (!loaded.length) return;
+      state.shuffle = true;
+      btnShuffle.classList.add('active');
+      noteQueueStarted();
+      if (loaded.length < total) continuePages(false);
+      _setQueueOrder(loaded, loaded[0]);
+      playTrack(state.queue[state.queueIndex]);
+    });
+    dlBtn.addEventListener('click', async () => {
+      const missingCount = loaded.filter(t => !t.is_local).length;
+      dlBtn.textContent = 'Syncing...';
+      dlBtn.style.pointerEvents = 'none';
+      try {
+        const result = await api('/playlists/' + encodeURIComponent(pl.id) + '/sync', { method: 'POST' });
+        if (result.status === 'up_to_date') {
+          toast('All tracks are already local', 'success');
+          dlBtn.style.display = 'none';
+        } else {
+          toast('Downloading ' + result.missing + ' missing tracks', 'success');
+          refreshDlBadge();
+          _ensureGlobalSSE();
+          dlBtn.textContent = 'Queued';
+          dlBtn.disabled = true;
+        }
+      } catch (err) {
+        toast('Sync failed: ' + err.message, 'error');
+        dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download ' + missingCount + ' Missing';
+        dlBtn.style.pointerEvents = '';
+      }
+    });
+  };
 
-    // Update track count
-    plMeta.querySelector('.album-detail-sub').textContent = tracks.length + ' tracks';
+  const afterAwait = () => {
+    const decision = _playlistLeaveDecision(
+      state.view === viewKey,
+      filling,
+      stillThisFill(),
+      _playlistFillPlaylistId === playlistId,
+    );
+    if (decision === 'stop-incomplete') {
+      toast(
+        'Playlist queue incomplete (' + queuedUntil + ' of ' + (_playlistFillTotal || total) + ')',
+        'error',
+      );
+    }
+    return decision;
+  };
+
+  const paintOrFill = (totalHint) => {
+    if (onThisView()) paintLoaded(totalHint);
+    else if (filling && stillThisFill()) {
+      queuedUntil = _syncPlaylistLiveQueue(loaded, queuedUntil, state.shuffle, true);
+      _playlistFillTotal = totalHint || total;
+    }
+  };
+
+  const scrollParent = _playlistScrollParent(trackList);
+  const cancelRestore = (eventType, ours) => {
+    _playlistUserScrollCancelsRestore(_playlistScrollRestoreFor(viewKey), eventType, ours);
+  };
+  const onWheel = () => cancelRestore('wheel');
+  const onTouch = () => cancelRestore('touchmove');
+  const onTouchStart = () => cancelRestore('touchstart');
+  const onMouseDown = () => cancelRestore('mousedown');
+  const onPointerDown = () => cancelRestore('pointerdown');
+  const onScroll = () => {
+    if (_playlistScrollAssignIsOurs(scrollParent)) return;
+    if (loaded.length && loaded.length < total) continuePages(false);
+    if ((total || loaded.length) > PLAYLIST_VIRTUAL_THRESHOLD) {
+      _paintPlaylistVirtual(trackList, loaded, total || loaded.length);
+    }
+  };
+  const onScrollKey = (e) => {
+    const key = e && e.key;
+    if (key !== 'PageUp' && key !== 'PageDown' && key !== 'Home' && key !== 'End'
+        && key !== ' ' && key !== 'ArrowUp' && key !== 'ArrowDown') return;
+    cancelRestore('keyboard');
+    if (loaded.length && loaded.length < (total || loaded.length)) continuePages(false);
+  };
+  const onKey = (e) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    cancelRestore('keyboard');
+    if (loaded.length && loaded.length < (total || loaded.length)) continuePages(false);
+    e.preventDefault();
+    e.stopPropagation();
+    const count = total || loaded.length;
+    _playlistSelectedIndex = _playlistMoveIndex(
+      _playlistSelectedIndex, e.key === 'ArrowDown' ? 1 : -1, count,
+    );
+    _playlistFocusSelected = true;
+    if (scrollParent) {
+      const listOffsetTop = _playlistListOffset(trackList, scrollParent);
+      const listScroll = _playlistListScrollTop(scrollParent.scrollTop || 0, listOffsetTop);
+      const next = _playlistEnsureVisibleScroll(
+        _playlistSelectedIndex,
+        listScroll,
+        scrollParent.clientHeight || 720,
+        PLAYLIST_VIRTUAL_ROW_PX,
+      );
+      const parentNext = next + listOffsetTop;
+      if (parentNext !== scrollParent.scrollTop) scrollParent.scrollTop = parentNext;
+    }
+    renderPlaylistRows(trackList, loaded, count);
+  };
+  if (scrollParent && scrollParent.addEventListener) {
+    scrollParent.addEventListener('scroll', onScroll, { passive: true });
+    scrollParent.addEventListener('wheel', onWheel, { passive: true });
+    scrollParent.addEventListener('touchmove', onTouch, { passive: true });
+    scrollParent.addEventListener('touchstart', onTouchStart, { passive: true });
+    scrollParent.addEventListener('mousedown', onMouseDown);
+    scrollParent.addEventListener('pointerdown', onPointerDown);
+  }
+  const keyTarget = typeof document !== 'undefined' ? document : null;
+  if (keyTarget && keyTarget.addEventListener) {
+    keyTarget.addEventListener('keydown', onScrollKey);
+  }
+  trackList.setAttribute('tabindex', '0');
+  trackList.addEventListener('keydown', onKey);
+  if (typeof viewEl !== 'undefined' && viewEl) {
+    const prevCleanup = viewEl._viewCleanup;
+    viewEl._viewCleanup = () => {
+      if (typeof prevCleanup === 'function') prevCleanup();
+      cancelRestore('navigate');
+      if (pageRetryTimer) clearTimeout(pageRetryTimer);
+      if (scrollParent && scrollParent.removeEventListener) {
+        scrollParent.removeEventListener('scroll', onScroll);
+        scrollParent.removeEventListener('wheel', onWheel);
+        scrollParent.removeEventListener('touchmove', onTouch);
+        scrollParent.removeEventListener('touchstart', onTouchStart);
+        scrollParent.removeEventListener('mousedown', onMouseDown);
+        scrollParent.removeEventListener('pointerdown', onPointerDown);
+      }
+      if (keyTarget && keyTarget.removeEventListener) {
+        keyTarget.removeEventListener('keydown', onScrollKey);
+      }
+      trackList.removeEventListener('keydown', onKey);
+    };
+  }
+
+  let pageRetryTimer = null;
+  let pageRetryNotBefore = 0;
+  let pageRetryStreak = 0;
+  let pagesBusy = false;
+  let offset = 0;
+  let upgradesScanned = false;
+
+  async function continuePages(force) {
+    if (pagesBusy) return;
+    if (!force && pageRetryNotBefore && Date.now() < pageRetryNotBefore) return;
+    if (pageRetryTimer) {
+      clearTimeout(pageRetryTimer);
+      pageRetryTimer = null;
+    }
+    pagesBusy = true;
+    try {
+      while (offset < total) {
+        let page;
+        try {
+          page = await api(playlistTracksUrl(pl, PLAYLIST_PAGE_SIZE, offset));
+        } catch (err) {
+          const failure = _playlistLaterPageFailure(loaded.length, total, err && err.status);
+          if (!failure.keepRows) throw err;
+          pageRetryStreak += 1;
+          const plan = _playlistPageRetryPlan(pageRetryStreak);
+          if (plan.toast && (onThisView() || filling)) toast(failure.toast, 'error');
+          if (plan.auto && failure.retry && (onThisView() || (filling && stillThisFill()))) {
+            pageRetryNotBefore = Date.now() + plan.delayMs;
+            pageRetryTimer = setTimeout(() => {
+              pageRetryTimer = null;
+              continuePages(true);
+            }, plan.delayMs);
+          } else {
+            pageRetryNotBefore = 0;
+          }
+          return;
+        }
+        pageRetryStreak = 0;
+        const decision = afterAwait();
+        if (decision !== 'continue') return;
+        const rows = page.tracks || [];
+        if (!rows.length) break;
+        loaded.push.apply(loaded, rows);
+        if (page.total) total = page.total;
+        _rememberPlaylistKnownCount(viewKey, total);
+        _playlistFillTotal = total;
+        offset += rows.length;
+        paintOrFill(total);
+      }
+    } finally {
+      pagesBusy = false;
+    }
+    if (_playlistShouldScanUpgrades(upgradesScanned, onThisView(), offset, total)) {
+      upgradesScanned = true;
+      _scanPlaylistUpgrades(loaded, trackList, upgradeBtn, refreshUpgradeBtn);
+    }
+  }
+
+  try {
+    const first = await api(playlistTracksUrl(pl, PLAYLIST_PAGE_SIZE, 0));
+    if (afterAwait() !== 'continue') return;
+    loaded.push.apply(loaded, first.tracks || []);
+    total = first.total || pl.num_tracks || loaded.length;
+    _rememberPlaylistKnownCount(viewKey, total);
+    _playlistFillTotal = total;
+    paintOrFill(total);
+    wireActions();
+
+    offset = (first.offset || 0) + loaded.length;
+    await continuePages(true);
   } catch (err) {
+    const failure = _playlistLaterPageFailure(loaded.length, total, err && err.status);
+    if (failure.keepRows) {
+      if (onThisView() || filling) toast(failure.toast, 'error');
+      return;
+    }
+    const message = (err && err.message) || 'Failed to load tracks';
+    const rateLimited = !!(err && err.status === 429);
+    if (filling || rateLimited) toast(message, 'error');
+    if (!onThisView()) return;
     while (trackList.firstChild) trackList.removeChild(trackList.firstChild);
     trackList.appendChild(h('div', { className: 'empty-state' },
-      textEl('div', 'Failed to load tracks', 'empty-state-title'),
-      textEl('div', err.message, 'empty-state-sub')
+      textEl('div', rateLimited ? 'Tidal rate limit' : 'Failed to load tracks', 'empty-state-title'),
+      textEl('div', message, 'empty-state-sub')
     ));
   }
 }

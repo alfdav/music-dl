@@ -51,6 +51,11 @@ function buildLocalReleaseView(releaseId) {
   return /^[a-f0-9]{6,64}$/.test(hash) ? `localrelease:${hash}` : 'library';
 }
 
+function buildPlaylistView(playlistId) {
+  const id = String(playlistId ?? '').trim();
+  return id ? `playlist:${_encodeSegment(id)}` : 'playlists';
+}
+
 function normalizeView(view) {
   const raw = typeof view === 'string' ? view.trim() : '';
   if (!raw) return 'home';
@@ -59,6 +64,7 @@ function normalizeView(view) {
   if (/^album:[0-9]+$/.test(raw)) return raw;
   if (/^localalbum:[^:#/?]+:[^:#/?]+$/.test(raw)) return raw;
   if (/^localrelease:[a-f0-9]{6,64}$/.test(raw)) return raw;
+  if (/^playlist:[^/?#]+$/.test(raw)) return raw;
   return 'home';
 }
 
@@ -81,6 +87,7 @@ const exported = {
   buildArtistView,
   buildLocalAlbumView,
   buildLocalReleaseView,
+  buildPlaylistView,
   normalizeLaunchView,
   normalizeView,
   parseArtistView,

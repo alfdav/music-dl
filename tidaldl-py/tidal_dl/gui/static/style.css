@@ -650,6 +650,27 @@ body {
   gap: 2px;
 }
 
+.tracks.tracks-virtual {
+  position: relative;
+}
+
+.tracks-virtual-spacer {
+  width: 100%;
+  pointer-events: none;
+}
+
+.tracks-virtual-window {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+.tracks-virtual .track {
+  height: 66px;
+  min-height: 66px;
+  box-sizing: border-box;
+}
+
 .track-header {
   display: grid;
   grid-template-columns: 40px 44px 1fr 1fr 72px 52px 44px 52px 84px 32px;
@@ -696,6 +717,10 @@ body {
 
 .track.unplayable:hover {
   background: transparent;
+}
+
+.track.selected {
+  background: var(--surface-active);
 }
 
 .track.playing {

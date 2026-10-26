@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import shutil
 import subprocess
@@ -11,6 +12,52 @@ from tidalapi.media import AudioExtensions
 
 def ffmpeg_executable(path_binary_ffmpeg: str | None) -> str:
     return path_binary_ffmpeg or shutil.which("ffmpeg") or "ffmpeg"
+
+
+def ffprobe_executable(path_binary_ffmpeg: str | None) -> str:
+    """ffprobe next to the configured ffmpeg, else the one on PATH."""
+    ffmpeg = pathlib.Path(ffmpeg_executable(path_binary_ffmpeg))
+    sibling_name = "ffprobe.exe" if ffmpeg.name.lower() == "ffmpeg.exe" else "ffprobe"
+    sibling = ffmpeg.with_name(sibling_name)
+    if sibling.is_file():
+        return str(sibling)
+    return shutil.which("ffprobe") or "ffprobe"
+
+
+def audio_stream_duration_seconds(path: pathlib.Path, path_binary_ffmpeg: str | None = None) -> float | None:
+    """Duration of the first audio stream. Cover art is a different stream."""
+    try:
+        proc = subprocess.run(
+            [
+                ffprobe_executable(path_binary_ffmpeg),
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=duration",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    try:
+        payload = json.loads(proc.stdout or "")
+    except json.JSONDecodeError:
+        return None
+    streams = payload.get("streams") if isinstance(payload, dict) else None
+    if not isinstance(streams, list) or not streams or not isinstance(streams[0], dict):
+        return None
+    try:
+        return float(streams[0]["duration"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def run_ffmpeg(path_binary_ffmpeg: str | None, *args: str) -> None:

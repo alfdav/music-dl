@@ -5,10 +5,10 @@ dir, but Path(__file__) points into the PYZ archive. Without the _MEIPASS
 fallback, the app serves stale/missing assets from the wrong location.
 """
 
-from pathlib import Path
-from unittest.mock import patch
 import re
 import sys
+from pathlib import Path
+from unittest.mock import patch
 
 from tests.gui_js_source import GUI_JS_FILES, read_gui_js
 
@@ -71,6 +71,7 @@ class TestStaticDirResolution:
              patch.object(sys, "_MEIPASS", str(tmp_path), create=True):
             # Re-import to trigger the resolution logic
             import importlib
+
             import tidal_dl.gui
             importlib.reload(tidal_dl.gui)
             resolved = tidal_dl.gui._STATIC_DIR
