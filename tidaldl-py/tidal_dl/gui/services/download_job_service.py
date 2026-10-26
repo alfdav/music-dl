@@ -90,13 +90,14 @@ def _prepare_downloaded_file(file_path: Path, roots: list[Path], known: set[str]
         return None
     from tidal_dl.helper.library_db.utils import canonical_library_path
 
-    path_str = canonical_library_path(str(file_path))
-    if path_str in known:
+    listed = str(file_path)
+    path_key = canonical_library_path(listed)
+    if path_key in known:
         return None
     meta = _read_metadata(file_path, roots)
     if meta:
         record = {
-            "path": path_str,
+            "path": listed,
             "status": "tagged" if meta["isrc"] else "needs_isrc",
             "isrc": meta["isrc"] or None,
             "artist": meta["artist"],
@@ -122,12 +123,12 @@ def _prepare_downloaded_file(file_path: Path, roots: list[Path], known: set[str]
         }
     else:
         record = {
-            "path": path_str,
+            "path": listed,
             "status": "unreadable",
             "codec": "unknown",
             "metadata_complete": True,
         }
-    known.add(path_str)
+    known.add(path_key)
     return record
 
 

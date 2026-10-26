@@ -273,15 +273,20 @@ class TestSettings:
 
         s = Settings()
         names = {item.name for item in fields(s.data)}
-        # 48 historical fields + scan_paths + edition_advice_enabled +
-        # edition_scorer_path from #186 Jev edition advice + playlist sync.
-        assert len(names) == 58
+        # 58 previous fields plus the Plex writer settings. The token is not one of them.
+        assert len(names) == 63
         assert "scan_paths" in names
         assert "edition_advice_enabled" in names
         assert "edition_scorer_path" in names
         assert "playlist_sync_enabled" in names
         assert "playlist_sync_dry_run" in names
         assert "playlist_sync_allowlist" in names
+        assert "playlist_sync_plex_url" in names
+        assert "playlist_sync_plex_section_id" in names
+        assert "playlist_sync_plex_local_prefix" in names
+        assert "playlist_sync_plex_server_prefix" in names
+        assert "playlist_sync_plex_scan_timeout_sec" in names
+        assert not any("token" in name for name in names)
 
     def test_settings_default_quality(self, clear_singletons, tmp_path, monkeypatch):
         from tidalapi.media import Quality

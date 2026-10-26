@@ -7,6 +7,7 @@ from typing import Protocol
 
 from tidal_dl.playlist_sync.matcher import (
     isrc_key,
+    lead_artist,
     normalize_artist,
     normalize_title,
     strip_accents,
@@ -92,9 +93,17 @@ def _duration_state(source: _Side, candidate: _Side) -> str:
 
 
 def verify(source_track: _Side, candidate: _Side) -> VerifyResult:
-    """Compare one source row to one candidate. confirmed is the only pass."""
-    artist_ok = bool(normalize_artist(source_track.artist)) and (
+    """Compare one source row to one candidate. confirmed is the only pass.
+
+    With equal ISRCs, the lead artist is enough ("Lead, Guest" matches
+    "Lead"). Without an ISRC match the full artist rule applies. Equal ISRCs
+    with a different lead artist or a different title go to review.
+    """
+    full_artist_ok = bool(normalize_artist(source_track.artist)) and (
         normalize_artist(source_track.artist) == normalize_artist(candidate.artist)
+    )
+    lead_ok = bool(lead_artist(source_track.artist)) and (
+        lead_artist(source_track.artist) == lead_artist(candidate.artist)
     )
     title_ok = bool(normalize_title(source_track.title)) and (
         normalize_title(source_track.title) == normalize_title(candidate.title)
@@ -104,6 +113,7 @@ def verify(source_track: _Side, candidate: _Side) -> VerifyResult:
     isrc_equal = bool(source_isrc) and source_isrc == candidate_isrc
     isrc_conflict = bool(source_isrc) and bool(candidate_isrc) and source_isrc != candidate_isrc
     isrc_ok = isrc_equal
+    artist_ok = full_artist_ok or (isrc_equal and lead_ok)
     duration_state = _duration_state(source_track, candidate)
     duration_ok = duration_state == "ok"
     source_markers = markers_in(source_track.title, source_track.version, source_track.album)
@@ -123,6 +133,10 @@ def verify(source_track: _Side, candidate: _Side) -> VerifyResult:
     elif not artist_ok:
         confidence = "reject"
         reasons.append("artist_mismatch")
+    elif isrc_equal and not title_ok:
+        # Same recording code, different title, e.g. "(Live)" on one side only.
+        confidence = "review"
+        reasons.append("isrc_title_mismatch")
     elif not title_ok:
         confidence = "reject"
         reasons.append("title_mismatch")

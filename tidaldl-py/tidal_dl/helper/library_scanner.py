@@ -18,6 +18,7 @@ import os
 import pathlib
 import re
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
@@ -76,9 +77,23 @@ def visible_scanned_path_sql(column: str = "path") -> str:
     """
     if not _SQL_IDENT.fullmatch(column):
         raise ValueError(f"invalid SQL identifier: {column}")
+    names = sorted(_SKIPPED_SCAN_DIR_NAMES)
+    # Cheap raw-string prefilter first: a skipped component can only appear when
+    # the name is somewhere in the path (LIKE folds ASCII case like lower()).
+    # Most rows stop here, so the slash/lower normalization below runs only on
+    # the few candidates instead of once per name on every row.
+    prefilter = " AND ".join(
+        f"{column} NOT LIKE '%{_sql_like_literal(name)}%' ESCAPE '\\'" for name in names
+    )
     norm = f"'/' || trim(lower(replace({column}, char(92), '/')), '/') || '/'"
-    clauses = [f"instr({norm}, '/{name}/') = 0" for name in sorted(_SKIPPED_SCAN_DIR_NAMES)]
-    return "(" + " AND ".join(clauses) + ")"
+    clauses = [f"instr({norm}, '/{name}/') = 0" for name in names]
+    return f"(({prefilter}) OR (" + " AND ".join(clauses) + "))"
+
+
+def _sql_like_literal(value: str) -> str:
+    """Escape *value* for a SQL LIKE pattern with ESCAPE '\\' and single quotes."""
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped.replace("'", "''")
 
 
 def purge_skipped_library_rows(library_db: LibraryDB) -> int:
@@ -105,15 +120,21 @@ def drop_skipped_scan_paths(library_db: LibraryDB) -> int:
     return len(stale)
 
 
+def _music_root_key(value: str | pathlib.Path) -> str:
+    """NFC prefix key. The original string is what callers open."""
+    return unicodedata.normalize("NFC", os.path.normpath(os.path.expanduser(str(value))))
+
+
 def path_under_music_roots(path: str | pathlib.Path, roots: list[pathlib.Path]) -> bool:
     """Return True if *path* is the same as or inside one of *roots*.
 
     Prefix match only — no ``stat()`` / ``resolve()`` of the file, so Home
-    can drop leftover QA rows without probing a NAS music volume.
+    can drop leftover QA rows without probing a NAS music volume. NFC is
+    compared so an on-disk NFD spelling still counts as inside an NFC root.
     """
-    raw = os.path.normpath(os.path.expanduser(str(path)))
+    raw = _music_root_key(path)
     for root in roots:
-        root_raw = os.path.normpath(os.path.expanduser(str(root)))
+        root_raw = _music_root_key(root)
         if raw == root_raw or raw.startswith(root_raw + os.sep):
             return True
     return False
@@ -219,7 +240,7 @@ def _extract_isrc(path: pathlib.Path) -> str | None:
     """
     try:
         audio = mutagen_file(str(path), easy=False)
-    except Exception:
+    except Exception:  # noqa: BLE001 - best-effort, failure is non-fatal
         return None
 
     if audio is None or audio.tags is None:
@@ -329,7 +350,7 @@ def scan_directory(
 
             try:
                 isrc = _extract_isrc(file_path)
-            except Exception:
+            except Exception:  # noqa: BLE001 - best-effort, failure is non-fatal
                 result.errors += 1
                 if len(result.error_paths) < result._ERROR_PATH_CAP:
                     result.error_paths.append(str(file_path))

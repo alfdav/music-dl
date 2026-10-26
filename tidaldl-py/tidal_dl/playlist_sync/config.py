@@ -20,6 +20,11 @@ class PlaylistSyncConfig:
     gap_sec_max: float = 60
     allowlist: tuple[str, ...] = ()
     download_base_path: str = "~/download"
+    plex_url: str = ""
+    plex_section_id: str = ""
+    plex_local_prefix: str = ""
+    plex_server_prefix: str = ""
+    plex_scan_timeout_sec: int = 600
 
 
 def _allowlist(value: Any) -> tuple[str, ...]:
@@ -55,12 +60,37 @@ def load_config(settings: Any | None = None) -> PlaylistSyncConfig:
         gap_sec_max=high,
         allowlist=_allowlist(getattr(data, "playlist_sync_allowlist", ())),
         download_base_path=_download_base(getattr(data, "download_base_path", "~/download")),
+        plex_url=_text(getattr(data, "playlist_sync_plex_url", "")),
+        plex_section_id=_text(getattr(data, "playlist_sync_plex_section_id", "")),
+        plex_local_prefix=_prefix(getattr(data, "playlist_sync_plex_local_prefix", "")),
+        plex_server_prefix=_prefix(getattr(data, "playlist_sync_plex_server_prefix", "")),
+        plex_scan_timeout_sec=_timeout(getattr(data, "playlist_sync_plex_scan_timeout_sec", 600)),
     )
 
 
 def _download_base(value: Any) -> str:
     raw = "~/download" if value is None or value == "" else str(value)
     return nfc_path(os.path.expanduser(raw))
+
+
+def _text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _prefix(value: Any) -> str:
+    return nfc_path(_text(value))
+
+
+def _timeout(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 600
+    if parsed <= 0:
+        return 600
+    return parsed
 
 
 def name_allowed(name: str, allowlist: tuple[str, ...]) -> bool:

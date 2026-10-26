@@ -197,6 +197,7 @@ jobs:
           bash tests/test_macos_local_installer.sh
           bash tests/test_macos_release_installer.sh
           bash tests/test_windows_local_installer.sh
+          bash tests/test_playlist_sync_share_recover.sh
 
       - name: Validate documentation contracts
         id: docs_contracts
