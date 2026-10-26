@@ -42,6 +42,7 @@ class Track:
     version: str = ""
     playlist_name: str = ""
     source_playlist_id: str = ""
+    path: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "title", nfc(self.title))
@@ -76,7 +77,6 @@ class Candidate:
         object.__setattr__(self, "artist", nfc(self.artist))
         object.__setattr__(self, "album", nfc(self.album))
         object.__setattr__(self, "version", nfc(self.version))
-        object.__setattr__(self, "path", nfc(self.path))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -132,6 +132,7 @@ def coerce_track(item: Track | dict[str, Any], *, source: str, playlist_name: st
             version=item.version,
             playlist_name=playlist_name,
             source_playlist_id=item.source_playlist_id,
+            path=item.path,
         )
     raw_id = item.get("source_track_id", item.get("id", ""))
     isrc = item.get("isrc")
@@ -147,6 +148,7 @@ def coerce_track(item: Track | dict[str, Any], *, source: str, playlist_name: st
         version=str(item.get("version") or ""),
         playlist_name=str(item.get("playlist_name") or playlist_name),
         source_playlist_id=str(item.get("source_playlist_id") or ""),
+        path=str(item.get("path") or ""),
     )
 
 
@@ -197,6 +199,8 @@ class PlaylistReport:
     unmatched: int = 0
     unobtainable: int = 0
     already_local: int = 0
+    removed_in_plex: int = 0
+    duplicates_in_source: int = 0
     needs_review: list[dict[str, Any]] = field(default_factory=list)
     tracks: list[dict[str, Any]] = field(default_factory=list)
 
@@ -211,6 +215,8 @@ class PlaylistReport:
             "unmatched": self.unmatched,
             "unobtainable": self.unobtainable,
             "already_local": self.already_local,
+            "removed_in_plex": self.removed_in_plex,
+            "duplicates_in_source": self.duplicates_in_source,
             "needs_review": self.needs_review,
             "tracks": self.tracks,
         }
@@ -225,6 +231,10 @@ class CycleReport:
     skipped: list[dict[str, Any]] = field(default_factory=list)
     needs_review: list[dict[str, Any]] = field(default_factory=list)
     download_mismatch: list[dict[str, Any]] = field(default_factory=list)
+    pending_plex: list[dict[str, Any]] = field(default_factory=list)
+    plex_errors: list[dict[str, Any]] = field(default_factory=list)
+    removed_in_plex: list[dict[str, Any]] = field(default_factory=list)
+    source_errors: list[dict[str, Any]] = field(default_factory=list)
     halted_reason: str | None = None
     playlists: list[PlaylistReport] = field(default_factory=list)
 
@@ -237,6 +247,10 @@ class CycleReport:
             "skipped": self.skipped,
             "needs_review": self.needs_review,
             "download_mismatch": self.download_mismatch,
+            "pending_plex": self.pending_plex,
+            "plex_errors": self.plex_errors,
+            "removed_in_plex": self.removed_in_plex,
+            "source_errors": self.source_errors,
             "halted_reason": self.halted_reason,
             "playlists": [playlist.to_dict() for playlist in self.playlists],
         }
@@ -248,3 +262,12 @@ class DownloadResult:
     path: str | None = None
     http_status: int | None = None
     error: str | None = None
+
+
+@dataclass
+class AppendResult:
+    """What a Plex append did. ``detail`` never carries a token or a header."""
+
+    status: str
+    rating_keys: list[str] = field(default_factory=list)
+    detail: str = ""
