@@ -153,7 +153,9 @@ def test_default_tidal_writes_only_inside_runner_temp_without_network(
     assert completed.returncode == 0
     assert json.loads(completed.stdout)["detail"] == "login failed"
     assert before == after
-    assert (config / "token.json").is_file()
+    # Phase 0/1 never writes an empty token.json. A failed restore must
+    # leave the ephemeral dir without a token file and never touch HOME.
+    assert not (config / "token.json").exists()
     assert all(path.is_relative_to(runner) for path in config.rglob("*"))
 
 

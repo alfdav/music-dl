@@ -15,6 +15,7 @@
     "allow-stop-sidecar",
     "allow-start-sidecar",
     "allow-restart-sidecar",
+    "allow-get-ui-secret",
     "core:event:default",
     "shell:allow-open"
   ]

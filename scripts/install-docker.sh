@@ -49,7 +49,32 @@ sync_source() {
   mv "$extracted" "$INSTALL_DIR" || die "Could not install source into $INSTALL_DIR."
 }
 
+ensure_ui_secret() {
+  if [ -n "${MUSIC_DL_UI_SECRET:-}" ]; then
+    return 0
+  fi
+  local secret_file="${MUSIC_DL_CONFIG:-$HOME/.config/music-dl}/ui_secret"
+  if [ -f "$secret_file" ] && [ -s "$secret_file" ]; then
+    MUSIC_DL_UI_SECRET="$(tr -d '\n' < "$secret_file")"
+    export MUSIC_DL_UI_SECRET
+    return 0
+  fi
+  mkdir -p "$(dirname "$secret_file")" || die "Could not create $(dirname "$secret_file")."
+  if have_command openssl; then
+    MUSIC_DL_UI_SECRET="$(openssl rand -hex 32)"
+  elif have_command python3; then
+    MUSIC_DL_UI_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+  else
+    die "Set MUSIC_DL_UI_SECRET; bind-all will not mint one."
+  fi
+  printf '%s\n' "$MUSIC_DL_UI_SECRET" > "$secret_file" || die "Could not write $secret_file."
+  chmod 600 "$secret_file" || true
+  export MUSIC_DL_UI_SECRET
+  say "Wrote operator-held MUSIC_DL_UI_SECRET to $secret_file"
+}
+
 start_compose() {
+  ensure_ui_secret
   say "Building and starting music-dl"
   docker compose -f "$INSTALL_DIR/docker/docker-compose.yml" up gui -d --build \
     || die "Docker Compose failed. Check Docker, then rerun this installer."

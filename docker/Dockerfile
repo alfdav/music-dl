@@ -47,7 +47,8 @@ USER musicdl
 
 VOLUME ["/home/musicdl/.config/music-dl", "/home/musicdl/download"]
 
-# Bind to 0.0.0.0 so the host can reach the container
+# Bind to 0.0.0.0 so the host can reach the container.
+# MUSIC_DL_UI_SECRET must be provided at run time; bind-all will not mint one.
 ENV MUSIC_DL_BIND_ALL=1
 ENV MUSIC_DL_CONFIG_DIR=/home/musicdl/.config/music-dl
 

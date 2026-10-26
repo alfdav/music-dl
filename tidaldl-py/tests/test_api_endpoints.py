@@ -9,8 +9,6 @@ Uses the shared `client` fixture from conftest.py which provides:
 import wave
 from types import SimpleNamespace
 
-import pytest
-
 from tidal_dl.helper.library_db import LibraryDB
 
 
@@ -759,18 +757,32 @@ class TestUpgradeStart:
 
 
 class TestDownloadTrigger:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="auth hole: download queues without login; fixed on cursor/tidal-auth-v2-phase01-150e, remove on merge",
-    )
     def test_requires_tidal_login(self, client, monkeypatch, clear_singletons):
+        """POST /api/download with no session is 401, not a queued job.
+
+        On master, ``require_tidal`` treated a missing refresh token as
+        REFRESH_SKIPPED and then enqueued. That is a real auth-gate hole,
+        not a stale assertion: the request must not start device-code
+        login and must not accept the download.
+        """
+        oauth = []
+
         class FakeSession:
             def check_login(self):
                 return False
 
+            def login_oauth(self):
+                oauth.append("login_oauth")
+                raise AssertionError("download trigger started login_oauth")
+
         class FakeTidal:
             def __init__(self):
                 self.session = FakeSession()
+                self.data = SimpleNamespace(
+                    access_token=None,
+                    refresh_token=None,
+                    expiry_time=0,
+                )
 
         monkeypatch.setattr("tidal_dl.config.Tidal", FakeTidal)
 
@@ -781,8 +793,13 @@ class TestDownloadTrigger:
         )
 
         assert resp.status_code == 401
-        assert resp.json()["detail"] == "Not logged in to Tidal"
-        assert "terminal" not in resp.json()["detail"].lower()
+        assert resp.json()["detail"] == {
+            "message": "Session needs attention. Use Connect to sign in.",
+            "auth_state": "needs_attention",
+        }
+        assert "terminal" not in str(resp.json()["detail"]).lower()
+        assert oauth == []
+        assert client.app.state.download_jobs.snapshot()["queued_count"] == 0
 
 
 class TestSearchAuth:
@@ -803,8 +820,11 @@ class TestSearchAuth:
         )
 
         assert resp.status_code == 401
-        assert resp.json()["detail"] == "Not logged in to Tidal"
-        assert "terminal" not in resp.json()["detail"].lower()
+        assert resp.json()["detail"] == {
+            "message": "Session needs attention. Use Connect to sign in.",
+            "auth_state": "needs_attention",
+        }
+        assert "terminal" not in str(resp.json()["detail"]).lower()
 
 
 class TestDuplicatesPreview:
@@ -914,12 +934,12 @@ class TestStaticFileServing:
         assert "text/html" in resp.headers.get("content-type", "")
 
     def test_csrf_token_embedded_in_index(self, client):
-        """CSRF token must be present in the index page meta tag."""
+        """Index keeps the meta tag but does not expose the per-launch secret."""
         resp = client.get("/", headers=client._host_header)
         assert 'name="csrf-token"' in resp.text
-        assert 'content="' in resp.text
-        # The token should not be the placeholder
+        assert 'content=""' in resp.text
         assert "__CSRF_TOKEN__" not in resp.text
+        assert client.app.state.ui_secret not in resp.text
 
     def test_app_js_served(self, client):
         for name in ("api.js", "views.js", "player.js"):

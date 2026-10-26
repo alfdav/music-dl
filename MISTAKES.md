@@ -88,6 +88,22 @@
 
 **Prevention:** First-page SQL stamp goes through `stamp_track` (no NAS). Paint uses `_playlistListScrollTop(parent.scrollTop, list.offsetTop)` and 66px border-box rows. Restore is one-shot via `_applyPlaylistScrollRestore`. After Play/Shuffle/play-from-here, `_playlistUnqueuedTracks` appends later pages into `queue`/`queueOriginal`. Client `total` never raises cache size above Tidal `num_tracks` or 10_000.
 
+## 2026-09-27 — Refresh persist wrote an empty refresh_token
+
+**What happened:** A live run against a copied config dir left `token.json` with a new access token and `refresh_token` null. The real file was not touched. The copy could no longer refresh, so the next Connect would be a new Tidal seat.
+
+**Root cause:** `tidalapi.Session.token_refresh` stores `access_token` and does not set `refresh_token` (the response often omits it). `Tidal.token_persist` then saved `session.refresh_token`. On a session that had not loaded the refresh token, that value is `None`. `Token.save` still wrote the file because the access token counted as payload.
+
+**Prevention:** A save keeps a non-empty refresh token already on disk when the session value is empty, logs that refusal with secrets redacted, and puts the kept value back on the session. A refresh response that does include a new refresh token still wins. Cover the omit-refresh response and concurrent persists.
+
+## 2026-09-27 — Bind-all minted the UI secret to any Host-spoofed GET /
+
+**What happened:** `server.py` auto-filled `MUSIC_DL_UI_SECRET` before `make_uvicorn_config` fail-closed. `GET /` then `Set-Cookie`d `music_dl_ui`. A client that could reach a `MUSIC_DL_BIND_ALL` listener sent `Host: localhost:<port>` and replayed the cookie as `X-Music-DL-UI`.
+
+**Root cause:** Bind-all treated a missing operator secret as "generate one" and used GET `/` as the delivery path. Host checks do not prove the peer is local.
+
+**Prevention:** Bind-all starts only with an already-set `MUSIC_DL_UI_SECRET`. GET `/` sets the cookie only on loopback. Cover run-does-not-autofill and bind-all GET `/` leaking no cookie.
+
 ## 2026-09-27 — Overlay keycaps reused the settings-card fill
 
 **What happened:** The `?` help overlay switched to `shortcut-keycap` chips. Those chips fill with `--bg-warm`, the same token as `.shortcuts-card`, so chords lost their key surface and kept only a faint border.
@@ -263,6 +279,14 @@
 **Root cause:** Two functions named "login" with different rejected-refresh behavior. Tests even require the GUI path to start OAuth (`test_gui_auth_login_uses_oauth_when_refresh_cannot_repair`).
 
 **Prevention:** Cite `Tidal.login()` and `auth_login()` separately. Rejected refresh in the GUI is `needs_attention`, not a new device-code seat. Verify `file:line` against the live line, not the function name.
+
+## 2026-09-26 — Auto-login after 401 and in-place token writes
+
+**What happened:** A 401 in `apiTidal()` called `triggerLogin()`, which started device-code OAuth while a refresh token still existed. `token.json` was also written in place, so a crash could truncate a working session. Recovery deleted a valid `.bak`.
+
+**Root cause:** Login was treated as the 401 recovery path. File writes used truncate-in-place plus destructive bak fallback.
+
+**Prevention:** Refresh once, then show Session needs attention. Device-code starts only from Connect with `confirm: true`. Token writes are temp+fsync+rename+dir fsync at mode 0600. Restore a valid `.bak`; never write an empty token. CLI `dl` prints `music-dl login` and exits.
 
 ## 2026-09-26 — Advisory QA hid master failures until enforcement
 
