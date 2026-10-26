@@ -15,6 +15,7 @@
         }
       ]
     },
+    "allow-get-ui-secret",
     "shell:allow-open"
   ]
 }

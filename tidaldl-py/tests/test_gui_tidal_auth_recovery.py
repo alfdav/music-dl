@@ -6,10 +6,9 @@ def test_tidal_auth_errors_offer_explicit_catalog_login():
 
     assert "function _isTidalAuthError(error)" in source
     assert "error.status === 401" in source
-    assert "error.detail.toLowerCase().includes('not logged in to tidal')" in source
     assert "async function apiTidal(path, options)" in source
-    assert "toast('Tidal login required — opening sign-in…', 'error');" in source
-    assert "triggerLogin();" in source
+    assert "Session needs attention" in source
+    assert "triggerLogin()" not in source.split("async function apiTidal(path, options) {")[1].split("\nfunction ")[0]
     assert "api('/search?" in source
     assert "Connect Tidal to search, stream, and download" in source
     assert "connectButton.addEventListener('click', () => triggerLogin());" in source
@@ -22,7 +21,7 @@ def test_settings_auth_status_offers_gui_login_button():
     assert "if (data.auth_state === 'not_configured') return { label: 'log in', dot: 'disconnected' };" in source
     assert "const presentation = _tidalStatusPresentation(data);" in source
     assert "data.account_quality" in source
-    assert "textEl('button', 'Log in to Tidal', 'banner-action')" in source
+    assert "textEl('button', 'Connect', 'banner-action')" in source
     assert "loginBtn.addEventListener('click', () => { triggerLogin(); });" in source
     assert "textEl('button', 'Reset Tidal connection', 'banner-action')" in source
     assert "_resetTidalConnection(container)" in source

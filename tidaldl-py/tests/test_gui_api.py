@@ -10,6 +10,15 @@ _TEST_PORT = 8765
 _HOST_HEADER = {"host": f"localhost:{_TEST_PORT}"}
 
 
+def _ui_headers(client):
+    secret = getattr(client.app.state, "ui_secret", "") or getattr(client.app.state, "csrf_token", "")
+    return {
+        **_HOST_HEADER,
+        "X-Music-DL-UI": secret,
+        "X-CSRF-Token": secret,
+    }
+
+
 def _fetch_gui_js(client: TestClient) -> str:
     parts: list[str] = []
     for name in GUI_JS_FILES:
@@ -78,7 +87,7 @@ def test_app_factory_returns_fastapi_instance():
 def test_auth_state_reports_saved_unexpired_credentials():
     client = _make_auth_client(_FakeTidal(logged_in=True, access_token="token", username="Ada"))
 
-    resp = client.get("/api/auth/status", headers=_HOST_HEADER)
+    resp = client.get("/api/auth/status", headers=_ui_headers(client))
 
     assert resp.status_code == 200
     assert resp.json() == {
@@ -86,13 +95,14 @@ def test_auth_state_reports_saved_unexpired_credentials():
         "username": "Ada",
         "auth_state": "credentials_ready",
         "account_quality": "HI_RES",
+        "refresh_in_flight": False,
     }
 
 
 def test_auth_state_reports_not_configured_without_persisted_token():
     client = _make_auth_client(_FakeTidal(logged_in=False, access_token=None))
 
-    resp = client.get("/api/auth/status", headers=_HOST_HEADER)
+    resp = client.get("/api/auth/status", headers=_ui_headers(client))
 
     assert resp.status_code == 200
     assert resp.json() == {
@@ -100,13 +110,14 @@ def test_auth_state_reports_not_configured_without_persisted_token():
         "username": "",
         "auth_state": "not_configured",
         "account_quality": None,
+        "refresh_in_flight": False,
     }
 
 
 def test_auth_state_reports_expired_with_persisted_token_and_failed_session():
     client = _make_auth_client(_FakeTidal(logged_in=False, access_token="expired-token"))
 
-    resp = client.get("/api/auth/status", headers=_HOST_HEADER)
+    resp = client.get("/api/auth/status", headers=_ui_headers(client))
 
     assert resp.status_code == 200
     assert resp.json() == {
@@ -114,6 +125,7 @@ def test_auth_state_reports_expired_with_persisted_token_and_failed_session():
         "username": "",
         "auth_state": "expired",
         "account_quality": None,
+        "refresh_in_flight": False,
     }
 
 
@@ -121,7 +133,7 @@ def test_auth_state_reports_unavailable_when_tidal_status_check_fails():
     tidal = _FakeTidal(logged_in=False, access_token="token", expiry_time=object())
     client = _make_auth_client(tidal)
 
-    resp = client.get("/api/auth/status", headers=_HOST_HEADER)
+    resp = client.get("/api/auth/status", headers=_ui_headers(client))
 
     assert resp.status_code == 200
     assert resp.json() == {
@@ -129,6 +141,7 @@ def test_auth_state_reports_unavailable_when_tidal_status_check_fails():
         "username": "",
         "auth_state": "unavailable",
         "account_quality": None,
+        "refresh_in_flight": False,
     }
 
 
@@ -139,7 +152,7 @@ def test_auth_status_uses_cached_account_quality_without_provider_refresh():
     )
     client = _make_auth_client(tidal)
 
-    resp = client.get("/api/auth/status", headers=_HOST_HEADER)
+    resp = client.get("/api/auth/status", headers=_ui_headers(client))
 
     assert resp.status_code == 200
     assert resp.json()["account_quality"] == "HI_RES"
@@ -150,7 +163,7 @@ def test_auth_account_refreshes_quality_when_logged_in():
     tidal.refresh_account_quality = lambda: "LOSSLESS"
     client = _make_auth_client(tidal)
 
-    resp = client.get("/api/auth/account", headers=_HOST_HEADER)
+    resp = client.get("/api/auth/account", headers=_ui_headers(client))
 
     assert resp.status_code == 200
     assert resp.json() == {
@@ -158,6 +171,7 @@ def test_auth_account_refreshes_quality_when_logged_in():
         "username": "Ada",
         "auth_state": "credentials_ready",
         "account_quality": "LOSSLESS",
+        "refresh_in_flight": False,
     }
 
 
@@ -168,7 +182,7 @@ def test_auth_account_skips_provider_refresh_when_logged_out():
     )
     client = _make_auth_client(tidal)
 
-    resp = client.get("/api/auth/account", headers=_HOST_HEADER)
+    resp = client.get("/api/auth/account", headers=_ui_headers(client))
 
     assert resp.status_code == 200
     assert resp.json()["auth_state"] == "not_configured"
@@ -361,9 +375,10 @@ def test_static_js_shows_tidal_session_banner_only_for_expired_auth():
         "// Library views: check scan_paths"
     )[0]
 
-    assert "function _authStateNeedsExpiredBanner(authState) {\n  return authState === 'expired';\n}" in js
+    assert "authState === 'expired' || authState === 'needs_attention'" in js
     assert "if (_authStateNeedsExpiredBanner(auth.auth_state))" in banner_source
     assert "Tidal session expired." in banner_source
+    assert "Session needs attention." in banner_source
 
 
 def test_static_js_playlist_sync_updates_download_badge_and_sse():

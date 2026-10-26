@@ -335,7 +335,8 @@ For deep dives, see:
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `MUSIC_DL_CONFIG_DIR` | `~/.config/music-dl` | Config/credentials directory |
-| `MUSIC_DL_BIND_ALL` | _(unset)_ | Set to `1` to bind server to `0.0.0.0` (Docker sets this automatically) |
+| `MUSIC_DL_BIND_ALL` | _(unset)_ | Set to `1` to bind `0.0.0.0` (Docker opt-in only). Requires `MUSIC_DL_UI_SECRET`. |
+| `MUSIC_DL_UI_SECRET` | generated per launch on loopback | Shared by the Tauri shell, webview, and sidecar. Required on mutating and `/api/auth` requests as `X-Music-DL-UI`. Bind-all (`MUSIC_DL_BIND_ALL`) refuses to start unless this is already set; GET `/` does not mint it as a cookie. |
 | `MUSIC_DL_HOST` | `127.0.0.1` | Docker Compose host binding; changing it alone does not bypass localhost Host/CORS validation |
 | `MUSIC_DL_PORT` | `8765` | Docker compose port mapping |
 | `MUSIC_DL_CONFIG` | `~/.config/music-dl` | Docker compose config volume source |

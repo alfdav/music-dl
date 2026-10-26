@@ -12,6 +12,7 @@ fn main() {
         "stop_sidecar",
         "start_sidecar",
         "restart_sidecar",
+        "get_ui_secret",
     ]);
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
         .expect("failed to build Tauri application");

@@ -195,6 +195,11 @@ def discover_ready_daemon(
 def make_uvicorn_config(meta: DaemonMetadata, *, bind_all: bool = False) -> uvicorn.Config:
     from tidal_dl.gui import create_app
 
+    if bind_all and not (os.environ.get("MUSIC_DL_UI_SECRET") or "").strip():
+        raise RuntimeError(
+            "MUSIC_DL_BIND_ALL requires MUSIC_DL_UI_SECRET so the local API is not open"
+        )
+
     host = "0.0.0.0" if bind_all else meta.host
 
     def app_factory():

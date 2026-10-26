@@ -148,10 +148,10 @@ Use `bump minor`, `bump major`, or `set X.Y.Z` when needed. The helper updates P
 
 ## Security
 
-- Server binds `127.0.0.1` by default. `0.0.0.0` only via `MUSIC_DL_BIND_ALL=1`.
-- CSRF token required for POST/PATCH/PUT/DELETE.
+- Server binds `127.0.0.1` by default. `0.0.0.0` only via `MUSIC_DL_BIND_ALL=1` plus `MUSIC_DL_UI_SECRET`.
+- Per-launch UI secret required as `X-Music-DL-UI` on mutating endpoints and every `/api/auth` route. Host must be the exact `localhost:port` or `127.0.0.1:port`.
 - Path traversal is blocked: `resolve(strict=True)` + `is_relative_to()` + extension whitelist.
-- Never hardcode secrets. Never log tokens.
+- Never hardcode secrets. Never log tokens or refresh tokens.
 - Docker runs as non-root (UID 1000).
 
 ## Architecture
