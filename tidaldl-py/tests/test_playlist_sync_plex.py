@@ -927,12 +927,12 @@ def test_token_never_leaks(tmp_path: Path, caplog: pytest.LogCaptureFixture):
     assert TOKEN not in failed.detail
     assert "<redacted>" in failed.detail
 
-    server.failures.append(("PUT", "/playlists/7001/items", 401))
-    server.add_playlist("Playlist C", smart="0", items=[], rating_key="7001")
+    server.failures.append(("PUT", "/playlists/8001/items", 401))
+    server.add_playlist("Playlist C", smart="0", items=[], rating_key="8001")
     denied = sink.append("Playlist C", [_plex_track("5002", "Other Song", artist=OTHER)])
     assert denied.status == "failed"
-    assert denied.detail.startswith("PlexError: 401 PUT /playlists/7001/items")
-    assert "during=add keys=5002 playlist=7001" in denied.detail
+    assert denied.detail.startswith("PlexError: 401 PUT /playlists/8001/items")
+    assert "during=add keys=5002 playlist=8001" in denied.detail
     assert TOKEN not in denied.detail
 
     server.failures.append(("GET", "/library/sections/1/all", 401))
@@ -1157,6 +1157,41 @@ def test_playlist_items_page_until_the_container_is_complete(tmp_path: Path):
     assert [row["ratingKey"] for row in rows] == ["5001", "5002"]
     item_calls = [call for call in session.calls if call["path"].endswith("/items")]
     assert [call["headers"]["X-Plex-Container-Start"] for call in item_calls] == ["0", "1"]
+
+
+def test_paged_listings_walk_three_overlapping_pages(monkeypatch):
+    """A full page with no totalSize is not the end, and a repeated id is kept once."""
+    from tidal_dl.playlist_sync import plex_client as plex_client_module
+
+    monkeypatch.setattr(plex_client_module, "_PAGE", 2)
+    pages = {0: ["1", "2"], 2: ["2", "3"], 4: ["3", "4"]}
+
+    class Session:
+        def __init__(self) -> None:
+            self.starts: list[tuple[str, int]] = []
+
+        def request(self, method, url, params=None, headers=None, timeout=None, **_kwargs):
+            path = urlsplit(url).path
+            start = int((headers or {}).get("X-Plex-Container-Start") or 0)
+            self.starts.append((path, start))
+            chunk = pages.get(start, [])
+            payload = {
+                "MediaContainer": {
+                    "size": len(chunk),
+                    "Metadata": [
+                        {"ratingKey": item, "title": f"Song {item}", "playlistType": "audio"} for item in chunk
+                    ],
+                }
+            }
+            return FakeResponse(200, payload)
+
+    session = Session()
+    client = PlexClient(URL, PlexToken(TOKEN), SECTION, session=session)
+    assert [row["rating_key"] for row in client.list_audio_playlists()] == ["1", "2", "3", "4"]
+    assert [row["ratingKey"] for row in client.playlist_items("9")] == ["1", "2", "3", "4"]
+    assert [row["ratingKey"] for row in client.search_tracks("Song")] == ["1", "2", "3", "4"]
+    for path in ("/playlists", "/playlists/9/items", f"/library/sections/{SECTION}/all"):
+        assert [start for seen, start in session.starts if seen == path] == [0, 2, 4, 6]
 
 
 def test_playlist_listing_pages_until_complete(tmp_path: Path):

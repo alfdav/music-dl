@@ -49,13 +49,19 @@ class TidalSource:
     def list_tracks(self, playlist: PlaylistRef) -> list[Track]:
         playlist_obj = self.session.playlist(playlist.source_playlist_id)
         tracks: list[Track] = []
+        seen: set[str] = set()
         for row in playlist_track_catalog(playlist_obj):
             isrc = str(row.get("isrc") or "").strip()
             raw_id = row.get("id")
+            track_id = _track_id(raw_id)
+            if track_id and track_id in seen:
+                continue
+            if track_id:
+                seen.add(track_id)
             tracks.append(
                 Track(
                     source=self.name,
-                    source_track_id=_track_id(raw_id),
+                    source_track_id=track_id,
                     title=str(row.get("name") or ""),
                     artist=str(row.get("artist") or ""),
                     album=str(row.get("album") or ""),
