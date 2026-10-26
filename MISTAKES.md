@@ -272,6 +272,14 @@
 
 **Prevention:** Always probe OAuth delivery. Store `session_max_quality` in-memory. When the session is LOSSLESS-capped, accept delivered CD, label history as LOSSLESS, and emit one notice. Fail-closed only when the session is Hi-Res capable or unprobed. Do not wipe `token.json` or start a new login. Document a future login-client picker; do not implement it here.
 
+## 2026-09-26 — Treated CLI `Tidal.login()` as the GUI login contract
+
+**What happened:** While auditing Tidal auth, `config.py` `login()` looked like it never starts device-code while a `refresh_token` exists. The GUI `POST /auth/login` path still calls `login_oauth()` after a rejected refresh. A spec that praised both as the same law would have hidden the extra-seat bug.
+
+**Root cause:** Two functions named "login" with different rejected-refresh behavior. Tests even require the GUI path to start OAuth (`test_gui_auth_login_uses_oauth_when_refresh_cannot_repair`).
+
+**Prevention:** Cite `Tidal.login()` and `auth_login()` separately. Rejected refresh in the GUI is `needs_attention`, not a new device-code seat. Verify `file:line` against the live line, not the function name.
+
 ## 2026-09-26 — Auto-login after 401 and in-place token writes
 
 **What happened:** A 401 in `apiTidal()` called `triggerLogin()`, which started device-code OAuth while a refresh token still existed. `token.json` was also written in place, so a crash could truncate a working session. Recovery deleted a valid `.bak`.
