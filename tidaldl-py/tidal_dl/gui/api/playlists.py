@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 _CACHE_TTL = 300  # 5 minutes
 _CACHE_MAX_PLAYLISTS = 50
 _PLAYLIST_PAGE_SIZE = 50
+_USER_PLAYLIST_PAGE = 50
 _PLAYLIST_FETCH_CONCURRENCY = 2
 _PLAYLIST_PAGE_CAP = 50
 _PLAYLIST_TOTAL_CAP = 10_000
@@ -173,21 +174,77 @@ def _call_tracks(playlist: Any, *, limit: int, offset: int) -> list:
 
 
 def fetch_user_playlists(session) -> list:
-    """Return the user's playlist objects. No cover cache and no login."""
+    """Return the user's playlist objects. No cover cache and no login.
+
+    Pages ``users/<id>/playlists`` when the session can. One id is kept once.
+    """
     user = getattr(session, "user", None)
     if user is None:
         return []
+    paged = _page_created_playlists(user)
+    if paged is not None:
+        return paged
     getter = getattr(user, "playlists", None)
     if not callable(getter):
         return []
-    return list(getter() or [])
+    return _first_by_id(list(getter() or []))
 
 
-def playlist_track_catalog(playlist: Any, *, page_size: int = _PLAYLIST_PAGE_SIZE) -> list[dict]:
+def _page_created_playlists(user: Any) -> list | None:
+    request = getattr(user, "request", None)
+    user_id = getattr(user, "id", None)
+    factory = getattr(getattr(user, "playlist", None), "parse_factory", None)
+    map_request = getattr(request, "map_request", None) if request is not None else None
+    if user_id is None or not callable(map_request) or not callable(factory):
+        return None
+    offset = 0
+    found: list = []
+    seen: set[str] = set()
+    while offset <= _PLAYLIST_TOTAL_CAP:
+        batch = list(
+            map_request(
+                f"users/{user_id}/playlists",
+                params={"limit": _USER_PLAYLIST_PAGE, "offset": offset},
+                parse=factory,
+            )
+            or []
+        )
+        if not batch:
+            break
+        fresh = _take_new(found, seen, batch, lambda item: getattr(item, "id", None))
+        if fresh == 0 or len(batch) < _USER_PLAYLIST_PAGE:
+            break
+        offset += _USER_PLAYLIST_PAGE
+    return found
+
+
+def _first_by_id(rows: list) -> list:
+    found: list = []
+    _take_new(found, set(), rows, lambda item: getattr(item, "id", None))
+    return found
+
+
+def _take_new(found: list, seen: set[str], batch: list, ident) -> int:
+    fresh = 0
+    for item in batch:
+        key = ident(item)
+        text = "" if key is None else str(key)
+        if text:
+            if text in seen:
+                continue
+            seen.add(text)
+        found.append(item)
+        fresh += 1
+    return fresh
+
+
+def playlist_track_catalog(playlist: Any, *, page_size: int | None = None) -> list[dict]:
     """Catalog rows for one playlist object, including an available flag.
 
     Same page walk as the tracks endpoint. Does not stamp the local library.
     """
+    if page_size is None:
+        page_size = _PLAYLIST_PAGE_SIZE
     offset = 0
     rows: list[dict] = []
     while offset <= _PLAYLIST_TOTAL_CAP:

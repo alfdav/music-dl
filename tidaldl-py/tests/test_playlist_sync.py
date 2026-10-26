@@ -883,6 +883,223 @@ def test_package_never_references_bulk_sync_or_tokens():
         ast.parse(path.read_text(encoding="utf-8"))
 
 
+def test_tidal_listing_keeps_one_copy_of_an_id_that_repeats_across_pages():
+    from tidal_dl.gui.api import playlists as playlist_api
+    from tidal_dl.playlist_sync.tidal_source import TidalSource
+
+    class Obj:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    artist = Obj(name=ARTIST, id=1)
+    album = Obj(name="Example Album", id=2, image=lambda _size: "")
+    page = 2
+    windows = {
+        0: [1, 2],
+        2: [2, 3],
+        4: [3, 4],
+    }
+
+    def raw(track_id: int):
+        return Obj(
+            id=track_id,
+            name=f"Song {track_id}",
+            full_name=None,
+            artists=[artist],
+            album=album,
+            duration=180,
+            isrc=f"XX000000000{track_id}",
+            allow_streaming=True,
+            stream_ready=True,
+            audio_quality="HIGH",
+            media_metadata_tags=[],
+            version="",
+        )
+
+    def tracks(limit, offset):
+        assert limit == page
+        return [raw(track_id) for track_id in windows.get(offset, [])]
+
+    calls: list[int] = []
+
+    def map_request(url, params=None, parse=None):
+        offset = int((params or {}).get("offset") or 0)
+        calls.append(offset)
+        chunk = windows.get(offset, [])
+        return [Obj(id=f"pl-{item}", name=f"Playlist {item}", num_tracks=1, last_updated="2026-01-01") for item in chunk]
+
+    session = Obj(
+        user=Obj(
+            id="user-1",
+            request=Obj(map_request=map_request),
+            playlist=Obj(parse_factory=lambda item: item),
+            playlists=lambda: (_ for _ in ()).throw(AssertionError("unpaged playlist list")),
+        ),
+        playlist=lambda _playlist_id: Obj(tracks=tracks),
+    )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(playlist_api, "_USER_PLAYLIST_PAGE", page)
+    monkeypatch.setattr(playlist_api, "_PLAYLIST_PAGE_SIZE", page)
+    try:
+        tidal = TidalSource(session)
+        listed = tidal.list_playlists()
+        assert [item.source_playlist_id for item in listed] == ["pl-1", "pl-2", "pl-3", "pl-4"]
+        assert calls == [0, 2, 4, 6]
+        loaded = tidal.list_tracks(listed[0])
+        assert [item.source_track_id for item in loaded] == ["1", "2", "3", "4"]
+    finally:
+        monkeypatch.undo()
+
+
+def test_review_match_still_retries_a_saved_download(tmp_path: Path):
+    saved = tmp_path / "saved.flac"
+    saved.write_bytes(b"saved")
+    other = tmp_path / "other.flac"
+    other.write_bytes(b"other")
+    row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    name = normalize_playlist_name("Playlist A")
+    ledger = Ledger(tmp_path / "playlist_sync.db")
+    ledger.set_status(
+        row,
+        name,
+        "downloaded",
+        seen_at="2026-10-06T00:00:00+00:00",
+        local_path=str(saved),
+    )
+    source = _Source("tidal", [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [row])])
+
+    class Sink(_Sink):
+        def __init__(self) -> None:
+            super().__init__()
+            self.paths: list[list[str | None]] = []
+
+        def append(self, name: str, tracks: list[Track], paths: list[str | None] | None = None):
+            self.paths.append(list(paths or []))
+            return super().append(name, tracks, paths)
+
+    def library(track: Track) -> list[Candidate]:
+        if track.source_track_id != "1001":
+            return []
+        return [
+            _candidate(
+                "Example Song",
+                isrc="XX0000000001",
+                duration=184,
+                ident="border",
+                path=str(other),
+            )
+        ]
+
+    sink = Sink()
+    downloads = _Downloads()
+    report, _, _ = _run(
+        tmp_path,
+        source,
+        sink=sink,
+        downloads=downloads,
+        ledger=ledger,
+        library=library,
+        file_exists=lambda path: path in {str(saved), str(other)},
+    )
+    assert downloads.calls == []
+    assert sink.appends == [("Playlist A", ["1001"])]
+    assert sink.paths == [[str(saved)]]
+    assert report.needs_review == []
+
+    plex_ledger = Ledger(tmp_path / "plex-review" / "playlist_sync.db")
+    plex_ledger.set_status(
+        row,
+        name,
+        "downloaded",
+        seen_at="2026-10-06T00:00:00+00:00",
+        local_path=str(saved),
+    )
+    plex_hit = _track("plex", "5001", "Example Song", isrc="XX0000000001", duration=184)
+    library_sink = Sink()
+    library_sink.found = [plex_hit]
+    again, _, _ = _run(
+        tmp_path / "plex-review",
+        source,
+        sink=library_sink,
+        downloads=_Downloads(),
+        ledger=plex_ledger,
+        library=lambda _track: [],
+        file_exists=lambda path: path == str(saved),
+    )
+    assert library_sink.appends == [("Playlist A", ["1001"])]
+    assert library_sink.paths == [[str(saved)]]
+    assert again.needs_review == []
+
+
+def test_playlist_sync_command_refuses_a_write_flag():
+    import typer
+
+    from tidal_dl.cli import playlist_sync
+
+    with pytest.raises(typer.Exit) as caught:
+        playlist_sync(dry_run=False)
+    assert caught.value.exit_code == 2
+
+
+def test_dry_run_entry_prints_the_plan_and_writes_nothing(tmp_path: Path):
+    from tidal_dl.playlist_sync.dry_run import planned_lines, run_dry_cycle
+
+    local_file = tmp_path / "local.flac"
+    local_file.write_bytes(b"local")
+    download_row = _track("tidal", "1001", "Example Song", isrc="XX0000000001", duration=180)
+    add_row = _track("tidal", "1002", "Local Song", isrc="XX0000000002", duration=180)
+    removed_row = _track("tidal", "1003", "Removed Song", isrc="XX0000000003", duration=180)
+    name = normalize_playlist_name("Playlist A")
+    ledger = Ledger(tmp_path / "playlist_sync.db")
+    ledger.set_status(
+        removed_row,
+        name,
+        "added",
+        seen_at="2026-10-06T00:00:00+00:00",
+        plex_rating_key="9001",
+    )
+    ledger.remember_plex_added(name, "9001", at="2026-10-06T00:00:00+00:00")
+    source = _Source(
+        "tidal",
+        [(_playlist("tidal", "pl-a", "Playlist A", "2026-01-01"), [removed_row, add_row, download_row])],
+    )
+
+    class ExplodingDownloads(_Downloads):
+        def enqueue_download(self, track_ids: list[int]) -> dict:
+            raise AssertionError("dry run queued a download")
+
+    class ExplodingSink(_Sink):
+        def append(self, name: str, tracks: list[Track], paths: list[str | None] | None = None):
+            raise AssertionError("dry run appended")
+
+    def library(track: Track) -> list[Candidate]:
+        if track.source_track_id != "1002":
+            return []
+        return [_candidate("Local Song", isrc="XX0000000002", ident="local", path=str(local_file))]
+
+    report = run_dry_cycle(
+        _wall(2026, 10, 6, 12),
+        settings=_cfg(dry_run=False),
+        sources=[source],
+        sink=ExplodingSink(),
+        ledger=ledger,
+        downloads=ExplodingDownloads(),
+        library=library,
+        clock=_ClockRng().clock,
+        rng=_ClockRng(),
+        sleep=lambda _seconds: None,
+        pacer=TidalApiPacer(delay_min=0, delay_max=0, sleeper=lambda _seconds: None, clock=lambda: 0.0),
+        auth_state=lambda: "credentials_ready",
+        download_path_ready=lambda _path: True,
+        file_exists=lambda path: path == str(local_file),
+    )
+    lines = planned_lines(report)
+    assert "would download: Example Artist — Example Song" in lines
+    assert "would add: Example Artist — Local Song" in lines
+    assert "would remove: Example Artist — Removed Song" in lines
+    assert report.halted_reason is None
+
+
 def test_tidal_source_reuses_catalog_helpers():
     from tidal_dl.playlist_sync.tidal_source import TidalSource
 

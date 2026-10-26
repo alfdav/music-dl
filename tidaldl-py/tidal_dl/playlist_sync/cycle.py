@@ -663,6 +663,8 @@ def _consider(
             )
         return
     if local_state == "review":
+        if _saved_file_retry(work, group, report, union, placed, track, name_norm):
+            return
         union.append(track)
         _keep(
             work,
@@ -718,6 +720,8 @@ def _consider(
                     )
                 return
             if plex_state == "review":
+                if _saved_file_retry(work, group, report, union, placed, track, name_norm):
+                    return
                 union.append(track)
                 _keep(
                     work,
@@ -1664,6 +1668,22 @@ def _note_file_missing(
     report.needs_review.append(entry)
     work.report.needs_review.append(entry)
     placed.append(_Placed(track, "review", entry))
+
+
+def _saved_file_retry(
+    work: _Work,
+    group: _Group,
+    report: PlaylistReport,
+    union: list[Track],
+    placed: list[_Placed],
+    track: Track,
+    name_norm: str,
+) -> bool:
+    """Append a downloaded file even when a later lookup only rates as review."""
+    row = work.ledger.get_track(track.source, track.source_track_id, name_norm)
+    if not row:
+        return False
+    return _retry_saved_file(work, group, report, union, placed, track, name_norm, row)
 
 
 def _retry_saved_file(

@@ -1286,6 +1286,25 @@ def isrc_tag(
         console.print(f"[dim]Library ISRC entries: {db.isrc_entry_count()}.[/dim]")
 
 
+@app.command("playlist-sync")
+def playlist_sync(
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Print what would be added, removed, or downloaded. No Plex writes and no Tidal downloads.",
+        ),
+    ] = True,
+) -> None:
+    """Run one playlist sync cycle. This command never writes."""
+    from tidal_dl.playlist_sync.dry_run import main as dry_main
+
+    if not dry_run:
+        print("playlist-sync does not write. Re-run with --dry-run.")
+        raise typer.Exit(code=2)
+    raise typer.Exit(code=dry_main())
+
+
 @app.command()
 def gui(
     port: int = typer.Option(8765, help="Port to serve on."),
