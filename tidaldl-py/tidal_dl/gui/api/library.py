@@ -1189,6 +1189,7 @@ def _enrich_album_candidates(db: LibraryDB) -> None:
     from tidal_dl.helper.album_grouping import build_local_album_groups, find_candidates
 
     groups = build_local_album_groups(db.all_tracks())
+    updated = False
     for left, right in find_candidates(groups):
         stored = db.get_grouping_assessment(left.signature, right.signature)
         if stored is None:
@@ -1235,8 +1236,9 @@ def _enrich_album_candidates(db: LibraryDB) -> None:
                     contradictions=stored["contradictions"],
                     catalog=catalog,
                 )
-            _album_cards(db)
-            stored = db.get_grouping_assessment(left.signature, right.signature) or stored
+            updated = True
+    if updated:
+        _album_cards(db)
 
 
 def _safe_catalog_lookup(lookup: Callable[[], dict]) -> dict:
