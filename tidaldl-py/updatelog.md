@@ -20,12 +20,17 @@ uv tool install --from git+https://github.com/alfdav/music-dl.git#subdirectory=t
 
 ---
 
-## Unreleased
+## v1.8.0 (2026-11-25)
 - Playlist sync can append to a Plex music playlist. It is off unless playlist sync is on and a Plex URL and section key are set. The writer never deletes, reorders, or recreates a playlist, and treats a track you removed in Plex as removed for good ([#211](https://github.com/alfdav/music-dl/pull/211)).
 - Add `scripts/playlist_sync_share_recover.sh`, a one-shot check that remounts a stale SMB download share once before a playlist fill ([#215](https://github.com/alfdav/music-dl/pull/215)).
 - The library opens files by their on-disk name and matches rows by NFC key, so names with accents scan correctly on shares that store a different Unicode form. Fixes [#210](https://github.com/alfdav/music-dl/issues/210) ([#212](https://github.com/alfdav/music-dl/pull/212)).
 - Add `music-dl playlist-sync --dry-run`, which runs one playlist sync cycle and prints what it would download, add, or remove. It does not download from Tidal or write to Plex; it only updates `playlist_sync.db` ([#218](https://github.com/alfdav/music-dl/pull/218)).
 - A track that appears twice in one source playlist is now marked for review on its second copy instead of being planned as a second Plex add. A file already downloaded for a track is appended even when a later lookup only rates as review, and Tidal and Plex playlist pages no longer return the same entry twice ([#218](https://github.com/alfdav/music-dl/pull/218)).
+- Tidal sign-in is sturdier: a stored refresh token is kept when a refresh reply leaves it out, a download started with no session is reported as needing attention instead of queued, a skipped token refresh no longer ends in 401 errors, the login confirm step is bound to the login that started it, and log redaction formatting is fixed. Healthy sessions are left alone ([#197](https://github.com/alfdav/music-dl/pull/197)).
+- The GUI no longer creates its UI secret when it listens on all interfaces ([#197](https://github.com/alfdav/music-dl/pull/197)).
+- Library album cards are rebuilt once after catalog enrichment instead of after every lookup, and still rebuild if enrichment fails partway. Fixes [#219](https://github.com/alfdav/music-dl/issues/219) ([#220](https://github.com/alfdav/music-dl/pull/220)).
+- Security: the desktop app's rustls dependency is updated to 0.23.46 for a published advisory ([#224](https://github.com/alfdav/music-dl/pull/224)).
+- Dependency updates: tauri-plugin-log 2.10.1 ([#221](https://github.com/alfdav/music-dl/pull/221)), tauri-plugin-updater 2.12.0 ([#191](https://github.com/alfdav/music-dl/pull/191)), tauri-plugin-single-instance 2.4.5 ([#190](https://github.com/alfdav/music-dl/pull/190)), serde 1.0.229 ([#174](https://github.com/alfdav/music-dl/pull/174)), serde_json 1.0.151 ([#175](https://github.com/alfdav/music-dl/pull/175)), anyio 4.14.2 ([#187](https://github.com/alfdav/music-dl/pull/187)), urllib3 2.8.0 ([#207](https://github.com/alfdav/music-dl/pull/207)) and certifi 2026.10.19 ([#216](https://github.com/alfdav/music-dl/pull/216)).
 
 ## v1.7.13 (2026-10-09)
 - Library scans no longer stop with `Python int too large to convert to SQLite INTEGER` on filesystems that report 64-bit file IDs (some SMB shares among them). File IDs are stored as signed 64-bit values, so moved folders still heal by identity. One unreadable file is skipped instead of failing the whole scan, an unreadable library folder is reported as an error and the library is kept, unreadable subfolders are no longer pruned as deleted, and older rows get their file identity filled in during a normal scan ([#209](https://github.com/alfdav/music-dl/pull/209)).
